@@ -1,0 +1,605 @@
+/**
+ * CyberAssess Security Platform - Frontend HUD Controller
+ * Pure Vanilla Zero-Build Architecture (Contract 07 & Contract 04)
+ */
+
+class ScanStreamManager {
+  constructor() {
+    this.currentScanId = null;
+    this.eventSource = null;
+    this.allFindings = [];
+    this.activeFilter = "ALL";
+    this.searchQuery = "";
+
+    this.initElements();
+    this.attachEventListeners();
+    this.checkSystemHealth();
+    this.detectTargetType();
+  }
+
+  initElements() {
+    // Form elements
+    this.scanForm = document.getElementById("scan-form");
+    this.targetInput = document.getElementById("target-input");
+    this.targetName = document.getElementById("target-name");
+    this.typeBadge = document.getElementById("type-detected-badge");
+    this.scanProfile = document.getElementById("scan-profile");
+    this.engineChips = document.querySelectorAll(".engine-chip");
+    this.btnLaunch = document.getElementById("btn-launch");
+    this.btnCancel = document.getElementById("btn-cancel");
+    this.btnToggleAdvanced = document.getElementById("btn-toggle-advanced");
+    this.advancedPanel = document.getElementById("advanced-config-panel");
+
+    // Progress HUD
+    this.progressHud = document.getElementById("progress-hud");
+    this.progressBar = document.getElementById("progress-bar-fill");
+    this.progressPercent = document.getElementById("progress-percent");
+    this.stageText = document.getElementById("stage-text");
+
+    // Terminal
+    this.terminalWindow = document.getElementById("terminal-window");
+    this.chkAutoscroll = document.getElementById("chk-autoscroll");
+    this.btnClearTerminal = document.getElementById("btn-clear-terminal");
+
+    // Scorecard & Dashboard
+    this.resultsDashboard = document.getElementById("results-dashboard");
+    this.gradeLetter = document.getElementById("grade-letter");
+    this.gradeCircle = document.getElementById("grade-circle");
+    this.scoreVal = document.getElementById("score-val");
+    this.countCritical = document.getElementById("count-critical");
+    this.countHigh = document.getElementById("count-high");
+    this.countMedium = document.getElementById("count-medium");
+    this.countLow = document.getElementById("count-low");
+    this.countInfo = document.getElementById("count-info");
+
+    // Export Buttons
+    this.btnExportHtml = document.getElementById("btn-export-html");
+    this.btnExportSarif = document.getElementById("btn-export-sarif");
+    this.btnExportJson = document.getElementById("btn-export-json");
+
+    // Findings
+    this.findingsList = document.getElementById("findings-list-container");
+    this.filterTabs = document.querySelectorAll(".filter-tab");
+    this.searchInput = document.getElementById("findings-search");
+
+    // History Modal
+    this.btnOpenHistory = document.getElementById("btn-open-history");
+    this.btnCloseHistory = document.getElementById("btn-close-history");
+    this.historyModal = document.getElementById("history-modal");
+    this.historyTableBody = document.getElementById("history-table-body");
+  }
+
+  attachEventListeners() {
+    // Target Input Type Detection
+    this.targetInput.addEventListener("input", () => this.detectTargetType());
+
+    // Profile Presets Selection
+    this.scanProfile.addEventListener("change", (e) => this.applyProfilePreset(e.target.value));
+
+    // Engine Chips Toggle
+    this.engineChips.forEach((chip) => {
+      const checkbox = chip.querySelector('input[type="checkbox"]');
+      checkbox.addEventListener("change", () => {
+        chip.classList.toggle("active", checkbox.checked);
+      });
+    });
+
+    // Advanced Panel Toggle
+    this.btnToggleAdvanced.addEventListener("click", (e) => {
+      e.preventDefault();
+      const isVisible = this.advancedPanel.style.display !== "none";
+      this.advancedPanel.style.display = isVisible ? "none" : "block";
+    });
+
+    // Form Submission (Launch Scan)
+    this.scanForm.addEventListener("submit", (e) => this.handleStartScan(e));
+
+    // Cancel Scan
+    this.btnCancel.addEventListener("click", () => this.handleCancelScan());
+
+    // Terminal Clear
+    this.btnClearTerminal.addEventListener("click", () => {
+      this.terminalWindow.innerHTML = "";
+    });
+
+    // Filter Tabs
+    this.filterTabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        this.filterTabs.forEach((t) => t.classList.remove("active"));
+        tab.classList.add("active");
+        this.activeFilter = tab.dataset.filter;
+        this.renderFindings();
+      });
+    });
+
+    // Live Search Input
+    this.searchInput.addEventListener("input", (e) => {
+      this.searchQuery = e.target.value.toLowerCase();
+      this.renderFindings();
+    });
+
+    // History Modal
+    this.btnOpenHistory.addEventListener("click", () => this.openHistoryModal());
+    this.btnCloseHistory.addEventListener("click", () => this.closeHistoryModal());
+    this.historyModal.addEventListener("click", (e) => {
+      if (e.target === this.historyModal) this.closeHistoryModal();
+    });
+  }
+
+  async checkSystemHealth() {
+    try {
+      const res = await fetch("/api/system/health");
+      if (res.ok) {
+        document.getElementById("system-status-text").innerText = "SYSTEM ONLINE";
+        document.getElementById("system-status-indicator").style.borderColor = "var(--border-subtle)";
+      }
+    } catch (e) {
+      document.getElementById("system-status-text").innerText = "DISCONNECTED";
+      document.getElementById("system-status-indicator").style.borderColor = "var(--color-critical)";
+    }
+  }
+
+  detectTargetType() {
+    const val = this.targetInput.value.trim();
+    let type = "URL";
+
+    if (val.startsWith("/") || val.startsWith("./") || val.includes(":\\") || val.startsWith("..")) {
+      if (val.toLowerCase().endsWith("dockerfile")) {
+        type = "DOCKERFILE";
+      } else if (val.endsWith(".yaml") || val.endsWith(".yml") || val.endsWith(".tf")) {
+        type = "IAC_MANIFEST";
+      } else {
+        type = "LOCAL_PATH";
+      }
+    } else if (val.startsWith("http://") || val.startsWith("https://")) {
+      type = "URL";
+    } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(val)) {
+      type = "IP";
+    } else if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(val)) {
+      type = "DOMAIN";
+    }
+
+    this.typeBadge.innerText = type;
+    return type;
+  }
+
+  applyProfilePreset(profile) {
+    const chipMap = {
+      FULL_STACK: ["network", "web_dast", "code_sast", "infra_iac", "cicd_audit"],
+      QUICK_AUDIT: ["network", "web_dast"],
+      DAST_ONLY: ["web_dast"],
+      SAST_ONLY: ["code_sast"],
+      NETWORK_TLS: ["network"],
+      INFRA_ONLY: ["infra_iac"],
+      CUSTOM: null,
+    };
+
+    const targetEngines = chipMap[profile];
+    if (!targetEngines) return;
+
+    this.engineChips.forEach((chip) => {
+      const engineName = chip.dataset.engine;
+      const checkbox = chip.querySelector('input[type="checkbox"]');
+      const isEnabled = targetEngines.includes(engineName);
+      checkbox.checked = isEnabled;
+      chip.classList.toggle("active", isEnabled);
+    });
+  }
+
+  getSelectedEngines() {
+    const selected = [];
+    this.engineChips.forEach((chip) => {
+      const checkbox = chip.querySelector('input[type="checkbox"]');
+      if (checkbox.checked) selected.push(checkbox.value);
+    });
+    return selected;
+  }
+
+  async handleStartScan(e) {
+    e.preventDefault();
+    const targetVal = this.targetInput.value.trim();
+    if (!targetVal) return;
+
+    const targetType = this.detectTargetType();
+    const targetName = this.targetName.value.trim() || targetVal;
+    const profile = this.scanProfile.value;
+    const enabledEngines = this.getSelectedEngines();
+
+    const rateLimit = parseFloat(document.getElementById("cfg-rate-limit").value) || 5.0;
+    const timeoutSec = parseInt(document.getElementById("cfg-timeout").value) || 10;
+    const customUa = document.getElementById("cfg-user-agent").value.trim();
+
+    const payload = {
+      target_type: targetType,
+      target_value: targetVal,
+      target_name: targetName,
+      profile: profile,
+      enabled_engines: enabledEngines,
+      config: {
+        rate_limit_rps: rateLimit,
+        timeout_seconds: timeoutSec,
+        custom_headers: customUa ? { "User-Agent": customUa } : {},
+      },
+    };
+
+    this.btnLaunch.style.display = "none";
+    this.btnCancel.style.display = "inline-flex";
+    this.progressHud.style.display = "block";
+    this.resultsDashboard.style.display = "block";
+
+    this.allFindings = [];
+    this.renderScorecard(null);
+    this.renderFindings();
+
+    this.appendLog("orchestrator", "INFO", `Launching scan on target: ${targetVal}`);
+
+    try {
+      const res = await fetch("/api/scans/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to start scan");
+      }
+
+      const data = await res.json();
+      this.currentScanId = data.scan_id;
+      this.updateExportLinks(this.currentScanId);
+      this.connectEventStream(this.currentScanId);
+    } catch (err) {
+      this.appendLog("orchestrator", "ERROR", `Scan launch failed: ${err.message}`);
+      this.btnLaunch.style.display = "inline-flex";
+      this.btnCancel.style.display = "none";
+    }
+  }
+
+  async handleCancelScan() {
+    if (!this.currentScanId) return;
+    try {
+      await fetch(`/api/scans/${this.currentScanId}/cancel`, { method: "POST" });
+      this.appendLog("orchestrator", "WARNING", "Scan cancellation requested by user.");
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  connectEventStream(scanId) {
+    if (this.eventSource) {
+      this.eventSource.close();
+    }
+
+    this.eventSource = new EventSource(`/api/scans/${scanId}/events`);
+
+    this.eventSource.addEventListener("progress", (e) => {
+      const data = JSON.parse(e.data);
+      this.updateProgress(data.percent, data.stage);
+    });
+
+    this.eventSource.addEventListener("log", (e) => {
+      const data = JSON.parse(e.data);
+      this.appendLog(data.engine, data.level, data.message, data.timestamp);
+    });
+
+    this.eventSource.addEventListener("finding", (e) => {
+      const finding = JSON.parse(e.data);
+      this.allFindings.push(finding);
+      this.renderFindings();
+      this.updateLiveSummaryCounts();
+    });
+
+    this.eventSource.addEventListener("completed", (e) => {
+      const summary = JSON.parse(e.data);
+      this.renderScorecard(summary);
+      this.updateProgress(100, "Assessment complete.");
+      this.btnLaunch.style.display = "inline-flex";
+      this.btnCancel.style.display = "none";
+      this.eventSource.close();
+    });
+
+    this.eventSource.addEventListener("error", (e) => {
+      // EventSource automatic reconnect or error
+      if (this.eventSource.readyState === EventSource.CLOSED) {
+        this.btnLaunch.style.display = "inline-flex";
+        this.btnCancel.style.display = "none";
+      }
+    });
+  }
+
+  updateProgress(percent, stage) {
+    const pct = Math.min(100, Math.max(0, percent || 0));
+    this.progressBar.style.width = `${pct}%`;
+    this.progressPercent.innerText = `${pct}%`;
+    if (stage) this.stageText.innerText = stage;
+  }
+
+  appendLog(engine, level, message, timestamp) {
+    const timeStr = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+    const line = document.createElement("div");
+    line.className = `log-line ${(level || "info").toLowerCase()}`;
+    line.innerHTML = `
+      <span class="log-time">[${timeStr}]</span>
+      <span class="log-engine">[${engine || "sys"}]</span>
+      <span class="log-msg">${this.escapeHtml(message)}</span>
+    `;
+    this.terminalWindow.appendChild(line);
+
+    if (this.chkAutoscroll.checked) {
+      this.terminalWindow.scrollTop = this.terminalWindow.scrollHeight;
+    }
+  }
+
+  updateLiveSummaryCounts() {
+    let crit = 0, high = 0, med = 0, low = 0, info = 0;
+    this.allFindings.forEach((f) => {
+      if (f.severity === "CRITICAL") crit++;
+      else if (f.severity === "HIGH") high++;
+      else if (f.severity === "MEDIUM") med++;
+      else if (f.severity === "LOW") low++;
+      else if (f.severity === "INFO") info++;
+    });
+
+    this.countCritical.innerText = crit;
+    this.countHigh.innerText = high;
+    this.countMedium.innerText = med;
+    this.countLow.innerText = low;
+    this.countInfo.innerText = info;
+
+    document.getElementById("tab-count-all").innerText = this.allFindings.length;
+    document.getElementById("tab-count-critical").innerText = crit;
+    document.getElementById("tab-count-high").innerText = high;
+    document.getElementById("tab-count-medium").innerText = med;
+    document.getElementById("tab-count-low").innerText = low;
+  }
+
+  renderScorecard(summary) {
+    const grade = summary ? summary.overall_security_grade : "-";
+    const score = summary ? `${summary.weighted_score.toFixed(1)} / 100` : "0.0 / 100";
+
+    this.gradeLetter.innerText = grade;
+    this.scoreVal.innerText = score;
+
+    const gradeColors = {
+      "A+": "#10b981",
+      A: "#10b981",
+      B: "#3b82f6",
+      C: "#eab308",
+      D: "#f97316",
+      F: "#ef4444",
+      "-": "#64748b",
+    };
+
+    const col = gradeColors[grade] || "#64748b";
+    this.gradeCircle.style.borderColor = col;
+    this.gradeCircle.style.boxShadow = `0 0 25px ${col}66`;
+    this.gradeLetter.style.color = col;
+
+    if (summary) {
+      this.countCritical.innerText = summary.critical_count;
+      this.countHigh.innerText = summary.high_count;
+      this.countMedium.innerText = summary.medium_count;
+      this.countLow.innerText = summary.low_count;
+      this.countInfo.innerText = summary.info_count;
+    }
+  }
+
+  updateExportLinks(scanId) {
+    this.btnExportHtml.href = `/api/scans/${scanId}/export/html`;
+    this.btnExportSarif.href = `/api/scans/${scanId}/export/sarif`;
+    this.btnExportJson.href = `/api/scans/${scanId}/export/json`;
+  }
+
+  renderFindings() {
+    this.updateLiveSummaryCounts();
+    const filtered = this.allFindings.filter((f) => {
+      const matchFilter = this.activeFilter === "ALL" || f.severity === this.activeFilter;
+      const matchSearch =
+        !this.searchQuery ||
+        f.title.toLowerCase().includes(this.searchQuery) ||
+        f.check_id.toLowerCase().includes(this.searchQuery) ||
+        (f.cwe_id && f.cwe_id.toLowerCase().includes(this.searchQuery));
+      return matchFilter && matchSearch;
+    });
+
+    if (filtered.length === 0) {
+      this.findingsList.innerHTML = `
+        <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
+          <div style="font-size: 32px; margin-bottom: 8px;">🛡️</div>
+          <div>No vulnerabilities matching current filter criteria.</div>
+        </div>
+      `;
+      return;
+    }
+
+    this.findingsList.innerHTML = filtered
+      .map((f, idx) => {
+        const sevClass = `severity-${f.severity.toLowerCase()}`;
+        const codeSnippet = f.remediation_code_snippet
+          ? `
+          <div class="code-block-container">
+            <div class="code-header">
+              <span>Remediation Code Snippet</span>
+              <button class="btn-copy" onclick="window.copySnippet('snip-${idx}')">Copy</button>
+            </div>
+            <pre id="snip-${idx}"><code>${this.escapeHtml(f.remediation_code_snippet)}</code></pre>
+          </div>
+        `
+          : "";
+
+        return `
+        <div class="finding-card ${sevClass}">
+          <div class="finding-header" onclick="window.toggleCard('fc-${idx}')">
+            <div class="finding-title-group">
+              <span class="severity-badge ${sevClass}">${f.severity}</span>
+              <span class="check-id">${this.escapeHtml(f.check_id)}</span>
+              <span class="finding-title">${this.escapeHtml(f.title)}</span>
+            </div>
+            <div class="finding-header-meta">
+              <span class="cvss-pill">CVSS ${f.cvss_score.toFixed(1)}</span>
+              <span class="chevron" id="chev-fc-${idx}">▼</span>
+            </div>
+          </div>
+          <div class="finding-body" id="body-fc-${idx}">
+            <div class="tags-row">
+              ${f.cwe_id ? `<span class="meta-tag">${this.escapeHtml(f.cwe_id)}</span>` : ""}
+              ${f.owasp_category ? `<span class="meta-tag">${this.escapeHtml(f.owasp_category)}</span>` : ""}
+              ${f.nist_control ? `<span class="meta-tag">${this.escapeHtml(f.nist_control)}</span>` : ""}
+              <span class="meta-tag engine-tag">${this.escapeHtml(f.engine)}</span>
+            </div>
+
+            <p class="finding-desc"><strong>Description:</strong> ${this.escapeHtml(f.description)}</p>
+            <p class="finding-impact"><strong>Impact:</strong> ${this.escapeHtml(f.impact)}</p>
+
+            <div class="evidence-box">
+              <h4>Evidence & Location</h4>
+              <div class="evidence-row">
+                <span class="ev-label">Location:</span>
+                <code>${this.escapeHtml(f.evidence.location)}</code>
+              </div>
+              <div class="evidence-row">
+                <span class="ev-label">Observed:</span>
+                <code class="obs-code">${this.escapeHtml(f.evidence.observed_value)}</code>
+              </div>
+              <div class="evidence-row">
+                <span class="ev-label">Expected:</span>
+                <code class="exp-code">${this.escapeHtml(f.evidence.expected_value || "Secure Configuration")}</code>
+              </div>
+            </div>
+
+            <div class="remediation-box">
+              <h4>Remediation Guidance</h4>
+              <p>${this.escapeHtml(f.remediation)}</p>
+              ${codeSnippet}
+            </div>
+          </div>
+        </div>
+      `;
+      })
+      .join("");
+  }
+
+  async openHistoryModal() {
+    this.historyModal.style.display = "flex";
+    try {
+      const res = await fetch("/api/scans/history?limit=30");
+      if (!res.ok) return;
+      const data = await res.json();
+      this.renderHistoryTable(data.scans || []);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  closeHistoryModal() {
+    this.historyModal.style.display = "none";
+  }
+
+  renderHistoryTable(scans) {
+    if (scans.length === 0) {
+      this.historyTableBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No past scans recorded yet.</td></tr>`;
+      return;
+    }
+
+    this.historyTableBody.innerHTML = scans
+      .map((s) => {
+        const time = s.created_at ? new Date(s.created_at).toLocaleString() : "N/A";
+        const grade = s.summary ? s.summary.overall_security_grade : "-";
+        const score = s.summary ? s.summary.weighted_score.toFixed(1) : "-";
+        const findCount = s.findings ? s.findings.length : 0;
+
+        return `
+        <tr>
+          <td>${time}</td>
+          <td><strong>${this.escapeHtml(s.target.name || s.target.value)}</strong></td>
+          <td><code>${s.target.type}</code></td>
+          <td><span class="badge" style="font-weight: 800; font-size: 14px;">${grade}</span></td>
+          <td>${score}</td>
+          <td>${findCount}</td>
+          <td>
+            <button class="btn btn-xs btn-outline" onclick="window.app.loadPastScan('${s.id}')">View</button>
+            <button class="btn btn-xs btn-ghost" style="color: var(--color-critical);" onclick="window.app.deletePastScan('${s.id}')">Delete</button>
+          </td>
+        </tr>
+      `;
+      })
+      .join("");
+  }
+
+  async loadPastScan(scanId) {
+    this.closeHistoryModal();
+    try {
+      const res = await fetch(`/api/scans/${scanId}`);
+      if (!res.ok) return;
+      const job = await res.json();
+
+      this.currentScanId = job.id;
+      this.targetInput.value = job.target.value;
+      this.targetName.value = job.target.name || "";
+      this.allFindings = job.findings || [];
+
+      this.updateProgress(job.progress_percent || 100, job.current_stage || "Completed.");
+      this.renderScorecard(job.summary);
+      this.renderFindings();
+      this.updateExportLinks(job.id);
+
+      this.resultsDashboard.style.display = "block";
+      this.progressHud.style.display = "block";
+
+      // Render logs
+      this.terminalWindow.innerHTML = "";
+      (job.logs || []).forEach((l) => {
+        this.appendLog(l.engine, l.level, l.message, l.timestamp);
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async deletePastScan(scanId) {
+    if (!confirm("Are you sure you want to delete this scan record?")) return;
+    try {
+      await fetch(`/api/scans/${scanId}`, { method: "DELETE" });
+      this.openHistoryModal();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+}
+
+// Global helpers for inline onclick event handlers
+window.toggleCard = function (id) {
+  const body = document.getElementById("body-" + id);
+  const chev = document.getElementById("chev-" + id);
+  if (body) body.classList.toggle("open");
+  if (chev) chev.classList.toggle("open");
+};
+
+window.copySnippet = function (id) {
+  const el = document.getElementById(id);
+  if (el) {
+    navigator.clipboard.writeText(el.innerText).then(() => {
+      alert("Remediation code snippet copied to clipboard.");
+    });
+  }
+};
+
+window.filterFindingsBySeverity = function (sev) {
+  const tab = document.querySelector(`.filter-tab[data-filter="${sev}"]`);
+  if (tab) tab.click();
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+  window.app = new ScanStreamManager();
+});

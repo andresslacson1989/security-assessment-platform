@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberAssess - Automated Security Assessment Platform</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app-wrapper">
+    <!-- Top Navigation Header -->
+    <header class="soc-header">
+      <div class="brand-group">
+        <div class="brand-logo-icon">🛡️</div>
+        <div class="brand-text">
+          <h1 class="brand-title">CYBER<span class="highlight">ASSESS</span></h1>
+          <span class="brand-subtitle">Automated Security Assessment & Vulnerability Management</span>
+        </div>
+      </div>
+      <div class="header-controls">
+        <div class="system-status-indicator" id="system-status-indicator" title="API Status">
+          <span class="pulse-dot"></span>
+          <span class="status-label" id="system-status-text">SYSTEM ONLINE</span>
+        </div>
+        <button class="btn btn-outline" id="btn-open-history">
+          <span>📜</span> History Archive
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Container -->
+    <main class="main-content">
+      
+      <!-- Target Launch Bar -->
+      <section class="card launch-hud">
+        <div class="card-header">
+          <h2>🎯 Target Specification & Profile</h2>
+          <button class="btn btn-sm btn-ghost" id="btn-toggle-advanced">⚙️ Advanced Config</button>
+        </div>
+        <div class="card-body">
+          <form id="scan-form">
+            <div class="form-row">
+              <div class="form-group flex-2">
+                <label for="target-input">Target URL, Hostname, IP or Repository Path</label>
+                <div class="input-with-badge">
+                  <input type="text" id="target-input" class="form-control" placeholder="e.g. https://example.com, 192.168.1.1, or /path/to/project" required>
+                  <span class="type-detected-badge" id="type-detected-badge">URL</span>
+                </div>
+              </div>
+              <div class="form-group flex-1">
+                <label for="target-name">Target Label (Optional)</label>
+                <input type="text" id="target-name" class="form-control" placeholder="e.g. Production Web App">
+              </div>
+              <div class="form-group flex-1">
+                <label for="scan-profile">Assessment Profile</label>
+                <select id="scan-profile" class="form-control">
+                  <option value="FULL_STACK">Full Stack Audit (All)</option>
+                  <option value="QUICK_AUDIT">Quick Perimeter Audit</option>
+                  <option value="DAST_ONLY">Web Application DAST Only</option>
+                  <option value="SAST_ONLY">Source Code SAST & SCA</option>
+                  <option value="NETWORK_TLS">Network & TLS Auditor</option>
+                  <option value="INFRA_ONLY">Container & IaC Only</option>
+                  <option value="CUSTOM">Custom Selection</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Engine Selection Chips -->
+            <div class="engines-selection-group">
+              <span class="selection-label">Enabled Engines:</span>
+              <div class="engine-chips" id="engine-chips-container">
+                <label class="engine-chip active" data-engine="network">
+                  <input type="checkbox" name="engines" value="network" checked>
+                  <span class="chip-label">🌐 Network & TLS</span>
+                </label>
+                <label class="engine-chip active" data-engine="web_dast">
+                  <input type="checkbox" name="engines" value="web_dast" checked>
+                  <span class="chip-label">🛡️ Web App DAST</span>
+                </label>
+                <label class="engine-chip active" data-engine="code_sast">
+                  <input type="checkbox" name="engines" value="code_sast" checked>
+                  <span class="chip-label">💻 Code SAST & SCA</span>
+                </label>
+                <label class="engine-chip active" data-engine="infra_iac">
+                  <input type="checkbox" name="engines" value="infra_iac" checked>
+                  <span class="chip-label">📦 Containers & IaC</span>
+                </label>
+                <label class="engine-chip active" data-engine="cicd_audit">
+                  <input type="checkbox" name="engines" value="cicd_audit" checked>
+                  <span class="chip-label">⚡ CI/CD Pipelines</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Collapsible Advanced Config Panel -->
+            <div class="advanced-config-panel" id="advanced-config-panel" style="display: none;">
+              <div class="config-grid">
+                <div class="form-group">
+                  <label for="cfg-rate-limit">Rate Limit (Requests / Sec)</label>
+                  <input type="number" id="cfg-rate-limit" class="form-control" min="1" max="20" value="5">
+                </div>
+                <div class="form-group">
+                  <label for="cfg-timeout">Connection Timeout (Seconds)</label>
+                  <input type="number" id="cfg-timeout" class="form-control" min="2" max="60" value="10">
+                </div>
+                <div class="form-group">
+                  <label for="cfg-user-agent">Custom User-Agent</label>
+                  <input type="text" id="cfg-user-agent" class="form-control" placeholder="Default: CyberAssess/3.0">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary btn-lg" id="btn-launch">
+                <span class="btn-icon">⚡</span> Launch Security Assessment
+              </button>
+              <button type="button" class="btn btn-danger btn-lg" id="btn-cancel" style="display: none;">
+                <span>🛑</span> Cancel Active Scan
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- Live Scan Progress HUD -->
+      <section class="card progress-hud" id="progress-hud" style="display: none;">
+        <div class="progress-info-row">
+          <div class="stage-display">
+            <span class="pulse-indicator"></span>
+            <span class="stage-text" id="stage-text">Initializing assessment engines...</span>
+          </div>
+          <div class="progress-percent" id="progress-percent">0%</div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%;"></div>
+        </div>
+      </section>
+
+      <!-- Real-Time Telemetry Terminal Console -->
+      <section class="card terminal-section">
+        <div class="terminal-header">
+          <div class="terminal-tabs">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+            <span class="terminal-title">LIVE TELEMETRY STREAM & CONSOLE</span>
+          </div>
+          <div class="terminal-actions">
+            <label class="autoscroll-toggle">
+              <input type="checkbox" id="chk-autoscroll" checked> Auto-Scroll
+            </label>
+            <button class="btn btn-xs btn-ghost" id="btn-clear-terminal">Clear</button>
+          </div>
+        </div>
+        <div class="terminal-window" id="terminal-window">
+          <div class="log-line info">
+            <span class="log-time">[SYSTEM]</span>
+            <span class="log-engine">[orchestrator]</span>
+            <span class="log-msg">CyberAssess Security Engine v3.0.0 ready. Standing by for scan target.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Security Scorecard & Findings Dashboard -->
+      <section class="scorecard-section" id="results-dashboard" style="display: none;">
+        
+        <!-- Scorecard Row -->
+        <div class="scorecard-grid">
+          <div class="card grade-hero-card">
+            <div class="grade-circle" id="grade-circle">
+              <span class="grade-letter" id="grade-letter">-</span>
+            </div>
+            <div class="score-meta">
+              <span class="score-label">SECURITY GRADE</span>
+              <span class="score-val" id="score-val">0.0 / 100</span>
+            </div>
+          </div>
+
+          <div class="card summary-counts-card">
+            <div class="severity-tiles-grid">
+              <div class="sev-tile critical" onclick="filterFindingsBySeverity('CRITICAL')">
+                <span class="sev-count" id="count-critical">0</span>
+                <span class="sev-name">CRITICAL</span>
+              </div>
+              <div class="sev-tile high" onclick="filterFindingsBySeverity('HIGH')">
+                <span class="sev-count" id="count-high">0</span>
+                <span class="sev-name">HIGH</span>
+              </div>
+              <div class="sev-tile medium" onclick="filterFindingsBySeverity('MEDIUM')">
+                <span class="sev-count" id="count-medium">0</span>
+                <span class="sev-name">MEDIUM</span>
+              </div>
+              <div class="sev-tile low" onclick="filterFindingsBySeverity('LOW')">
+                <span class="sev-count" id="count-low">0</span>
+                <span class="sev-name">LOW</span>
+              </div>
+              <div class="sev-tile info" onclick="filterFindingsBySeverity('INFO')">
+                <span class="sev-count" id="count-info">0</span>
+                <span class="sev-name">INFO</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Export Action Toolbar -->
+        <div class="export-toolbar">
+          <span class="export-label">Download Full Assessment Report:</span>
+          <div class="export-buttons">
+            <a href="#" class="btn btn-sm btn-outline" id="btn-export-html" target="_blank">
+              <span>📄</span> Standalone HTML
+            </a>
+            <a href="#" class="btn btn-sm btn-outline" id="btn-export-sarif" target="_blank">
+              <span>📊</span> OASIS SARIF v2.1.0
+            </a>
+            <a href="#" class="btn btn-sm btn-outline" id="btn-export-json" target="_blank">
+              <span>💾</span> Raw JSON
+            </a>
+          </div>
+        </div>
+
+        <!-- Findings Explorer -->
+        <div class="card findings-explorer">
+          <div class="explorer-header">
+            <div class="filter-tabs">
+              <button class="filter-tab active" data-filter="ALL">All Findings (<span id="tab-count-all">0</span>)</button>
+              <button class="filter-tab" data-filter="CRITICAL">Critical (<span id="tab-count-critical">0</span>)</button>
+              <button class="filter-tab" data-filter="HIGH">High (<span id="tab-count-high">0</span>)</button>
+              <button class="filter-tab" data-filter="MEDIUM">Medium (<span id="tab-count-medium">0</span>)</button>
+              <button class="filter-tab" data-filter="LOW">Low (<span id="tab-count-low">0</span>)</button>
+            </div>
+            <div class="search-box">
+              <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search vulnerability title, check ID, CWE...">
+            </div>
+          </div>
+
+          <div class="findings-list" id="findings-list-container">
+            <!-- Dynamic Finding Cards will be rendered here -->
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+
+    <!-- History Drawer / Modal -->
+    <div class="modal-overlay" id="history-modal" style="display: none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>📜 Past Security Assessment Archive</h3>
+          <button class="btn-close" id="btn-close-history">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="history-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Target</th>
+                  <th>Type</th>
+                  <th>Grade</th>
+                  <th>Score</th>
+                  <th>Findings</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="history-table-body">
+                <!-- History Rows -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
