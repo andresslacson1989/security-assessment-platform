@@ -644,3 +644,150 @@ async def test_scenario_10_authenticated_dast_session_scanning():
 
     # Verify DAST-FORM-002: State-changing form missing anti-CSRF token
     assert "DAST-FORM-002" in check_ids
+
+# ==============================================================================
+# Scenario 15: Hybrid Tool Adapter Discovery, Execution & Graceful Fallback
+# (Contract 05 v4.1.0 - Acceptance Scenario 15)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
+    """
+    Scenario 15A: Adapters present (mocked) -> findings emitted with correct source_tool.
+    Scenario 15B: Adapters absent (mocked) -> graceful native fallback, scan completes cleanly.
+    """
+    from app.adapters.nmap_adapter import NmapAdapter
+    from app.adapters.nuclei_adapter import NucleiAdapter
+    from app.adapters.semgrep_adapter import SemgrepAdapter
+    from app.adapters.trivy_adapter import TrivyAdapter
+    from app.adapters import discover_system_capabilities
+    from app.core.models import (
+        ToolAdapterConfig, ToolStatus, ToolExecutionMode, SystemCapabilities,
+        Evidence, Severity
+    )
+    import hashlib
+
+    # --------------------------------------------------------------------------
+    # Scenario 15A: Adapter ACTIVE path - mocked as available & returning findings
+    # --------------------------------------------------------------------------
+    nmap_finding = Finding(
+        scan_id="test-15",
+        engine="network",
+        check_id="NET-PORT-001",
+        category="Open Ports",
+        title="Exposed Database Port (MySQL/MariaDB)",
+        severity=Severity.HIGH,
+        cvss_score=7.5,
+        cwe_id="CWE-16",
+        owasp_category="A05:2021-Security Misconfiguration",
+        nist_control="SC-7",
+        description="Port 3306 (MySQL) open.",
+        impact="Database exposed to direct attack.",
+        remediation="Firewall database port.",
+        evidence=Evidence(
+            location="host:3306",
+            observed_value="MySQL 8.0.32 listening on 0.0.0.0:3306",
+            expected_value="Port inaccessible from public internet",
+        ),
+        fingerprint=calculate_fingerprint("NET-PORT-001", "host:3306", "MySQL 8.0.32 listening on 0.0.0.0:3306"),
+        source_tool="nmap",
+    )
+
+    with patch.object(NmapAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(NmapAdapter, "get_version", AsyncMock(return_value="7.95")), \
+         patch.object(NmapAdapter, "run", AsyncMock(return_value=[nmap_finding])):
+
+        adapter = NmapAdapter()
+        assert await adapter.is_available() is True
+        findings = await adapter.run(None, None, AsyncMock(), AsyncMock())
+        assert len(findings) == 1
+        assert findings[0].source_tool == "nmap"
+        assert findings[0].check_id == "NET-PORT-001"
+
+    # Nuclei finding mock
+    nuclei_finding = Finding(
+        scan_id="test-15",
+        engine="web_dast",
+        check_id="DAST-CVE-001",
+        category="CVE",
+        title="CVE-2023-1234 - Example Vulnerability",
+        severity=Severity.HIGH,
+        cvss_score=7.5,
+        cwe_id="CWE-79",
+        owasp_category="A03:2021-Injection",
+        nist_control="SI-10",
+        description="Nuclei-detected CVE.",
+        impact="Data exfiltration.",
+        remediation="Patch to latest version.",
+        evidence=Evidence(
+            location="https://example.com/vuln",
+            observed_value="Vulnerable endpoint matched CVE-2023-1234 template",
+            expected_value="Patched endpoint",
+        ),
+        fingerprint=calculate_fingerprint("DAST-CVE-001", "https://example.com/vuln", "Vulnerable endpoint matched CVE-2023-1234 template"),
+        source_tool="nuclei",
+        reproduction_curl='curl -i https://example.com/vuln',
+    )
+
+    with patch.object(NucleiAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(NucleiAdapter, "run", AsyncMock(return_value=[nuclei_finding])):
+
+        adapter = NucleiAdapter()
+        findings = await adapter.run(None, None, AsyncMock(), AsyncMock())
+        assert len(findings) == 1
+        assert findings[0].source_tool == "nuclei"
+        assert findings[0].reproduction_curl is not None
+
+    # --------------------------------------------------------------------------
+    # Scenario 15B: Adapters ABSENT - graceful fallback, scan completes cleanly
+    # --------------------------------------------------------------------------
+    with patch.object(NmapAdapter, "is_available", AsyncMock(return_value=False)), \
+         patch.object(NucleiAdapter, "is_available", AsyncMock(return_value=False)), \
+         patch.object(SemgrepAdapter, "is_available", AsyncMock(return_value=False)), \
+         patch.object(TrivyAdapter, "is_available", AsyncMock(return_value=False)):
+
+        capabilities = await discover_system_capabilities(ToolAdapterConfig())
+        for tool in capabilities.tools:
+            assert tool.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+            assert tool.available is False
+        assert capabilities.native_engines_ready is True
+
+    # --------------------------------------------------------------------------
+    # Scenario 15C: Orchestrator full lifecycle - no adapters, scan completes cleanly
+    # --------------------------------------------------------------------------
+    from app.engines.network.engine import NetworkAssessmentEngine
+    from app.core.orchestrator import ScanOrchestrator
+
+    orch = ScanOrchestrator()
+    orch.register_engine(NetworkAssessmentEngine())
+
+    target = Target(
+        name="Fallback Test",
+        type=TargetType.DOMAIN,
+        value="example.com",
+    )
+    config = ScanConfig(adapters=ToolAdapterConfig(enable_nmap=False, enable_nuclei=False, enable_semgrep=False, enable_trivy=False))
+    job = ScanJob(target=target, profile=ScanProfile.QUICK, config=config, enabled_engines=["network"])
+
+    with patch("app.engines.network.tls_auditor.audit_tls_certificates", AsyncMock(return_value=[])), \
+         patch("app.engines.network.tls_auditor.audit_tls_protocols_and_ciphers", AsyncMock(return_value=[])), \
+         patch("app.engines.network.dns_hygiene.audit_dns_hygiene", AsyncMock(return_value=[])), \
+         patch("app.engines.network.port_checker.audit_exposed_ports", AsyncMock(return_value=[])), \
+         patch("app.adapters.discover_system_capabilities", AsyncMock(return_value=SystemCapabilities(
+             tools=[
+                 ToolStatus(name="nmap", available=False, execution_mode=ToolExecutionMode.DISABLED),
+                 ToolStatus(name="nuclei", available=False, execution_mode=ToolExecutionMode.DISABLED),
+                 ToolStatus(name="semgrep", available=False, execution_mode=ToolExecutionMode.DISABLED),
+                 ToolStatus(name="trivy", available=False, execution_mode=ToolExecutionMode.DISABLED),
+             ],
+             native_engines_ready=True,
+             os_platform="test",
+         ))):
+        await orch.start_scan(job)
+        import asyncio as _asyncio
+        for _ in range(30):
+            await _asyncio.sleep(0.1)
+            if job.status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
+                break
+
+    assert job.status == ScanStatus.COMPLETED, f"Expected COMPLETED, got {job.status}"
+    assert job.active_adapters == []

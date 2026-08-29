@@ -10,6 +10,7 @@ from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback
 from app.engines.network.tls_auditor import audit_tls_certificates, audit_tls_protocols_and_ciphers
 from app.engines.network.dns_hygiene import audit_dns_hygiene
 from app.engines.network.port_checker import audit_exposed_ports
+from app.adapters.nmap_adapter import NmapAdapter
 
 
 class NetworkAssessmentEngine(BaseAssessmentEngine):
@@ -46,8 +47,10 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        scan_id = kwargs.get("scan_id", "active")
 
         # --- Stage 1: TLS / SSL Audit (0% - 35%) ---
         await emit_progress(10, "Auditing SSL/TLS certificate validity and expiration...")
@@ -59,7 +62,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             timeout_seconds=min(5.0, config.timeout_seconds),
         )
         for f in tls_cert_findings:
-            f.scan_id = "active"
+            f.scan_id = scan_id
             findings.append(f)
             await emit_finding(f)
 
@@ -70,7 +73,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             timeout_seconds=min(3.0, config.timeout_seconds),
         )
         for f in tls_proto_findings:
-            f.scan_id = "active"
+            f.scan_id = scan_id
             findings.append(f)
             await emit_finding(f)
 
@@ -82,22 +85,53 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             timeout_seconds=min(3.0, config.timeout_seconds),
         )
         for f in dns_findings:
-            f.scan_id = "active"
+            f.scan_id = scan_id
             findings.append(f)
             await emit_finding(f)
 
-        # --- Stage 3: Port Exposure Scanner (70% - 100%) ---
+        # --- Stage 3: Port Exposure Scanner & Hybrid Nmap Adapter (70% - 100%) ---
         await emit_progress(75, "Scanning for exposed database and management ports...")
-        port_findings = await audit_exposed_ports(
-            target.value,
-            custom_ports=config.port_list or None,
-            emit_log=emit_log,
-            timeout_seconds=min(2.0, config.timeout_seconds),
-        )
-        for f in port_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+
+        nmap_executed = False
+        enable_nmap = getattr(config.adapters, "enable_nmap", True)
+        if enable_nmap:
+            nmap_adapter = NmapAdapter()
+            custom_path = getattr(config.adapters, "nmap_path", None) or getattr(config.adapters, "custom_nmap_path", None)
+            try:
+                if await nmap_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Nmap CLI adapter for deep port and service auditing...")
+                    nmap_findings = await nmap_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id=scan_id,
+                    )
+                    await emit_log(LogLevel.INFO, "Nmap active scan completed successfully")
+                    for f in nmap_findings:
+                        f.source_tool = "nmap"
+                        f.scan_id = scan_id
+                        findings.append(f)
+                    nmap_executed = True
+                else:
+                    await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Nmap CLI execution error: {e}")
+                await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
+        else:
+            await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
+
+        if not nmap_executed:
+            port_findings = await audit_exposed_ports(
+                target.value,
+                custom_ports=config.port_list or None,
+                emit_log=emit_log,
+                timeout_seconds=min(2.0, config.timeout_seconds),
+            )
+            for f in port_findings:
+                f.scan_id = scan_id
+                findings.append(f)
+                await emit_finding(f)
 
         await emit_progress(100, "Network & TLS audit completed.")
         await emit_log(LogLevel.INFO, f"Network engine finished with {len(findings)} total findings.")

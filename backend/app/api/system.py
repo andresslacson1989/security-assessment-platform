@@ -51,3 +51,13 @@ async def get_registered_engines() -> Dict[str, Any]:
         "count": len(engines_list),
         "engines": engines_list,
     }
+
+
+@router.get("/capabilities", summary="System Tool & Engine Capabilities")
+async def get_system_capabilities() -> Any:
+    """
+    Returns host tool discovery status, binary paths, versions, and execution modes.
+    """
+    from app.adapters import discover_system_capabilities
+    return await discover_system_capabilities()
+

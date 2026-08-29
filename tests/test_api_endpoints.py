@@ -47,6 +47,15 @@ async def test_system_endpoints():
         assert "infra_iac" in engine_names
         assert "cicd_audit" in engine_names
 
+        # 3. System capabilities
+        resp_caps = await ac.get("/api/system/capabilities")
+        assert resp_caps.status_code == 200
+        data_caps = resp_caps.json()
+        assert "tools" in data_caps
+        assert "native_engines_ready" in data_caps
+        assert len(data_caps["tools"]) == 4
+
+
 
 @pytest.mark.asyncio
 async def test_scan_lifecycle_api():

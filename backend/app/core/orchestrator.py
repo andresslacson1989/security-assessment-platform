@@ -21,6 +21,7 @@ from app.core.models import (
 from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
 from app.engines.base import BaseAssessmentEngine
+from app.adapters import discover_system_capabilities, get_adapter_registry
 
 
 class ScanOrchestrator:
@@ -213,6 +214,8 @@ class ScanOrchestrator:
         await self._broadcast(scan_id, "crawl_discovered", endpoint.model_dump(mode="json"))
 
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
+        job = self._active_jobs.get(scan_id)
+        active_adapters = getattr(job, "active_adapters", []) if job else []
         await self._broadcast(scan_id, "completed", {
             "scan_id": scan_id,
             "status": ScanStatus.COMPLETED.value,
@@ -226,11 +229,23 @@ class ScanOrchestrator:
             "info_count": summary.info_count,
             "pages_crawled": summary.pages_crawled,
             "authenticated_session_active": summary.authenticated_session_active,
+            "active_adapters": active_adapters,
             "completed_at": utc_now().isoformat(),
         })
 
     async def emit_error(self, scan_id: str, error_message: str) -> None:
         await self._broadcast(scan_id, "error", {"message": error_message})
+
+    async def emit_tool_status(self, scan_id: str, tool_name: str, available: bool, mode: str, version: Optional[str] = None) -> None:
+        """
+        Emits an event: tool_status SSE event per Contract 04 v4.1.0.
+        """
+        await self._broadcast(scan_id, "tool_status", {
+            "tool": tool_name,
+            "available": available,
+            "mode": mode,
+            "version": version,
+        })
 
     # --- Background Execution Engine ---
 
@@ -245,6 +260,30 @@ class ScanOrchestrator:
 
         await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", f"Starting security scan on target: {job.target.value}")
         await self.emit_progress(scan_id, 5, "Initializing engines...", ScanStatus.RUNNING)
+
+        # --- Adapter Discovery & tool_status SSE (Contract 04 v4.1.0) ---
+        try:
+            capabilities = await discover_system_capabilities(job.config.adapters)
+            active_adapters: List[str] = []
+            for tool_status in capabilities.tools:
+                await self.emit_tool_status(
+                    scan_id,
+                    tool_name=tool_status.name,
+                    available=tool_status.available,
+                    mode=tool_status.execution_mode.value,
+                    version=tool_status.version,
+                )
+                if tool_status.available:
+                    active_adapters.append(tool_status.name)
+            job.active_adapters = active_adapters
+            job.summary.active_adapters = active_adapters
+            if active_adapters:
+                await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", f"Active tool adapters: {', '.join(active_adapters)}")
+            else:
+                await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", "No external tool adapters detected - native Python engines will be used for all assessments.")
+        except Exception as e:
+            await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", f"Adapter discovery error (non-fatal): {e}")
+            job.active_adapters = []
 
         # Select and filter applicable engines
         applicable_engines: List[BaseAssessmentEngine] = []

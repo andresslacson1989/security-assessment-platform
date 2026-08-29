@@ -11,6 +11,8 @@ from app.engines.code_sast.secret_scanner import audit_code_secrets
 from app.engines.code_sast.crypto_lint import audit_crypto_patterns
 from app.engines.code_sast.injection_lint import audit_injection_patterns
 from app.engines.code_sast.dependency_auditor import audit_dependencies
+from app.adapters.semgrep_adapter import SemgrepAdapter
+from app.adapters.trivy_adapter import TrivyAdapter
 
 
 class CodeSastAssessmentEngine(BaseAssessmentEngine):
@@ -86,6 +88,66 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
             f.scan_id = "active"
             findings.append(f)
             await emit_finding(f)
+
+        # --- Stage 4: Semgrep Adapter (AST Rule-Based SAST) ---
+        enable_semgrep = getattr(config.adapters, "enable_semgrep", True)
+        if enable_semgrep:
+            semgrep_adapter = SemgrepAdapter()
+            custom_path = getattr(config.adapters, "semgrep_path", None)
+            try:
+                if await semgrep_adapter.is_available(custom_path):
+                    await emit_progress(87, "Running Semgrep AST rule-based static analysis...")
+                    await emit_log(LogLevel.INFO, "Executing Semgrep adapter for deep AST-based taint and injection analysis...")
+                    existing_fps = {f.fingerprint for f in findings}
+                    semgrep_findings = await semgrep_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in semgrep_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "semgrep"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Semgrep CLI not available - native AST taint and secret scanner results used as fallback")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Semgrep adapter error: {e} - continuing with native SAST results")
+        else:
+            await emit_log(LogLevel.INFO, "Semgrep adapter disabled - native SAST checks used as fallback")
+
+        # --- Stage 5: Trivy Adapter (Deep SCA & Container CVE Scanning) ---
+        enable_trivy = getattr(config.adapters, "enable_trivy", True)
+        if enable_trivy:
+            trivy_adapter = TrivyAdapter()
+            custom_path = getattr(config.adapters, "trivy_path", None)
+            try:
+                if await trivy_adapter.is_available(custom_path):
+                    await emit_progress(93, "Running Trivy deep SCA and CVE analysis...")
+                    await emit_log(LogLevel.INFO, "Executing Trivy adapter for deep dependency CVE and container posture analysis...")
+                    existing_fps = {f.fingerprint for f in findings}
+                    trivy_findings = await trivy_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in trivy_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "trivy"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Trivy CLI not available - native dependency auditor results used as fallback")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e} - continuing with native SCA results")
+        else:
+            await emit_log(LogLevel.INFO, "Trivy adapter disabled - native SCA checks used as fallback")
 
         await emit_progress(100, "Code SAST and SCA assessment completed.")
         await emit_log(LogLevel.INFO, f"Code SAST engine completed with {len(findings)} total findings.")

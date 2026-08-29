@@ -31,6 +31,7 @@ from app.engines.web_dast.cors_analyzer import audit_cors_policies
 from app.engines.web_dast.api_inspector import audit_sensitive_exposure_and_methods
 from app.engines.web_dast.browser_posture import audit_browser_posture
 from app.engines.web_dast.graphql_auditor import audit_graphql_endpoints
+from app.adapters.nuclei_adapter import NucleiAdapter
 
 
 class WebDastAssessmentEngine(BaseAssessmentEngine):
@@ -263,6 +264,34 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     f.scan_id = "active"
                     findings.append(f)
                     await emit_finding(f)
+
+            # --- Stage 7: Nuclei Adapter (CVE & Misconfiguration Templates) ---
+            enable_nuclei = getattr(config.adapters, "enable_nuclei", True)
+            if enable_nuclei:
+                nuclei_adapter = NucleiAdapter()
+                custom_path = getattr(config.adapters, "nuclei_path", None)
+                try:
+                    if await nuclei_adapter.is_available(custom_path):
+                        await emit_log(LogLevel.INFO, "Executing Nuclei CVE/misconfiguration template scanner...")
+                        nuclei_findings = await nuclei_adapter.run(
+                            target,
+                            config,
+                            emit_log,
+                            emit_finding,
+                            scan_id="active",
+                        )
+                        for f in nuclei_findings:
+                            if f.fingerprint not in existing_fps:
+                                existing_fps.add(f.fingerprint)
+                                f.source_tool = "nuclei"
+                                f.scan_id = "active"
+                                findings.append(f)
+                    else:
+                        await emit_log(LogLevel.INFO, "Nuclei CLI not available - native DAST checks already completed as fallback")
+                except Exception as e:
+                    await emit_log(LogLevel.WARNING, f"Nuclei adapter error: {e} - continuing with native DAST results")
+            else:
+                await emit_log(LogLevel.INFO, "Nuclei adapter disabled - native DAST checks already completed as fallback")
 
         await emit_progress(100, "Web DAST assessment completed.")
         await emit_log(LogLevel.INFO, f"Web DAST engine finished with {len(findings)} total findings.")
