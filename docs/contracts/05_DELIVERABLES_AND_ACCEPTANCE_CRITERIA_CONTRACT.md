@@ -96,3 +96,4 @@ A release is marked **DONE** only when:
 3. Scoring math conforms to Contract 02 formulas with zero deviations.
 4. Frontend executes cleanly with zero JavaScript console errors.
 5. `pytest tests/ -v` passes with 100% success rate across all 15 scenarios.
+

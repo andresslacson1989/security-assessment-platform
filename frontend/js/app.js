@@ -54,6 +54,30 @@ class ScanStreamManager {
     this.btnToggleEndpoints = document.getElementById("btn-toggle-endpoints");
     this.endpointsTableContainer = document.getElementById("endpoints-table-container");
 
+    // Discovered Subdomains OSINT HUD (Contract 07 v4.1.0)
+    this.subdomainsHud = document.getElementById("subdomains-hud");
+    this.subdomainsCountBadge = document.getElementById("subdomains-count-badge");
+    this.subdomainsTableBody = document.getElementById("subdomains-table-body");
+    this.btnToggleSubdomains = document.getElementById("btn-toggle-subdomains");
+    this.subdomainsTableContainer = document.getElementById("subdomains-table-container");
+    this.discoveredSubdomains = [];
+
+    // HTTP Repeater Pentester Workbench (Contract 07 v4.1.0)
+    this.btnOpenRepeater = document.getElementById("btn-open-repeater");
+    this.btnCloseRepeater = document.getElementById("btn-close-repeater");
+    this.repeaterModal = document.getElementById("repeater-modal");
+    this.btnRepSend = document.getElementById("btn-rep-send");
+    this.repMethod = document.getElementById("rep-method");
+    this.repUrl = document.getElementById("rep-url");
+    this.repHeaders = document.getElementById("rep-headers");
+    this.repBody = document.getElementById("rep-body");
+    this.repStatusBadge = document.getElementById("rep-status-badge");
+    this.repMetricTime = document.getElementById("rep-metric-time");
+    this.repMetricSize = document.getElementById("rep-metric-size");
+    this.repMetricTls = document.getElementById("rep-metric-tls");
+    this.repRespHeaders = document.getElementById("rep-resp-headers");
+    this.repRespBody = document.getElementById("rep-resp-body");
+
     // Progress HUD
     this.progressHud = document.getElementById("progress-hud");
     this.progressBar = document.getElementById("progress-bar-fill");
@@ -142,6 +166,15 @@ class ScanStreamManager {
       });
     }
 
+    // Toggle Subdomains HUD Table (Contract 07 v4.1.0)
+    if (this.btnToggleSubdomains) {
+      this.btnToggleSubdomains.addEventListener("click", () => {
+        const isHidden = this.subdomainsTableContainer.style.display === "none";
+        this.subdomainsTableContainer.style.display = isHidden ? "block" : "none";
+        this.btnToggleSubdomains.innerText = isHidden ? "Collapse" : "Expand";
+      });
+    }
+
     // Form Submission (Launch Scan)
     this.scanForm.addEventListener("submit", (e) => this.handleStartScan(e));
 
@@ -175,6 +208,22 @@ class ScanStreamManager {
     this.historyModal.addEventListener("click", (e) => {
       if (e.target === this.historyModal) this.closeHistoryModal();
     });
+
+    // HTTP Repeater Modal (Contract 07 v4.1.0)
+    if (this.btnOpenRepeater) {
+      this.btnOpenRepeater.addEventListener("click", () => this.openRepeaterModal());
+    }
+    if (this.btnCloseRepeater) {
+      this.btnCloseRepeater.addEventListener("click", () => this.closeRepeaterModal());
+    }
+    if (this.repeaterModal) {
+      this.repeaterModal.addEventListener("click", (e) => {
+        if (e.target === this.repeaterModal) this.closeRepeaterModal();
+      });
+    }
+    if (this.btnRepSend) {
+      this.btnRepSend.addEventListener("click", () => this.handleSendRepeater());
+    }
   }
 
   toggleAuthSubforms(authType) {
@@ -428,6 +477,11 @@ class ScanStreamManager {
       this.addDiscoveredEndpoint(ep);
     });
 
+    this.eventSource.addEventListener("subdomain_discovered", (e) => {
+      const sub = JSON.parse(e.data);
+      this.addSubdomain(sub);
+    });
+
     this.eventSource.addEventListener("tool_status", (e) => {
       const data = JSON.parse(e.data);
       this.updateToolPill(data.tool, data.available, data.mode, data.version);
@@ -535,6 +589,169 @@ class ScanStreamManager {
       `;
       })
       .join("");
+  }
+
+  // Contract 07 v4.1.0: OSINT Subdomain Recon Management
+  addSubdomain(subdomain) {
+    if (!this.discoveredSubdomains.some((s) => s.domain === subdomain.domain)) {
+      this.discoveredSubdomains.push(subdomain);
+      this.renderDiscoveredSubdomains();
+    }
+  }
+
+  renderDiscoveredSubdomains() {
+    if (!this.subdomainsHud) return;
+
+    if (this.discoveredSubdomains.length === 0) {
+      this.subdomainsHud.style.display = "none";
+      return;
+    }
+
+    this.subdomainsHud.style.display = "block";
+    if (this.subdomainsCountBadge) {
+      this.subdomainsCountBadge.innerText = `${this.discoveredSubdomains.length} Subdomain${this.discoveredSubdomains.length === 1 ? "" : "s"}`;
+    }
+
+    this.subdomainsTableBody.innerHTML = this.discoveredSubdomains
+      .map((sub) => {
+        const ipsStr = (sub.ip_addresses || []).join(", ") || "-";
+        const cnamesStr = (sub.cname_targets || []).join(", ") || "-";
+        const takeoverBadge = sub.is_takeover_vulnerable
+          ? '<span class="tag-takeover-vuln">VULNERABLE (CWE-698)</span>'
+          : '<span style="color: var(--text-dim);">SECURE</span>';
+
+        return `
+        <tr>
+          <td><strong style="color: var(--text-main); font-family: var(--font-mono);">${this.escapeHtml(sub.domain)}</strong></td>
+          <td><code style="font-size: 11px;">${this.escapeHtml(ipsStr)}</code></td>
+          <td><code style="font-size: 11px; color: var(--accent-cyan);">${this.escapeHtml(cnamesStr)}</code></td>
+          <td>${takeoverBadge}</td>
+          <td>
+            <button class="btn btn-xs btn-outline" onclick="window.app.setTargetSubdomain('${this.escapeHtml(sub.domain)}')">Scan</button>
+          </td>
+        </tr>
+      `;
+      })
+      .join("");
+  }
+
+  setTargetSubdomain(domain) {
+    if (this.targetInput) {
+      this.targetInput.value = `https://${domain}`;
+      this.detectTargetType();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  // Contract 07 v4.1.0: Interactive HTTP Repeater Workbench
+  openRepeaterModal() {
+    if (this.repeaterModal) {
+      this.repeaterModal.style.display = "flex";
+      if (this.targetInput && this.targetInput.value && !this.repUrl.value) {
+        this.repUrl.value = this.targetInput.value;
+      }
+    }
+  }
+
+  closeRepeaterModal() {
+    if (this.repeaterModal) {
+      this.repeaterModal.style.display = "none";
+    }
+  }
+
+  async handleSendRepeater() {
+    if (!this.repUrl || !this.repUrl.value) {
+      alert("Please specify a request URL.");
+      return;
+    }
+
+    const url = this.repUrl.value.trim();
+    const method = (this.repMethod ? this.repMethod.value : "GET").toUpperCase();
+    const headersRaw = this.repHeaders ? this.repHeaders.value.trim() : "";
+    const bodyRaw = this.repBody ? this.repBody.value : "";
+
+    // Parse headers (line-by-line key: value or json)
+    const headers = {};
+    if (headersRaw) {
+      if (headersRaw.startsWith("{")) {
+        try {
+          Object.assign(headers, JSON.parse(headersRaw));
+        } catch (_) {}
+      } else {
+        headersRaw.split("\n").forEach((line) => {
+          const colonIdx = line.indexOf(":");
+          if (colonIdx > 0) {
+            const k = line.substring(0, colonIdx).trim();
+            const v = line.substring(colonIdx + 1).trim();
+            if (k) headers[k] = v;
+          }
+        });
+      }
+    }
+
+    if (this.btnRepSend) {
+      this.btnRepSend.innerText = "Sending...";
+      this.btnRepSend.disabled = true;
+    }
+
+    try {
+      const payload = {
+        url: url,
+        method: method,
+        headers: headers,
+        body: bodyRaw || null,
+        follow_redirects: false,
+        timeout_seconds: 10.0,
+      };
+
+      const resp = await fetch("/api/tools/repeater", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || `HTTP Error ${resp.status}`);
+      }
+
+      const resData = await resp.json();
+
+      // Render status & metrics
+      if (this.repStatusBadge) {
+        this.repStatusBadge.innerText = `${resData.status_code}`;
+        this.repStatusBadge.className = `resp-status-badge ${resData.status_code >= 400 ? "status-badge-4xx" : "status-badge-2xx"}`;
+      }
+      if (this.repMetricTime) {
+        this.repMetricTime.innerText = `${resData.duration_ms.toFixed(1)} ms`;
+      }
+      if (this.repMetricSize) {
+        this.repMetricSize.innerText = `${resData.content_length} B`;
+      }
+      if (this.repMetricTls) {
+        this.repMetricTls.innerText = resData.tls_version ? `${resData.tls_version}` : "TLS ---";
+      }
+
+      // Render response headers
+      if (this.repRespHeaders) {
+        const hdrsFormatted = Object.entries(resData.headers || {})
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("\n");
+        this.repRespHeaders.innerHTML = `<code>${this.escapeHtml(hdrsFormatted)}</code>`;
+      }
+
+      // Render response body
+      if (this.repRespBody) {
+        this.repRespBody.innerHTML = `<code>${this.escapeHtml(resData.body || "(Empty response body)")}</code>`;
+      }
+    } catch (e) {
+      alert(`Repeater Request Failed: ${e.message}`);
+    } finally {
+      if (this.btnRepSend) {
+        this.btnRepSend.innerText = "Send";
+        this.btnRepSend.disabled = false;
+      }
+    }
   }
 
   updateProgress(percent, stage) {
@@ -657,6 +874,39 @@ class ScanStreamManager {
         `
           : "";
 
+        const curlPoc = f.reproduction_curl
+          ? `
+          <div class="curl-poc-box">
+            <div class="curl-poc-header">
+              <span>⚡ Reproduction cURL Command</span>
+              <button class="btn-copy" onclick="window.copySnippet('curl-${idx}')">Copy cURL</button>
+            </div>
+            <pre id="curl-${idx}"><code>${this.escapeHtml(f.reproduction_curl)}</code></pre>
+          </div>
+        `
+          : "";
+
+        const taintTrace = f.taint_trace && f.taint_trace.length
+          ? `
+          <div class="taint-ladder-box">
+            <h4>🧬 AST Dataflow Taint Flow Trace</h4>
+            <div class="taint-ladder">
+              ${f.taint_trace.map((step, sIdx) => {
+                let stepClass = "taint-prop";
+                if (step.startsWith("Source")) stepClass = "taint-source";
+                else if (step.startsWith("Sink")) stepClass = "taint-sink";
+                return `
+                  <div class="taint-step ${stepClass}">
+                    <span class="step-num">${sIdx + 1}</span>
+                    <span class="step-content"><code>${this.escapeHtml(step)}</code></span>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+          </div>
+        `
+          : "";
+
         return `
         <div class="finding-card ${sevClass}">
           <div class="finding-header" onclick="window.toggleCard('fc-${idx}')">
@@ -703,6 +953,9 @@ class ScanStreamManager {
               <p>${this.escapeHtml(f.remediation)}</p>
               ${codeSnippet}
             </div>
+
+            ${curlPoc}
+            ${taintTrace}
           </div>
         </div>
       `;
@@ -769,11 +1022,13 @@ class ScanStreamManager {
       this.targetName.value = job.target.name || "";
       this.allFindings = job.findings || [];
       this.discoveredEndpoints = job.discovered_endpoints || [];
+      this.discoveredSubdomains = job.discovered_subdomains || [];
 
       this.updateProgress(job.progress_percent || 100, job.current_stage || "Completed.");
       this.renderScorecard(job.summary);
       this.renderFindings();
       this.renderDiscoveredEndpoints();
+      this.renderDiscoveredSubdomains();
       this.updateExportLinks(job.id);
 
       if (job.summary?.authenticated_session_active) {

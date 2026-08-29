@@ -184,3 +184,4 @@ class ScanStreamManager {
 
 - All frontend assets run directly in any standard browser without Node.js, Webpack, or npm build steps at runtime.
 - FastAPI serves pure static HTML5, CSS3, and ES6 JavaScript directly at `/`.
+

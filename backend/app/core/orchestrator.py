@@ -15,6 +15,7 @@ from app.core.models import (
     LogLevel,
     ScanJobSummary,
     DiscoveredEndpoint,
+    DiscoveredSubdomain,
     utc_now,
     calculate_fingerprint,
 )
@@ -213,6 +214,19 @@ class ScanOrchestrator:
 
         await self._broadcast(scan_id, "crawl_discovered", endpoint.model_dump(mode="json"))
 
+    async def emit_subdomain_discovered(self, scan_id: str, subdomain: DiscoveredSubdomain) -> None:
+        """
+        Emits an OSINT subdomain discovery event and updates job discovered subdomains.
+        """
+        job = self._active_jobs.get(scan_id)
+        if job:
+            existing_domains = {sd.domain for sd in job.discovered_subdomains}
+            if subdomain.domain not in existing_domains:
+                job.discovered_subdomains.append(subdomain)
+                job.summary.subdomains_discovered = len(job.discovered_subdomains)
+
+        await self._broadcast(scan_id, "subdomain_discovered", subdomain.model_dump(mode="json"))
+
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
         job = self._active_jobs.get(scan_id)
         active_adapters = getattr(job, "active_adapters", []) if job else []
@@ -228,6 +242,7 @@ class ScanOrchestrator:
             "low_count": summary.low_count,
             "info_count": summary.info_count,
             "pages_crawled": summary.pages_crawled,
+            "subdomains_discovered": summary.subdomains_discovered,
             "authenticated_session_active": summary.authenticated_session_active,
             "active_adapters": active_adapters,
             "completed_at": utc_now().isoformat(),
@@ -335,6 +350,9 @@ class ScanOrchestrator:
                 async def _ep_cb(ep: DiscoveredEndpoint) -> None:
                     await self.emit_endpoint_discovered(scan_id, ep)
 
+                async def _subdomain_cb(sd: DiscoveredSubdomain) -> None:
+                    await self.emit_subdomain_discovered(scan_id, sd)
+
                 try:
                     import inspect
                     sig = inspect.signature(engine.run)
@@ -344,6 +362,8 @@ class ScanOrchestrator:
                         run_kwargs["emit_auth_status"] = _auth_cb
                     if "emit_endpoint_discovered" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_endpoint_discovered"] = _ep_cb
+                    if "emit_subdomain_discovered" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["emit_subdomain_discovered"] = _subdomain_cb
 
                     engine_findings = await engine.run(
                         job.target,

@@ -270,3 +270,4 @@ class BaseToolAdapter(ABC):
 | **`NucleiAdapter`** | `nuclei` | `nuclei -u <target> -j -silent -tags cve,misconfig` | JSON Lines (`-j`) | `parameter_fuzzer.py` + `headers_cookies.py` | Maps Nuclei template IDs and severity to canonical CWEs and `DAST-xxx`. `source_tool="nuclei"`. |
 | **`SemgrepAdapter`** | `semgrep` | `semgrep scan --config auto --json <dir>` | JSON (`--json`) | `ast_taint_analyzer.py` + `secret_scanner.py` | Normalizes Semgrep rules into `SAST-xxx` with line numbers and evidence diffs. `source_tool="semgrep"`. |
 | **`TrivyAdapter`** | `trivy` | `trivy fs --format json <dir>` | JSON (`--format json`) | `dependency_auditor.py` + `dockerfile_auditor.py` | Maps package and container vulnerabilities to `SAST-DEP-001` and `IAC-DOCK-xxx`. `source_tool="trivy"`. |
+

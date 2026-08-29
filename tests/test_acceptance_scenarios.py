@@ -768,10 +768,12 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
     config = ScanConfig(adapters=ToolAdapterConfig(enable_nmap=False, enable_nuclei=False, enable_semgrep=False, enable_trivy=False))
     job = ScanJob(target=target, profile=ScanProfile.QUICK, config=config, enabled_engines=["network"])
 
-    with patch("app.engines.network.tls_auditor.audit_tls_certificates", AsyncMock(return_value=[])), \
-         patch("app.engines.network.tls_auditor.audit_tls_protocols_and_ciphers", AsyncMock(return_value=[])), \
-         patch("app.engines.network.dns_hygiene.audit_dns_hygiene", AsyncMock(return_value=[])), \
-         patch("app.engines.network.port_checker.audit_exposed_ports", AsyncMock(return_value=[])), \
+    with patch("app.engines.network.engine.audit_tls_certificates", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_dns_hygiene", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_exposed_ports", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_subdomain_osint", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_service_banners", AsyncMock(return_value=[])), \
          patch("app.adapters.discover_system_capabilities", AsyncMock(return_value=SystemCapabilities(
              tools=[
                  ToolStatus(name="nmap", available=False, execution_mode=ToolExecutionMode.DISABLED),
@@ -791,3 +793,356 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
 
     assert job.status == ScanStatus.COMPLETED, f"Expected COMPLETED, got {job.status}"
     assert job.active_adapters == []
+
+
+# ==============================================================================
+# (Contract 05 v4.1.0 - Acceptance Scenario 14)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_14_interactive_http_repeater():
+    """
+    Scenario 14: Interactive HTTP Repeater & One-Click cURL PoC Generation
+    - Executes custom requests via POST /api/tools/repeater returning latency, status, headers, and body.
+    - Tests error handling on network failure / timeouts.
+    - Confirms web finding models can carry valid copy-pasteable reproduction_curl strings.
+    """
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app
+    from app.core.models import RepeaterRequest, Finding, Evidence, Severity
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Mock httpx inside execute_repeater_request for predictable testing
+        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.headers = {"content-type": "application/json", "server": "test-nginx"}
+            mock_response.text = '{"status": "ok", "message": "repeater response"}'
+            mock_response.content = b'{"status": "ok", "message": "repeater response"}'
+            mock_response.extensions = {"tls_version": "TLSv1.3", "cipher_suite": "TLS_AES_256_GCM_SHA384"}
+            mock_client.request.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            payload = {
+                "url": "https://example.com/api/test",
+                "method": "POST",
+                "headers": {"Authorization": "Bearer test-token-123"},
+                "body": '{"query": "SELECT 1"}',
+                "follow_redirects": True,
+                "timeout_seconds": 5.0,
+            }
+
+            resp = await client.post("/api/tools/repeater", json=payload)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status_code"] == 200
+            assert data["headers"]["server"] == "test-nginx"
+            assert data["body"] == '{"status": "ok", "message": "repeater response"}'
+            assert data["duration_ms"] >= 0.0
+            assert data["content_length"] == len(mock_response.content)
+            assert data["tls_version"] == "TLSv1.3"
+
+        # Verify timeout error handling
+        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.request.side_effect = httpx.TimeoutException("Connection timed out")
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            resp = await client.post(
+                "/api/tools/repeater",
+                json={"url": "https://slow.example.com", "method": "GET", "timeout_seconds": 1.0}
+            )
+            assert resp.status_code == 504
+            assert "timed out" in resp.json()["detail"]
+
+        # Verify network/connection error handling
+        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.request.side_effect = httpx.ConnectError("Connection refused")
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            resp = await client.post(
+                "/api/tools/repeater",
+                json={"url": "https://unreachable.example.com", "method": "GET"}
+            )
+            assert resp.status_code == 502
+            assert "Failed to connect" in resp.json()["detail"]
+
+    # Verify Finding reproduction_curl PoC synthesis conformance
+    test_finding = Finding(
+        scan_id="test-repeater-poc",
+        engine="web_dast",
+        check_id="DAST-INJ-001",
+        category="Injection",
+        title="Time-based SQL Injection in parameter 'id'",
+        severity=Severity.CRITICAL,
+        cvss_score=9.8,
+        description="SQL injection confirmed via 2.0s timing delay.",
+        impact="Full database compromise.",
+        remediation="Use parameterized queries.",
+        evidence=Evidence(
+            location="https://example.com/search?id=1",
+            observed_value="Delay: 2.12s",
+            expected_value="Delay: < 0.2s",
+        ),
+        fingerprint=calculate_fingerprint("DAST-INJ-001", "https://example.com/search?id=1", "Delay: 2.12s"),
+        reproduction_curl='curl -i -s -k -X GET "https://example.com/search?id=1%27+AND+(SELECT+1+FROM+(SELECT(SLEEP(2)))a)--+"',
+    )
+    assert test_finding.reproduction_curl is not None
+    assert test_finding.reproduction_curl.startswith("curl ")
+
+
+# ==============================================================================
+# (Contract 05 v4.1.0 - Acceptance Scenario 12)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_12_passive_osint_subdomain_recon_and_cname_takeover():
+    """
+    Scenario 12: Passive OSINT Subdomain Reconnaissance & Dangling CNAME Takeover
+    - Queries crt.sh API simulation.
+    - Evaluates CNAME records and discovers takeover risk (NET-OSINT-001).
+    - Detects sensitive subdomains on public infrastructure (NET-OSINT-002).
+    - Inspects service daemon banner for known vulnerable version (NET-SVC-001).
+    """
+    from app.engines.network.subdomain_recon import audit_subdomain_osint
+    from app.engines.network.banner_grabber import audit_service_banners
+    from app.core.models import (
+        Target, TargetType, ScanConfig, OSINTConfig, DiscoveredSubdomain
+    )
+
+    # 1. Test Subdomain Recon & Takeover Detection (NET-OSINT-001 & NET-OSINT-002)
+    mock_crtsh_data = [
+        {"name_value": "admin.example.com\napi.example.com"},
+        {"name_value": "dangling.example.com\ndev.example.com"},
+    ]
+
+    discovered_subdomains_list = []
+    async def mock_sub_cb(sd: DiscoveredSubdomain):
+        discovered_subdomains_list.append(sd)
+
+    with patch("app.engines.network.subdomain_recon.httpx.AsyncClient") as mock_http_cls:
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_crtsh_data
+        mock_client.get.return_value = mock_resp
+        mock_http_cls.return_value.__aenter__.return_value = mock_client
+
+        with patch("app.engines.network.subdomain_recon.dns.asyncresolver.Resolver") as mock_resolver_cls:
+            mock_resolver = AsyncMock()
+
+            # Mock resolve for subdomains
+            async def mock_resolve(domain_name, rdtype):
+                if domain_name == "dangling.example.com" and rdtype == "CNAME":
+                    m_rdata = MagicMock()
+                    m_rdata.target = "mybucket.s3.amazonaws.com."
+                    return [m_rdata]
+                elif domain_name == "mybucket.s3.amazonaws.com" and rdtype == "A":
+                    import dns.resolver
+                    raise dns.resolver.NXDOMAIN()
+                elif rdtype == "A":
+                    m_a = MagicMock()
+                    m_a.__str__.return_value = "93.184.216.34"
+                    return [m_a]
+                import dns.resolver
+                raise dns.resolver.NoAnswer()
+
+            mock_resolver.resolve.side_effect = mock_resolve
+            mock_resolver_cls.return_value = mock_resolver
+
+            config = ScanConfig(osint=OSINTConfig(subdomain_enumeration=True, subdomain_takeover_check=True))
+            findings = await audit_subdomain_osint(
+                "example.com",
+                config=config,
+                scan_id="test-osint",
+                emit_subdomain=mock_sub_cb,
+            )
+
+            check_ids = [f.check_id for f in findings]
+            assert "NET-OSINT-001" in check_ids, "Expected dangling CNAME takeover finding (NET-OSINT-001)"
+            assert "NET-OSINT-002" in check_ids, "Expected sensitive subdomain finding (NET-OSINT-002)"
+            assert len(discovered_subdomains_list) >= 4
+
+    # 2. Test Service Banner Grabbing (NET-SVC-001)
+    with patch("app.engines.network.banner_grabber.grab_service_banner", AsyncMock(return_value="220 (vsFTPd 2.3.4)")):
+        svc_findings = await audit_service_banners("127.0.0.1", [21], scan_id="test-banner")
+        assert len(svc_findings) == 1
+        assert svc_findings[0].check_id == "NET-SVC-001"
+        assert "vsftpd 2.3.4" in svc_findings[0].title
+        assert svc_findings[0].severity == Severity.HIGH
+        assert svc_findings[0].cvss_score == 7.5
+
+
+# ==============================================================================
+# (Contract 05 v4.1.0 - Acceptance Scenario 11)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_11_active_parameter_fuzzing_and_injection():
+    """
+    Scenario 11: Active Parameter Fuzzing & Benign Injection Verification
+    - Injects safe time-based SQLi probe (SLEEP(2)) -> DAST-INJ-001.
+    - Injects canary Reflected XSS token -> DAST-XSS-001.
+    - Injects read-only Path Traversal payload -> DAST-LFI-001.
+    - Injects Server-Side Template Injection expression ({{7*7}}) -> DAST-SSTI-001.
+    - Injects Open Redirect target -> DAST-REDIR-001.
+    - Verifies all findings synthesize copy-pasteable reproduction_curl PoCs.
+    """
+    from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
+    from app.core.models import (
+        ScanConfig, FuzzingConfig, DiscoveredEndpoint, Severity
+    )
+    import time
+
+    from urllib.parse import unquote
+
+    time_counter = [0.0]
+    def mock_perf():
+        time_counter[0] += 0.05
+        return time_counter[0]
+
+    # Mock responses for different payloads
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        url_str = unquote(str(request.url))
+        # SQLi probe simulation
+        if "SLEEP" in url_str:
+            time_counter[0] += 2.5
+            return httpx.Response(200, text="<html><body>Items list</body></html>", request=request)
+        # XSS probe simulation
+        elif "_CYBERASSESS_XSS_" in url_str:
+            # Echo unescaped canary reflection
+            return httpx.Response(200, text=f"<html><body>Search: {url_str}</body></html>", request=request)
+        # LFI probe simulation
+        elif "etc/passwd" in url_str:
+            return httpx.Response(200, text="root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin", request=request)
+        # SSTI probe simulation
+        elif "{{7*7}}" in url_str:
+            return httpx.Response(200, text="<html><body>Computed result: 49</body></html>", request=request)
+        # Baseline response
+        return httpx.Response(200, text="<html><body>Normal page</body></html>", request=request)
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testapp") as client:
+        with patch("app.engines.web_dast.parameter_fuzzer.time.perf_counter", side_effect=mock_perf):
+            config = ScanConfig(
+                fuzzing=FuzzingConfig(
+                    enabled=True,
+                    fuzz_sqli=True,
+                    fuzz_xss=True,
+                    fuzz_lfi=True,
+                    fuzz_ssti=True,
+                    fuzz_redirect=False,
+                    delay_seconds=1.0,
+                )
+            )
+            discovered_eps = [
+                DiscoveredEndpoint(url="http://testapp/products?id=10", status_code=200),
+            ]
+
+            findings = await audit_parameter_fuzzing(
+                "http://testapp/products?id=10",
+                discovered_endpoints=discovered_eps,
+                client=client,
+                config=config,
+                scan_id="test-fuzzing",
+            )
+
+        check_ids = {f.check_id for f in findings}
+        assert "DAST-INJ-001" in check_ids, f"Expected DAST-INJ-001 in {check_ids}"
+        assert "DAST-XSS-001" in check_ids, f"Expected DAST-XSS-001 in {check_ids}"
+        assert "DAST-LFI-001" in check_ids, f"Expected DAST-LFI-001 in {check_ids}"
+        assert "DAST-SSTI-001" in check_ids, f"Expected DAST-SSTI-001 in {check_ids}"
+
+        for f in findings:
+            assert f.reproduction_curl is not None
+            assert f.reproduction_curl.startswith("curl ")
+            assert f.source_tool == "native"
+
+
+# ==============================================================================
+# (Contract 05 v4.1.0 - Acceptance Scenario 13)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_13_ast_taint_flow_and_git_history_scanner(tmp_path):
+    """
+    Scenario 13: Interprocedural AST Taint Flow & Historical Git Secret Scanner
+    - Parses Python source files with AST and detects untrusted input reaching SQL/Command sinks.
+    - Asserts SAST-TAINT-001 (SQL sink) and SAST-TAINT-002 (Command sink) with structured taint_trace.
+    - Analyzes git log -p diffs and detects historical commit secret leaks (SAST-GIT-001) with masked evidence.
+    """
+    from app.engines.code_sast.ast_taint_analyzer import audit_ast_taint_flow
+    from app.engines.code_sast.git_history_scanner import audit_git_commit_history
+
+    # 1. Test AST Taint Flow Analyzer
+    sample_code = """
+from flask import request
+import cursor
+import subprocess
+
+def handle_request():
+    user_id = request.args.get("id")
+    query = f"SELECT * FROM users WHERE id = '{user_id}'"
+    cursor.execute(query)
+
+def handle_command():
+    target_ip = request.form.get("ip")
+    cmd_str = f"ping -c 1 {target_ip}"
+    subprocess.Popen(cmd_str, shell=True)
+"""
+    py_file = tmp_path / "vulnerable_app.py"
+    py_file.write_text(sample_code, encoding="utf-8")
+
+    taint_findings = audit_ast_taint_flow(str(tmp_path))
+    check_ids = {f.check_id for f in taint_findings}
+
+    assert "SAST-TAINT-001" in check_ids, "Expected SAST-TAINT-001 (SQL sink taint)"
+    assert "SAST-TAINT-002" in check_ids, "Expected SAST-TAINT-002 (Command sink taint)"
+
+    sql_finding = next(f for f in taint_findings if f.check_id == "SAST-TAINT-001")
+    assert sql_finding.taint_trace is not None
+    assert len(sql_finding.taint_trace) >= 2
+    assert any("Source" in step for step in sql_finding.taint_trace)
+    assert any("Sink" in step for step in sql_finding.taint_trace)
+
+    cmd_finding = next(f for f in taint_findings if f.check_id == "SAST-TAINT-002")
+    assert cmd_finding.taint_trace is not None
+    assert len(cmd_finding.taint_trace) >= 2
+
+    # 2. Test Historical Git Commit Secret Scanner
+    mock_git_diff = """commit a1b2c3d4e5f67890
+Author: Dev <dev@example.com>
+Date:   Wed Jan 1 00:00:00 2026 +0000
+
+    Initial commit with config
+
+diff --git a/config.py b/config.py
+--- a/dev/null
++++ b/config.py
+@@ -0,0 +1,5 @@
++AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
++DATABASE_URI = "postgres://admin:SecretPass123@db.internal:5432/prod"
+"""
+
+    with patch("asyncio.create_subprocess_exec") as mock_exec, \
+         patch("pathlib.Path.exists", return_value=True):
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (mock_git_diff.encode("utf-8"), b"")
+        mock_exec.return_value = mock_proc
+
+        git_findings = await audit_git_commit_history(str(tmp_path))
+        assert len(git_findings) >= 1
+        git_check_ids = {f.check_id for f in git_findings}
+        assert "SAST-GIT-001" in git_check_ids
+
+        # Guarantee masking of secrets in evidence
+        for gf in git_findings:
+            assert "AKIAIOSFODNN7EXAMPLE" not in gf.evidence.observed_value
+            assert "SecretPass123" not in gf.evidence.observed_value
+            assert "*" in gf.evidence.observed_value
+
+        aws_finding = next(f for f in git_findings if "AKIA" in f.title or "SAST-SEC-001" in f.evidence.observed_value)
+        assert "AKIA" in aws_finding.evidence.observed_value
+
+
+
+

@@ -328,3 +328,4 @@ def calculate_fingerprint(check_id: str, location: str, observed_value: str) -> 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 ```
 If a newly generated finding has an identical `fingerprint` to an existing finding in the `ScanJob`, the new finding MUST be discarded and its occurrence logged as a duplicate observation.
+

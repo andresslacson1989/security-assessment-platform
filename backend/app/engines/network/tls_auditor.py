@@ -292,4 +292,56 @@ async def audit_tls_protocols_and_ciphers(
             # Expected behavior for secure servers: handshake fails
             pass
 
+    # 2. Weak Ciphersuite & SWEET32 Probing (NET-TLS-006)
+    try:
+        ctx_sweet32 = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx_sweet32.check_hostname = False
+        ctx_sweet32.verify_mode = ssl.CERT_NONE
+        ctx_sweet32.set_ciphers("3DES:DES-CBC3-SHA:DES:RC4")
+
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(hostname, port, ssl=ctx_sweet32),
+            timeout=timeout_seconds,
+        )
+        sslobj = writer.get_extra_info("ssl_object")
+        cipher_used = sslobj.cipher() if sslobj else None
+        writer.close()
+        await writer.wait_closed()
+
+        cipher_name = cipher_used[0] if cipher_used else "3DES/DES"
+        loc = f"{hostname}:{port}"
+        obs = f"Handshake accepted with 64-bit block cipher: {cipher_name}"
+        findings.append(Finding(
+            scan_id="auto",
+            engine="network",
+            check_id="NET-TLS-006",
+            category="SSL/TLS Infrastructure",
+            title="Deprecated Ciphersuite Vulnerable to SWEET32 / 3DES (CVE-2016-2183)",
+            severity=Severity.MEDIUM,
+            cvss_score=5.9,
+            cvss_vector="CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",
+            cwe_id="CWE-327",
+            owasp_category="A02:2021-Cryptographic Failures",
+            nist_control="SC-13",
+            description=(
+                f"The server negotiated the weak 64-bit block cipher '{cipher_name}'. "
+                "Ciphers with 64-bit block size are vulnerable to collision attacks (SWEET32), "
+                "allowing plaintext recovery in long-lived TLS sessions."
+            ),
+            impact="Potential recovery of sensitive session cookies or tokens via birthday collision attacks.",
+            remediation="Disable 3DES, DES, RC4, and CBC-mode ciphers in your web server TLS configuration.",
+            remediation_code_snippet="ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305';",
+            references=["https://sweet32.info/", "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2016-2183"],
+            evidence=Evidence(
+                location=loc,
+                observed_value=obs,
+                expected_value="64-bit block ciphers disabled; AEAD ciphers (GCM/Poly1305) enforced",
+            ),
+            fingerprint=calculate_fingerprint("NET-TLS-006", loc, cipher_name),
+            source_tool="native",
+        ))
+    except Exception:
+        # Expected behavior: server rejects 3DES/weak cipher list
+        pass
+
     return findings

@@ -157,3 +157,4 @@ When findings are produced by external tool adapters, they MUST be normalized in
 | **Semgrep** | Rule matching Hardcoded Key | `SAST-SEC-xxx` | Hardcoded Secrets | 7.5 - 9.8 | CWE-798 |
 | **Trivy** | Package Dependency CVE | `SAST-DEP-001` | Vulnerable Dependencies | From CVE CVSS | CWE-1395 |
 | **Trivy** | Dockerfile misconfiguration | `IAC-DOCK-xxx` | Container Posture | 7.8 | CWE-250 |
+

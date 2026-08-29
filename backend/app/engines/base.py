@@ -4,7 +4,7 @@ Contract 03 & 08 Base Assessment Engine Plugin Interface.
 
 from abc import ABC, abstractmethod
 from typing import List, Callable, Awaitable, Optional, Dict, Any
-from app.core.models import Target, Finding, ScanConfig, LogLevel, DiscoveredEndpoint
+from app.core.models import Target, Finding, ScanConfig, LogLevel, DiscoveredEndpoint, DiscoveredSubdomain
 
 # Callback signatures for asynchronous telemetry streaming
 LogCallback = Callable[[LogLevel, str], Awaitable[None]]
@@ -12,6 +12,7 @@ ProgressCallback = Callable[[int, str], Awaitable[None]]
 FindingCallback = Callable[[Finding], Awaitable[None]]
 AuthStatusCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 EndpointDiscoveredCallback = Callable[[DiscoveredEndpoint], Awaitable[None]]
+SubdomainDiscoveredCallback = Callable[[DiscoveredSubdomain], Awaitable[None]]
 
 
 class BaseAssessmentEngine(ABC):

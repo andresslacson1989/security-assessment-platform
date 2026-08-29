@@ -1223,3 +1223,205 @@ pre {
 .source-tool--semgrep { background: #2e1065; color: #d8b4fe; border-color: #7c3aed; }
 .source-tool--trivy   { background: #042f2e; color: #5eead4; border-color: #0d9488; }
 .source-tool--native  { background: #1e293b; color: #94a3b8; border-color: #475569; }
+
+/* ============================================================================
+   Pentester Workbench & HTTP Repeater Styles (Contract 07 v4.1.0)
+   ============================================================================ */
+.modal-card--wide {
+  max-width: 1100px;
+  width: 95%;
+}
+
+.repeater-workbench-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
+@media (max-width: 900px) {
+  .repeater-workbench-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.repeater-request-pane, .repeater-response-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.repeater-url-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rep-method-select {
+  width: 110px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.monospace-input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+  background-color: var(--bg-terminal);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+}
+
+.repeater-sub-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.repeater-sub-section label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.repeater-resp-meta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--bg-surface-elevated);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.resp-status-badge {
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.resp-metric {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.repeater-resp-headers, .repeater-resp-body {
+  background: var(--bg-terminal);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 250px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ============================================================================
+   Reproduction cURL PoC Box & AST Taint Ladder
+   ============================================================================ */
+.curl-poc-box {
+  margin-top: 14px;
+  background: #060d17;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.curl-poc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: rgba(56, 189, 248, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+}
+
+.curl-poc-box pre {
+  padding: 10px 12px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #bae6fd;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.taint-ladder-box {
+  margin-top: 14px;
+  background: #110d1f;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+
+.taint-ladder-box h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: #d8b4fe;
+  margin-bottom: 10px;
+}
+
+.taint-ladder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.taint-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.taint-step .step-num {
+  font-weight: 700;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.taint-source {
+  background: rgba(239, 68, 68, 0.15);
+  border-left: 3px solid #ef4444;
+}
+.taint-source .step-num { background: #ef4444; color: #fff; }
+
+.taint-prop {
+  background: rgba(234, 179, 8, 0.15);
+  border-left: 3px solid #eab308;
+}
+.taint-prop .step-num { background: #eab308; color: #000; }
+
+.taint-sink {
+  background: rgba(168, 85, 247, 0.2);
+  border-left: 3px solid #a855f7;
+}
+.taint-sink .step-num { background: #a855f7; color: #fff; }
+
+.tag-takeover-vuln {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid #ef4444;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 11px;
+}
+

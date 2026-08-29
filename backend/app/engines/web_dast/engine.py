@@ -31,6 +31,7 @@ from app.engines.web_dast.cors_analyzer import audit_cors_policies
 from app.engines.web_dast.api_inspector import audit_sensitive_exposure_and_methods
 from app.engines.web_dast.browser_posture import audit_browser_posture
 from app.engines.web_dast.graphql_auditor import audit_graphql_endpoints
+from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
 from app.adapters.nuclei_adapter import NucleiAdapter
 
 
@@ -264,6 +265,25 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     f.scan_id = "active"
                     findings.append(f)
                     await emit_finding(f)
+
+            # --- Stage 6.5: Active Parameter Fuzzing & Injection Probes (80% - 90%) ---
+            if config.fuzzing.enabled:
+                await emit_progress(80, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
+                await emit_log(LogLevel.INFO, "Fuzzing discovered query parameters and forms with non-destructive payloads.")
+                fuzz_findings = await audit_parameter_fuzzing(
+                    target.value,
+                    discovered_endpoints=discovered_endpoints,
+                    client=client,
+                    config=config,
+                    scan_id="active",
+                    emit_finding=emit_finding,
+                    emit_log=emit_log,
+                )
+                for f in fuzz_findings:
+                    if f.fingerprint not in existing_fps:
+                        existing_fps.add(f.fingerprint)
+                        f.scan_id = "active"
+                        findings.append(f)
 
             # --- Stage 7: Nuclei Adapter (CVE & Misconfiguration Templates) ---
             enable_nuclei = getattr(config.adapters, "enable_nuclei", True)

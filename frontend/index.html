@@ -25,6 +25,9 @@
           <span class="pulse-dot"></span>
           <span class="status-label" id="system-status-text">SYSTEM ONLINE</span>
         </div>
+        <button class="btn btn-outline" id="btn-open-repeater">
+          <span>⚡</span> HTTP Repeater
+        </button>
         <button class="btn btn-outline" id="btn-open-history">
           <span>📜</span> History Archive
         </button>
@@ -298,6 +301,33 @@
         </div>
       </section>
 
+      <!-- Discovered Subdomains OSINT HUD Table (Contract 07 v4.1.0) -->
+      <section class="card endpoints-card" id="subdomains-hud" style="display: none;">
+        <div class="card-header">
+          <div class="endpoints-header-left">
+            <h2>📡 Discovered Subdomains (OSINT)</h2>
+            <span class="endpoints-badge" id="subdomains-count-badge">0 Subdomains</span>
+          </div>
+          <button class="btn btn-xs btn-ghost" id="btn-toggle-subdomains">Collapse</button>
+        </div>
+        <div class="card-body endpoints-table-wrapper" id="subdomains-table-container">
+          <table class="data-table monospace-table">
+            <thead>
+              <tr>
+                <th>Subdomain</th>
+                <th>Resolved IPs</th>
+                <th>CNAME Target</th>
+                <th style="width: 140px;">Takeover Risk</th>
+                <th style="width: 100px;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="subdomains-table-body">
+              <!-- Dynamically populated via SSE subdomain_discovered -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- Real-Time Telemetry Terminal Console -->
       <section class="card terminal-section">
         <div class="terminal-header">
@@ -403,6 +433,57 @@
       </section>
 
     </main>
+
+    <!-- Interactive HTTP Repeater Pentester Workbench Modal (Contract 07 v4.1.0) -->
+    <div class="modal-overlay" id="repeater-modal" style="display: none;">
+      <div class="modal-card modal-card--wide">
+        <div class="modal-header">
+          <h3>⚡ Interactive HTTP Repeater & Workbench</h3>
+          <button class="btn-close" id="btn-close-repeater">&times;</button>
+        </div>
+        <div class="modal-body repeater-workbench-body">
+          <div class="repeater-request-pane">
+            <div class="repeater-url-bar">
+              <select id="rep-method" class="form-control rep-method-select">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="DELETE">DELETE</option>
+                <option value="PATCH">PATCH</option>
+                <option value="HEAD">HEAD</option>
+                <option value="OPTIONS">OPTIONS</option>
+              </select>
+              <input type="text" id="rep-url" class="form-control" placeholder="https://example.com/api/v1/endpoint">
+              <button class="btn btn-primary" id="btn-rep-send">Send</button>
+            </div>
+            <div class="repeater-sub-section">
+              <label for="rep-headers">Request Headers (Key: Value per line):</label>
+              <textarea id="rep-headers" class="form-control monospace-input" rows="4" placeholder="Authorization: Bearer token&#10;User-Agent: PentestBot/1.0"></textarea>
+            </div>
+            <div class="repeater-sub-section">
+              <label for="rep-body">Request Body (JSON / Form / Raw):</label>
+              <textarea id="rep-body" class="form-control monospace-input" rows="6" placeholder='{"id": 1, "action": "test"}'></textarea>
+            </div>
+          </div>
+          <div class="repeater-response-pane">
+            <div class="repeater-resp-meta" id="rep-resp-meta">
+              <span class="resp-status-badge badge-none" id="rep-status-badge">---</span>
+              <span class="resp-metric" id="rep-metric-time">0 ms</span>
+              <span class="resp-metric" id="rep-metric-size">0 B</span>
+              <span class="resp-metric" id="rep-metric-tls">TLS ---</span>
+            </div>
+            <div class="repeater-sub-section">
+              <label>Response Headers:</label>
+              <pre class="repeater-resp-headers" id="rep-resp-headers"><code>(No request sent yet)</code></pre>
+            </div>
+            <div class="repeater-sub-section">
+              <label>Response Body:</label>
+              <pre class="repeater-resp-body" id="rep-resp-body"><code>(Response body will appear here)</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- History Drawer / Modal -->
     <div class="modal-overlay" id="history-modal" style="display: none;">

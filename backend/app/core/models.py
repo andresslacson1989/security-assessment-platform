@@ -161,7 +161,7 @@ class FuzzingConfig(BaseModel):
     """
     Configuration for active parameter fuzzing & benign injection testing.
     """
-    enabled: bool = Field(default=True, description="Enable active parameter fuzzing & benign injection testing")
+    enabled: bool = Field(default=False, description="Enable active parameter fuzzing & benign injection testing")
     fuzz_query_params: bool = Field(default=True, description="Fuzz URL GET query parameters")
     fuzz_body_params: bool = Field(default=True, description="Fuzz POST/PUT form and JSON parameters")
     fuzz_sqli: bool = Field(default=True, description="Test for Time-based and Boolean-differential SQLi")

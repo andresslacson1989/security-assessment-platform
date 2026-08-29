@@ -335,4 +335,55 @@ async def audit_dns_hygiene(
     except Exception:
         pass
 
+    # --- 6. DNS Zone Transfer (AXFR) Audit (NET-DNS-008) ---
+    try:
+        ns_answers = await resolver.resolve(apex_domain, "NS")
+        for ns_item in ns_answers:
+            ns_host = str(ns_item.target).rstrip(".")
+            try:
+                # Attempt safe, bounded AXFR zone transfer check in a background thread
+                def _probe_axfr(nameserver: str, zone_name: str) -> bool:
+                    import dns.query
+                    import dns.zone
+                    z = dns.zone.from_xfr(dns.query.xfr(nameserver, zone_name, timeout=2.0))
+                    return len(z.nodes) > 1
+
+                is_axfr_open = await asyncio.to_thread(_probe_axfr, ns_host, apex_domain)
+                if is_axfr_open:
+                    loc = f"dns://{ns_host}/{apex_domain}"
+                    obs = f"Nameserver '{ns_host}' permitted unauthenticated AXFR zone transfer."
+                    findings.append(Finding(
+                        scan_id="auto",
+                        engine="network",
+                        check_id="NET-DNS-008",
+                        category="DNS & Zone Security",
+                        title=f"DNS Zone Transfer (AXFR) Exposure on '{ns_host}'",
+                        severity=Severity.HIGH,
+                        cvss_score=7.5,
+                        cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                        cwe_id="CWE-200",
+                        owasp_category="A01:2021-Broken Access Control",
+                        nist_control="AC-3, SC-7",
+                        description=(
+                            f"The DNS nameserver '{ns_host}' permits unauthenticated full zone transfer (AXFR) for domain '{apex_domain}'. "
+                            "Attackers can obtain a complete map of all internal and external hostnames, subdomains, and IP mappings."
+                        ),
+                        impact="Full internal network mapping and disclosure of sensitive unlinked DNS subdomains.",
+                        remediation="Configure the DNS server to restrict AXFR zone transfers strictly to authorized secondary nameserver IPs.",
+                        remediation_code_snippet=f"# BIND configuration fix:\nzone \"{apex_domain}\" {{\n    type master;\n    allow-transfer {{ none; }}; // Or secondary IP only\n}};",
+                        references=["https://cwe.mitre.org/data/definitions/200.html"],
+                        evidence=Evidence(
+                            location=loc,
+                            observed_value=obs,
+                            expected_value="AXFR queries rejected for unauthorized clients",
+                        ),
+                        fingerprint=calculate_fingerprint("NET-DNS-008", loc, obs),
+                        source_tool="native",
+                    ))
+                    break
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return findings

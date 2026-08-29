@@ -7,9 +7,11 @@ from typing import List
 
 from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
-from app.engines.network.tls_auditor import audit_tls_certificates, audit_tls_protocols_and_ciphers
+from app.engines.network.tls_auditor import audit_tls_certificates, audit_tls_protocols_and_ciphers, extract_host_and_port
 from app.engines.network.dns_hygiene import audit_dns_hygiene
 from app.engines.network.port_checker import audit_exposed_ports
+from app.engines.network.subdomain_recon import audit_subdomain_osint
+from app.engines.network.banner_grabber import audit_service_banners
 from app.adapters.nmap_adapter import NmapAdapter
 
 
@@ -129,6 +131,41 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 timeout_seconds=min(2.0, config.timeout_seconds),
             )
             for f in port_findings:
+                f.scan_id = scan_id
+                findings.append(f)
+                await emit_finding(f)
+
+            # Native Banner Grabbing for detected open ports (NET-SVC-001)
+            host, _ = extract_host_and_port(target.value)
+            open_port_nums = []
+            for f in port_findings:
+                try:
+                    # Extract port from location string e.g. "example.com:3306"
+                    p_str = f.evidence.location.split(":")[-1]
+                    open_port_nums.append(int(p_str))
+                except Exception:
+                    pass
+            if open_port_nums:
+                banner_findings = await audit_service_banners(host, open_port_nums, scan_id=scan_id)
+                for f in banner_findings:
+                    findings.append(f)
+                    await emit_finding(f)
+
+        # --- Stage 4: Passive OSINT Subdomain Recon & Takeover (85% - 100%) ---
+        if config.osint.subdomain_enumeration:
+            await emit_progress(85, "Performing passive Certificate Transparency OSINT & subdomain takeover checks...")
+            await emit_log(LogLevel.INFO, "Harvesting public subdomains via crt.sh Certificate Transparency logs.")
+            
+            subdomain_cb = kwargs.get("emit_subdomain_discovered")
+            osint_findings = await audit_subdomain_osint(
+                target.value,
+                config=config,
+                scan_id=scan_id,
+                emit_subdomain=subdomain_cb,
+                emit_finding=emit_finding,
+                emit_log=emit_log,
+            )
+            for f in osint_findings:
                 f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)

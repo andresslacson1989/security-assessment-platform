@@ -264,3 +264,5 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Parsing Mechanics:**
   - Parses JSON output: `Results[].Vulnerabilities[]` extracting `VulnerabilityID`, `PkgName`, `InstalledVersion`, `FixedVersion`, `PrimaryURL`.
   - Normalizes into `Finding` with `source_tool="trivy"`.
+
+

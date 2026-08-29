@@ -8,8 +8,10 @@ from typing import List
 from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.engines.code_sast.secret_scanner import audit_code_secrets
+from app.engines.code_sast.git_history_scanner import audit_git_commit_history
 from app.engines.code_sast.crypto_lint import audit_crypto_patterns
 from app.engines.code_sast.injection_lint import audit_injection_patterns
+from app.engines.code_sast.ast_taint_analyzer import audit_ast_taint_flow
 from app.engines.code_sast.dependency_auditor import audit_dependencies
 from app.adapters.semgrep_adapter import SemgrepAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
@@ -63,6 +65,13 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
             findings.append(f)
             await emit_finding(f)
 
+        # Historical Git Commit Secret Scanning (SAST-GIT-001)
+        git_findings = await audit_git_commit_history(repo_path)
+        for f in git_findings:
+            f.scan_id = "active"
+            findings.append(f)
+            await emit_finding(f)
+
         # --- Stage 2: Insecure Cryptography & AST Injection Linting (40% - 75%) ---
         await emit_progress(45, "Linting source code for weak crypto, insecure PRNG, and injection flaws...")
         await emit_log(LogLevel.INFO, "Analyzing cryptographic primitives and dangerous shell/deserialization calls.")
@@ -75,6 +84,13 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
 
         inj_findings = await audit_injection_patterns(repo_path, emit_log=emit_log)
         for f in inj_findings:
+            f.scan_id = "active"
+            findings.append(f)
+            await emit_finding(f)
+
+        # Interprocedural AST Taint Flow Analysis (SAST-TAINT-001, SAST-TAINT-002)
+        taint_findings = audit_ast_taint_flow(repo_path)
+        for f in taint_findings:
             f.scan_id = "active"
             findings.append(f)
             await emit_finding(f)
