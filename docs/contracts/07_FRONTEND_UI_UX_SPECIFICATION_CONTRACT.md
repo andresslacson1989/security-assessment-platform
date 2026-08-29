@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 3.0.0 (Comprehensive Production Specification)  
+**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -52,24 +52,31 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Web DAST & Browser Security Audit    │
+│ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Active Parameter Fuzzing & DAST      │
 │ [█████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ ┌───────────────────────┐ ┌───────────────────────────────────────────────┐ │
 │ │  SECURITY SCORECARD   │ │         REAL-TIME TERMINAL STREAM             │ │
-│ │   GRADE: [ C ] (76.0) │ │ 21:45:02 [INFO] (network) TLS 1.3 Active      │ │
-│ │  Crit: 0 | High: 1    │ │ 21:45:05 [WARN] (dast) Missing CSP Header     │ │
-│ │  Med:  3 | Low:  4    │ │ 21:45:07 [WARN] (dast) Missing SRI on CDN     │ │
+│ │   GRADE: [ C ] (76.0) │ │ 21:45:02 [INFO] (network) Discovered 8 subdoms│ │
+│ │  Crit: 0 | High: 1    │ │ 21:45:05 [WARN] (dast) Injected XSS Canary OK │ │
+│ │  Med:  3 | Low:  4    │ │ 21:45:07 [INFO] (sast) AST Taint Traces Mapped│ │
 │ └───────────────────────┘ └───────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 📋 VULNERABILITY FINDINGS EXPLORER                                          │
+│ 📡 ATTACK SURFACE & RECON: [Discovered Endpoints (14)] [OSINT Subdomains (8)]│
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ api.example.com -> AWS S3 [CNAME Takeover Vulnerable: NO]               │ │
+│ │ dev.example.com -> Unregistered Bucket [TAKEOVER DETECTED!]            │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 🛠️ PENTESTER WORKBENCH: [Vulnerability Findings] [HTTP Repeater Tool]       │
 │ Engine Filter: [All] [Network] [DAST] [SAST] [IaC/Docker] [CI/CD]           │
 │ Severity Tabs: [All (10)] [Critical (0)] [High (1)] [Med (3)] [Low (4)]     │
 │ [🔍 Search findings...] [Export: 📄 HTML | ⚡ SARIF | 💾 JSON]              │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ 🔴 [CRIT] CVSS 9.8 - SQL Injection Detected via Timing (SLEEP 2s)       │ │
+│ │   [Copy cURL PoC] [View Taint Trace] [Inspect Response Diff]            │ │
 │ │ 🟠 [HIGH] CVSS 8.1 - Insecure CORS Origin Reflection with Credentials   │ │
 │ │ 🟡 [MED]  CVSS 5.0 - Missing Content-Security-Policy (CSP) Header       │ │
-│ │ 🟡 [MED]  CVSS 5.3 - Public GraphQL Introspection Enabled               │ │
 │ └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -78,20 +85,33 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 ## 3. Interactive Component Workflows
 
-1. **Target Launch Bar & Advanced Config:** Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`), preset profile selection (`Full Stack`, `Quick`, `DAST`, `SAST`, `Network`, `IaC`), and instantaneous launch.
-   - **Authentication Config Modal/Drawer:** Radio buttons for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, and Logged-In Indicator).
-   - **Crawler Scope Controls:** Sliders/inputs for Crawl Depth ($1-5$), Max Pages ($10-200$), and Exclude Path Patterns (`*logout*`, `*delete*`).
-2. **Real-Time Telemetry & Monospace Terminal:** Real-time animated progress bar with glowing stage notifications; auto-scrolling terminal log feed with severity level color chips (`INFO`, `WARN`, `ERROR`).
-3. **Security Grade Scorecard:** Giant grade hexagon badge (`A+` to `F`), numerical score meter (0-100), and clickable severity count tiles that immediately filter the findings table.
-4. **Discovered Endpoints HUD:** Live updating table displaying crawled URLs, crawl depth, observed HTTP response code, and authentication status badges.
-5. **Findings Explorer & Inspection Drawer:** Filterable by engine, severity, and text search. Clicking any finding row expands an inspection drawer with:
-   - CVSS score badge and vector string
-   - CWE ID & OWASP (2021) tags with external reference links
-   - Detailed Description & Business Impact
-   - Observed vs Expected Evidence Diff Box
-   - Formatted Code Remediation Box with one-click "Copy Snippet" action.
-6. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
-7. **Scan History Archive:** Instant reload of past scans with timestamps, targets, and grades.
+1. **Target Launch Bar & Advanced Config Drawers:**
+   - Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`).
+   - **Authentication Controls:** Radio pills for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, CSRF Field, and Logged-In Indicator).
+   - **Crawler Controls:** Depth ($1-5$), Max Pages ($10-200$), Exclude Patterns (`*logout*`, `*delete*`).
+   - **Active Fuzzing Controls:** Toggles for SQLi probes, Canary XSS tokens, Path Traversal, SSTI evaluation, and Open Redirect.
+   - **OSINT Recon Controls:** Toggles for Certificate Transparency (crt.sh) subdomain harvesting and Dangling CNAME takeover checks.
+
+2. **Attack Surface Reconnaissance Tables:**
+   - **Discovered Endpoints HUD:** Real-time table displaying crawled URLs, HTTP status, crawl depth, form discovery count, and auth posture.
+   - **Discovered Subdomains HUD:** Real-time table displaying subdomain names, resolved IPs, CNAME aliases, and Takeover Vulnerability status badges.
+
+3. **Interactive Findings Explorer:**
+   - Filterable by engine, severity, and text search.
+   - Expandable finding cards with CVSS badges, CWE/OWASP tags, evidence diffs, and remediation code blocks.
+   - **One-Click "Copy cURL PoC":** Copies exact, standalone reproduction cURL command with test payloads and headers to clipboard.
+   - **AST Taint Trace Viewer:** Visual step-by-step ladder showing untrusted user source variable down to database/command execution sink.
+
+4. **Interactive HTTP Repeater Tab:**
+   - Manual penetration testing workbench.
+   - Method selector (GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD).
+   - URL input bar with query parameter editor.
+   - Headers and Request Body editor with syntax assistance.
+   - Live "Send Request" trigger returning response status, latency, TLS ciphersuite, response headers, and formatted body viewer.
+
+5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
+
+6. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, and findings.
 
 ---
 
@@ -122,6 +142,11 @@ class ScanStreamManager {
     this.eventSource.addEventListener('crawl_discovered', (e) => {
       const endpoint = JSON.parse(e.data);
       this.addDiscoveredEndpointRow(endpoint);
+    });
+
+    this.eventSource.addEventListener('subdomain_discovered', (e) => {
+      const subdomain = JSON.parse(e.data);
+      this.addDiscoveredSubdomainRow(subdomain);
     });
 
     this.eventSource.addEventListener('finding', (e) => {

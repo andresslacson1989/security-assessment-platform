@@ -1,7 +1,7 @@
 # Contract 05: Deliverables & Acceptance Criteria Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 3.0.0 (Comprehensive Production Specification)  
+**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Quality Assurance, Test Automation & Acceptance Sign-Off  
 
@@ -10,16 +10,16 @@
 ## 1. Complete Deliverables Checklist
 
 ### 1.1 Backend Architecture (`/backend`)
-- [ ] **FastAPI Application (`app/main.py`):** High-performance async server with CORS handling, structured error middleware, and static UI file serving.
+- [ ] **FastAPI Application (`app/main.py`):** High-performance async server with CORS handling, structured error middleware, repeater router, and static UI file serving.
 - [ ] **Async Orchestrator (`app/core/orchestrator.py`):** Background scan manager with concurrent engine execution, token bucket rate limiter, task cancellation, and SSE event streaming.
 - [ ] **Data & Storage Layer (`app/core/models.py`, `app/core/storage.py`):** Strict Pydantic v2 schemas and local JSON persistence in `data/scans/`.
 - [ ] **Deterministic Grading Engine (`app/core/grading.py`):** Exact mathematical calculation of 0-100 scores and `A+` to `F` letter grades.
 - [ ] **5 Modular Assessment Engines:**
-  - [ ] `network` (`tls_auditor.py`, `dns_hygiene.py`, `port_checker.py`)
-  - [ ] `web_dast` (`headers_cookies.py`, `cors_analyzer`, `api_inspector.py`, `browser_posture.py`, `graphql_auditor.py`, `crawler.py`, `auth_session.py`)
-  - [ ] `code_sast` (`secret_scanner.py`, `crypto_lint.py`, `injection_lint.py`, `dependency_auditor.py`)
+  - [ ] `network` (`tls_auditor.py`, `dns_hygiene.py`, `port_checker.py`, `banner_grabber.py`, `subdomain_recon.py`)
+  - [ ] `web_dast` (`headers_cookies.py`, `cors_analyzer.py`, `api_inspector.py`, `browser_posture.py`, `graphql_auditor.py`, `crawler.py`, `auth_session.py`, `parameter_fuzzer.py`)
+  - [ ] `code_sast` (`secret_scanner.py`, `crypto_lint.py`, `injection_lint.py`, `dependency_auditor.py`, `ast_taint_analyzer.py`, `git_history_scanner.py`)
   - [ ] `infra_iac` (`dockerfile_auditor.py`, `compose_auditor.py`, `k8s_manifest_auditor.py`, `terraform_auditor.py`)
-  - [ ] `cicd_audit` (`github_actions_auditor.py`, `gitlab_ci_auditor.py`)
+  - [ ] `cicd_audit` (`github_actions_auditor.py`)
 - [ ] **3 Compliance & Security Exporters:**
   - [ ] Standalone interactive HTML report generator (`app/exporters/html_exporter.py`)
   - [ ] OASIS SARIF v2.1.0 JSON generator (`app/exporters/sarif_exporter.py`)
@@ -28,29 +28,30 @@
 ### 1.2 Frontend Cyber-Security Dark-Theme UI (`/frontend`)
 - [ ] **Cyber-Security SOC HUD (`index.html`, `css/style.css`, `js/app.js`):** Responsive dark interface (`#07090e` obsidian theme with neon emerald/cyan/amber/crimson accents).
 - [ ] **Target Launcher Bar:** Quick target input (URL, Domain, IP, File Path, IaC Manifest), profile preset selector, and one-click launch button.
-- [ ] **Authentication & Crawler Settings Drawer:** Collapsible controls for Auth Mode (None, Header/Bearer, Session Cookie, Form Login with username/password/indicator) and Crawl Limits (Max Depth, Max Pages, Exclude Patterns).
-- [ ] **Live Telemetry & Monospace Terminal:** Real-time animated progress bar, active stage indicator, and auto-scrolling terminal log stream with level tags (`INFO`, `WARN`, `ERROR`).
-- [ ] **Security Scorecard Widget:** High-impact letter grade badge (`A+` to `F`), CVSS 0-100 score gauge, and severity counters (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`).
-- [ ] **Discovered Endpoints HUD:** Real-time table displaying crawled URLs, HTTP status, and authentication status.
-- [ ] **Interactive Vulnerability Explorer:** Filter tabs (All, Critical, High, Medium, Low, Info), live search bar, category chips, expandable cards with CVSS badges, CWE tags, observed evidence diffs, and copyable remediation code blocks.
+- [ ] **Configuration Drawers:** Collapsible controls for Auth Mode, Crawl Limits, Active Parameter Fuzzing toggles, and OSINT Recon options.
+- [ ] **Live Telemetry & Monospace Terminal:** Real-time animated progress bar, active stage indicator, and auto-scrolling terminal log stream with level tags.
+- [ ] **Security Scorecard Widget:** High-impact letter grade badge (`A+` to `F`), CVSS 0-100 score gauge, and severity counters.
+- [ ] **Attack Surface Reconnaissance Tables:** Real-time tables displaying crawled endpoints and OSINT discovered subdomains with CNAME takeover risk indicators.
+- [ ] **Interactive Vulnerability Explorer:** Filter tabs, live search, category chips, expandable cards with CVSS badges, CWE tags, observed evidence diffs, copyable reproduction cURL PoC buttons, and remediation code blocks.
+- [ ] **Interactive HTTP Repeater Tab:** Pentester workbench for crafting and testing raw HTTP requests with live response preview, header inspection, and latency metrics.
 - [ ] **One-Click Export Toolbar:** Direct download buttons for Standalone HTML, SARIF v2.1.0, and JSON reports.
 - [ ] **Historical Scan Archive Drawer:** Sidebar/table listing past scans with timestamps, targets, grades, and instant reload.
 
 ### 1.3 Developer & Ops Utilities
 - [ ] **One-Command Platform Runner (`run_platform.py`):** Single Python script that verifies dependencies, boots uvicorn, and automatically opens the dashboard in the default browser.
-- [ ] **Automated Test Suite (`/tests`):** Comprehensive `pytest` test suite with 100% engine check coverage across all 5 engines and 10 acceptance scenarios.
+- [ ] **Automated Test Suite (`/tests`):** Comprehensive `pytest` test suite with 100% engine check coverage across all 5 engines and 14 acceptance scenarios.
 - [ ] **Documentation (`README.md`):** Complete setup, usage, architecture guide, and API documentation.
 
 ---
 
 ## 2. Rigorous Acceptance Test Scenarios
 
-The platform must pass all 10 acceptance test scenarios deterministically:
+The platform must pass all 14 acceptance test scenarios deterministically:
 
 1. **Scenario 1: Network & TLS Infrastructure Audit**
    - Given a mock or live HTTPS target, accurately detects certificate expiration dates, deprecated TLS 1.0/1.1 protocols, weak ciphers, and queries SPF, DMARC, MTA-STS, and DNSSEC records.
 2. **Scenario 2: DAST Security Headers, Cookies & Modern Browser Isolation**
-   - Flags missing CSP, HSTS, X-Frame-Options, missing `HttpOnly`/`Secure`/`SameSite` cookie attributes, missing COOP/COEP isolation, and missing Subresource Integrity (SRI) on external scripts.
+   - Flags missing CSP, HSTS, X-Frame-Options, missing `HttpOnly`/`Secure`/`SameSite` cookie attributes, and missing Subresource Integrity (SRI) on external scripts.
 3. **Scenario 3: DAST CORS, GraphQL & Sensitive Exposure**
    - Detects origin reflection with credentials (`Origin: https://evil.com`), public GraphQL introspection (`__schema`), and public `.env` / `/.git/HEAD` files.
 4. **Scenario 4: SAST Secret Detection & Token Masking**
@@ -67,6 +68,14 @@ The platform must pass all 10 acceptance test scenarios deterministically:
    - Verifies BFS depth traversal ($D \le 3$), same-origin boundary enforcement, max page cap ($N \le 50$), sitemap/robots parsing, URL canonicalization, loop prevention, and form registration.
 10. **Scenario 10: Authenticated DAST Session & Form Login Scanning**
     - Verifies automated form login, anti-CSRF token extraction (`csrf_token`, `_csrf`, etc.), session cookie preservation, logout path blacklisting, session heartbeat re-authentication, and unauthenticated vs authenticated access control differential checks (`DAST-AUTH-001` to `004`, `DAST-FORM-001` to `002`).
+11. **Scenario 11: Active Parameter Fuzzing & Injection Verification**
+    - Injects safe time-based SQLi probes (`SLEEP(2)`), canary reflected XSS tokens (`_CYBERASSESS_XSS_<hex>_`), path traversal (`../../../../etc/passwd`), and template injection (`{{7*7}}`), verifying findings `DAST-INJ-001`, `DAST-XSS-001`, `DAST-LFI-001`, `DAST-SSTI-001`, and `DAST-REDIR-001` with copy-pasteable `reproduction_curl` commands.
+12. **Scenario 12: Passive OSINT Subdomain Reconnaissance & Dangling CNAME Takeover**
+    - Queries crt.sh API, resolves subdomains, detects dangling CNAME records (`.s3.amazonaws.com`, `.github.io`), generates `NET-OSINT-001`, and inspects service banners for `NET-SVC-001`.
+13. **Scenario 13: Interprocedural AST Taint Flow & Historical Git Secret Scanner**
+    - Performs AST dataflow tracking from untrusted inputs to database/system execution sinks (`SAST-TAINT-001`, `SAST-TAINT-002`) and searches `git log` commit history for leaked secrets (`SAST-GIT-001`).
+14. **Scenario 14: Interactive HTTP Repeater & One-Click cURL PoC Generation**
+    - Executes custom requests via `POST /api/tools/repeater` returning latency and status, and confirms all web findings include valid `reproduction_curl` fields.
 
 ---
 
@@ -77,4 +86,4 @@ A release is marked **DONE** only when:
 2. All 5 engines catch all network/parsing exceptions with zero orchestrator crashes.
 3. Scoring math conforms to Contract 02 formulas with zero deviations.
 4. Frontend executes cleanly with zero JavaScript console errors.
-5. `pytest tests/ -v` passes with 100% success rate.
+5. `pytest tests/ -v` passes with 100% success rate across all 14 scenarios.

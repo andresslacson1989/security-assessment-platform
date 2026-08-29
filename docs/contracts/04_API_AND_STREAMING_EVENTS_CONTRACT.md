@@ -1,7 +1,7 @@
 # Contract 04: REST API, OpenAPI & Real-Time Streaming Events Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 3.0.0 (Comprehensive Production Specification)  
+**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST API Endpoints, OpenAPI 3.1 Schemas & SSE Streaming Protocol  
 
@@ -21,7 +21,7 @@ Content-Type: `application/json; charset=utf-8`
 ```json
 {
   "status": "HEALTHY",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "timestamp": "2026-08-29T21:45:00Z",
   "uptime_seconds": 18450.2,
   "storage": {
@@ -40,19 +40,19 @@ Content-Type: `application/json; charset=utf-8`
     {
       "name": "network",
       "display_name": "Network & TLS Auditor",
-      "description": "Evaluates SSL/TLS certificates, deprecated protocols, cipher suites, DNS hygiene (SPF/DMARC/MTA-STS/DNSSEC), and exposed service ports.",
+      "description": "Evaluates SSL/TLS certificates, deprecated protocols, cipher suites, DNS hygiene (SPF/DMARC/MTA-STS/DNSSEC), passive OSINT certificate transparency subdomains, and exposed service ports.",
       "supported_targets": ["URL", "DOMAIN", "IP"]
     },
     {
       "name": "web_dast",
       "display_name": "Web Application, Browser & API DAST",
-      "description": "Audits OWASP security headers, cookie flags, CORS policies, modern browser isolation (COOP/COEP/SRI), GraphQL introspection, and sensitive endpoint exposure.",
+      "description": "Audits OWASP security headers, cookie flags, CORS policies, modern browser isolation (COOP/COEP/SRI), active benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect), GraphQL introspection, and sensitive endpoint exposure.",
       "supported_targets": ["URL", "DOMAIN"]
     },
     {
       "name": "code_sast",
       "display_name": "Static Code Analysis, Secrets & Dependencies",
-      "description": "Scans local repositories for 40+ high-entropy secret patterns, weak cryptography/PRNG, SQL/shell injection anti-patterns, and lockfile CVEs.",
+      "description": "Scans local repositories for 40+ high-entropy secret patterns, git commit history secret leakage, AST interprocedural taint flow analysis (SQLi, Command Injection), weak cryptography/PRNG, and lockfile CVEs.",
       "supported_targets": ["LOCAL_PATH"]
     },
     {
@@ -88,7 +88,7 @@ Content-Type: `application/json; charset=utf-8`
     "rate_limit_rps": 5,
     "timeout_seconds": 10,
     "custom_headers": {
-      "User-Agent": "SecurityAssessmentBot/3.0"
+      "User-Agent": "CyberAssessBot/4.0"
     },
     "crawler": {
       "enabled": true,
@@ -104,6 +104,22 @@ Content-Type: `application/json; charset=utf-8`
       "password_field": "password",
       "password": "SecretPassword123!",
       "logged_in_indicator": "Sign Out"
+    },
+    "fuzzing": {
+      "enabled": true,
+      "fuzz_query_params": true,
+      "fuzz_body_params": true,
+      "fuzz_sqli": true,
+      "fuzz_xss": true,
+      "fuzz_lfi": true,
+      "fuzz_ssti": true,
+      "fuzz_redirect": true,
+      "delay_seconds": 2.0
+    },
+    "osint": {
+      "subdomain_enumeration": true,
+      "subdomain_takeover_check": true,
+      "crtsh_timeout_seconds": 10.0
     }
   }
 }
@@ -120,114 +136,71 @@ Content-Type: `application/json; charset=utf-8`
 ---
 
 #### `GET /api/scans/{scan_id}`
-Returns complete scan snapshot.
-- **Response (200 OK):**
-```json
-{
-  "id": "c4b3f8e2-9d3a-4a61-9c88-123456789abc",
-  "target": {
-    "id": "8f1a2b3c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
-    "name": "Production Portal",
-    "type": "URL",
-    "value": "https://example.com",
-    "resolved_ip": "93.184.216.34",
-    "created_at": "2026-08-29T21:45:00Z"
-  },
-  "profile": "FULL_STACK",
-  "enabled_engines": ["network", "web_dast"],
-  "status": "COMPLETED",
-  "progress_percent": 100,
-  "current_stage": "Assessment complete.",
-  "summary": {
-    "critical_count": 0,
-    "high_count": 1,
-    "medium_count": 3,
-    "low_count": 4,
-    "info_count": 2,
-    "total_findings": 10,
-    "passed_checks": 34,
-    "total_checks_evaluated": 44,
-    "weighted_score": 76.0,
-    "overall_security_grade": "C",
-    "duration_seconds": 9.2,
-    "engine_breakdown": {
-      "network": 4,
-      "web_dast": 6
-    }
-  },
-  "findings": [...],
-  "logs": [...],
-  "started_at": "2026-08-29T21:45:00Z",
-  "completed_at": "2026-08-29T21:45:09Z"
-}
-```
+Returns complete scan snapshot including `discovered_endpoints`, `discovered_subdomains`, `findings` (with `reproduction_curl` and `taint_trace`), and `logs`.
 
 ---
 
 #### `POST /api/scans/{scan_id}/cancel`
 Aborts an active scan.
-- **Response (200 OK):**
-```json
-{
-  "scan_id": "c4b3f8e2-9d3a-4a61-9c88-123456789abc",
-  "status": "CANCELLED",
-  "message": "Scan job successfully aborted."
-}
-```
 
 ---
 
 #### `GET /api/scans/history`
 Returns paginated list of historical scan summaries.
-- **Query Parameters:** `limit` (default: 50), `offset` (default: 0)
-- **Response (200 OK):**
-```json
-{
-  "total": 24,
-  "scans": [
-    {
-      "id": "c4b3f8e2-9d3a-4a61-9c88-123456789abc",
-      "target_name": "Production Portal",
-      "target_value": "https://example.com",
-      "target_type": "URL",
-      "profile": "FULL_STACK",
-      "status": "COMPLETED",
-      "overall_security_grade": "C",
-      "weighted_score": 76.0,
-      "total_findings": 10,
-      "critical_count": 0,
-      "high_count": 1,
-      "started_at": "2026-08-29T21:45:00Z",
-      "completed_at": "2026-08-29T21:45:09Z"
-    }
-  ]
-}
-```
 
 ---
 
 #### `DELETE /api/scans/{scan_id}`
 Deletes scan record from disk.
-- **Response (200 OK):**
-```json
-{
-  "scan_id": "c4b3f8e2-9d3a-4a61-9c88-123456789abc",
-  "message": "Scan record deleted successfully."
-}
-```
 
 ---
 
 ### 1.3 Compliance & Export Endpoints
 
 #### `GET /api/scans/{scan_id}/export/html`
-- **Output:** Returns standalone, single-file HTML report (`text/html; charset=utf-8`).
+- **Output:** Standalone single-file HTML report with interactive styling, severity filters, and cURL PoC copy buttons.
 
 #### `GET /api/scans/{scan_id}/export/sarif`
-- **Output:** Returns standard OASIS SARIF v2.1.0 JSON format for GitHub Code Scanning integration.
+- **Output:** Standard OASIS SARIF v2.1.0 JSON format for GitHub Code Scanning integration.
 
 #### `GET /api/scans/{scan_id}/export/json`
-- **Output:** Returns full raw JSON dump conforming to the `ScanJob` schema.
+- **Output:** Complete JSON dump conforming to the `ScanJob` schema.
+
+---
+
+### 1.4 Pentester Productivity Endpoints
+
+#### `POST /api/tools/repeater`
+Allows manual crafting, replay, and differential inspection of HTTP requests directly from the dashboard.
+- **Request Body (`application/json`):**
+```json
+{
+  "url": "https://example.com/api/v1/user?id=1",
+  "method": "GET",
+  "headers": {
+    "Authorization": "Bearer sample_token",
+    "User-Agent": "CyberAssess-Repeater/4.0"
+  },
+  "body": null,
+  "follow_redirects": false,
+  "timeout_seconds": 10.0
+}
+```
+- **Response (200 OK):**
+```json
+{
+  "status_code": 200,
+  "headers": {
+    "content-type": "application/json",
+    "server": "nginx/1.18.0"
+  },
+  "body": "{\"id\": 1, \"name\": \"Admin\"}",
+  "duration_ms": 142.5,
+  "content_length": 27,
+  "tls_version": "TLSv1.3",
+  "cipher": "TLS_AES_256_GCM_SHA384"
+}
+```
 
 ---
 
@@ -241,6 +214,7 @@ Event Types emitted:
 2. `event: log` — Data: `{"timestamp": "...", "level": "INFO", "engine": "network", "message": "..."}`
 3. `event: auth_status` — Data: `{"auth_type": "FORM_LOGIN", "authenticated": true, "session_active": true, "message": "Successfully authenticated."}`
 4. `event: crawl_discovered` — Data: `{"url": "https://example.com/dashboard", "depth": 1, "status_code": 200, "is_authenticated": true, "total_discovered": 12}`
-5. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification)
-6. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "completed_at": "..."}`
-7. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`
+5. `event: subdomain_discovered` — Data: `{"domain": "api.example.com", "ip_addresses": ["93.184.216.34"], "cname_targets": ["api.example.com.cdn.cloudflare.net"], "is_takeover_vulnerable": false, "service_fingerprint": "Cloudflare", "total_subdomains": 5}`
+6. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification with `reproduction_curl` when available)
+7. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "completed_at": "..."}`
+8. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`

@@ -1,13 +1,13 @@
 # Contract 06: Master Security Check Catalog & CWE / OWASP / NIST Taxonomy Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 3.0.0 (Comprehensive Production Specification)  
+**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Canonical Security Rules, Vulnerability Taxonomy & Compliance Mapping  
 
 ---
 
-## 1. Master Security Check Catalog (50+ Canonical Rules)
+## 1. Master Security Check Catalog (60+ Canonical Rules)
 
 Every vulnerability or misconfiguration detected by the platform MUST reference a unique canonical `check_id` from this master catalog.
 
@@ -22,8 +22,7 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `NET-TLS-003` | SSL/TLS Certificate Expiring in < 30 Days | `MEDIUM` | 5.3 | CWE-295 | A02:Cryptographic Failures | SC-8 | `notAfter` within 30 days of current UTC. |
 | `NET-TLS-004` | Certificate Hostname Mismatch | `HIGH` | 7.4 | CWE-297 | A02:Cryptographic Failures | SC-8 | Target domain not in Subject Alternative Names (SAN) or CN. |
 | `NET-TLS-005` | Deprecated TLS 1.0 / 1.1 Protocol Enabled | `HIGH` | 7.5 | CWE-326 | A02:Cryptographic Failures | SC-13 | Server completes handshake when TLSv1.0 or TLSv1.1 is negotiated. |
-| `NET-TLS-006` | Insecure SSLv3 Protocol Enabled (POODLE) | `CRITICAL` | 9.0 | CWE-326 | A02:Cryptographic Failures | SC-13 | Server completes SSLv3 handshake. |
-| `NET-TLS-007` | Weak Cipher Suite Negotiated (RC4/3DES/DES) | `HIGH` | 7.5 | CWE-327 | A02:Cryptographic Failures | SC-13 | Server negotiates 3DES (SWEET32), RC4, or export-grade cipher. |
+| `NET-TLS-006` | Deprecated Ciphersuite Vulnerable to SWEET32 / 3DES | `MEDIUM` | 5.9 | CWE-327 | A02:Cryptographic Failures | SC-13 | Server negotiates 64-bit block cipher (3DES/DES). |
 | `NET-DNS-001` | Missing or Incomplete SPF Record | `MEDIUM` | 5.3 | CWE-345 | A05:Security Misconfiguration | SI-8 | Root domain lacks `v=spf1` TXT record. |
 | `NET-DNS-002` | Permissive SPF Record (`+all`) | `HIGH` | 7.5 | CWE-345 | A05:Security Misconfiguration | SI-8 | SPF TXT record contains `+all` allowing unauthorized mail sender spoofing. |
 | `NET-DNS-003` | Missing DMARC Email Protection Record | `MEDIUM` | 5.3 | CWE-345 | A05:Security Misconfiguration | SI-8 | `_dmarc.{domain}` query returns `NXDOMAIN` or no `v=DMARC1` record. |
@@ -32,10 +31,12 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `NET-DNS-006` | Missing MTA-STS or TLS-RPT Record | `LOW` | 3.5 | CWE-319 | A02:Cryptographic Failures | SC-8 | Missing `_mta-sts` or `_smtp._tls` TXT record for enforcing TLS in transit. |
 | `NET-DNS-007` | Missing DNSSEC Deployment | `LOW` | 3.7 | CWE-345 | A05:Security Misconfiguration | SC-20, SC-21 | Domain zone lacks signed `DNSKEY` / `DS` / `RRSIG` records. |
 | `NET-DNS-008` | DNS Zone Transfer (AXFR) Exposure | `HIGH` | 7.5 | CWE-200 | A01:Broken Access Control | AC-3, SC-7 | DNS server responds to AXFR request with complete zone dump. |
-| `NET-DNS-009` | Missing BIMI Email Identity Alignment | `INFO` | 0.0 | CWE-345 | A05:Security Misconfiguration | SI-8 | Domain lacks `default._bimi.{domain}` authentication indicator. |
 | `NET-PORT-001` | Exposed Database Port (MySQL 3306 / Postgres 5432) | `HIGH` | 7.5 | CWE-284 | A01:Broken Access Control | AC-3, SC-7 | TCP connection succeeds on port 3306 or 5432 from public network. |
 | `NET-PORT-002` | Exposed In-Memory Cache (Redis 6379 / Mongo 27017) | `HIGH` | 7.5 | CWE-284 | A01:Broken Access Control | AC-3, SC-7 | TCP connection succeeds on port 6379, 27017, or 9200. |
 | `NET-PORT-003` | Exposed Insecure Remote Management (Telnet 23 / FTP 21) | `HIGH` | 7.5 | CWE-319 | A02:Cryptographic Failures | AC-17, IA-2 | TCP connection succeeds on unencrypted port 21 or 23. |
+| `NET-SVC-001` | Deprecated or Vulnerable Service Daemon Version Detected | `HIGH` | 7.5 | CWE-200 | A05:Security Misconfiguration | CM-6 | Service banner reveals outdated or vulnerable software version. |
+| `NET-OSINT-001` | Dangling DNS CNAME / Subdomain Takeover Vulnerability | `CRITICAL` | 9.1 | CWE-284 | A01:Broken Access Control | AC-3, SC-7 | Subdomain CNAME points to unregistered third-party cloud service. |
+| `NET-OSINT-002` | Sensitive Subdomain Discovered via Public Certificate Transparency | `MEDIUM` | 5.3 | CWE-200 | A05:Security Misconfiguration | CM-6 | Discovered public subdomain with sensitive prefix (admin, dev, staging, internal). |
 
 ---
 
@@ -50,8 +51,6 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `DAST-HDR-005` | Missing X-Content-Type-Options Header | `LOW` | 3.1 | CWE-79 | A05:Security Misconfiguration | SI-10 | Response lacks `X-Content-Type-Options: nosniff`. |
 | `DAST-HDR-006` | Permissive Referrer-Policy Header | `LOW` | 3.1 | CWE-200 | A05:Security Misconfiguration | SC-8 | Lacks `Referrer-Policy` or set to `unsafe-url` / `no-referrer-when-downgrade`. |
 | `DAST-HDR-007` | Detailed Server Version Disclosure | `LOW` | 3.1 | CWE-200 | A05:Security Misconfiguration | CM-6 | `Server` or `X-Powered-By` header exposes granular framework/version strings. |
-| `DAST-HDR-008` | Missing Permissions-Policy Header | `LOW` | 3.1 | CWE-1021 | A05:Security Misconfiguration | SC-18 | Response lacks `Permissions-Policy` restricting browser sensors/features. |
-| `DAST-HDR-009` | Missing Cross-Origin Isolation (COOP/COEP/CORP) | `LOW` | 3.1 | CWE-1021 | A05:Security Misconfiguration | SC-18 | Missing `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy`. |
 | `DAST-COOKIE-001` | Cookie Missing HttpOnly Flag | `MEDIUM` | 5.3 | CWE-1004 | A05:Security Misconfiguration | SC-23 | Sensitive session cookie sent without `HttpOnly` flag. |
 | `DAST-COOKIE-002` | Cookie Missing Secure Flag | `MEDIUM` | 5.3 | CWE-614 | A05:Security Misconfiguration | SC-8, SC-13 | Cookie set over HTTPS connection without `Secure` flag. |
 | `DAST-COOKIE-003` | Cookie Missing or Permissive SameSite | `LOW` | 3.7 | CWE-1275 | A01:Broken Access Control | SC-23 | Cookie lacks `SameSite=Strict` or `SameSite=Lax`. |
@@ -73,6 +72,11 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `DAST-AUTH-004` | Sensitive Data in Authenticated Query Strings | `MEDIUM` | 5.3 | CWE-598 | A04:Insecure Design | SC-28 | Authenticated URL query string contains tokens, passwords, or PII. |
 | `DAST-FORM-001` | Insecure Form Action Submitting over Cleartext HTTP | `HIGH` | 7.5 | CWE-319 | A02:Cryptographic Failures | SC-8 | HTML `<form>` action target points to unencrypted `http://` endpoint. |
 | `DAST-FORM-002` | Missing Anti-CSRF Token in State-Changing Form | `MEDIUM` | 6.5 | CWE-352 | A01:Broken Access Control | SC-23 | HTML POST/PUT form lacks anti-CSRF hidden input field (`csrf_token`, `_token`). |
+| `DAST-INJ-001` | SQL Injection Detected via Parameter Timing / Boolean Differential | `CRITICAL` | 9.8 | CWE-89 | A03:Injection | SI-10 | Response latency $\ge 2.0\text{s}$ on `SLEEP(2)` probe or differential hash divergence on `1=1` vs `1=2`. |
+| `DAST-XSS-001` | Reflected Cross-Site Scripting (XSS) via Unescaped Canary Reflection | `HIGH` | 7.5 | CWE-79 | A03:Injection | SI-10 | Harmless canary token `_CYBERASSESS_XSS_<hex>_` echoed unescaped in response DOM/attributes. |
+| `DAST-LFI-001` | Local File Inclusion / Path Traversal Detected | `HIGH` | 8.6 | CWE-22 | A01:Broken Access Control | AC-3, SI-10 | Traversal payload `../../../../etc/passwd` reflects `root:.*:0:0:` or `win.ini` signatures. |
+| `DAST-SSTI-001` | Server-Side Template Injection (SSTI) Expression Evaluated | `CRITICAL` | 9.8 | CWE-1336 | A03:Injection | SI-10 | Mathematical probe `{{7*7}}` or `${7*7}` evaluates to `49` in rendered response. |
+| `DAST-REDIR-001` | Open Redirection via Parameter Tampering | `MEDIUM` | 6.1 | CWE-601 | A01:Broken Access Control | AC-3 | Injected redirect target reflects in `Location:` header pointing to external domain. |
 
 ---
 
@@ -89,12 +93,15 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `SAST-SEC-007` | Unencrypted Private Cryptographic Key File | `CRITICAL` | 9.8 | CWE-321 | A02:Cryptographic Failures | SC-12, SC-28 | `-----BEGIN ((RSA\|EC\|DSA\|OPENSSH) )?PRIVATE KEY-----` |
 | `SAST-SEC-008` | Hardcoded Database URI with Plaintext Password | `HIGH` | 8.6 | CWE-798 | A07:Identification & Auth | IA-5, SC-28 | `(postgres\|mysql\|mongodb\|redis):\/\/[a-zA-Z0-9_]+:[^@\s]+@[a-zA-Z0-9.-]+` |
 | `SAST-SEC-009` | Hardcoded Internal IP Address / Hostname | `LOW` | 3.1 | CWE-200 | A05:Security Misconfiguration | CM-6 | Hardcoded RFC 1918 private IPs or `.corp` hostnames in code. |
+| `SAST-GIT-001` | Exposed Cryptographic Secret in Historical Git Commit | `HIGH` | 8.6 | CWE-798 | A07:Identification & Auth | IA-5, SC-28 | Regex and Shannon entropy scan of git log history detects unmasked secrets in past commits. |
 | `SAST-CRY-001` | Broken Cryptographic Hash Function (MD5/SHA1) | `MEDIUM` | 5.3 | CWE-328 | A02:Cryptographic Failures | SC-13 | Use of `hashlib.md5`, `hashlib.sha1`, `crypto.createHash('md5')`. |
 | `SAST-CRY-002` | Insecure Pseudo-Random Number Generator (PRNG) | `HIGH` | 7.5 | CWE-338 | A02:Cryptographic Failures | SC-13 | `random.random()`, `Math.random()` used in token/auth generation. |
 | `SAST-CRY-003` | Insecure Symmetric Cipher Mode (AES-ECB) | `HIGH` | 7.5 | CWE-327 | A02:Cryptographic Failures | SC-13 | AES configured in Electronic Codebook (`ECB`) mode. |
 | `SAST-INJ-001` | Raw SQL Query String Formatting / Concatenation | `HIGH` | 8.5 | CWE-89 | A03:Injection | SI-10 | Direct variable interpolation into `cursor.execute(...)`. |
 | `SAST-INJ-002` | Unsafe Shell Execution (`shell=True`, `system()`) | `HIGH` | 8.5 | CWE-78 | A03:Injection | SI-10 | Variable passed to `subprocess.Popen(..., shell=True)` or `os.system()`. |
 | `SAST-INJ-003` | Unsafe Object Deserialization | `HIGH` | 8.5 | CWE-502 | A08:Software Integrity | SI-10 | Usage of `pickle.loads()`, `yaml.load(..., Loader=Loader)`. |
+| `SAST-TAINT-001` | Unsanitized User Input Flows into Database Execution Sink | `CRITICAL` | 9.8 | CWE-89 | A03:Injection | SI-10 | Interprocedural AST taint flow from HTTP input source into database execution sink. |
+| `SAST-TAINT-002` | Unsanitized User Input Flows into OS Command Execution Sink | `CRITICAL` | 9.8 | CWE-78 | A03:Injection | SI-10 | AST taint flow from user input source into `subprocess` or `os.system` execution sink. |
 | `SAST-DEP-001` | Vulnerable Pinned Dependency (Known CVE) | `HIGH` | 7.5 | CWE-1395 | A06:Vulnerable Components | SA-15, SI-2 | Matching package version against vulnerability database. |
 | `SAST-DEP-002` | Unpinned / Wildcard Dependency Version | `LOW` | 3.7 | CWE-1104 | A06:Vulnerable Components | SA-15 | Manifest contains `*` or `>=0.0.0` wildcard dependencies. |
 

@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Operational Limits
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 3.0.0 (Comprehensive Production Specification)  
+**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards & Security Operations  
 
@@ -9,16 +9,16 @@
 
 ## 1. System Vision & Purpose
 
-The **Automated Security Assessment & Vulnerability Management Platform** is an enterprise-grade, fully automated, non-destructive security auditing and vulnerability management platform. Designed for security architects, DevSecOps pipelines, and application developers, the platform provides deep, calculated, and mathematically verified security assessments across the complete modern software stack.
+The **Automated Security Assessment & Vulnerability Management Platform** is an enterprise-grade, automated, defensive penetration testing and vulnerability management platform. Designed for security architects, professional penetration testers, DevSecOps pipelines, and application developers, the platform provides deep, calculated, and mathematically verified security assessments across the complete modern software stack.
 
-When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Repository, Container Specification, or Infrastructure-as-Code Template), the platform automatically orchestrates a comprehensive battery of non-intrusive, non-disruptive, and deterministic security checks across five core security domains:
-1. **Network Perimeter, TLS/SSL & DNS Infrastructure** (`network`)
-2. **Web Application, Modern Browser & REST/GraphQL API Security (DAST)** (`web_dast`)
-3. **Static Code Analysis, Secrets, Cryptography & Software Composition (SAST/SCA)** (`code_sast`)
+When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Repository, Container Specification, or Infrastructure-as-Code Template), the platform automatically orchestrates a comprehensive battery of non-destructive, high-fidelity, and deterministic security checks across five core security domains:
+1. **Network Perimeter, TLS/SSL & DNS Infrastructure & Passive OSINT** (`network`)
+2. **Web Application, Scoped Crawling, Authenticated DAST & Active Parameter Fuzzing** (`web_dast`)
+3. **Static Code Analysis, Interprocedural AST Taint Flow, Git Secrets & Software Composition** (`code_sast`)
 4. **Infrastructure-as-Code, Container & Cloud Posture (IaC)** (`infra_iac`)
 5. **CI/CD Pipeline & Build Automation Security** (`cicd_audit`)
 
-The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
+The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), enables interactive HTTP request repeating, provides one-click standalone `curl` reproduction PoC commands, and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
 
 ---
 
@@ -27,16 +27,23 @@ The platform calculates deterministic CVSS v3.1-aligned security scores and lett
 ### 2.1 The Zero-Harm Non-Destructive Mandate
 Every scanning engine, check module, and network probe in this system MUST operate strictly within a **zero-harm, non-destructive, non-disruptive** operational framework:
 
-1. **Strictly Non-Destructive Inspection:**
-   - Modules MUST NOT transmit destructive payloads (e.g., SQL `DROP`/`DELETE`, command injection triggers, filesystem tampering, or memory corruption exploits).
-   - Dynamic tests are strictly restricted to:
-     - Passive HTTP header and cookie observation
-     - Standard HTTP request method inspection (`OPTIONS`, `HEAD`, `GET`)
-     - Safe probe requests (e.g., testing if a sensitive path returns `403` vs `200` with known headers)
-     - Safe SSL/TLS handshake metadata negotiation and cipher enumeration
-     - Passive DNS record resolution (`TXT`, `MX`, `A`, `AAAA`, `CAA`, `DNSKEY`, `DS`)
-     - Safe, non-saturating TCP socket connection checks (`connect()` and immediate `close()`)
-     - Read-only GraphQL introspection queries
+1. **Strictly Non-Destructive Inspection & Benign Mutation:**
+   - Modules MUST NOT transmit destructive payloads (e.g., SQL `DROP`/`DELETE`/`UPDATE`, command injection execution, filesystem modification, memory corruption exploits, or data exfiltration).
+   - Dynamic tests and parameter mutations are strictly restricted to:
+     - Passive HTTP header and cookie observation.
+     - Standard HTTP request method inspection (`OPTIONS`, `HEAD`, `GET`).
+     - Safe probe requests (e.g., testing if a sensitive path returns `403` vs `200`).
+     - Safe SSL/TLS handshake metadata negotiation, cipher enumeration, and TLS vulnerability probes (Heartbleed, SWEET32, POODLE).
+     - Passive DNS record resolution (`TXT`, `MX`, `A`, `AAAA`, `CAA`, `DNSKEY`, `DS`) and Certificate Transparency (`crt.sh`) passive subdomain reconnaissance.
+     - Safe, non-saturating TCP socket connection checks (`connect()` and immediate `close()`) with daemon banner extraction.
+     - Read-only GraphQL introspection queries.
+     - **Benign Parameter Fuzzing:**
+       - *Time-based SQLi Probes:* Benign delay queries (e.g., `SLEEP(2)` / `pg_sleep(2)`) to measure latency differentials without altering table records.
+       - *Boolean Differential SQLi:* Read-only comparison of responses between truthy (`1=1`) and falsy (`1=2`) queries.
+       - *Reflected XSS Canary Tokens:* Injecting unique harmless non-executable alphanumeric tokens (`_CYBERASSESS_XSS_<random_hex>_`) and verifying unescaped reflection in the HTML body or attributes.
+       - *Local File Inclusion (LFI) / Path Traversal Probes:* Read-only traversal sequences (`../../../../etc/passwd` or `..\..\..\..\windows\win.ini`) detecting operating system signature patterns without writing to disk.
+       - *Server-Side Template Injection (SSTI):* Mathematical expression evaluation (e.g., `{{7*7}}` or `${7*7}`) verifying rendering of `49`.
+       - *Open Redirect Probes:* Checking for external hostname reflection in HTTP `Location:` response headers.
 2. **No Denial of Service (DoS) or Resource Exhaustion:**
    - Packet flooding, stress testing, high-concurrency fuzzing, slowloris attacks, and brute-force password cracking are strictly prohibited.
    - Concurrency per target is capped by default to 5 workers (configurable up to a hard ceiling of 15).

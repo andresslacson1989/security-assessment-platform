@@ -1,52 +1,53 @@
-# Contract 02: Data Schema & Data Models Specification
+# Contract 02: Core Data Schema, Pydantic Models & Scoring Algorithm
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 3.0.0 (Comprehensive Production Specification)  
+**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Core Data Models, Pydantic v2 Schemas, Interchange Formats & Scoring  
+**Scope Authority:** Data Models, State Machines, Serialization & Mathematical Scoring  
 
 ---
 
-## 1. Overview & Architecture Standards
+## 1. Schema Design Philosophy
 
-This contract defines the authoritative data contracts, JSON schemas, Pydantic v2 models, enumeration states, and deterministic grading algorithms for all platform entities. Every API request, engine check output, streaming event, database record, and export artifact MUST conform to these schemas without deviation.
+All models in this platform are strictly defined using **Pydantic v2** with type validation, immutability guarantees where appropriate, and deterministic serialization to JSON, OASIS SARIF v2.1.0, and HTML formats.
 
 ---
 
-## 2. Core Enumerations & State Machines
+## 2. Enums & Classifications
 
-### 2.1 Severity Level (`Severity`)
-Aliged with CVSS v3.1 base scoring:
-
-| Enum Value | CVSS v3.1 Range | Color Token | Definition & SLA Guidance |
-| :--- | :--- | :--- | :--- |
-| **`CRITICAL`** | 9.0 – 10.0 | `#ef4444` (Crimson) | Severe vulnerability allowing remote unauthorized access, exposed private keys, public `.env` leak, or root execution. Immediate 24h remediation. |
-| **`HIGH`** | 7.0 – 8.9 | `#f97316` (Orange) | Significant vulnerability that directly degrades security controls, exposes internal database ports, CORS origin reflection with credentials, or leaks API keys. Fix within 7 days. |
-| **`MEDIUM`** | 4.0 – 6.9 | `#eab308` (Yellow) | Flaw or misconfiguration weakening defense-in-depth (missing CSP, insecure cookie flags, deprecated TLS 1.0/1.1, GraphQL introspection enabled). Fix within 30 days. |
-| **`LOW`** | 0.1 – 3.9 | `#3b82f6` (Blue) | Minor hygiene deficiency or non-standard configuration (server banner disclosure, missing Referrer-Policy, unpinned base image tag). Fix in regular release. |
-| **`INFO`** | 0.0 | `#10b981` (Green) | Positive observation, architectural best practice, or safe reconnaissance metadata. No fix required. |
-
-### 2.2 Target Type (`TargetType`)
+### 2.1 Target Classification (`TargetType`)
 ```python
+from enum import Enum
+
 class TargetType(str, Enum):
-    URL = "URL"                    # Full web URL (e.g. https://example.com/app)
-    DOMAIN = "DOMAIN"              # Fully Qualified Domain Name (e.g. example.com)
-    IP = "IP"                      # IPv4 or IPv6 host address (e.g. 192.168.1.100)
-    LOCAL_PATH = "LOCAL_PATH"      # Local code repository or filesystem directory
-    DOCKERFILE = "DOCKERFILE"      # Dockerfile or container specification
-    IAC_MANIFEST = "IAC_MANIFEST"  # Kubernetes YAML, Terraform .tf, or Docker Compose
+    URL = "URL"                    # Web Application or REST/GraphQL Endpoint
+    DOMAIN = "DOMAIN"              # Domain Name / FQDN (Perimeter, DNS, OSINT)
+    IP = "IP"                      # Single IPv4 or IPv6 Address
+    LOCAL_PATH = "LOCAL_PATH"      # Local Source Code Repository
+    DOCKERFILE = "DOCKERFILE"      # Dockerfile Specification
+    IAC_MANIFEST = "IAC_MANIFEST"  # Kubernetes, Compose, or Terraform Manifest
 ```
 
-### 2.3 Scan Profile (`ScanProfile`)
+### 2.2 Finding Severity Rating (`Severity`)
+```python
+class Severity(str, Enum):
+    CRITICAL = "CRITICAL"  # CVSS 9.0 - 10.0: Immediate compromise / RCE / Root Secret / SQLi
+    HIGH = "HIGH"          # CVSS 7.0 - 8.9: Significant vulnerability / XSS / LFI / Insecure Auth / Sudo / Privileged Pod
+    MEDIUM = "MEDIUM"      # CVSS 4.0 - 6.9: Security misconfiguration / Missing CSP / SWEET32 / Weak CORS
+    LOW = "LOW"            # CVSS 0.1 - 3.9: Informational hygiene / Missing CAA / Unpinned dep / Server banner
+    INFO = "INFO"          # CVSS 0.0: Educational observation or positive posture note
+```
+
+### 2.3 Scan Profiles (`ScanProfile`)
 ```python
 class ScanProfile(str, Enum):
-    FULL_STACK = "FULL_STACK"     # Executes all applicable engines across the target
-    QUICK = "QUICK"               # Rapid triage checks (TLS + Top Headers + Critical Ports)
-    DAST_ONLY = "DAST_ONLY"       # Web application, modern browser & API security checks
-    SAST_ONLY = "SAST_ONLY"       # Static code analysis, secrets, weak crypto & dependency audit
-    NETWORK_ONLY = "NETWORK_ONLY" # TLS/SSL, DNS hygiene, MTA-STS, and port scanner
-    INFRA_ONLY = "INFRA_ONLY"     # Container, Kubernetes, Dockerfile & IaC audit
-    CUSTOM = "CUSTOM"             # User-selected engine and check subset
+    FULL_STACK = "FULL_STACK"        # All 5 engines active
+    QUICK_AUDIT = "QUICK_AUDIT"      # Network + Web DAST Header Check only
+    DAST_ONLY = "DAST_ONLY"          # Web DAST + Crawler + Auth + Active Fuzzing
+    SAST_ONLY = "SAST_ONLY"          # Static Code + Taint AST + Secrets + Dependencies
+    NETWORK_TLS = "NETWORK_TLS"      # Network Ports + TLS Ciphers + DNS + OSINT Subdomains
+    INFRA_ONLY = "INFRA_ONLY"        # Dockerfile + Compose + K8s + Terraform
+    CUSTOM = "CUSTOM"                # User-defined engine selection
 ```
 
 ### 2.4 Scan Status & State Machine (`ScanStatus`)
@@ -98,7 +99,7 @@ class Evidence(BaseModel):
     observed_value: str = Field(..., description="What was actually observed (e.g. 'Server: Apache/2.4.41' or 'AKIA****')")
     expected_value: str = Field(..., description="What should have been configured according to security standard")
     raw_response_snippet: Optional[str] = Field(default=None, description="Safe excerpt of HTTP header, banner, or code snippet")
-    request_details: Optional[Dict[str, Any]] = Field(default=None, description="HTTP method, URL, and test headers used")
+    request_details: Optional[Dict[str, Any]] = Field(default=None, description="HTTP method, URL, parameter name, and test headers used")
     response_details: Optional[Dict[str, Any]] = Field(default=None, description="HTTP status code and response headers")
     line_number: Optional[int] = Field(default=None, description="Line number if finding relates to a file")
     column_number: Optional[int] = Field(default=None, description="Column number if applicable")
@@ -110,27 +111,37 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
-    check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-HDR-001, NET-TLS-001, SAST-SEC-001)")
-    category: str = Field(..., description="Taxonomy category (e.g. SSL/TLS, Security Headers, Hardcoded Secrets, Container Posture)")
+    check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
+    category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")
     severity: Severity = Field(..., description="Finding severity rating")
     cvss_score: float = Field(..., ge=0.0, le=10.0, description="CVSS v3.1 Base Score")
     cvss_vector: Optional[str] = Field(default=None, description="e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
-    cwe_id: Optional[str] = Field(default=None, description="Common Weakness Enumeration ID (e.g. CWE-798)")
-    owasp_category: Optional[str] = Field(default=None, description="OWASP Top 10 (2021) mapping (e.g. A05:2021-Security Misconfiguration)")
-    nist_control: Optional[str] = Field(default=None, description="NIST SP 800-53 control mapping (e.g. SC-8, IA-5)")
+    cwe_id: Optional[str] = Field(default=None, description="Common Weakness Enumeration ID (e.g. CWE-89, CWE-79)")
+    owasp_category: Optional[str] = Field(default=None, description="OWASP Top 10 (2021) mapping (e.g. A03:2021-Injection)")
+    nist_control: Optional[str] = Field(default=None, description="NIST SP 800-53 control mapping (e.g. SC-8, IA-5, SI-10)")
     description: str = Field(..., description="Detailed explanation of the flaw and why it occurred")
     impact: str = Field(..., description="Potential business or technical damage if exploited")
     remediation: str = Field(..., description="Step-by-step guidance to fix the issue")
     remediation_code_snippet: Optional[str] = Field(default=None, description="Example configuration or patch code")
     references: List[str] = Field(default_factory=list, description="Authoritative links (OWASP, NIST, RFC, vendor advisory)")
     evidence: Evidence = Field(..., description="Concrete proof and observed data")
+    reproduction_curl: Optional[str] = Field(default=None, description="Exact copy-pasteable curl PoC command to reproduce the finding")
+    taint_trace: Optional[List[str]] = Field(default=None, description="AST dataflow taint trace steps from source to sink")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     fingerprint: str = Field(..., description="Deterministic SHA256 hash of (check_id + location + evidence.observed_value)")
 ```
 
-### 3.4 Discovered Endpoint Model (`DiscoveredEndpoint`)
+### 3.4 Discovered Subdomain & Endpoint Models
 ```python
+class DiscoveredSubdomain(BaseModel):
+    domain: str = Field(..., description="Fully-qualified discovered subdomain name")
+    ip_addresses: List[str] = Field(default_factory=list, description="Resolved IPv4/IPv6 addresses")
+    cname_targets: List[str] = Field(default_factory=list, description="Resolved CNAME aliases")
+    is_takeover_vulnerable: bool = Field(default=False, description="Whether CNAME points to unclaimed cloud resource")
+    service_fingerprint: Optional[str] = Field(default=None, description="Identified hosting provider or technology")
+    discovered_via: str = Field(default="crt.sh", description="Reconnaissance source (crt.sh, DNS enumeration, TLS SAN)")
+
 class DiscoveredEndpoint(BaseModel):
     url: str = Field(..., description="Normalized discovered URL")
     method: str = Field(default="GET", description="HTTP method")
@@ -141,8 +152,24 @@ class DiscoveredEndpoint(BaseModel):
     has_forms: bool = Field(default=False, description="Whether HTML forms were discovered on this page")
 ```
 
-### 3.5 Authentication & Crawler Configurations
+### 3.5 Authentication, Crawler, Fuzzing & OSINT Configurations
 ```python
+class FuzzingConfig(BaseModel):
+    enabled: bool = Field(default=False, description="Enable active parameter fuzzing & benign injection testing")
+    fuzz_query_params: bool = Field(default=True, description="Fuzz URL GET query parameters")
+    fuzz_body_params: bool = Field(default=True, description="Fuzz POST/PUT form and JSON parameters")
+    fuzz_sqli: bool = Field(default=True, description="Test for Time-based and Boolean-differential SQLi")
+    fuzz_xss: bool = Field(default=True, description="Test for Reflected XSS using benign canary tokens")
+    fuzz_lfi: bool = Field(default=True, description="Test for Local File Inclusion and Path Traversal")
+    fuzz_ssti: bool = Field(default=True, description="Test for Server-Side Template Injection mathematical evaluation")
+    fuzz_redirect: bool = Field(default=True, description="Test for Open Redirect via parameter tampering")
+    delay_seconds: float = Field(default=2.0, ge=1.0, le=5.0, description="Expected delay for timing-based probes")
+
+class OsintConfig(BaseModel):
+    subdomain_enumeration: bool = Field(default=True, description="Query public Certificate Transparency logs (crt.sh)")
+    subdomain_takeover_check: bool = Field(default=True, description="Detect dangling CNAME records pointing to unclaimed services")
+    crtsh_timeout_seconds: float = Field(default=10.0, ge=3.0, le=30.0, description="Timeout for crt.sh API queries")
+
 class AuthConfig(BaseModel):
     auth_type: AuthType = Field(default=AuthType.NONE, description="Authentication mechanism")
     headers: Dict[str, str] = Field(default_factory=dict, description="Custom headers (e.g. Authorization: Bearer <token>)")
@@ -183,6 +210,7 @@ class ScanJobSummary(BaseModel):
     passed_checks: int = Field(default=0, ge=0)
     total_checks_evaluated: int = Field(default=0, ge=0)
     pages_crawled: int = Field(default=1, ge=0, description="Total unique internal pages crawled")
+    subdomains_discovered: int = Field(default=0, ge=0, description="Total unique subdomains discovered via OSINT")
     authenticated_session_active: bool = Field(default=False, description="Whether authentication was verified active")
     weighted_score: float = Field(default=100.0, ge=0.0, le=100.0, description="Calculated 0-100 security score")
     overall_security_grade: str = Field(default="A+", description="Letter grade: A+, A, B, C, D, or F")
@@ -215,6 +243,8 @@ class ScanConfig(BaseModel):
     include_subdomains: bool = Field(default=False)
     crawler: CrawlerConfig = Field(default_factory=CrawlerConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    fuzzing: FuzzingConfig = Field(default_factory=FuzzingConfig)
+    osint: OsintConfig = Field(default_factory=OsintConfig)
 
 class ScanJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -227,6 +257,7 @@ class ScanJob(BaseModel):
     current_stage: str = Field(default="Initializing assessment engine...")
     summary: ScanJobSummary = Field(default_factory=ScanJobSummary)
     discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list)
+    discovered_subdomains: List[DiscoveredSubdomain] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
     logs: List[LogEntry] = Field(default_factory=list)
     started_at: Optional[datetime] = Field(default=None)
