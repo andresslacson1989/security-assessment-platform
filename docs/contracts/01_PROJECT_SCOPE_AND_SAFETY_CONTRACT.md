@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Operational Limits
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards & Security Operations  
 
@@ -17,6 +17,10 @@ When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Rep
 3. **Static Code Analysis, Interprocedural AST Taint Flow, Git Secrets & Software Composition** (`code_sast`)
 4. **Infrastructure-as-Code, Container & Cloud Posture (IaC)** (`infra_iac`)
 5. **CI/CD Pipeline & Build Automation Security** (`cicd_audit`)
+
+The platform operates on a **Tiered Hybrid Engine Architecture**:
+- **Tier 1 (Native Async Core):** Zero-prerequisite, 100% portable Python async engines that execute instantly out of the box on any standard OS without external dependencies.
+- **Tier 2 (Pluggable Tool Adapters):** Dynamic adapters that detect and orchestrate battle-tested CLI tools (**Nmap**, **Nuclei**, **Semgrep**, **Trivy**) when present on the host system or container image, augmenting depth with seamless native fallback.
 
 The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), enables interactive HTTP request repeating, provides one-click standalone `curl` reproduction PoC commands, and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
 
@@ -95,15 +99,69 @@ The platform validates every target input against strict syntactic and semantic 
 
 ---
 
-## 4. Rate Limiting, Throttling & Circuit Breakers
+## 4. Enterprise Hybrid Tool Adapter Architecture & Safe Subprocess Boundaries
 
-### 4.1 Token Bucket Rate Limiting
+To combine zero-dependency portability with enterprise-grade penetration testing power, the platform operates a **Tiered Hybrid Adapter Model**:
+
+```
+                              ┌───────────────────────────────────────────────┐
+                              │            CYBERASSESS ORCHESTRATOR           │
+                              └──────────────────────┬────────────────────────┘
+                                                     │
+                     ┌───────────────────────────────┴───────────────────────────────┐
+                     ▼                                                               ▼
+        ┌─────────────────────────┐                                     ┌─────────────────────────┐
+        │  NATIVE ASYNC ENGINES   │                                     │  TOOL ADAPTER PLUGINS   │
+        │ (Zero-Prerequisite Core)│                                     │ (Enhanced Enterprise)   │
+        ├─────────────────────────┤                                     ├─────────────────────────┤
+        │ • Native TLS / DNS      │◄────────[Graceful Fallback]─────────┤ • Nmap / Npcap Adapter  │
+        │ • Native HTTP DAST      │◄────────[Graceful Fallback]─────────┤ • Nuclei Engine Adapter │
+        │ • Native BFS Crawler    │                                     │ • Semgrep SAST Adapter  │
+        │ • Native AST Taint Flow │◄────────[Graceful Fallback]─────────┤ • Trivy SCA Adapter     │
+        └─────────────────────────┘                                     └─────────────────────────┘
+                     │                                                               │
+                     └───────────────────────────────┬───────────────────────────────┘
+                                                     ▼
+                                      ┌─────────────────────────────┐
+                                      │ CANONICAL NORMALIZER (SARIF)│
+                                      │   (Single Unified Schema)   │
+                                      └─────────────────────────────┘
+```
+
+### 4.1 Zero-Failure Fallback Guarantee
+1. **Host Discovery:** The orchestrator automatically probes system `PATH` and configured paths via `shutil.which` at startup and scan initialization.
+2. **Transparent Fallback:** If an external binary (`nmap`, `nuclei`, `semgrep`, `trivy`) is not installed or errors during startup, the platform automatically and silently falls back to its built-in native Python engine. The scan NEVER crashes due to missing external binaries.
+3. **Execution Mode Reporting:** Every finding records its `source_tool` (`"native"`, `"nmap"`, `"nuclei"`, `"semgrep"`, `"trivy"`) for audit transparency.
+
+### 4.2 Safe Non-Destructive Subprocess Execution Flags
+External tools MUST be invoked with strictly bounded, non-destructive arguments:
+- **Nmap (`NmapAdapter`):**
+  - Command: `nmap -sV -sC --version-light -T4 -oX - <target>`
+  - Prohibitions: No `-A`, no `--script=exploit`, no `--script=dos`, no packet flooding.
+- **Nuclei (`NucleiAdapter`):**
+  - Command: `nuclei -u <target> -j -silent -tags cve,misconfig -severity low,medium,high,critical`
+  - Prohibitions: No `-tags dos,fuzz,intrusive`.
+- **Semgrep (`SemgrepAdapter`):**
+  - Command: `semgrep scan --config auto --json <target_dir>`
+- **Trivy (`TrivyAdapter`):**
+  - Command: `trivy fs --format json <target_dir>`
+
+### 4.3 Subprocess Isolation & Lifecycle Bounds
+- All CLI processes are spawned via `asyncio.create_subprocess_exec()` with strict memory/timeout limits.
+- Maximum execution timeout per tool: 60.0 seconds.
+- Subprocesses are assigned to dedicated process groups and are immediately terminated on scan cancellation or timeout.
+
+---
+
+## 5. Rate Limiting, Throttling & Circuit Breakers
+
+### 5.1 Token Bucket Rate Limiting
 - Every network-touching engine routes requests through an asynchronous Token Bucket Rate Limiter.
 - **Default Rate:** 5 requests per second (RPS).
 - **Configurable Range:** 1 RPS to 20 RPS.
 - **Burst Limit:** Maximum burst of 10 requests.
 
-### 4.2 Automated Circuit Breakers & Backoff Policy
+### 5.2 Automated Circuit Breakers & Backoff Policy
 - **Consecutive Error Trigger:** If a target returns **5 consecutive 5xx Server Errors** or **3 consecutive connection timeouts (>10s)**:
   1. The scanner transitions to `THROTTLED` state, pausing outbound requests for 10 seconds.
   2. Rate limit is automatically halved.
@@ -112,16 +170,17 @@ The platform validates every target input against strict syntactic and semantic 
   1. Active scan stage safely aborts with status `COMPLETED_WITH_WARNINGS` or `FAILED`.
   2. A finding is registered: `"Target Unresponsive / Rate-Limited: Scan Aborted Safely to Protect Target"`.
 
-### 4.3 Strict Network Timeout Bounds
+### 5.3 Strict Network Timeout Bounds
 - **HTTP Request Timeout:** 10.0 seconds maximum.
 - **TLS Handshake Timeout:** 5.0 seconds maximum.
 - **TCP Socket Connect Timeout:** 2.0 seconds maximum.
 - **DNS Query Timeout:** 3.0 seconds maximum.
+- **Tool Adapter Subprocess Timeout:** 60.0 seconds maximum.
 - Unbounded blocking calls are strictly prohibited across all code paths.
 
 ---
 
-## 5. Data Privacy, Local Execution & Redaction
+## 6. Data Privacy, Local Execution & Redaction
 
 1. **100% Local Execution:**
    - All scan orchestration, rule evaluation, AST parsing, scoring, and report rendering execute exclusively on the host system.
@@ -135,13 +194,13 @@ The platform validates every target input against strict syntactic and semantic 
 
 ---
 
-## 6. Audit Trail & Legal Authorization Contract
+## 7. Audit Trail & Legal Authorization Contract
 
 - **User Consent Notice:** The platform UI displays a permanent notice: *"Only run security assessments against targets you own or have explicit written authorization to test."*
 - **Audit Logging:** Every scan record persistently logs:
   - Unique UUID v4 `scan_id`
   - Exact target identifier and resolved IP
-  - Selected profile and enabled engine list
+  - Selected profile, enabled engine list, and active tool adapters
   - User agent / scanner identifier used
   - Start timestamp, completion timestamp, and duration
   - Total request count and bytes transferred

@@ -1,7 +1,7 @@
 # Contract 06: Master Security Check Catalog & CWE / OWASP / NIST Taxonomy Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Canonical Security Rules, Vulnerability Taxonomy & Compliance Mapping  
 
@@ -139,3 +139,22 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `CICD-GHA-002` | Unpinned Third-Party Action Version | `MEDIUM` | 5.3 | CWE-1104 | A08:Software Integrity | SA-15 | `uses: actions/...@main` or `@master` instead of immutable commit SHA. |
 | `CICD-GHA-003` | Script Injection via GitHub Expression Context | `HIGH` | 8.5 | CWE-78 | A03:Injection | SI-10 | Untrusted expression (e.g. `${{ github.event.issue.title }}`) in inline `run:`. |
 | `CICD-GHA-004` | Overly Permissive Default GITHUB_TOKEN | `MEDIUM` | 6.0 | CWE-250 | A05:Security Misconfiguration | AC-6 | Workflow specifies `permissions: write-all` or omits explicit permissions block. |
+
+---
+
+## 2. External Tool Vulnerability Normalization & Taxonomy Mapping Rules
+
+When findings are produced by external tool adapters, they MUST be normalized into canonical `Finding` objects following these deterministic taxonomy mapping rules:
+
+| Originating Tool | Raw Finding Source | Canonical Check ID Mapping | Target Category | Default CVSS 3.1 | Canonical CWE |
+| :--- | :--- | :--- | :--- | :---: | :--- |
+| **Nmap** | Exposed Port | `NET-PORT-001` / `002` / `003` | Network Infrastructure | 7.5 | CWE-284 |
+| **Nmap** | Outdated Service Banner | `NET-SVC-001` | Service Posture | 7.5 | CWE-200 |
+| **Nuclei** | `http/cves/*` (CVE-YYYY-XXXX) | `DAST-INJ-001` or `DAST-EXP-001` | Web Vulnerability | From Nuclei (Mapped to 9.8/7.5/5.3) | Mapped from Nuclei metadata |
+| **Nuclei** | `http/misconfiguration/*` | `DAST-HDR-xxx` or `DAST-CORS-xxx` | Misconfiguration | 5.0 - 7.5 | CWE-16 / CWE-942 |
+| **Semgrep** | Rule matching SQL injection | `SAST-TAINT-001` | Code Injection | 9.8 | CWE-89 |
+| **Semgrep** | Rule matching Command injection | `SAST-TAINT-002` | Code Injection | 9.8 | CWE-78 |
+| **Semgrep** | Rule matching Hardcoded Key | `SAST-SEC-xxx` | Hardcoded Secrets | 7.5 - 9.8 | CWE-798 |
+| **Trivy** | Package Dependency CVE | `SAST-DEP-001` | Vulnerable Dependencies | From CVE CVSS | CWE-1395 |
+| **Trivy** | Dockerfile misconfiguration | `IAC-DOCK-xxx` | Container Posture | 7.8 | CWE-250 |
+

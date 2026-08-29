@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Execution Algorithms & Test Vectors Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Implementation Algorithms, Test Vectors, Parser Mechanics & Remediation Templates  
 
@@ -9,7 +9,7 @@
 
 ## 1. Universal Engine Execution Lifecycle Pipeline
 
-Every security check executed across all 5 engines MUST operate according to this deterministic 6-stage lifecycle pipeline:
+Every security check executed across all 5 engines and 4 adapters MUST operate according to this deterministic 6-stage lifecycle pipeline:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -23,10 +23,10 @@ Every security check executed across all 5 engines MUST operate according to thi
 
 1. **Target Applicability Validation:** Verifies target type matches the check requirements.
 2. **Rate Limiter Token Acquisition:** Acquires token from Token Bucket (default: 5 RPS) before any network I/O.
-3. **Async I/O with Strict Timeout:** Executes bounded I/O wrapped in `asyncio.wait_for()` (HTTP $\le 10\text{s}$, Sockets $\le 2\text{s}$, DNS $\le 3\text{s}$, crt.sh $\le 10\text{s}$).
-4. **Algorithmic Decision Tree:** Evaluates raw response/AST against the canonical rule criteria.
+3. **Async I/O with Strict Timeout:** Executes bounded I/O wrapped in `asyncio.wait_for()` (HTTP $\le 10\text{s}$, Sockets $\le 2\text{s}$, DNS $\le 3\text{s}$, crt.sh $\le 10\text{s}$, Tool Adapters $\le 60\text{s}$).
+4. **Algorithmic Decision Tree:** Evaluates raw response/AST/XML/JSON against canonical rule criteria.
 5. **Evidence Formatting & Secret Masking:** Normalizes `observed_value`, `expected_value`, and redacts secrets.
-6. **Real-time SSE Emission:** Instantly emits `event: finding` and `event: log` callbacks to connected clients.
+6. **Real-time SSE Emission:** Instantly emits `event: finding`, `event: log`, and `event: tool_status` callbacks to connected clients.
 
 ---
 
@@ -219,3 +219,48 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 
 ### 7.2 Standardized Code Remediation Templates
 - Provides copyable configuration blocks for Nginx, Apache, Docker, Kubernetes, SQL Parameterization, and Subdomain DNS cleanups.
+
+---
+
+## 8. Hybrid Tool Adapters & Parser Mechanics (`backend/app/adapters/`)
+
+### 8.1 Nmap Subprocess & XML Parsing (`nmap_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [nmap_path, "-sV", "-sC", "--version-light", "-T4", "-oX", "-", target_host]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses standard Nmap XML using `xml.etree.ElementTree`.
+  - Iterates `<host><ports><port>` extracting `portid`, `protocol`, `<state state="...">`, `<service name="..." product="..." version="...">`.
+  - Normalizes open database, cache, or remote admin ports to `NET-PORT-xxx` and daemon banners to `NET-SVC-001` with `source_tool="nmap"`.
+
+### 8.2 Nuclei Subprocess & JSON Stream Parsing (`nuclei_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [nuclei_path, "-u", target_url, "-j", "-silent", "-tags", "cve,misconfig", "-severity", "low,medium,high,critical"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  ```
+- **Parsing Mechanics:**
+  - Reads `stdout` line-by-line; each line is parsed via `json.loads()`.
+  - Extracts `template-id`, `info.name`, `info.severity`, `info.classification.cwe-id`, `matched-at`, `curl-command`.
+  - Generates `Finding` object with `source_tool="nuclei"` and `reproduction_curl`.
+
+### 8.3 Semgrep Subprocess & AST Rule Output Parsing (`semgrep_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [semgrep_path, "scan", "--config", "auto", "--json", repo_path]
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON output: `results` list containing `check_id`, `path`, `start.line`, `extra.message`, `extra.metadata.cwe`.
+  - Normalizes into `Finding` with `source_tool="semgrep"` and code snippet.
+
+### 8.4 Trivy Subprocess & SCA/Container Parsing (`trivy_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [trivy_path, "fs", "--format", "json", repo_path]
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON output: `Results[].Vulnerabilities[]` extracting `VulnerabilityID`, `PkgName`, `InstalledVersion`, `FixedVersion`, `PrimaryURL`.
+  - Normalizes into `Finding` with `source_tool="trivy"`.

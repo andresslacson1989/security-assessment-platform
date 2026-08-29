@@ -1,9 +1,9 @@
 # Contract 03: Engine Plugin Interface & Module Implementation Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Assessment Engine Plugins, Submodules & Execution Lifecycle  
+**Scope Authority:** Assessment Engine Plugins, Submodules, Tool Adapters & Execution Lifecycle  
 
 ---
 
@@ -80,12 +80,12 @@ class BaseAssessmentEngine(ABC):
 ## 2. Resilience, Error Isolation & Lifecycle Guarantees
 
 1. **Zero Cascade Failure Guarantee:**
-   - Any unhandled exception (e.g., `socket.timeout`, `httpx.ConnectError`, `dns.resolver.NXDOMAIN`, `yaml.YAMLError`) MUST be caught inside the engine check boundary.
+   - Any unhandled exception (e.g., `socket.timeout`, `httpx.ConnectError`, `dns.resolver.NXDOMAIN`, `yaml.YAMLError`, or tool subprocess failure) MUST be caught inside the engine/adapter boundary.
    - The engine logs the event via `emit_log(LogLevel.WARNING, ...)` and continues remaining checks.
 2. **Cancellation Responsiveness:**
-   - Async loops across checks MUST check for cancellation (`asyncio.CancelledError`). When cancelled, active sockets/HTTP connections MUST be closed gracefully within 500ms.
+   - Async loops and subprocess execution MUST check for cancellation (`asyncio.CancelledError`). When cancelled, active sockets, HTTP connections, and child subprocesses MUST be terminated gracefully within 500ms.
 3. **Strict Timeout Bounds:**
-   - All network connections and socket operations MUST be bounded by explicit timeouts (HTTP $\le$ 10s, Socket $\le$ 2s, DNS $\le$ 3s, crt.sh $\le$ 10s).
+   - All network connections and socket operations MUST be bounded by explicit timeouts (HTTP $\le$ 10s, Socket $\le$ 2s, DNS $\le$ 3s, crt.sh $\le$ 10s, Tool Adapters $\le$ 60s).
 
 ---
 
@@ -142,51 +142,24 @@ class BaseAssessmentEngine(ABC):
 
 #### Submodules:
 1. **`headers_cookies.py` (Security Headers & Cookie Flags)**
-   - **`DAST-HDR-001`:** Missing `Content-Security-Policy` (MEDIUM, CVSS 5.0).
-   - **`DAST-HDR-002`:** Missing `Strict-Transport-Security` (MEDIUM, CVSS 5.3).
-   - **`DAST-HDR-003`:** Insufficient HSTS Max-Age (< 6 months) (LOW, CVSS 3.1).
-   - **`DAST-HDR-004`:** Missing `X-Frame-Options` (MEDIUM, CVSS 4.3).
-   - **`DAST-HDR-005`:** Missing `X-Content-Type-Options: nosniff` (LOW, CVSS 3.1).
-   - **`DAST-HDR-006`:** Permissive `Referrer-Policy` (LOW, CVSS 3.1).
-   - **`DAST-HDR-007`:** Detailed Server Version Disclosure (`Server`, `X-Powered-By`) (LOW, CVSS 3.1).
-   - **`DAST-COOKIE-001`:** Cookie missing `HttpOnly` flag (MEDIUM, CVSS 5.3).
-   - **`DAST-COOKIE-002`:** Cookie missing `Secure` flag on HTTPS (MEDIUM, CVSS 5.3).
-   - **`DAST-COOKIE-003`:** Cookie missing or improper `SameSite` attribute (LOW, CVSS 3.7).
-   - **`DAST-CCH-001`:** Missing `Cache-Control: no-store` on sensitive responses (LOW, CVSS 3.1).
+   - `DAST-HDR-001` (CSP), `DAST-HDR-002` (HSTS), `DAST-HDR-003` (HSTS Max-Age), `DAST-HDR-004` (X-Frame-Options), `DAST-HDR-005` (nosniff), `DAST-HDR-006` (Referrer-Policy), `DAST-HDR-007` (Server Version), `DAST-COOKIE-001` (HttpOnly), `DAST-COOKIE-002` (Secure), `DAST-COOKIE-003` (SameSite), `DAST-CCH-001` (Cache-Control).
 
 2. **`cors_analyzer.py` (CORS Misconfiguration Analyzer)**
-   - **`DAST-CORS-001`:** Insecure CORS Origin Reflection with Credentials (HIGH, CVSS 8.1).
-   - **`DAST-CORS-002`:** Insecure CORS Wildcard with Credentials (HIGH, CVSS 7.5).
-   - **`DAST-CORS-003`:** CORS Trust of `null` Origin with Credentials (HIGH, CVSS 7.5).
+   - `DAST-CORS-001` (Origin Reflection + Credentials), `DAST-CORS-002` (Wildcard + Credentials), `DAST-CORS-003` (Null Origin + Credentials).
 
 3. **`api_inspector.py` (Sensitive Exposure & Methods)**
-   - **`DAST-EXP-001`:** Publicly Exposed `.env` file (CRITICAL, CVSS 9.8).
-   - **`DAST-EXP-002`:** Exposed Git Metadata Repository (`/.git/HEAD`) (CRITICAL, CVSS 9.8).
-   - **`DAST-EXP-003`:** Exposed Spring Boot Actuator (`/actuator/env`, `/actuator/health`) (HIGH, CVSS 7.5).
-   - **`DAST-EXP-004`:** Exposed OpenAPI / Swagger Specification (`/swagger.json`) without auth (LOW, CVSS 3.7).
-   - **`DAST-METH-001`:** Dangerous HTTP `TRACE` Method Enabled (MEDIUM, CVSS 4.3).
+   - `DAST-EXP-001` (`.env`), `DAST-EXP-002` (`/.git/HEAD`), `DAST-EXP-003` (Spring Boot Actuator), `DAST-EXP-004` (OpenAPI Swagger), `DAST-METH-001` (`TRACE` method).
 
 4. **`browser_posture.py` & `graphql_auditor.py`**
-   - **`DAST-SRI-001`:** Missing Subresource Integrity (`integrity=`) on external CDN scripts (LOW, CVSS 3.7).
-   - **`DAST-MIX-001`:** Passive Mixed Content (HTTP assets embedded on HTTPS page) (MEDIUM, CVSS 4.3).
-   - **`DAST-GQL-001`:** Public GraphQL Introspection Enabled (MEDIUM, CVSS 5.3).
+   - `DAST-SRI-001` (Subresource Integrity), `DAST-MIX-001` (Mixed Content), `DAST-GQL-001` (GraphQL Introspection).
 
 5. **`crawler.py` & `auth_session.py` (Scoped BFS Crawler & Authentication)**
-   - BFS link discovery filtering static bundle assets (`.js`, `.css`, `.png`, etc.) up to `max_depth` and `max_pages`.
-   - Header, Cookie, and Form-based login with CSRF token extraction and session heartbeat monitor.
-   - **`DAST-AUTH-001`:** Insecure Authentication over Cleartext HTTP (HIGH, CVSS 7.5).
-   - **`DAST-AUTH-002`:** Session Cookie Lacks Security Attributes (HIGH, CVSS 7.4).
-   - **`DAST-AUTH-003`:** Broken Access Control / Sensitive Endpoint Unprotected (HIGH, CVSS 8.5).
-   - **`DAST-AUTH-004`:** Sensitive Data in Authenticated Query Strings (MEDIUM, CVSS 5.3).
-   - **`DAST-FORM-001`:** Insecure Cleartext Form Action (HIGH, CVSS 7.5).
-   - **`DAST-FORM-002`:** Missing Anti-CSRF Token in State-Changing Form (MEDIUM, CVSS 6.5).
+   - BFS link discovery with static bundle filtering.
+   - Session login (Header/Cookie/Form) with CSRF extraction and heartbeat monitor.
+   - `DAST-AUTH-001` (Cleartext Auth), `DAST-AUTH-002` (Insecure Session Cookie), `DAST-AUTH-003` (Broken Access Control), `DAST-AUTH-004` (Sensitive Query Strings), `DAST-FORM-001` (Insecure Form Action), `DAST-FORM-002` (Missing CSRF Token).
 
 6. **`parameter_fuzzer.py` (Active Parameter Fuzzing & Benign Injection Probes)**
-   - **`DAST-INJ-001` (SQL Injection Detected via Parameter Timing / Boolean Differential):** Detects response latency $\ge 2.0\text{s}$ on `SLEEP(2)` probe or differential hash divergence on `1=1` vs `1=2` (CRITICAL, CVSS 9.8).
-   - **`DAST-XSS-001` (Reflected Cross-Site Scripting via Canary Token):** Injects `_CYBERASSESS_XSS_<hex>_` and verifies unescaped reflection in raw HTML body/attribute context (HIGH, CVSS 7.5).
-   - **`DAST-LFI-001` (Local File Inclusion / Path Traversal):** Probes `../../../../etc/passwd` or `..\..\win.ini` and detects `root:.*:0:0:` or `\[fonts\]` signatures (HIGH, CVSS 8.6).
-   - **`DAST-SSTI-001` (Server-Side Template Injection Expression Evaluated):** Injects `{{7*7}}` or `${7*7}` and verifies rendered `49` evaluation (CRITICAL, CVSS 9.8).
-   - **`DAST-REDIR-001` (Open Redirection via Parameter Tampering):** Probes redirect parameters and verifies external domain reflection in `Location:` header (MEDIUM, CVSS 6.1).
+   - `DAST-INJ-001` (Time-based & Boolean SQLi), `DAST-XSS-001` (Canary Reflected XSS), `DAST-LFI-001` (Path Traversal), `DAST-SSTI-001` (Template Injection `{{7*7}}`), `DAST-REDIR-001` (Open Redirect).
 
 ---
 
@@ -198,32 +171,18 @@ class BaseAssessmentEngine(ABC):
 
 #### Submodules:
 1. **`secret_scanner.py` & `git_history_scanner.py` (Pattern & Historical Git Secrets)**
-   - **`SAST-SEC-001`:** AWS Access Key ID (`AKIA...`) (HIGH, CVSS 8.6).
-   - **`SAST-SEC-002`:** AWS Secret Access Key (CRITICAL, CVSS 9.8).
-   - **`SAST-SEC-003`:** GitHub PAT (`ghp_...`, `github_pat_...`) (HIGH, CVSS 8.5).
-   - **`SAST-SEC-004`:** Stripe Secret Key (`sk_live_...`) (CRITICAL, CVSS 9.1).
-   - **`SAST-SEC-005`:** Google Cloud API Key (`AIza...`) (HIGH, CVSS 7.5).
-   - **`SAST-SEC-006`:** Slack Webhook URL (MEDIUM, CVSS 5.3).
-   - **`SAST-SEC-007`:** Unencrypted Private Cryptographic Key File (`-----BEGIN PRIVATE KEY-----`) (CRITICAL, CVSS 9.8).
-   - **`SAST-SEC-008`:** Hardcoded Database URI with Password (HIGH, CVSS 8.6).
-   - **`SAST-SEC-009`:** Hardcoded Internal IP Address / Private Hostname (LOW, CVSS 3.1).
-   - **`SAST-GIT-001`:** Exposed Cryptographic Secret in Historical Git Commit (HIGH, CVSS 8.6).
+   - `SAST-SEC-001` to `009` (AWS, GitHub, Stripe, GCP, Slack, Private Key, Database URI, RFC1918 IP).
+   - `SAST-GIT-001` (Historical Git Commit Secret).
 
-2. **`crypto_lint.py` (Insecure Cryptography & PRNG Linting)**
-   - **`SAST-CRY-001`:** Broken Hash Function (`MD5`, `SHA1`) (MEDIUM, CVSS 5.3).
-   - **`SAST-CRY-002`:** Insecure PRNG (`random.random()`, `Math.random()`) in token/auth context (HIGH, CVSS 7.5).
-   - **`SAST-CRY-003`:** Insecure Symmetric Cipher Mode (AES in `ECB` mode) (HIGH, CVSS 7.5).
+2. **`crypto_lint.py` & `injection_lint.py` (Insecure Cryptography, PRNG & Injection)**
+   - `SAST-CRY-001` (MD5/SHA1), `SAST-CRY-002` (Insecure PRNG), `SAST-CRY-003` (AES ECB Mode).
+   - `SAST-INJ-001` (Raw SQL Format), `SAST-INJ-002` (Shell Injection), `SAST-INJ-003` (Unsafe Deserialization).
 
-3. **`injection_lint.py` & `ast_taint_analyzer.py` (AST Interprocedural Taint Flow)**
-   - **`SAST-INJ-001`:** Raw SQL Query String Formatting / Concatenation (HIGH, CVSS 8.5).
-   - **`SAST-INJ-002`:** Unsafe Shell Execution (`subprocess(..., shell=True)`, `os.system()`) (HIGH, CVSS 8.5).
-   - **`SAST-INJ-003`:** Unsafe Deserialization (`pickle.loads()`, `yaml.load(Loader=Loader)`) (HIGH, CVSS 8.5).
-   - **`SAST-TAINT-001`:** Unsanitized User Input Flows into Database Execution Sink (CRITICAL, CVSS 9.8).
-   - **`SAST-TAINT-002`:** Unsanitized User Input Flows into OS Command Execution Sink (CRITICAL, CVSS 9.8).
+3. **`ast_taint_analyzer.py` (AST Interprocedural Taint Flow)**
+   - `SAST-TAINT-001` (AST User Input -> SQL Sink), `SAST-TAINT-002` (AST User Input -> Command Sink).
 
 4. **`dependency_auditor.py` (Software Composition Analysis - SCA)**
-   - **`SAST-DEP-001`:** Vulnerable Pinned Dependency (Known CVE) (HIGH, CVSS 7.5).
-   - **`SAST-DEP-002`:** Unpinned / Wildcard Dependency Version (`*`) (LOW, CVSS 3.7).
+   - `SAST-DEP-001` (Vulnerable Pinned Dependency), `SAST-DEP-002` (Unpinned Wildcard Dependency).
 
 ---
 
@@ -234,17 +193,10 @@ class BaseAssessmentEngine(ABC):
 **Applicable Target Types:** `DOCKERFILE`, `IAC_MANIFEST`, `LOCAL_PATH`
 
 #### Submodules:
-1. **`dockerfile_auditor.py` (Container Hardening)**
-   - `IAC-DOCK-001` (Root User), `IAC-DOCK-002` (Unpinned Tag), `IAC-DOCK-003` (Missing HEALTHCHECK), `IAC-DOCK-004` (Plaintext Secret in ENV/ARG), `IAC-DOCK-005` (Apt Cache Retained), `IAC-DOCK-006` (Sudo in RUN).
-
-2. **`compose_auditor.py` (Docker Compose Posture)**
-   - `IAC-CMP-001` (Privileged Service), `IAC-CMP-002` (Docker Socket Mount), `IAC-CMP-003` (Database Exposed on 0.0.0.0).
-
-3. **`k8s_manifest_auditor.py` (Kubernetes Security)**
-   - `IAC-K8S-001` (Privileged Pod), `IAC-K8S-002` (Host Namespace Sharing), `IAC-K8S-003` (Root Filesystem Writable), `IAC-K8S-004` (Missing Resource Limits).
-
-4. **`terraform_auditor.py` (Cloud IaC Security)**
-   - `IAC-TF-001` (Public S3 Bucket), `IAC-TF-002` (0.0.0.0/0 on SSH/RDP), `IAC-TF-003` (Unencrypted Storage Volume), `IAC-TF-004` (Wildcard IAM Policy).
+- `dockerfile_auditor.py` (`IAC-DOCK-001` to `006`)
+- `compose_auditor.py` (`IAC-CMP-001` to `003`)
+- `k8s_manifest_auditor.py` (`IAC-K8S-001` to `004`)
+- `terraform_auditor.py` (`IAC-TF-001` to `004`)
 
 ---
 
@@ -255,5 +207,66 @@ class BaseAssessmentEngine(ABC):
 **Applicable Target Types:** `LOCAL_PATH`
 
 #### Submodules:
-1. **`github_actions_auditor.py` (GitHub Actions Security)**
-   - `CICD-GHA-001` (Insecure pull_request_target), `CICD-GHA-002` (Unpinned 3rd-party Action), `CICD-GHA-003` (Script Injection via Expression), `CICD-GHA-004` (Overly Permissive GITHUB_TOKEN).
+- `github_actions_auditor.py` (`CICD-GHA-001` to `004`)
+
+---
+
+## 4. Hybrid Tool Adapter Plugin Architecture (`backend/app/adapters/`)
+
+To combine pure native zero-dependency execution with enterprise CLI tooling, the platform defines the `BaseToolAdapter` interface.
+
+### 4.1 Abstract Tool Adapter Interface
+```python
+from abc import ABC, abstractmethod
+import shutil
+from typing import Optional, List, Callable, Awaitable
+from app.core.models import Target, Finding, ScanConfig, LogLevel
+
+class BaseToolAdapter(ABC):
+    """
+    Abstract contract for external tool adapters (Nmap, Nuclei, Semgrep, Trivy).
+    """
+
+    @property
+    @abstractmethod
+    def tool_name(self) -> str:
+        """Name of executable: 'nmap', 'nuclei', 'semgrep', 'trivy'."""
+        pass
+
+    @abstractmethod
+    def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
+        """Resolves executable path using custom_path or system PATH via shutil.which()."""
+        pass
+
+    @abstractmethod
+    async def is_available(self, custom_path: Optional[str] = None) -> bool:
+        """Checks if tool executable is present and executable."""
+        pass
+
+    @abstractmethod
+    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+        """Retrieves CLI tool version string (e.g. 'Nmap 7.94', 'nuclei v3.2.0')."""
+        pass
+
+    @abstractmethod
+    async def run(
+        self,
+        target: Target,
+        config: ScanConfig,
+        emit_log: Callable[[LogLevel, str], Awaitable[None]],
+        emit_finding: Callable[[Finding], Awaitable[None]],
+    ) -> List[Finding]:
+        """
+        Executes CLI command asynchronously, parses stdout/JSON/XML, and normalizes findings.
+        """
+        pass
+```
+
+### 4.2 Adapter Specifications & Fallback Mapping
+
+| Tool Adapter | Binary | Execution Command | Output Format | Native Fallback Module | Finding Normalization |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`NmapAdapter`** | `nmap` | `nmap -sV -sC --version-light -T4 -oX - <target>` | XML (`-oX -`) | `port_checker.py` + `banner_grabber.py` | Maps open ports, daemon versions, and NSE script output into `NET-PORT-xxx` and `NET-SVC-001`. `source_tool="nmap"`. |
+| **`NucleiAdapter`** | `nuclei` | `nuclei -u <target> -j -silent -tags cve,misconfig` | JSON Lines (`-j`) | `parameter_fuzzer.py` + `headers_cookies.py` | Maps Nuclei template IDs and severity to canonical CWEs and `DAST-xxx`. `source_tool="nuclei"`. |
+| **`SemgrepAdapter`** | `semgrep` | `semgrep scan --config auto --json <dir>` | JSON (`--json`) | `ast_taint_analyzer.py` + `secret_scanner.py` | Normalizes Semgrep rules into `SAST-xxx` with line numbers and evidence diffs. `source_tool="semgrep"`. |
+| **`TrivyAdapter`** | `trivy` | `trivy fs --format json <dir>` | JSON (`--format json`) | `dependency_auditor.py` + `dockerfile_auditor.py` | Maps package and container vulnerabilities to `SAST-DEP-001` and `IAC-DOCK-xxx`. `source_tool="trivy"`. |

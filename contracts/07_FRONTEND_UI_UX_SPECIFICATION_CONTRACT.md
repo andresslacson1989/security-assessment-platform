@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -52,6 +52,8 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
 ├─────────────────────────────────────────────────────────────────────────────┤
+│ 🔌 HYBRID TOOL STATUS: [Nmap: Active] [Nuclei: Fallback] [Semgrep: Active]  │
+├─────────────────────────────────────────────────────────────────────────────┤
 │ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Active Parameter Fuzzing & DAST      │
 │ [█████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]   │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -70,13 +72,14 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🛠️ PENTESTER WORKBENCH: [Vulnerability Findings] [HTTP Repeater Tool]       │
 │ Engine Filter: [All] [Network] [DAST] [SAST] [IaC/Docker] [CI/CD]           │
+│ Tool Filter: [All] [Native Core] [Nmap] [Nuclei] [Semgrep] [Trivy]          │
 │ Severity Tabs: [All (10)] [Critical (0)] [High (1)] [Med (3)] [Low (4)]     │
 │ [🔍 Search findings...] [Export: 📄 HTML | ⚡ SARIF | 💾 JSON]              │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
 │ │ 🔴 [CRIT] CVSS 9.8 - SQL Injection Detected via Timing (SLEEP 2s)       │ │
-│ │   [Copy cURL PoC] [View Taint Trace] [Inspect Response Diff]            │ │
+│ │   [Source: Native Core] [Copy cURL PoC] [View Taint] [Inspect Diff]     │ │
 │ │ 🟠 [HIGH] CVSS 8.1 - Insecure CORS Origin Reflection with Credentials   │ │
-│ │ 🟡 [MED]  CVSS 5.0 - Missing Content-Security-Policy (CSP) Header       │ │
+│ │   [Source: Nuclei] [Template: http/cves/cors-leak] [Copy cURL PoC]      │ │
 │ └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -87,18 +90,20 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 1. **Target Launch Bar & Advanced Config Drawers:**
    - Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`).
+   - **System Tool Capabilities Pill Bar:** Displays live detection status badges for `Nmap`, `Nuclei`, `Semgrep`, and `Trivy` fetched from `/api/system/capabilities`.
    - **Authentication Controls:** Radio pills for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, CSRF Field, and Logged-In Indicator).
    - **Crawler Controls:** Depth ($1-5$), Max Pages ($10-200$), Exclude Patterns (`*logout*`, `*delete*`).
    - **Active Fuzzing Controls:** Toggles for SQLi probes, Canary XSS tokens, Path Traversal, SSTI evaluation, and Open Redirect.
    - **OSINT Recon Controls:** Toggles for Certificate Transparency (crt.sh) subdomain harvesting and Dangling CNAME takeover checks.
+   - **Tool Adapter Controls:** Per-tool checkboxes to enable/disable external adapters.
 
 2. **Attack Surface Reconnaissance Tables:**
    - **Discovered Endpoints HUD:** Real-time table displaying crawled URLs, HTTP status, crawl depth, form discovery count, and auth posture.
    - **Discovered Subdomains HUD:** Real-time table displaying subdomain names, resolved IPs, CNAME aliases, and Takeover Vulnerability status badges.
 
 3. **Interactive Findings Explorer:**
-   - Filterable by engine, severity, and text search.
-   - Expandable finding cards with CVSS badges, CWE/OWASP tags, evidence diffs, and remediation code blocks.
+   - Filterable by engine, tool source (`native`, `nmap`, `nuclei`, `semgrep`, `trivy`), severity, and text search.
+   - Expandable finding cards with CVSS badges, `source_tool` tags, CWE/OWASP tags, evidence diffs, and remediation code blocks.
    - **One-Click "Copy cURL PoC":** Copies exact, standalone reproduction cURL command with test payloads and headers to clipboard.
    - **AST Taint Trace Viewer:** Visual step-by-step ladder showing untrusted user source variable down to database/command execution sink.
 
@@ -111,7 +116,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
 
-6. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, and findings.
+6. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
 
 ---
 
@@ -124,6 +129,11 @@ class ScanStreamManager {
     
     this.eventSource = new EventSource(`/api/scans/${scanId}/events`);
     
+    this.eventSource.addEventListener('tool_status', (e) => {
+      const toolData = JSON.parse(e.data);
+      this.updateToolStatusBar(toolData);
+    });
+
     this.eventSource.addEventListener('progress', (e) => {
       const data = JSON.parse(e.data);
       this.updateProgressBar(data.percent, data.stage);

@@ -1,7 +1,7 @@
 # Contract 02: Core Data Schema, Pydantic Models & Scoring Algorithm
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Data Models, State Machines, Serialization & Mathematical Scoring  
 
@@ -31,9 +31,9 @@ class TargetType(str, Enum):
 ### 2.2 Finding Severity Rating (`Severity`)
 ```python
 class Severity(str, Enum):
-    CRITICAL = "CRITICAL"  # CVSS 9.0 - 10.0: Immediate compromise / RCE / Root Secret / SQLi
+    CRITICAL = "CRITICAL"  # CVSS 9.0 - 10.0: Immediate compromise / RCE / Root Secret / SQLi / Subdomain Takeover
     HIGH = "HIGH"          # CVSS 7.0 - 8.9: Significant vulnerability / XSS / LFI / Insecure Auth / Sudo / Privileged Pod
-    MEDIUM = "MEDIUM"      # CVSS 4.0 - 6.9: Security misconfiguration / Missing CSP / SWEET32 / Weak CORS
+    MEDIUM = "MEDIUM"      # CVSS 4.0 - 6.9: Security misconfiguration / Missing CSP / SWEET32 / Weak CORS / OSINT Subdomain
     LOW = "LOW"            # CVSS 0.1 - 3.9: Informational hygiene / Missing CAA / Unpinned dep / Server banner
     INFO = "INFO"          # CVSS 0.0: Educational observation or positive posture note
 ```
@@ -41,12 +41,12 @@ class Severity(str, Enum):
 ### 2.3 Scan Profiles (`ScanProfile`)
 ```python
 class ScanProfile(str, Enum):
-    FULL_STACK = "FULL_STACK"        # All 5 engines active
+    FULL_STACK = "FULL_STACK"        # All 5 engines active + all available adapters
     QUICK_AUDIT = "QUICK_AUDIT"      # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"          # Web DAST + Crawler + Auth + Active Fuzzing
-    SAST_ONLY = "SAST_ONLY"          # Static Code + Taint AST + Secrets + Dependencies
-    NETWORK_TLS = "NETWORK_TLS"      # Network Ports + TLS Ciphers + DNS + OSINT Subdomains
-    INFRA_ONLY = "INFRA_ONLY"        # Dockerfile + Compose + K8s + Terraform
+    DAST_ONLY = "DAST_ONLY"          # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei
+    SAST_ONLY = "SAST_ONLY"          # Static Code + Taint AST + Secrets + Semgrep + Trivy
+    NETWORK_TLS = "NETWORK_TLS"      # Network Ports + TLS Ciphers + DNS + OSINT + Nmap
+    INFRA_ONLY = "INFRA_ONLY"        # Dockerfile + Compose + K8s + Terraform + Trivy
     CUSTOM = "CUSTOM"                # User-defined engine selection
 ```
 
@@ -111,6 +111,7 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
+    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'nuclei', 'semgrep', 'trivy'")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
     category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")
@@ -152,7 +153,32 @@ class DiscoveredEndpoint(BaseModel):
     has_forms: bool = Field(default=False, description="Whether HTML forms were discovered on this page")
 ```
 
-### 3.5 Authentication, Crawler, Fuzzing & OSINT Configurations
+### 3.5 Hybrid Tool Adapter Configurations & Status Models
+```python
+class ToolAdapterConfig(BaseModel):
+    enable_nmap: bool = Field(default=True, description="Enable Nmap adapter when binary is available on host")
+    enable_nuclei: bool = Field(default=True, description="Enable Nuclei adapter when binary is available on host")
+    enable_semgrep: bool = Field(default=True, description="Enable Semgrep adapter when binary is available on host")
+    enable_trivy: bool = Field(default=True, description="Enable Trivy adapter when binary is available on host")
+    custom_nmap_path: Optional[str] = Field(default=None, description="Explicit path to nmap executable")
+    custom_nuclei_path: Optional[str] = Field(default=None, description="Explicit path to nuclei executable")
+    custom_semgrep_path: Optional[str] = Field(default=None, description="Explicit path to semgrep executable")
+    custom_trivy_path: Optional[str] = Field(default=None, description="Explicit path to trivy executable")
+
+class ToolStatus(BaseModel):
+    name: str = Field(..., description="Tool identifier (nmap, nuclei, semgrep, trivy)")
+    available: bool = Field(..., description="Whether binary was detected and verified on PATH/filesystem")
+    version: Optional[str] = Field(default=None, description="Detected executable version string")
+    path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
+    execution_mode: str = Field(default="NATIVE_FALLBACK", description="'ADAPTER_ACTIVE' or 'NATIVE_FALLBACK'")
+
+class SystemCapabilities(BaseModel):
+    tools: List[ToolStatus] = Field(default_factory=list, description="Tool availability and capability status")
+    native_engines_ready: bool = Field(default=True, description="Native Python async engines ready")
+    os_platform: str = Field(default="unknown", description="Operating system platform details")
+```
+
+### 3.6 Authentication, Crawler, Fuzzing & OSINT Configurations
 ```python
 class FuzzingConfig(BaseModel):
     enabled: bool = Field(default=False, description="Enable active parameter fuzzing & benign injection testing")
@@ -198,7 +224,7 @@ class CrawlerConfig(BaseModel):
     parse_sitemap: bool = Field(default=True, description="Parse robots.txt and sitemap.xml for seeds")
 ```
 
-### 3.6 Scan Job Summary Model (`ScanJobSummary`)
+### 3.7 Scan Job Summary Model (`ScanJobSummary`)
 ```python
 class ScanJobSummary(BaseModel):
     critical_count: int = Field(default=0, ge=0)
@@ -211,6 +237,7 @@ class ScanJobSummary(BaseModel):
     total_checks_evaluated: int = Field(default=0, ge=0)
     pages_crawled: int = Field(default=1, ge=0, description="Total unique internal pages crawled")
     subdomains_discovered: int = Field(default=0, ge=0, description="Total unique subdomains discovered via OSINT")
+    active_adapters: List[str] = Field(default_factory=list, description="List of external tools successfully executed")
     authenticated_session_active: bool = Field(default=False, description="Whether authentication was verified active")
     weighted_score: float = Field(default=100.0, ge=0.0, le=100.0, description="Calculated 0-100 security score")
     overall_security_grade: str = Field(default="A+", description="Letter grade: A+, A, B, C, D, or F")
@@ -218,7 +245,7 @@ class ScanJobSummary(BaseModel):
     engine_breakdown: Dict[str, int] = Field(default_factory=dict, description="Finding counts per engine")
 ```
 
-### 3.7 Log Entry Model (`LogEntry`)
+### 3.8 Log Entry Model (`LogEntry`)
 ```python
 class LogLevel(str, Enum):
     INFO = "INFO"
@@ -233,7 +260,7 @@ class LogEntry(BaseModel):
     message: str = Field(..., description="Log message text")
 ```
 
-### 3.8 Complete Scan Job Model (`ScanJob`)
+### 3.9 Complete Scan Job Model (`ScanJob`)
 ```python
 class ScanConfig(BaseModel):
     rate_limit_rps: int = Field(default=5, ge=1, le=20)
@@ -245,6 +272,7 @@ class ScanConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     fuzzing: FuzzingConfig = Field(default_factory=FuzzingConfig)
     osint: OsintConfig = Field(default_factory=OsintConfig)
+    adapters: ToolAdapterConfig = Field(default_factory=ToolAdapterConfig)
 
 class ScanJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

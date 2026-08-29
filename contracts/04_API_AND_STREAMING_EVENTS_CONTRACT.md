@@ -1,7 +1,7 @@
 # Contract 04: REST API, OpenAPI & Real-Time Streaming Events Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.0.0 (Enterprise Penetration Testing & Advanced Threat Auditing Specification)  
+**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST API Endpoints, OpenAPI 3.1 Schemas & SSE Streaming Protocol  
 
@@ -21,7 +21,7 @@ Content-Type: `application/json; charset=utf-8`
 ```json
 {
   "status": "HEALTHY",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "timestamp": "2026-08-29T21:45:00Z",
   "uptime_seconds": 18450.2,
   "storage": {
@@ -32,6 +32,46 @@ Content-Type: `application/json; charset=utf-8`
 }
 ```
 
+#### `GET /api/system/capabilities`
+Returns host tool discovery status, binary paths, versions, and execution modes.
+- **Response (200 OK):**
+```json
+{
+  "tools": [
+    {
+      "name": "nmap",
+      "available": true,
+      "version": "Nmap 7.94",
+      "path": "/usr/bin/nmap",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
+      "name": "nuclei",
+      "available": false,
+      "version": null,
+      "path": null,
+      "execution_mode": "NATIVE_FALLBACK"
+    },
+    {
+      "name": "semgrep",
+      "available": true,
+      "version": "1.60.0",
+      "path": "/usr/local/bin/semgrep",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
+      "name": "trivy",
+      "available": false,
+      "version": null,
+      "path": null,
+      "execution_mode": "NATIVE_FALLBACK"
+    }
+  ],
+  "native_engines_ready": true,
+  "os_platform": "Windows 11 / Linux x86_64"
+}
+```
+
 #### `GET /api/system/engines`
 - **Response (200 OK):**
 ```json
@@ -39,20 +79,20 @@ Content-Type: `application/json; charset=utf-8`
   "engines": [
     {
       "name": "network",
-      "display_name": "Network & TLS Auditor",
-      "description": "Evaluates SSL/TLS certificates, deprecated protocols, cipher suites, DNS hygiene (SPF/DMARC/MTA-STS/DNSSEC), passive OSINT certificate transparency subdomains, and exposed service ports.",
+      "display_name": "Network, TLS & OSINT Auditor",
+      "description": "Evaluates SSL/TLS certificates, deprecated protocols, cipher suites, DNS hygiene (SPF/DMARC/MTA-STS/DNSSEC), passive OSINT certificate transparency subdomains, exposed service ports, and integrates Nmap.",
       "supported_targets": ["URL", "DOMAIN", "IP"]
     },
     {
       "name": "web_dast",
       "display_name": "Web Application, Browser & API DAST",
-      "description": "Audits OWASP security headers, cookie flags, CORS policies, modern browser isolation (COOP/COEP/SRI), active benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect), GraphQL introspection, and sensitive endpoint exposure.",
+      "description": "Audits OWASP security headers, cookie flags, CORS policies, modern browser isolation (COOP/COEP/SRI), active benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect), GraphQL introspection, and integrates Nuclei.",
       "supported_targets": ["URL", "DOMAIN"]
     },
     {
       "name": "code_sast",
-      "display_name": "Static Code Analysis, Secrets & Dependencies",
-      "description": "Scans local repositories for 40+ high-entropy secret patterns, git commit history secret leakage, AST interprocedural taint flow analysis (SQLi, Command Injection), weak cryptography/PRNG, and lockfile CVEs.",
+      "display_name": "Static Code Analysis, Secrets & AST Taint",
+      "description": "Scans local repositories for 40+ high-entropy secret patterns, git commit history secret leakage, AST interprocedural taint flow analysis (SQLi, Command Injection), weak cryptography/PRNG, and integrates Semgrep/Trivy.",
       "supported_targets": ["LOCAL_PATH"]
     },
     {
@@ -88,7 +128,7 @@ Content-Type: `application/json; charset=utf-8`
     "rate_limit_rps": 5,
     "timeout_seconds": 10,
     "custom_headers": {
-      "User-Agent": "CyberAssessBot/4.0"
+      "User-Agent": "CyberAssessBot/4.1"
     },
     "crawler": {
       "enabled": true,
@@ -120,6 +160,12 @@ Content-Type: `application/json; charset=utf-8`
       "subdomain_enumeration": true,
       "subdomain_takeover_check": true,
       "crtsh_timeout_seconds": 10.0
+    },
+    "adapters": {
+      "enable_nmap": true,
+      "enable_nuclei": true,
+      "enable_semgrep": true,
+      "enable_trivy": true
     }
   }
 }
@@ -136,7 +182,7 @@ Content-Type: `application/json; charset=utf-8`
 ---
 
 #### `GET /api/scans/{scan_id}`
-Returns complete scan snapshot including `discovered_endpoints`, `discovered_subdomains`, `findings` (with `reproduction_curl` and `taint_trace`), and `logs`.
+Returns complete scan snapshot including `discovered_endpoints`, `discovered_subdomains`, `findings` (with `source_tool`, `reproduction_curl`, and `taint_trace`), and `logs`.
 
 ---
 
@@ -179,7 +225,7 @@ Allows manual crafting, replay, and differential inspection of HTTP requests dir
   "method": "GET",
   "headers": {
     "Authorization": "Bearer sample_token",
-    "User-Agent": "CyberAssess-Repeater/4.0"
+    "User-Agent": "CyberAssess-Repeater/4.1"
   },
   "body": null,
   "follow_redirects": false,
@@ -210,11 +256,12 @@ Endpoint: `GET /api/scans/{scan_id}/events`
 Protocol: **Server-Sent Events (SSE)** (`text/event-stream; charset=utf-8`)
 
 Event Types emitted:
-1. `event: progress` — Data: `{"percent": 45, "stage": "...", "status": "RUNNING"}`
-2. `event: log` — Data: `{"timestamp": "...", "level": "INFO", "engine": "network", "message": "..."}`
-3. `event: auth_status` — Data: `{"auth_type": "FORM_LOGIN", "authenticated": true, "session_active": true, "message": "Successfully authenticated."}`
-4. `event: crawl_discovered` — Data: `{"url": "https://example.com/dashboard", "depth": 1, "status_code": 200, "is_authenticated": true, "total_discovered": 12}`
-5. `event: subdomain_discovered` — Data: `{"domain": "api.example.com", "ip_addresses": ["93.184.216.34"], "cname_targets": ["api.example.com.cdn.cloudflare.net"], "is_takeover_vulnerable": false, "service_fingerprint": "Cloudflare", "total_subdomains": 5}`
-6. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification with `reproduction_curl` when available)
-7. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "completed_at": "..."}`
-8. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`
+1. `event: tool_status` — Data: `{"tool": "nmap", "available": true, "version": "7.94", "execution_mode": "ADAPTER_ACTIVE"}`
+2. `event: progress` — Data: `{"percent": 45, "stage": "...", "status": "RUNNING"}`
+3. `event: log` — Data: `{"timestamp": "...", "level": "INFO", "engine": "network", "message": "..."}`
+4. `event: auth_status` — Data: `{"auth_type": "FORM_LOGIN", "authenticated": true, "session_active": true, "message": "Successfully authenticated."}`
+5. `event: crawl_discovered` — Data: `{"url": "https://example.com/dashboard", "depth": 1, "status_code": 200, "is_authenticated": true, "total_discovered": 12}`
+6. `event: subdomain_discovered` — Data: `{"domain": "api.example.com", "ip_addresses": ["93.184.216.34"], "cname_targets": ["api.example.com.cdn.cloudflare.net"], "is_takeover_vulnerable": false, "service_fingerprint": "Cloudflare", "total_subdomains": 5}`
+7. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification with `source_tool` and `reproduction_curl` when available)
+8. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "active_adapters": ["nmap", "semgrep"], "completed_at": "..."}`
+9. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`
