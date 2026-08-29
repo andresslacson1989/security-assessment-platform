@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CyberAssess Security Assessment & Vulnerability Platform",
-    version="3.0.0",
+    version="3.1.0",
     description="Production Automated Security Assessment, Vulnerability Scoring and Vulnerability Management Platform.",
     lifespan=lifespan,
 )

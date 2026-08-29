@@ -51,7 +51,7 @@ def main():
     dashboard_url = f"http://{host}:{port}"
 
     print("=" * 72)
-    print(" 🛡️  CYBERASSESS AUTOMATED SECURITY ASSESSMENT PLATFORM v3.0.0")
+    print(" 🛡️  CYBERASSESS AUTOMATED SECURITY ASSESSMENT PLATFORM v3.1.0")
     print("=" * 72)
     print(f" [*] Local API Server   : {dashboard_url}")
     print(f" [*] Interactive Docs   : {dashboard_url}/docs")
