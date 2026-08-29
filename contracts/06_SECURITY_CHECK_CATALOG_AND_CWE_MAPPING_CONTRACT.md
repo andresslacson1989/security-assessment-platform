@@ -51,6 +51,8 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `DAST-HDR-005` | Missing X-Content-Type-Options Header | `LOW` | 3.1 | CWE-79 | A05:Security Misconfiguration | SI-10 | Response lacks `X-Content-Type-Options: nosniff`. |
 | `DAST-HDR-006` | Permissive Referrer-Policy Header | `LOW` | 3.1 | CWE-200 | A05:Security Misconfiguration | SC-8 | Lacks `Referrer-Policy` or set to `unsafe-url` / `no-referrer-when-downgrade`. |
 | `DAST-HDR-007` | Detailed Server Version Disclosure | `LOW` | 3.1 | CWE-200 | A05:Security Misconfiguration | CM-6 | `Server` or `X-Powered-By` header exposes granular framework/version strings. |
+| `DAST-HDR-008` | Missing Permissions-Policy Header | `INFO` | 0.0 | CWE-1021 | A05:Security Misconfiguration | AC-3 | HTTP response headers lack `Permissions-Policy` controlling sensitive browser features (camera, microphone, geolocation). |
+| `DAST-HDR-009` | Missing Cross-Origin Isolation Headers (COOP/COEP) | `LOW` | 3.1 | CWE-693 | A05:Security Misconfiguration | SC-18 | Response lacks `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy` headers. |
 | `DAST-COOKIE-001` | Cookie Missing HttpOnly Flag | `MEDIUM` | 5.3 | CWE-1004 | A05:Security Misconfiguration | SC-23 | Sensitive session cookie sent without `HttpOnly` flag. |
 | `DAST-COOKIE-002` | Cookie Missing Secure Flag | `MEDIUM` | 5.3 | CWE-614 | A05:Security Misconfiguration | SC-8, SC-13 | Cookie set over HTTPS connection without `Secure` flag. |
 | `DAST-COOKIE-003` | Cookie Missing or Permissive SameSite | `LOW` | 3.7 | CWE-1275 | A01:Broken Access Control | SC-23 | Cookie lacks `SameSite=Strict` or `SameSite=Lax`. |

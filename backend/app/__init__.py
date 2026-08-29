@@ -2,4 +2,4 @@
 Security Assessment Platform Backend Application.
 """
 
-__version__ = "3.0.0"
+__version__ = "4.1.0"

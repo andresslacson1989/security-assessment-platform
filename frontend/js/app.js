@@ -1,6 +1,6 @@
 /**
  * CyberAssess Security Platform - Frontend HUD Controller
- * Pure Vanilla Zero-Build Architecture (Contract 07 & Contract 04 v3.1.0)
+ * Pure Vanilla Zero-Build Architecture (Contract 07 & Contract 04 v4.1.0)
  */
 
 class ScanStreamManager {

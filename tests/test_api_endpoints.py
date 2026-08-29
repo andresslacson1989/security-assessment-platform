@@ -33,7 +33,10 @@ async def test_system_endpoints():
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "HEALTHY"
-        assert data["version"] == "3.0.0"
+        assert data["version"] == "4.1.0"
+        assert "uptime_seconds" in data
+        assert "storage" in data
+        assert data["storage"]["status"] == "OK"
 
         # 2. Engines catalog
         resp_eng = await ac.get("/api/system/engines")

@@ -109,7 +109,7 @@ def export_scan_to_sarif(scan_job: ScanJob) -> Dict[str, Any]:
                 "tool": {
                     "driver": {
                         "name": "CyberAssess Security Scanner",
-                        "version": "3.0.0",
+                        "version": "4.1.0",
                         "informationUri": "https://github.com/andresslacson1989/security-assessment-platform",
                         "rules": list(rules_map.values()),
                     }
