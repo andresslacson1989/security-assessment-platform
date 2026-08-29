@@ -1,7 +1,7 @@
 # Contract 05: Deliverables & Acceptance Criteria Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Quality Assurance, Test Automation & Acceptance Sign-Off  
 
@@ -20,12 +20,18 @@
   - [ ] `code_sast` (`secret_scanner.py`, `crypto_lint.py`, `injection_lint.py`, `dependency_auditor.py`, `ast_taint_analyzer.py`, `git_history_scanner.py`)
   - [ ] `infra_iac` (`dockerfile_auditor.py`, `compose_auditor.py`, `k8s_manifest_auditor.py`, `terraform_auditor.py`)
   - [ ] `cicd_audit` (`github_actions_auditor.py`)
-- [ ] **4 Pluggable Hybrid Tool Adapters (`app/adapters/`):**
+- [ ] **10 Pluggable Hybrid Tool Adapters (`app/adapters/`):**
   - [ ] `BaseToolAdapter` (`app/adapters/base_adapter.py`)
   - [ ] `NmapAdapter` (`app/adapters/nmap_adapter.py`)
+  - [ ] `SslyzeAdapter` (`app/adapters/sslyze_adapter.py`)
   - [ ] `NucleiAdapter` (`app/adapters/nuclei_adapter.py`)
+  - [ ] `FfufAdapter` (`app/adapters/ffuf_adapter.py`)
+  - [ ] `NiktoAdapter` (`app/adapters/nikto_adapter.py`)
   - [ ] `SemgrepAdapter` (`app/adapters/semgrep_adapter.py`)
+  - [ ] `GitleaksAdapter` (`app/adapters/gitleaks_adapter.py`)
+  - [ ] `BanditAdapter` (`app/adapters/bandit_adapter.py`)
   - [ ] `TrivyAdapter` (`app/adapters/trivy_adapter.py`)
+  - [ ] `CheckovAdapter` (`app/adapters/checkov_adapter.py`)
 - [ ] **3 Compliance & Security Exporters:**
   - [ ] Standalone interactive HTML report generator (`app/exporters/html_exporter.py`)
   - [ ] OASIS SARIF v2.1.0 JSON generator (`app/exporters/sarif_exporter.py`)
@@ -33,7 +39,7 @@
 
 ### 1.2 Frontend Cyber-Security Dark-Theme UI (`/frontend`)
 - [ ] **Cyber-Security SOC HUD (`index.html`, `css/style.css`, `js/app.js`):** Responsive dark interface (`#07090e` obsidian theme with neon emerald/cyan/amber/crimson accents).
-- [ ] **Target Launcher Bar & Capabilities HUD:** Target input (URL, Domain, IP, File Path, IaC Manifest), profile preset selector, and live tool capability badges (`Nmap`, `Nuclei`, `Semgrep`, `Trivy`).
+- [ ] **Target Launcher Bar & Capabilities HUD:** Target input (URL, Domain, IP, File Path, IaC Manifest), profile preset selector, and live tool capability badges for all 10 adapters (`Nmap`, `SSLyze`, `Nuclei`, `FFuF`, `Nikto`, `Semgrep`, `Gitleaks`, `Bandit`, `Trivy`, `Checkov`).
 - [ ] **Configuration Drawers:** Collapsible controls for Auth Mode, Crawl Limits, Active Parameter Fuzzing toggles, OSINT Recon options, and Tool Adapter switches.
 - [ ] **Live Telemetry & Monospace Terminal:** Real-time animated progress bar, active stage indicator, tool status notifications, and auto-scrolling terminal log stream.
 - [ ] **Security Scorecard Widget:** High-impact letter grade badge (`A+` to `F`), CVSS 0-100 score gauge, active tool badges, and severity counters.
@@ -45,14 +51,14 @@
 
 ### 1.3 Developer & Ops Utilities
 - [ ] **One-Command Platform Runner (`run_platform.py`):** Single Python script that verifies dependencies, discovers tools, boots uvicorn, and automatically opens the dashboard in the default browser.
-- [ ] **Automated Test Suite (`/tests`):** Comprehensive `pytest` test suite with 100% engine check coverage across all 5 engines and 15 acceptance scenarios.
+- [ ] **Automated Test Suite (`/tests`):** Comprehensive `pytest` test suite with 100% engine check coverage across all 5 engines and 17 acceptance scenarios.
 - [ ] **Documentation (`README.md`):** Complete setup, usage, architecture guide, and API documentation.
 
 ---
 
 ## 2. Rigorous Acceptance Test Scenarios
 
-The platform must pass all 15 acceptance test scenarios deterministically:
+The platform must pass all 17 acceptance test scenarios deterministically:
 
 1. **Scenario 1: Network & TLS Infrastructure Audit**
    - Given a mock or live HTTPS target, accurately detects certificate expiration dates, deprecated TLS 1.0/1.1 protocols, weak ciphers, and queries SPF, DMARC, MTA-STS, and DNSSEC records.
@@ -85,6 +91,10 @@ The platform must pass all 15 acceptance test scenarios deterministically:
 15. **Scenario 15: External Tool Adapter Discovery, Execution & Graceful Fallback**
     - Verifies discovery and invocation of `NmapAdapter`, `NucleiAdapter`, `SemgrepAdapter`, and `TrivyAdapter` with stdout/XML/JSON normalization into canonical `Finding` objects (`source_tool`).
     - Verifies 100% graceful fallback to native Python engines when binaries are absent, with zero unhandled exceptions or scan failures.
+16. **Scenario 16: Adapters First-in-Line Priority Execution & Native Redundancy Pruning**
+    - Asserts that when external adapters are active, they execute first as the primary assessment driver, establish the baseline findings, and suppress duplicate basic native port/linter runs while allowing native enrichments (AST Taint, CT OSINT, DNS) to proceed.
+17. **Scenario 17: Enterprise Tool Adapter Integrations (Gitleaks, Bandit, Checkov, FFuF, Nikto, SSLyze)**
+    - Verifies command construction, non-destructive execution flags, output parsing, and error isolation for `GitleaksAdapter`, `BanditAdapter`, `CheckovAdapter`, `FfufAdapter`, `NiktoAdapter`, and `SslyzeAdapter` with source tagging.
 
 ---
 
@@ -92,8 +102,8 @@ The platform must pass all 15 acceptance test scenarios deterministically:
 
 A release is marked **DONE** only when:
 1. All data structures strictly validate against Contract 02 Pydantic schemas.
-2. All 5 engines and 4 adapters catch all exceptions with zero orchestrator crashes.
+2. All 5 engines and 10 adapters catch all exceptions with zero orchestrator crashes.
 3. Scoring math conforms to Contract 02 formulas with zero deviations.
 4. Frontend executes cleanly with zero JavaScript console errors.
-5. `pytest tests/ -v` passes with 100% success rate across all 15 scenarios.
+5. `pytest tests/ -v` passes with 100% success rate across all 17 scenarios.
 

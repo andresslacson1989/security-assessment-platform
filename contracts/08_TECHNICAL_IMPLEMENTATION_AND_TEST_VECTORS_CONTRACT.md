@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Execution Algorithms & Test Vectors Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Implementation Algorithms, Test Vectors, Parser Mechanics & Remediation Templates  
 
@@ -9,7 +9,7 @@
 
 ## 1. Universal Engine Execution Lifecycle Pipeline
 
-Every security check executed across all 5 engines and 4 adapters MUST operate according to this deterministic 6-stage lifecycle pipeline:
+Every security check executed across all 5 engines and 10 adapters MUST operate according to this deterministic 6-stage lifecycle pipeline:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -222,7 +222,7 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 
 ---
 
-## 8. Hybrid Tool Adapters & Parser Mechanics (`backend/app/adapters/`)
+## 8. Adapters First-in-Line & Parser Mechanics (`backend/app/adapters/`)
 
 ### 8.1 Nmap Subprocess & XML Parsing (`nmap_adapter.py`)
 - **Invocation:**
@@ -236,7 +236,17 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
   - Iterates `<host><ports><port>` extracting `portid`, `protocol`, `<state state="...">`, `<service name="..." product="..." version="...">`.
   - Normalizes open database, cache, or remote admin ports to `NET-PORT-xxx` and daemon banners to `NET-SVC-001` with `source_tool="nmap"`.
 
-### 8.2 Nuclei Subprocess & JSON Stream Parsing (`nuclei_adapter.py`)
+### 8.2 SSLyze Subprocess & JSON Parsing (`sslyze_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [sslyze_path, "--json_out=-", f"{target_host}:{target_port}"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON output evaluating TLS 1.0/1.1 cipher support (`NET-TLS-002`), weak ciphers (`NET-TLS-003`), certificate expiration (`NET-TLS-001`), and hostname validation (`NET-TLS-004`) with `source_tool="sslyze"`.
+
+### 8.3 Nuclei Subprocess & JSON Stream Parsing (`nuclei_adapter.py`)
 - **Invocation:**
   ```python
   cmd = [nuclei_path, "-u", target_url, "-j", "-silent", "-tags", "cve,misconfig", "-severity", "low,medium,high,critical"]
@@ -247,7 +257,29 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
   - Extracts `template-id`, `info.name`, `info.severity`, `info.classification.cwe-id`, `matched-at`, `curl-command`.
   - Generates `Finding` object with `source_tool="nuclei"` and `reproduction_curl`.
 
-### 8.3 Semgrep Subprocess & AST Rule Output Parsing (`semgrep_adapter.py`)
+### 8.4 FFuF Subprocess & JSON Parsing (`ffuf_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [ffuf_path, "-u", f"{target_url}/FUZZ", "-w", wordlist_path, "-mc", "200,204,301,302,307,401,403", "-o", "-", "-of", "json", "-t", "5", "-rate", "10"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON results object `results[]`, extracting `input.FUZZ`, `status`, `length`, `words`, and `redirectlocation`.
+  - Creates `DiscoveredEndpoint` models and `Finding` objects (`DAST-EXP-xxx`) with `source_tool="ffuf"`.
+
+### 8.5 Nikto Subprocess & JSON Parsing (`nikto_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [nikto_path, "-h", target_url, "-Format", "json", "-output", "-", "-Tuning", "1,2,3,4,8,9,a,b,c"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON vulnerability array `vulnerabilities[]`, extracting OSVDB IDs, HTTP method, URI, and description.
+  - Normalizes into `Finding` with `source_tool="nikto"`.
+
+### 8.6 Semgrep Subprocess & AST Rule Output Parsing (`semgrep_adapter.py`)
 - **Invocation:**
   ```python
   cmd = [semgrep_path, "scan", "--config", "auto", "--json", repo_path]
@@ -256,7 +288,29 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
   - Parses JSON output: `results` list containing `check_id`, `path`, `start.line`, `extra.message`, `extra.metadata.cwe`.
   - Normalizes into `Finding` with `source_tool="semgrep"` and code snippet.
 
-### 8.4 Trivy Subprocess & SCA/Container Parsing (`trivy_adapter.py`)
+### 8.7 Gitleaks Subprocess & Git Secret Parsing (`gitleaks_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [gitleaks_path, "detect", "--source", repo_path, "--report-format", "json", "--report-path", "-"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON array of leak objects extracting `RuleID`, `Description`, `StartLine`, `File`, `Commit`, `Secret`.
+  - Enforces mandatory `mask_secret()` on evidence values and produces `Finding` with `source_tool="gitleaks"`.
+
+### 8.8 Bandit Subprocess & Python AST Parsing (`bandit_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [bandit_path, "-r", repo_path, "-f", "json"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON results `results[]` extracting `test_id`, `issue_severity`, `issue_confidence`, `issue_text`, `line_number`, `filename`, `code`.
+  - Normalizes into `Finding` with `source_tool="bandit"`.
+
+### 8.9 Trivy Subprocess & SCA/Container Parsing (`trivy_adapter.py`)
 - **Invocation:**
   ```python
   cmd = [trivy_path, "fs", "--format", "json", repo_path]
@@ -264,5 +318,16 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Parsing Mechanics:**
   - Parses JSON output: `Results[].Vulnerabilities[]` extracting `VulnerabilityID`, `PkgName`, `InstalledVersion`, `FixedVersion`, `PrimaryURL`.
   - Normalizes into `Finding` with `source_tool="trivy"`.
+
+### 8.10 Checkov Subprocess & IaC Policy Parsing (`checkov_adapter.py`)
+- **Invocation:**
+  ```python
+  cmd = [checkov_path, "-d", repo_path, "-o", "json", "--compact"]
+  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  ```
+- **Parsing Mechanics:**
+  - Parses JSON output: `results.failed_checks[]` extracting `check_id`, `check_name`, `file_path`, `file_line_range`, `resource`, `guideline`.
+  - Normalizes into `Finding` with `source_tool="checkov"`.
 
 

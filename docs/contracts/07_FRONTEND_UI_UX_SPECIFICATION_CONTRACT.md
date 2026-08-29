@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -52,9 +52,11 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 🔌 HYBRID TOOL STATUS: [Nmap: Active] [Nuclei: Fallback] [Semgrep: Active]  │
+│ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
+│    [FFUF: Active] [NIKTO: Fallback] [SEMGREP: Active] [GITLEAKS: Active]    │
+│    [BANDIT: Active] [TRIVY: Active] [CHECKOV: Fallback]                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Active Parameter Fuzzing & DAST      │
+│ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Adapters Primary & Active Fuzzing   │
 │ [█████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ ┌───────────────────────┐ ┌───────────────────────────────────────────────┐ │
@@ -72,7 +74,8 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🛠️ PENTESTER WORKBENCH: [Vulnerability Findings] [HTTP Repeater Tool]       │
 │ Engine Filter: [All] [Network] [DAST] [SAST] [IaC/Docker] [CI/CD]           │
-│ Tool Filter: [All] [Native Core] [Nmap] [Nuclei] [Semgrep] [Trivy]          │
+│ Tool Filter: [All] [Native Core] [Nmap] [SSLyze] [Nuclei] [FFuF] [Nikto]    │
+│              [Semgrep] [Gitleaks] [Bandit] [Trivy] [Checkov]                │
 │ Severity Tabs: [All (10)] [Critical (0)] [High (1)] [Med (3)] [Low (4)]     │
 │ [🔍 Search findings...] [Export: 📄 HTML | ⚡ SARIF | 💾 JSON]              │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
@@ -90,7 +93,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 1. **Target Launch Bar & Advanced Config Drawers:**
    - Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`).
-   - **System Tool Capabilities Pill Bar:** Displays live detection status badges for `Nmap`, `Nuclei`, `Semgrep`, and `Trivy` fetched from `/api/system/capabilities`.
+   - **System Tool Capabilities Pill Bar:** Displays live detection status badges for all 10 adapters (`Nmap`, `SSLyze`, `Nuclei`, `FFuF`, `Nikto`, `Semgrep`, `Gitleaks`, `Bandit`, `Trivy`, `Checkov`) fetched from `/api/system/capabilities`.
    - **Authentication Controls:** Radio pills for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, CSRF Field, and Logged-In Indicator).
    - **Crawler Controls:** Depth ($1-5$), Max Pages ($10-200$), Exclude Patterns (`*logout*`, `*delete*`).
    - **Active Fuzzing Controls:** Toggles for SQLi probes, Canary XSS tokens, Path Traversal, SSTI evaluation, and Open Redirect.
@@ -102,7 +105,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
    - **Discovered Subdomains HUD:** Real-time table displaying subdomain names, resolved IPs, CNAME aliases, and Takeover Vulnerability status badges.
 
 3. **Interactive Findings Explorer:**
-   - Filterable by engine, tool source (`native`, `nmap`, `nuclei`, `semgrep`, `trivy`), severity, and text search.
+   - Filterable by engine, tool source (`native`, `nmap`, `sslyze`, `nuclei`, `ffuf`, `nikto`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`), severity, and text search.
    - Expandable finding cards with CVSS badges, `source_tool` tags, CWE/OWASP tags, evidence diffs, and remediation code blocks.
    - **One-Click "Copy cURL PoC":** Copies exact, standalone reproduction cURL command with test payloads and headers to clipboard.
    - **AST Taint Trace Viewer:** Visual step-by-step ladder showing untrusted user source variable down to database/command execution sink.

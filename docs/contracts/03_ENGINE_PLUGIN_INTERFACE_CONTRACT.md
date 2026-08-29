@@ -1,7 +1,7 @@
 # Contract 03: Engine Plugin Interface & Module Implementation Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Assessment Engine Plugins, Submodules, Tool Adapters & Execution Lifecycle  
 
@@ -71,6 +71,10 @@ class BaseAssessmentEngine(ABC):
     ) -> List[Finding]:
         """
         Executes the engine's assessment checks asynchronously.
+        Follows the 3-Stage Pipeline:
+        1. Primary Adapters First (if available and enabled)
+        2. Proprietary Native Enrichment (AST Taint, CT OSINT, Active Fuzzing, DNS)
+        3. Resilient Native Fallback (if external tools are missing)
         """
         pass
 ```
@@ -211,9 +215,9 @@ class BaseAssessmentEngine(ABC):
 
 ---
 
-## 4. Hybrid Tool Adapter Plugin Architecture (`backend/app/adapters/`)
+## 4. Adapters First-in-Line Plugin Architecture (`backend/app/adapters/`)
 
-To combine pure native zero-dependency execution with enterprise CLI tooling, the platform defines the `BaseToolAdapter` interface.
+To combine enterprise-grade penetration testing power with zero-dependency portability, the platform defines the `BaseToolAdapter` interface.
 
 ### 4.1 Abstract Tool Adapter Interface
 ```python
@@ -224,13 +228,18 @@ from app.core.models import Target, Finding, ScanConfig, LogLevel
 
 class BaseToolAdapter(ABC):
     """
-    Abstract contract for external tool adapters (Nmap, Nuclei, Semgrep, Trivy).
+    Abstract contract for external tool adapters.
+    Supported enterprise tools:
+    - Network / TLS: Nmap, SSLyze
+    - Web DAST: Nuclei, FFuF, Nikto
+    - SAST / Secrets: Semgrep, Gitleaks, Bandit
+    - SCA / IaC: Trivy, Checkov
     """
 
     @property
     @abstractmethod
     def tool_name(self) -> str:
-        """Name of executable: 'nmap', 'nuclei', 'semgrep', 'trivy'."""
+        """Name of executable: 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'."""
         pass
 
     @abstractmethod
@@ -257,17 +266,24 @@ class BaseToolAdapter(ABC):
         emit_finding: Callable[[Finding], Awaitable[None]],
     ) -> List[Finding]:
         """
-        Executes CLI command asynchronously, parses stdout/JSON/XML, and normalizes findings.
+        Executes CLI command asynchronously as primary first-in-line stage,
+        parses stdout/JSON/XML, and normalizes findings into canonical Finding models.
         """
         pass
 ```
 
-### 4.2 Adapter Specifications & Fallback Mapping
+### 4.2 Adapter Specifications, Priority & Fallback Mapping
 
-| Tool Adapter | Binary | Execution Command | Output Format | Native Fallback Module | Finding Normalization |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`NmapAdapter`** | `nmap` | `nmap -sV -sC --version-light -T4 -oX - <target>` | XML (`-oX -`) | `port_checker.py` + `banner_grabber.py` | Maps open ports, daemon versions, and NSE script output into `NET-PORT-xxx` and `NET-SVC-001`. `source_tool="nmap"`. |
-| **`NucleiAdapter`** | `nuclei` | `nuclei -u <target> -j -silent -tags cve,misconfig` | JSON Lines (`-j`) | `parameter_fuzzer.py` + `headers_cookies.py` | Maps Nuclei template IDs and severity to canonical CWEs and `DAST-xxx`. `source_tool="nuclei"`. |
-| **`SemgrepAdapter`** | `semgrep` | `semgrep scan --config auto --json <dir>` | JSON (`--json`) | `ast_taint_analyzer.py` + `secret_scanner.py` | Normalizes Semgrep rules into `SAST-xxx` with line numbers and evidence diffs. `source_tool="semgrep"`. |
-| **`TrivyAdapter`** | `trivy` | `trivy fs --format json <dir>` | JSON (`--format json`) | `dependency_auditor.py` + `dockerfile_auditor.py` | Maps package and container vulnerabilities to `SAST-DEP-001` and `IAC-DOCK-xxx`. `source_tool="trivy"`. |
+| Tool Adapter | Binary | Execution Command | Output Format | Priority & Execution Role | Resilient Native Fallback | Finding Normalization |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`NmapAdapter`** | `nmap` | `nmap -sV -sC --version-light -T4 -oX - <target>` | XML (`-oX -`) | **Primary** Network & Port Scanner | `port_checker.py` + `banner_grabber.py` | Maps open ports, daemon versions, and NSE script output into `NET-PORT-xxx` and `NET-SVC-001`. `source_tool="nmap"`. |
+| **`SslyzeAdapter`** | `sslyze` | `sslyze --json_out=- <host>:<port>` | JSON (`--json_out=-`) | **Primary** Deep TLS/SSL Auditor | `tls_auditor.py` | Maps deprecated TLS protocols, weak ciphers, and cert issues to `NET-TLS-xxx`. `source_tool="sslyze"`. |
+| **`NucleiAdapter`** | `nuclei` | `nuclei -u <target> -j -silent -tags cve,misconfig` | JSON Lines (`-j`) | **Primary** DAST Vulnerability Engine | `parameter_fuzzer.py` + `headers_cookies.py` | Maps Nuclei template IDs and severity to canonical CWEs and `DAST-xxx`. `source_tool="nuclei"`. |
+| **`FfufAdapter`** | `ffuf` | `ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10` | JSON (`-of json`) | **Primary** Endpoint & Content Discovery | `crawler.py` | Discovers hidden routes, backup files, and endpoints, emitting `DAST-EXP-xxx` findings and `DiscoveredEndpoint` models. `source_tool="ffuf"`. |
+| **`NiktoAdapter`** | `nikto` | `nikto -h <target> -Format json -output - -Tuning 1,2,3,4,8,9,a,b,c` | JSON (`-Format json`) | **Primary** Server Misconfiguration Scanner | `headers_cookies.py` + `api_inspector.py` | Maps outdated server components, dangerous HTTP methods, and insecure headers to `DAST-HDR-xxx` / `DAST-EXP-xxx`. `source_tool="nikto"`. |
+| **`SemgrepAdapter`** | `semgrep` | `semgrep scan --config auto --json <dir>` | JSON (`--json`) | **Primary** Multi-Language AST SAST | `injection_lint.py` + `crypto_lint.py` | Normalizes Semgrep rules into `SAST-xxx` with line numbers and evidence diffs. `source_tool="semgrep"`. |
+| **`GitleaksAdapter`** | `gitleaks` | `gitleaks detect --source <dir> --report-format json --report-path -` | JSON (`--report-format json`) | **Primary** Dedicated Git Secret Scanner | `secret_scanner.py` + `git_history_scanner.py` | Extracts hardcoded tokens, private keys, and API secrets with mandatory masking to `SAST-SEC-xxx`. `source_tool="gitleaks"`. |
+| **`BanditAdapter`** | `bandit` | `bandit -r <dir> -f json` | JSON (`-f json`) | **Primary** Python AST Security Linter | `crypto_lint.py` + `injection_lint.py` | Maps high/medium confidence AST flaws to `SAST-CRY-xxx` and `SAST-INJ-xxx`. `source_tool="bandit"`. |
+| **`TrivyAdapter`** | `trivy` | `trivy fs --format json <dir>` | JSON (`--format json`) | **Primary** SCA & Container Vulnerability Engine | `dependency_auditor.py` + `dockerfile_auditor.py` | Maps package and container vulnerabilities to `SAST-DEP-001` and `IAC-DOCK-xxx`. `source_tool="trivy"`. |
+| **`CheckovAdapter`** | `checkov` | `checkov -d <dir> -o json --compact` | JSON (`-o json`) | **Primary** Infrastructure-as-Code Policy Engine | `compose_auditor.py` + `k8s_manifest_auditor.py` + `terraform_auditor.py` | Maps failed IaC checks (Terraform, K8s, Compose) to `IAC-TF-xxx`, `IAC-K8S-xxx`, `IAC-CMP-xxx`. `source_tool="checkov"`. |
 

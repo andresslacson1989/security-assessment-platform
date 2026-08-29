@@ -1,7 +1,7 @@
 # Contract 02: Core Data Schema, Pydantic Models & Scoring Algorithm
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Data Models, State Machines, Serialization & Mathematical Scoring  
 
@@ -41,12 +41,12 @@ class Severity(str, Enum):
 ### 2.3 Scan Profiles (`ScanProfile`)
 ```python
 class ScanProfile(str, Enum):
-    FULL_STACK = "FULL_STACK"        # All 5 engines active + all available adapters
+    FULL_STACK = "FULL_STACK"        # All 5 engines active + all 10 available adapters
     QUICK_AUDIT = "QUICK_AUDIT"      # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"          # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei
-    SAST_ONLY = "SAST_ONLY"          # Static Code + Taint AST + Secrets + Semgrep + Trivy
-    NETWORK_TLS = "NETWORK_TLS"      # Network Ports + TLS Ciphers + DNS + OSINT + Nmap
-    INFRA_ONLY = "INFRA_ONLY"        # Dockerfile + Compose + K8s + Terraform + Trivy
+    DAST_ONLY = "DAST_ONLY"          # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Nikto
+    SAST_ONLY = "SAST_ONLY"          # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + Trivy
+    NETWORK_TLS = "NETWORK_TLS"      # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze
+    INFRA_ONLY = "INFRA_ONLY"        # Dockerfile + Compose + K8s + Terraform + Trivy + Checkov
     CUSTOM = "CUSTOM"                # User-defined engine selection
 ```
 
@@ -70,6 +70,14 @@ class AuthType(str, Enum):
     HEADER = "HEADER"          # Static Bearer token or custom header
     COOKIE = "COOKIE"          # Direct session cookie injection
     FORM_LOGIN = "FORM_LOGIN"  # Automated form login with credential submission & CSRF handling
+```
+
+### 2.6 Tool Execution Mode (`ToolExecutionMode`)
+```python
+class ToolExecutionMode(str, Enum):
+    ADAPTER_ACTIVE = "ADAPTER_ACTIVE"      # External CLI adapter executed as primary front-line engine
+    NATIVE_FALLBACK = "NATIVE_FALLBACK"    # External CLI binary absent; resilient native Python engine executed
+    DISABLED = "DISABLED"                  # Explicitly disabled in scan configuration
 ```
 
 ---
@@ -111,7 +119,7 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
-    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'nuclei', 'semgrep', 'trivy'")
+    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
     category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")
@@ -156,21 +164,33 @@ class DiscoveredEndpoint(BaseModel):
 ### 3.5 Hybrid Tool Adapter Configurations & Status Models
 ```python
 class ToolAdapterConfig(BaseModel):
-    enable_nmap: bool = Field(default=True, description="Enable Nmap adapter when binary is available on host")
-    enable_nuclei: bool = Field(default=True, description="Enable Nuclei adapter when binary is available on host")
-    enable_semgrep: bool = Field(default=True, description="Enable Semgrep adapter when binary is available on host")
-    enable_trivy: bool = Field(default=True, description="Enable Trivy adapter when binary is available on host")
+    enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")
+    enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
+    enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
+    enable_ffuf: bool = Field(default=True, description="Enable FFuF high-speed content discovery adapter")
+    enable_nikto: bool = Field(default=True, description="Enable Nikto web server misconfiguration adapter")
+    enable_semgrep: bool = Field(default=True, description="Enable Semgrep multi-language AST SAST adapter")
+    enable_gitleaks: bool = Field(default=True, description="Enable Gitleaks git history secret scanner adapter")
+    enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")
+    enable_trivy: bool = Field(default=True, description="Enable Trivy SCA and container vulnerability adapter")
+    enable_checkov: bool = Field(default=True, description="Enable Checkov Infrastructure-as-Code policy adapter")
     custom_nmap_path: Optional[str] = Field(default=None, description="Explicit path to nmap executable")
+    custom_sslyze_path: Optional[str] = Field(default=None, description="Explicit path to sslyze executable")
     custom_nuclei_path: Optional[str] = Field(default=None, description="Explicit path to nuclei executable")
+    custom_ffuf_path: Optional[str] = Field(default=None, description="Explicit path to ffuf executable")
+    custom_nikto_path: Optional[str] = Field(default=None, description="Explicit path to nikto executable")
     custom_semgrep_path: Optional[str] = Field(default=None, description="Explicit path to semgrep executable")
+    custom_gitleaks_path: Optional[str] = Field(default=None, description="Explicit path to gitleaks executable")
+    custom_bandit_path: Optional[str] = Field(default=None, description="Explicit path to bandit executable")
     custom_trivy_path: Optional[str] = Field(default=None, description="Explicit path to trivy executable")
+    custom_checkov_path: Optional[str] = Field(default=None, description="Explicit path to checkov executable")
 
 class ToolStatus(BaseModel):
-    name: str = Field(..., description="Tool identifier (nmap, nuclei, semgrep, trivy)")
+    name: str = Field(..., description="Tool identifier (nmap, sslyze, nuclei, ffuf, nikto, semgrep, gitleaks, bandit, trivy, checkov)")
     available: bool = Field(..., description="Whether binary was detected and verified on PATH/filesystem")
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
-    execution_mode: str = Field(default="NATIVE_FALLBACK", description="'ADAPTER_ACTIVE' or 'NATIVE_FALLBACK'")
+    execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', or 'DISABLED'")
 
 class SystemCapabilities(BaseModel):
     tools: List[ToolStatus] = Field(default_factory=list, description="Tool availability and capability status")

@@ -1,7 +1,7 @@
 # Contract 04: REST API, OpenAPI & Real-Time Streaming Events Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST API Endpoints, OpenAPI 3.1 Schemas & SSE Streaming Protocol  
 
@@ -21,8 +21,8 @@ Content-Type: `application/json; charset=utf-8`
 ```json
 {
   "status": "HEALTHY",
-  "version": "4.1.0",
-  "timestamp": "2026-08-29T21:45:00Z",
+  "version": "5.0.0",
+  "timestamp": "2026-08-30T04:45:00Z",
   "uptime_seconds": 18450.2,
   "storage": {
     "status": "OK",
@@ -33,7 +33,7 @@ Content-Type: `application/json; charset=utf-8`
 ```
 
 #### `GET /api/system/capabilities`
-Returns host tool discovery status, binary paths, versions, and execution modes.
+Returns host tool discovery status, binary paths, versions, and execution modes for all 10 enterprise adapters.
 - **Response (200 OK):**
 ```json
 {
@@ -46,7 +46,28 @@ Returns host tool discovery status, binary paths, versions, and execution modes.
       "execution_mode": "ADAPTER_ACTIVE"
     },
     {
+      "name": "sslyze",
+      "available": true,
+      "version": "5.2.0",
+      "path": "/usr/local/bin/sslyze",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
       "name": "nuclei",
+      "available": true,
+      "version": "nuclei v3.2.0",
+      "path": "/usr/local/bin/nuclei",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
+      "name": "ffuf",
+      "available": true,
+      "version": "2.1.0",
+      "path": "/usr/bin/ffuf",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
+      "name": "nikto",
       "available": false,
       "version": null,
       "path": null,
@@ -60,7 +81,28 @@ Returns host tool discovery status, binary paths, versions, and execution modes.
       "execution_mode": "ADAPTER_ACTIVE"
     },
     {
+      "name": "gitleaks",
+      "available": true,
+      "version": "8.18.2",
+      "path": "/usr/local/bin/gitleaks",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
+      "name": "bandit",
+      "available": true,
+      "version": "1.7.8",
+      "path": "/usr/local/bin/bandit",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
       "name": "trivy",
+      "available": true,
+      "version": "0.50.1",
+      "path": "/usr/local/bin/trivy",
+      "execution_mode": "ADAPTER_ACTIVE"
+    },
+    {
+      "name": "checkov",
       "available": false,
       "version": null,
       "path": null,
@@ -68,6 +110,9 @@ Returns host tool discovery status, binary paths, versions, and execution modes.
     }
   ],
   "native_engines_ready": true,
+  "os_platform": "Windows 11 / Linux x86_64"
+}
+```
   "os_platform": "Windows 11 / Linux x86_64"
 }
 ```

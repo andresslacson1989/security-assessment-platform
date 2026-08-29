@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Operational Limits
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 4.1.0 (Enterprise Hybrid Tool Adapter & Penetration Testing Specification)  
+**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards & Security Operations  
 
@@ -18,9 +18,10 @@ When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Rep
 4. **Infrastructure-as-Code, Container & Cloud Posture (IaC)** (`infra_iac`)
 5. **CI/CD Pipeline & Build Automation Security** (`cicd_audit`)
 
-The platform operates on a **Tiered Hybrid Engine Architecture**:
-- **Tier 1 (Native Async Core):** Zero-prerequisite, 100% portable Python async engines that execute instantly out of the box on any standard OS without external dependencies.
-- **Tier 2 (Pluggable Tool Adapters):** Dynamic adapters that detect and orchestrate battle-tested CLI tools (**Nmap**, **Nuclei**, **Semgrep**, **Trivy**) when present on the host system or container image, augmenting depth with seamless native fallback.
+The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture**:
+- **Stage 1 (Primary Front-Line Tool Adapters):** When industry-standard CLI pentesting tools are present on the host system or container image (**Nmap**, **SSLyze**, **Nuclei**, **FFuF**, **Nikto**, **Semgrep**, **Gitleaks**, **Bandit**, **Trivy**, **Checkov**), they fire first as the primary authoritative assessment engines.
+- **Stage 2 (Proprietary Native Enrichment):** Deep specialized modules run concurrently or following adapter runs to enrich the assessment with proprietary capabilities external tools do not provide (e.g. interprocedural AST taint flow tracing, active time/boolean SQLi fuzzing with reproduction cURLs, Certificate Transparency OSINT, CNAME takeover detection, and strict DNS hygiene).
+- **Stage 3 (Resilient Zero-Failure Native Fallbacks):** If any external tool binary is absent on the host or encounters an error, the system seamlessly falls back to its built-in pure Python engines, guaranteeing 100% operational portability on clean systems with zero dropped assessments.
 
 The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), enables interactive HTTP request repeating, provides one-click standalone `curl` reproduction PoC commands, and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
 
@@ -99,52 +100,73 @@ The platform validates every target input against strict syntactic and semantic 
 
 ---
 
-## 4. Enterprise Hybrid Tool Adapter Architecture & Safe Subprocess Boundaries
+## 4. Enterprise Adapters First-in-Line Architecture & Safe Subprocess Boundaries
 
-To combine zero-dependency portability with enterprise-grade penetration testing power, the platform operates a **Tiered Hybrid Adapter Model**:
+To combine zero-dependency portability with enterprise-grade penetration testing power, the platform operates on an **"Adapters First-in-Line" Execution Architecture**:
 
 ```
                               ┌───────────────────────────────────────────────┐
                               │            CYBERASSESS ORCHESTRATOR           │
                               └──────────────────────┬────────────────────────┘
                                                      │
-                     ┌───────────────────────────────┴───────────────────────────────┐
-                     ▼                                                               ▼
-        ┌─────────────────────────┐                                     ┌─────────────────────────┐
-        │  NATIVE ASYNC ENGINES   │                                     │  TOOL ADAPTER PLUGINS   │
-        │ (Zero-Prerequisite Core)│                                     │ (Enhanced Enterprise)   │
-        ├─────────────────────────┤                                     ├─────────────────────────┤
-        │ • Native TLS / DNS      │◄────────[Graceful Fallback]─────────┤ • Nmap / Npcap Adapter  │
-        │ • Native HTTP DAST      │◄────────[Graceful Fallback]─────────┤ • Nuclei Engine Adapter │
-        │ • Native BFS Crawler    │                                     │ • Semgrep SAST Adapter  │
-        │ • Native AST Taint Flow │◄────────[Graceful Fallback]─────────┤ • Trivy SCA Adapter     │
-        └─────────────────────────┘                                     └─────────────────────────┘
-                     │                                                               │
-                     └───────────────────────────────┬───────────────────────────────┘
-                                                     ▼
-                                      ┌─────────────────────────────┐
-                                      │ CANONICAL NORMALIZER (SARIF)│
-                                      │   (Single Unified Schema)   │
-                                      └─────────────────────────────┘
+               ┌─────────────────────────────────────┴─────────────────────────────────────┐
+               │                                                                           │
+               ▼                                                                           ▼
+┌─────────────────────────────┐                                             ┌─────────────────────────────┐
+│  STAGE 1: ADAPTERS FIRST    │                                             │ STAGE 2: NATIVE ENRICHMENT  │
+│  (Authoritative Front-Line) │                                             │ (Proprietary Deep Analysis) │
+├─────────────────────────────┤                                             ├─────────────────────────────┤
+│ • Nmap (Network & Ports)    │                                             │ • AST Taint Flow Tracer     │
+│ • SSLyze (Deep TLS Ciphers) │                                             │ • Git History Secret Mining │
+│ • Nuclei (CVE Templates)    │                                             │ • Active Parameter Fuzzing  │
+│ • FFuF (Endpoint Discovery) │                                             │ • CT Subdomain OSINT crt.sh │
+│ • Nikto (Web Server Config) │                                             │ • Dangling CNAME Takeover   │
+│ • Semgrep (AST Code Rules)  │                                             │ • Authoritative DNS Hygiene │
+│ • Gitleaks (Git Secrets)    │                                             │ • Auth Session Management   │
+│ • Bandit (Python AST SAST)  │                                             └──────────────┬──────────────┘
+│ • Trivy (Container/Lock SCA)│                                                            │
+│ • Checkov (Cloud/IaC Audit) │                                                            │
+└──────────────┬──────────────┘                                                            │
+               │                                                                           │
+               │◄─────────────[Stage 3: Resilient Fallback if Binary Absent]───────────────┘
+               ▼
+┌─────────────────────────────┐
+│ CANONICAL NORMALIZER (SARIF)│
+│   (Single Unified Schema)   │
+└─────────────────────────────┘
 ```
 
-### 4.1 Zero-Failure Fallback Guarantee
-1. **Host Discovery:** The orchestrator automatically probes system `PATH` and configured paths via `shutil.which` at startup and scan initialization.
-2. **Transparent Fallback:** If an external binary (`nmap`, `nuclei`, `semgrep`, `trivy`) is not installed or errors during startup, the platform automatically and silently falls back to its built-in native Python engine. The scan NEVER crashes due to missing external binaries.
-3. **Execution Mode Reporting:** Every finding records its `source_tool` (`"native"`, `"nmap"`, `"nuclei"`, `"semgrep"`, `"trivy"`) for audit transparency.
+### 4.1 Zero-Failure Fallback Guarantee & Priority Model
+1. **Host Discovery & Priority Resolution:** The orchestrator automatically probes system `PATH` and configured paths via `shutil.which` at startup and scan initialization. When an adapter is active, it runs first to establish the baseline findings.
+2. **Transparent Native Fallback:** If an external binary (`nmap`, `sslyze`, `nuclei`, `ffuf`, `nikto`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`) is not installed or errors during execution, the platform automatically and seamlessly falls back to its built-in pure Python engines. The scan NEVER crashes due to missing external binaries.
+3. **Execution Mode Reporting:** Every finding records its `source_tool` (`"native"`, `"nmap"`, `"sslyze"`, `"nuclei"`, `"ffuf"`, `"nikto"`, `"semgrep"`, `"gitleaks"`, `"bandit"`, `"trivy"`, `"checkov"`) for audit transparency.
 
 ### 4.2 Safe Non-Destructive Subprocess Execution Flags
 External tools MUST be invoked with strictly bounded, non-destructive arguments:
 - **Nmap (`NmapAdapter`):**
-  - Command: `nmap -sV -sC --version-light -T4 -oX - <target>`
+  - Command: `nmap -sV -sC --version-light -T4 -oX - <target_host>`
   - Prohibitions: No `-A`, no `--script=exploit`, no `--script=dos`, no packet flooding.
+- **SSLyze (`SslyzeAdapter`):**
+  - Command: `sslyze --json_out=- <target_host>:<port>`
 - **Nuclei (`NucleiAdapter`):**
-  - Command: `nuclei -u <target> -j -silent -tags cve,misconfig -severity low,medium,high,critical`
+  - Command: `nuclei -u <target_url> -j -silent -tags cve,misconfig -severity low,medium,high,critical`
   - Prohibitions: No `-tags dos,fuzz,intrusive`.
+- **FFuF (`FfufAdapter`):**
+  - Command: `ffuf -u <target_url>/FUZZ -w <wordlist> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10`
+  - Prohibitions: Max rate capped at 10 RPS to preserve target stability.
+- **Nikto (`NiktoAdapter`):**
+  - Command: `nikto -h <target_url> -Format json -output - -Tuning 1,2,3,4,8,9,a,b,c`
+  - Prohibitions: No invasive DoS or brute-forcing modules.
 - **Semgrep (`SemgrepAdapter`):**
   - Command: `semgrep scan --config auto --json <target_dir>`
+- **Gitleaks (`GitleaksAdapter`):**
+  - Command: `gitleaks detect --source <target_dir> --report-format json --report-path -`
+- **Bandit (`BanditAdapter`):**
+  - Command: `bandit -r <target_dir> -f json`
 - **Trivy (`TrivyAdapter`):**
   - Command: `trivy fs --format json <target_dir>`
+- **Checkov (`CheckovAdapter`):**
+  - Command: `checkov -d <target_dir> -o json --compact`
 
 ### 4.3 Subprocess Isolation & Lifecycle Bounds
 - All CLI processes are spawned via `asyncio.create_subprocess_exec()` with strict memory/timeout limits.
