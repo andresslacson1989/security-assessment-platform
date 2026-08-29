@@ -156,6 +156,26 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Subresource Integrity (`DAST-SRI-001`):** Parses DOM `<script src="...">` and `<link rel="stylesheet">` from external domains lacking `integrity="sha..."`.
 - **GraphQL Introspection (`DAST-GQL-001`):** Sends `POST /graphql` with `{"query": "{ __schema { types { name } } }"}`. Flag if types schema returned.
 
+### 3.5 Scoped Web Discovery Crawler (`crawler.py`)
+- **Algorithm:** Asynchronous Breadth-First Search (BFS) spider.
+- **Link Extraction:** Parses HTML response with `BeautifulSoup` extracting `<a href>`, `<form action>`, `<link href>`, `<script src>`.
+- **URL Normalization:** Resolves relative URLs via `urllib.parse.urljoin`, removes anchor fragments via `urldefrag`, and normalizes parameters.
+- **Scope Guard:** Compares `urlparse(url).netloc == urlparse(target).netloc`. Rejects external third-party domains.
+- **Loop & Depth Limits:** Tracks visited SHA-256 URL hashes, enforcing `depth <= max_depth` (default: 3) and `count <= max_pages` (default: 50).
+- **Robots & Sitemap Seeds:** Fetches `/robots.txt` and `/sitemap.xml` to seed the discovery queue.
+
+### 3.6 Authentication & Session Manager (`auth_session.py`)
+- **Authentication Handlers:**
+  1. `HEADER`: Injects `Authorization: Bearer <token>` or custom headers into `httpx.AsyncClient`.
+  2. `COOKIE`: Populates `httpx.Cookies` jar with supplied session tokens.
+  3. `FORM_LOGIN`: Automated login workflow:
+     - `GET login_url`: Parses HTML form to identify input fields and auto-extract anti-CSRF token (`name="csrf_token"`, `_csrf`, `authenticity_token`, `_token`).
+     - `POST login_url`: Submits credentials + extracted CSRF token with `follow_redirects=True`.
+     - Collects and persists session cookies across subsequent crawl and DAST requests.
+- **Logout URL Blacklisting:** Automatically skips any URL matching `logout`, `signout`, `sign_out`, `log_out`, `exit`, `destroy`.
+- **Session Heartbeat & Re-authentication:** Periodically tests responses against `logged_in_indicator`. If a 401/403 or redirect to login is observed, automatically executes re-authentication.
+- **Differential Access Control Probe (`DAST-AUTH-003`):** Probes authenticated URLs without cookies/headers. If protected endpoint returns HTTP 200 with identical sensitive response, flags broken access control.
+
 ---
 
 ## 4. Engine 3: Static Code Analysis, Secrets & SCA (`code_sast`)

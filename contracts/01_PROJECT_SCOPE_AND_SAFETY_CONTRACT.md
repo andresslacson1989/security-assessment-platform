@@ -42,7 +42,29 @@ Every scanning engine, check module, and network probe in this system MUST opera
    - Concurrency per target is capped by default to 5 workers (configurable up to a hard ceiling of 15).
 3. **No Authentication Bypassing or Brute Forcing:**
    - Scanners MUST NOT attempt credential stuffing, dictionary attacks, or automated brute-forcing of login forms.
-   - When authenticated scanning is configured, the system uses user-supplied API keys or bearer tokens strictly as read-only audit credentials.
+   - When authenticated scanning is configured, the system uses user-supplied credentials, API keys, or session cookies strictly for authorized session maintenance.
+
+### 2.2 Scoped Multi-Page Web Crawling Safety Rules
+When crawling web applications across multiple internal routes:
+1. **Strict Same-Origin Policy (SOP) Enforcement:**
+   - The crawler MUST NOT traverse links outside the target scheme, host, and port (e.g. if target is `https://example.com`, links to `https://auth.example.com` or `https://cdn.example.com` are marked out-of-scope unless explicitly whitelisted).
+2. **Depth & Volume Constraints:**
+   - Maximum crawling depth $D \le 5$ (default: 3 levels).
+   - Maximum discovered page limit $N \le 200$ (default: 50 pages).
+3. **Loop & Dynamic Parameter Guardrails:**
+   - URLs are normalized (fragments stripped, parameters sorted, path traversals resolved).
+   - URLs are deduplicated via canonical SHA-256 state tracking to prevent infinite recursion on dynamic calendars or pagination traps.
+4. **Dangerous Path Exclusions:**
+   - Endpoints matching destructive patterns (e.g., `*delete*`, `*destroy*`, `*purge*`, `*drop*`, `*checkout*`, `*pay*`, `*charge*`) are automatically blocked from automated submission.
+
+### 2.3 Authenticated DAST Session Safety Rules
+When conducting authenticated scans inside protected application areas:
+1. **Logout Path Blacklisting:**
+   - The crawler and DAST engines MUST automatically blacklist and skip any URL or form matching logout/sign-out patterns (e.g., `/logout`, `/signout`, `/sign_out`, `/auth/exit`, `/session/destroy`) to ensure the active session is not prematurely invalidated.
+2. **Form Interaction Safety:**
+   - Forms discovered during authenticated crawls are analyzed passively (action target, method, input fields, CSRF protection). Mutating state-changing requests (`POST`/`PUT`/`DELETE`) MUST NOT be submitted with randomized data.
+3. **Session Heartbeat & Graceful Recovery:**
+   - The engine periodically evaluates a configurable `logged_in_indicator` (HTTP status code, response header, or body regex). If session invalidation or 401/403 status is observed, the engine re-authenticates automatically or logs a session expiry event without crashing.
 
 ---
 

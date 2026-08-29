@@ -89,6 +89,21 @@ Content-Type: `application/json; charset=utf-8`
     "timeout_seconds": 10,
     "custom_headers": {
       "User-Agent": "SecurityAssessmentBot/3.0"
+    },
+    "crawler": {
+      "enabled": true,
+      "max_depth": 3,
+      "max_pages": 50,
+      "exclude_patterns": ["*logout*", "*signout*", "*delete*"]
+    },
+    "auth": {
+      "auth_type": "FORM_LOGIN",
+      "login_url": "https://example.com/login",
+      "username_field": "email",
+      "username": "auditor@example.com",
+      "password_field": "password",
+      "password": "SecretPassword123!",
+      "logged_in_indicator": "Sign Out"
     }
   }
 }
@@ -224,6 +239,8 @@ Protocol: **Server-Sent Events (SSE)** (`text/event-stream; charset=utf-8`)
 Event Types emitted:
 1. `event: progress` — Data: `{"percent": 45, "stage": "...", "status": "RUNNING"}`
 2. `event: log` — Data: `{"timestamp": "...", "level": "INFO", "engine": "network", "message": "..."}`
-3. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification)
-4. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "completed_at": "..."}`
-5. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`
+3. `event: auth_status` — Data: `{"auth_type": "FORM_LOGIN", "authenticated": true, "session_active": true, "message": "Successfully authenticated."}`
+4. `event: crawl_discovered` — Data: `{"url": "https://example.com/dashboard", "depth": 1, "status_code": 200, "is_authenticated": true, "total_discovered": 12}`
+5. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification)
+6. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "completed_at": "..."}`
+7. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`

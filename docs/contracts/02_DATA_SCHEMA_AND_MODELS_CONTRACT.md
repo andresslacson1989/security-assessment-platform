@@ -62,6 +62,15 @@ class ScanProfile(str, Enum):
  [ COMPLETED ]
 ```
 
+### 2.5 Authentication Classification (`AuthType`)
+```python
+class AuthType(str, Enum):
+    NONE = "NONE"              # Unauthenticated public scan
+    HEADER = "HEADER"          # Static Bearer token or custom header
+    COOKIE = "COOKIE"          # Direct session cookie injection
+    FORM_LOGIN = "FORM_LOGIN"  # Automated form login with credential submission & CSRF handling
+```
+
 ---
 
 ## 3. Pydantic v2 Models & Schema Definitions
@@ -120,7 +129,49 @@ class Finding(BaseModel):
     fingerprint: str = Field(..., description="Deterministic SHA256 hash of (check_id + location + evidence.observed_value)")
 ```
 
-### 3.4 Scan Job Summary Model (`ScanJobSummary`)
+### 3.4 Discovered Endpoint Model (`DiscoveredEndpoint`)
+```python
+class DiscoveredEndpoint(BaseModel):
+    url: str = Field(..., description="Normalized discovered URL")
+    method: str = Field(default="GET", description="HTTP method")
+    depth: int = Field(default=0, ge=0, description="Crawl depth level at which endpoint was discovered")
+    status_code: Optional[int] = Field(default=None, description="Observed HTTP response status code")
+    content_type: Optional[str] = Field(default=None, description="Observed Content-Type header")
+    is_authenticated: bool = Field(default=False, description="Whether endpoint requires/received active authentication")
+    has_forms: bool = Field(default=False, description="Whether HTML forms were discovered on this page")
+```
+
+### 3.5 Authentication & Crawler Configurations
+```python
+class AuthConfig(BaseModel):
+    auth_type: AuthType = Field(default=AuthType.NONE, description="Authentication mechanism")
+    headers: Dict[str, str] = Field(default_factory=dict, description="Custom headers (e.g. Authorization: Bearer <token>)")
+    cookies: Dict[str, str] = Field(default_factory=dict, description="Session cookies (e.g. sessionid=xyz)")
+    login_url: Optional[str] = Field(default=None, description="Form login URL endpoint")
+    username_field: str = Field(default="username", description="HTML input name for username/email")
+    username: Optional[str] = Field(default=None, description="Login username or email")
+    password_field: str = Field(default="password", description="HTML input name for password")
+    password: Optional[str] = Field(default=None, description="Login password")
+    csrf_token_field: Optional[str] = Field(default=None, description="Optional custom CSRF form field name")
+    logged_in_indicator: Optional[str] = Field(default=None, description="Regex/string in response confirming active session")
+    logout_url_patterns: List[str] = Field(
+        default_factory=lambda: ["logout", "signout", "sign_out", "log_out", "exit", "destroy"],
+        description="Path patterns excluded from crawling to prevent session termination"
+    )
+
+class CrawlerConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable multi-page link discovery crawler")
+    max_depth: int = Field(default=3, ge=1, le=5, description="Maximum crawl tree traversal depth")
+    max_pages: int = Field(default=50, ge=1, le=200, description="Maximum pages to crawl")
+    exclude_patterns: List[str] = Field(
+        default_factory=lambda: ["*logout*", "*signout*", "*delete*", "*destroy*", "*purge*"],
+        description="Path patterns excluded from crawling"
+    )
+    follow_redirects: bool = Field(default=True, description="Follow same-origin redirects")
+    parse_sitemap: bool = Field(default=True, description="Parse robots.txt and sitemap.xml for seeds")
+```
+
+### 3.6 Scan Job Summary Model (`ScanJobSummary`)
 ```python
 class ScanJobSummary(BaseModel):
     critical_count: int = Field(default=0, ge=0)
@@ -131,13 +182,15 @@ class ScanJobSummary(BaseModel):
     total_findings: int = Field(default=0, ge=0)
     passed_checks: int = Field(default=0, ge=0)
     total_checks_evaluated: int = Field(default=0, ge=0)
+    pages_crawled: int = Field(default=1, ge=0, description="Total unique internal pages crawled")
+    authenticated_session_active: bool = Field(default=False, description="Whether authentication was verified active")
     weighted_score: float = Field(default=100.0, ge=0.0, le=100.0, description="Calculated 0-100 security score")
     overall_security_grade: str = Field(default="A+", description="Letter grade: A+, A, B, C, D, or F")
     duration_seconds: float = Field(default=0.0, ge=0.0)
     engine_breakdown: Dict[str, int] = Field(default_factory=dict, description="Finding counts per engine")
 ```
 
-### 3.5 Log Entry Model (`LogEntry`)
+### 3.7 Log Entry Model (`LogEntry`)
 ```python
 class LogLevel(str, Enum):
     INFO = "INFO"
@@ -152,7 +205,7 @@ class LogEntry(BaseModel):
     message: str = Field(..., description="Log message text")
 ```
 
-### 3.6 Complete Scan Job Model (`ScanJob`)
+### 3.8 Complete Scan Job Model (`ScanJob`)
 ```python
 class ScanConfig(BaseModel):
     rate_limit_rps: int = Field(default=5, ge=1, le=20)
@@ -160,6 +213,8 @@ class ScanConfig(BaseModel):
     custom_headers: Dict[str, str] = Field(default_factory=dict)
     port_list: List[int] = Field(default_factory=list)
     include_subdomains: bool = Field(default=False)
+    crawler: CrawlerConfig = Field(default_factory=CrawlerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 class ScanJob(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -171,6 +226,7 @@ class ScanJob(BaseModel):
     progress_percent: int = Field(default=0, ge=0, le=100)
     current_stage: str = Field(default="Initializing assessment engine...")
     summary: ScanJobSummary = Field(default_factory=ScanJobSummary)
+    discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
     logs: List[LogEntry] = Field(default_factory=list)
     started_at: Optional[datetime] = Field(default=None)

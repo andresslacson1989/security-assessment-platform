@@ -176,6 +176,25 @@ class BaseAssessmentEngine(ABC):
 5. **`graphql_auditor.py` (GraphQL Posture)**
    - **`DAST-GQL-001`:** Public GraphQL Introspection Enabled (MEDIUM, CVSS 5.3).
 
+6. **`crawler.py` (Scoped Multi-Page Discovery & BFS Spider)**
+   - **Link & Route Discovery:** Discovers internal links from `<a href>`, `<link rel>`, `<script src>`, and HTML5 route triggers up to configured `max_depth` (default: 3) and `max_pages` (default: 50).
+   - **Sitemap & Robots Parser:** Seeds crawl queue from `robots.txt` and `sitemap.xml` (or `sitemap_index.xml`).
+   - **Same-Origin Policy Guard:** Strictly enforces domain/subdomain boundaries, rejecting third-party domains.
+   - **Normalization & Deduplication:** Strips URL fragments (`#`), normalizes query parameters, and maintains SHA-256 visited set to avoid infinite crawl loops.
+   - **Form Discovery:** Identifies and registers all `<form>` elements (action URL, method, input fields) for security analysis.
+
+7. **`auth_session.py` (Authentication & State Manager)**
+   - **Authentication Handlers:** Supports `HEADER` (Bearer/API Key), `COOKIE` (session cookie injection), and `FORM_LOGIN` (automated login submission).
+   - **Automated Login & Anti-CSRF:** Fetches login page, extracts anti-CSRF tokens (`csrf_token`, `_csrf`, `authenticity_token`, `_token`), posts credentials, and stores session cookies.
+   - **Logout Route Blacklisting:** Automatically filters out URLs matching logout patterns (`*logout*`, `*signout*`, etc.) to prevent premature session invalidation.
+   - **Session Heartbeat & Recovery:** Checks response codes and `logged_in_indicator` keyword; automatically re-authenticates upon 401/403 or login redirect.
+   - **`DAST-AUTH-001` (Insecure Authentication over Cleartext HTTP):** Form login submitted or authenticated over HTTP (HIGH, CVSS 7.5).
+   - **`DAST-AUTH-002` (Session Cookie Lacks Security Attributes):** Session cookie missing `HttpOnly`, `Secure`, or `SameSite` post-authentication (HIGH, CVSS 7.4).
+   - **`DAST-AUTH-003` (Broken Access Control / Sensitive Endpoint Unprotected):** Protected authenticated endpoint accessible unauthenticated returning HTTP 200 with sensitive payload (HIGH, CVSS 8.5).
+   - **`DAST-AUTH-004` (Sensitive Data in Authenticated Query Strings):** Session tokens, passwords, or PII exposed in URL query parameters (MEDIUM, CVSS 5.3).
+   - **`DAST-FORM-001` (Insecure Cleartext Form Action):** HTML `<form>` action target uses unencrypted `http://` (HIGH, CVSS 7.5).
+   - **`DAST-FORM-002` (Missing Anti-CSRF Token in State-Changing Form):** POST/PUT `<form>` lacks anti-CSRF token input field (MEDIUM, CVSS 6.5).
+
 ---
 
 ### 3.3 Engine 3: Static Code Analysis, Secrets & SCA (`code_sast`)

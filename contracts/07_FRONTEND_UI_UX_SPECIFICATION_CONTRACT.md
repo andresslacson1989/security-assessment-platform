@@ -78,17 +78,20 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 ## 3. Interactive Component Workflows
 
-1. **Target Launch Bar:** Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`), preset profile selection (`Full Stack`, `Quick`, `DAST`, `SAST`, `Network`, `IaC`), and instantaneous launch.
+1. **Target Launch Bar & Advanced Config:** Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`), preset profile selection (`Full Stack`, `Quick`, `DAST`, `SAST`, `Network`, `IaC`), and instantaneous launch.
+   - **Authentication Config Modal/Drawer:** Radio buttons for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, and Logged-In Indicator).
+   - **Crawler Scope Controls:** Sliders/inputs for Crawl Depth ($1-5$), Max Pages ($10-200$), and Exclude Path Patterns (`*logout*`, `*delete*`).
 2. **Real-Time Telemetry & Monospace Terminal:** Real-time animated progress bar with glowing stage notifications; auto-scrolling terminal log feed with severity level color chips (`INFO`, `WARN`, `ERROR`).
 3. **Security Grade Scorecard:** Giant grade hexagon badge (`A+` to `F`), numerical score meter (0-100), and clickable severity count tiles that immediately filter the findings table.
-4. **Findings Explorer & Inspection Drawer:** Filterable by engine, severity, and text search. Clicking any finding row expands an inspection drawer with:
+4. **Discovered Endpoints HUD:** Live updating table displaying crawled URLs, crawl depth, observed HTTP response code, and authentication status badges.
+5. **Findings Explorer & Inspection Drawer:** Filterable by engine, severity, and text search. Clicking any finding row expands an inspection drawer with:
    - CVSS score badge and vector string
    - CWE ID & OWASP (2021) tags with external reference links
    - Detailed Description & Business Impact
    - Observed vs Expected Evidence Diff Box
    - Formatted Code Remediation Box with one-click "Copy Snippet" action.
-5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
-6. **Scan History Archive:** Instant reload of past scans with timestamps, targets, and grades.
+6. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
+7. **Scan History Archive:** Instant reload of past scans with timestamps, targets, and grades.
 
 ---
 
@@ -109,6 +112,16 @@ class ScanStreamManager {
     this.eventSource.addEventListener('log', (e) => {
       const data = JSON.parse(e.data);
       this.appendTerminalLog(data);
+    });
+
+    this.eventSource.addEventListener('auth_status', (e) => {
+      const data = JSON.parse(e.data);
+      this.updateAuthStatusBadge(data);
+    });
+
+    this.eventSource.addEventListener('crawl_discovered', (e) => {
+      const endpoint = JSON.parse(e.data);
+      this.addDiscoveredEndpointRow(endpoint);
     });
 
     this.eventSource.addEventListener('finding', (e) => {

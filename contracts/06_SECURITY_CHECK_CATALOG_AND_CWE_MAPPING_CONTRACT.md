@@ -67,6 +67,12 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `DAST-SRI-001` | Missing Subresource Integrity (SRI) on CDN Script | `LOW` | 3.7 | CWE-353 | A06:Vulnerable Components | SI-7 | Third-party `<script>` tag loaded from CDN lacks `integrity` attribute. |
 | `DAST-MIX-001` | Passive Mixed Content Detected | `MEDIUM` | 4.3 | CWE-319 | A02:Cryptographic Failures | SC-8 | HTTPS page includes `http://` asset (script, image, stylesheet). |
 | `DAST-GQL-001` | Public GraphQL Introspection Enabled | `MEDIUM` | 5.3 | CWE-200 | A05:Security Misconfiguration | AC-3 | GraphQL endpoint responds to `__schema` query with complete type graph. |
+| `DAST-AUTH-001` | Insecure Authentication over Cleartext HTTP | `HIGH` | 7.5 | CWE-319 | A02:Cryptographic Failures | SC-8 | Login credentials or session cookies transmitted over unencrypted `http://`. |
+| `DAST-AUTH-002` | Session Cookie Missing Security Flags post-Login | `HIGH` | 7.4 | CWE-614 | A05:Security Misconfiguration | SC-23 | Authenticated session cookie missing `HttpOnly`, `Secure`, or `SameSite`. |
+| `DAST-AUTH-003` | Broken Access Control / Sensitive Endpoint Unprotected | `HIGH` | 8.5 | CWE-284 | A01:Broken Access Control | AC-3 | Protected authenticated endpoint returns HTTP 200 when unauthenticated. |
+| `DAST-AUTH-004` | Sensitive Data in Authenticated Query Strings | `MEDIUM` | 5.3 | CWE-598 | A04:Insecure Design | SC-28 | Authenticated URL query string contains tokens, passwords, or PII. |
+| `DAST-FORM-001` | Insecure Form Action Submitting over Cleartext HTTP | `HIGH` | 7.5 | CWE-319 | A02:Cryptographic Failures | SC-8 | HTML `<form>` action target points to unencrypted `http://` endpoint. |
+| `DAST-FORM-002` | Missing Anti-CSRF Token in State-Changing Form | `MEDIUM` | 6.5 | CWE-352 | A01:Broken Access Control | SC-23 | HTML POST/PUT form lacks anti-CSRF hidden input field (`csrf_token`, `_token`). |
 
 ---
 
