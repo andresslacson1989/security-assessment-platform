@@ -428,6 +428,11 @@ class ScanStreamManager {
       this.addDiscoveredEndpoint(ep);
     });
 
+    this.eventSource.addEventListener("tool_status", (e) => {
+      const data = JSON.parse(e.data);
+      this.updateToolPill(data.tool, data.available, data.mode, data.version);
+    });
+
     this.eventSource.addEventListener("completed", (e) => {
       const summary = JSON.parse(e.data);
       this.renderScorecard(summary);
@@ -452,6 +457,49 @@ class ScanStreamManager {
     if (!this.discoveredEndpoints.some((e) => e.url === endpoint.url)) {
       this.discoveredEndpoints.push(endpoint);
       this.renderDiscoveredEndpoints();
+    }
+  }
+
+  // Contract 07 v4.1.0: Tool Adapter Pill Bar Update
+  updateToolPill(toolName, available, mode, version) {
+    const pill = document.getElementById(`tool-pill-${toolName}`);
+    if (!pill) return;
+
+    const iconEl = pill.querySelector(".tool-pill-icon");
+    const modeEl = pill.querySelector(".tool-pill-mode");
+    const nameEl = pill.querySelector(".tool-pill-name");
+
+    // Remove all state classes
+    pill.classList.remove("tool-pill--active", "tool-pill--fallback", "tool-pill--disabled");
+
+    if (mode === "ADAPTER_ACTIVE") {
+      pill.classList.add("tool-pill--active");
+      if (iconEl) iconEl.textContent = "🟢";
+      if (modeEl) modeEl.textContent = version ? `v${version}` : "ACTIVE";
+    } else if (mode === "DISABLED") {
+      pill.classList.add("tool-pill--disabled");
+      if (iconEl) iconEl.textContent = "⚫";
+      if (modeEl) modeEl.textContent = "DISABLED";
+    } else {
+      // NATIVE_FALLBACK (default)
+      pill.classList.add("tool-pill--fallback");
+      if (iconEl) iconEl.textContent = "🟡";
+      if (modeEl) modeEl.textContent = "NATIVE FALLBACK";
+    }
+  }
+
+  // Contract 04 v4.1.0: Probe GET /api/system/capabilities on page load
+  async loadSystemCapabilities() {
+    try {
+      const resp = await fetch("/api/system/capabilities");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const tools = data.tools || [];
+      tools.forEach((t) => {
+        this.updateToolPill(t.name, t.available, t.execution_mode, t.version);
+      });
+    } catch (_) {
+      // Non-fatal: pill bar defaults remain (NATIVE FALLBACK)
     }
   }
 
@@ -628,6 +676,7 @@ class ScanStreamManager {
               ${f.owasp_category ? `<span class="meta-tag">${this.escapeHtml(f.owasp_category)}</span>` : ""}
               ${f.nist_control ? `<span class="meta-tag">${this.escapeHtml(f.nist_control)}</span>` : ""}
               <span class="meta-tag engine-tag">${this.escapeHtml(f.engine)}</span>
+              <span class="source-tool-badge source-tool--${(f.source_tool || 'native').toLowerCase()}">[${this.escapeHtml(f.source_tool || 'native')}]</span>
             </div>
 
             <p class="finding-desc"><strong>Description:</strong> ${this.escapeHtml(f.description)}</p>
@@ -789,4 +838,6 @@ window.filterFindingsBySeverity = function (sev) {
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new ScanStreamManager();
+  // Load tool capabilities immediately on page load (Contract 04 v4.1.0)
+  window.app.loadSystemCapabilities();
 });

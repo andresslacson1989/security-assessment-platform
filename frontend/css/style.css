@@ -1116,3 +1116,110 @@ pre {
 .data-table tr:hover {
   background-color: var(--bg-surface-elevated);
 }
+
+/* ============================================================================
+   Tool Adapter Status Pill Bar (Contract 07 v4.1.0)
+   ============================================================================ */
+.tool-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 20px;
+  background: var(--bg-secondary, #0f172a);
+  border-bottom: 1px solid var(--border-color, #1e293b);
+  flex-wrap: wrap;
+}
+
+.tool-status-label {
+  font-size: 0.65rem;
+  font-family: monospace;
+  color: var(--text-muted, #64748b);
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  font-family: monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  cursor: default;
+  transition: border-color 0.2s ease, background 0.2s ease;
+  border-left-width: 3px;
+}
+
+.tool-pill-icon {
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.tool-pill-name {
+  color: #e2e8f0;
+}
+
+.tool-pill-version {
+  color: #94a3b8;
+  font-weight: 400;
+  font-size: 0.6rem;
+}
+
+.tool-pill-mode {
+  color: #64748b;
+  font-size: 0.58rem;
+  font-weight: 400;
+}
+
+/* Active: tool found and running */
+.tool-pill--active {
+  border-left-color: #22c55e;
+  background: #0f2a1a;
+}
+.tool-pill--active .tool-pill-name { color: #86efac; }
+.tool-pill--active .tool-pill-mode { color: #4ade80; }
+
+/* Fallback: tool missing, native engine used */
+.tool-pill--fallback {
+  border-left-color: #eab308;
+  background: #1c1a09;
+}
+.tool-pill--fallback .tool-pill-name { color: #fde047; }
+.tool-pill--fallback .tool-pill-mode { color: #ca8a04; }
+
+/* Disabled: explicitly turned off by user */
+.tool-pill--disabled {
+  border-left-color: #475569;
+  background: #1a1a1a;
+}
+.tool-pill--disabled .tool-pill-name { color: #64748b; }
+.tool-pill--disabled .tool-pill-mode { color: #475569; }
+
+/* ============================================================================
+   Source Tool Badges on Finding Cards (Contract 07 v4.1.0)
+   ============================================================================ */
+.source-tool-badge {
+  display: inline-block;
+  font-family: monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  padding: 1px 5px;
+  border: 1px solid transparent;
+  line-height: 1.5;
+}
+
+.source-tool--nmap    { background: #172554; color: #93c5fd; border-color: #1e40af; }
+.source-tool--nuclei  { background: #431407; color: #fdba74; border-color: #c2410c; }
+.source-tool--semgrep { background: #2e1065; color: #d8b4fe; border-color: #7c3aed; }
+.source-tool--trivy   { background: #042f2e; color: #5eead4; border-color: #0d9488; }
+.source-tool--native  { background: #1e293b; color: #94a3b8; border-color: #475569; }
