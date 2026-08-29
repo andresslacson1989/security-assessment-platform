@@ -236,3 +236,78 @@ async def test_web_dast_engine_full_run():
         assert len(auth_statuses) == 1
         assert auth_statuses[0]["auth_type"] == "HEADER"
         assert auth_statuses[0]["authenticated"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_dast_engine_audits_all_crawled_pages():
+    """
+    Verifies that WebDastEngine audits security headers, cookies, forms,
+    and browser posture across all discovered/crawled endpoints.
+    """
+    engine = WebDastAssessmentEngine()
+
+    mock_client = AsyncMock()
+
+    async def mock_get(url, **kwargs):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.headers = {
+            "content-type": "text/html; charset=utf-8",
+            "server": "Apache/2.4.41",
+        }
+        if "dashboard" in url:
+            resp.text = """
+            <html>
+              <body>
+                <h1>Dashboard</h1>
+                <script src="http://cdn.insecure.com/analytics.js"></script>
+                <form action="http://insecure.example.com/update" method="POST">
+                  <input type="text" name="data">
+                </form>
+              </body>
+            </html>
+            """
+        else:
+            resp.text = """
+            <html>
+              <body>
+                <a href="/dashboard">Dashboard</a>
+              </body>
+            </html>
+            """
+        return resp
+
+    mock_client.get = AsyncMock(side_effect=mock_get)
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=404, json=lambda: {}))
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    target = Target(name="Web Target", type=TargetType.URL, value="https://example.com")
+    config = ScanConfig(
+        crawler=CrawlerConfig(enabled=True, max_depth=2, max_pages=10, parse_sitemap=False),
+        auth=AuthConfig(auth_type=AuthType.NONE),
+    )
+
+    findings = []
+    async def log_cb(lvl, msg): pass
+    async def prog_cb(pct, stg): pass
+    async def find_cb(f): findings.append(f)
+
+    # Use real crawler with mocked client
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        res = await engine.run(
+            target,
+            config,
+            log_cb,
+            prog_cb,
+            find_cb,
+        )
+
+    check_ids = {f.check_id for f in res}
+    # Root + dashboard security headers tested
+    assert "DAST-HDR-001" in check_ids  # Missing CSP
+    # Subresource integrity & form security tested on /dashboard
+    assert "DAST-SRI-001" in check_ids  # Script from insecure cdn lacking integrity
+    assert "DAST-FORM-001" in check_ids  # Form action http:// on https site
+    assert "DAST-FORM-002" in check_ids  # Missing CSRF token on POST form
+

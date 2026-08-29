@@ -21,6 +21,7 @@ async def audit_security_headers_and_cookies(
     target_value: str,
     client: httpx.AsyncClient,
     emit_log: Optional[LogCallback] = None,
+    response: Optional[httpx.Response] = None,
 ) -> List[Finding]:
     """
     Inspects HTTP response headers, Set-Cookie attributes, and caching policies.
@@ -29,15 +30,16 @@ async def audit_security_headers_and_cookies(
     url = normalize_target_url(target_value)
     is_https = url.startswith("https://")
 
-    if emit_log:
-        await emit_log(LogLevel.INFO, f"Fetching HTTP response headers from {url}...")
-
-    try:
-        response = await client.get(url, follow_redirects=True)
-    except Exception as e:
+    if response is None:
         if emit_log:
-            await emit_log(LogLevel.WARNING, f"HTTP request to {url} failed: {str(e)}")
-        return findings
+            await emit_log(LogLevel.INFO, f"Fetching HTTP response headers from {url}...")
+
+        try:
+            response = await client.get(url, follow_redirects=True)
+        except Exception as e:
+            if emit_log:
+                await emit_log(LogLevel.WARNING, f"HTTP request to {url} failed: {str(e)}")
+            return findings
 
     headers = response.headers
     raw_headers_snippet = "\n".join([f"{k}: {v}" for k, v in headers.items()])

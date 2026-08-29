@@ -112,6 +112,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             discovered_endpoints: List[DiscoveredEndpoint] = []
             html_contents: Dict[str, str] = {}
 
+            page_responses: Dict[str, httpx.Response] = {}
+
             if config.crawler.enabled:
                 async def _on_ep_discovered(ep: DiscoveredEndpoint) -> None:
                     discovered_endpoints.append(ep)
@@ -128,6 +130,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     is_authenticated=auth_manager.is_authenticated,
                 )
                 discovered_endpoints = await crawler.crawl()
+                html_contents.update(crawler.page_html)
+                page_responses.update(crawler.page_responses)
             else:
                 initial_ep = DiscoveredEndpoint(
                     url=target.value,
@@ -139,37 +143,64 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 if emit_endpoint_discovered:
                     await emit_endpoint_discovered(initial_ep)
 
-            # --- Stage 3: Security Headers, Cookies & Form Audits (35% - 55%) ---
-            await emit_progress(35, "Auditing OWASP security headers, cookies, and forms...")
-            await emit_log(LogLevel.INFO, "Analyzing HTTP response security headers and Set-Cookie directives.")
-            await rate_limiter.acquire()
+            # Ensure root HTML is cached
+            if target.value not in html_contents:
+                try:
+                    root_resp = await client.get(target.value, follow_redirects=True)
+                    page_responses[target.value] = root_resp
+                    if "text/html" in root_resp.headers.get("content-type", "").lower():
+                        html_contents[target.value] = root_resp.text
+                except Exception:
+                    pass
 
-            header_findings = await audit_security_headers_and_cookies(
+            # --- Stage 3: Security Headers, Cookies & Form Audits (35% - 55%) ---
+            await emit_progress(35, f"Auditing security headers, cookies, and forms across {len(discovered_endpoints)} discovered endpoints...")
+            await emit_log(LogLevel.INFO, f"Evaluating HTTP security headers across {len(page_responses) or 1} pages.")
+
+            # Audit headers on root and all crawled pages
+            existing_fps = {f.fingerprint for f in findings}
+            
+            # Root header audit
+            root_resp = page_responses.get(target.value)
+            root_header_findings = await audit_security_headers_and_cookies(
                 target.value,
                 client=client,
                 emit_log=emit_log,
+                response=root_resp,
             )
-            for f in header_findings:
-                f.scan_id = "active"
-                findings.append(f)
-                await emit_finding(f)
+            for f in root_header_findings:
+                if f.fingerprint not in existing_fps:
+                    existing_fps.add(f.fingerprint)
+                    f.scan_id = "active"
+                    findings.append(f)
+                    await emit_finding(f)
 
-            # Fetch HTML for root and top discovered endpoints for form analysis
-            try:
-                root_resp = await client.get(target.value, follow_redirects=True)
-                if "text/html" in root_resp.headers.get("content-type", "").lower():
-                    html_contents[target.value] = root_resp.text
-            except Exception:
-                pass
+            # Crawled pages header audits
+            for page_url, page_resp in page_responses.items():
+                if page_url != target.value:
+                    ep_header_findings = await audit_security_headers_and_cookies(
+                        page_url,
+                        client=client,
+                        response=page_resp,
+                    )
+                    for f in ep_header_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.scan_id = "active"
+                            findings.append(f)
+                            await emit_finding(f)
 
+            # Form & authentication audits across all crawled HTML pages
             auth_form_findings = await auth_manager.audit_auth_and_forms(
                 discovered_endpoints=discovered_endpoints,
                 html_contents=html_contents,
             )
             for f in auth_form_findings:
-                f.scan_id = "active"
-                findings.append(f)
-                await emit_finding(f)
+                if f.fingerprint not in existing_fps:
+                    existing_fps.add(f.fingerprint)
+                    f.scan_id = "active"
+                    findings.append(f)
+                    await emit_finding(f)
 
             # --- Stage 4: CORS Policies (55% - 70%) ---
             await emit_progress(55, "Testing CORS policies and origin reflection...")
@@ -181,9 +212,11 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 emit_log=emit_log,
             )
             for f in cors_findings:
-                f.scan_id = "active"
-                findings.append(f)
-                await emit_finding(f)
+                if f.fingerprint not in existing_fps:
+                    existing_fps.add(f.fingerprint)
+                    f.scan_id = "active"
+                    findings.append(f)
+                    await emit_finding(f)
 
             # --- Stage 5: Sensitive File & API Exposure (70% - 85%) ---
             await emit_progress(70, "Scanning for exposed environment, git, and actuator endpoints...")
@@ -195,23 +228,29 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 emit_log=emit_log,
             )
             for f in exp_findings:
-                f.scan_id = "active"
-                findings.append(f)
-                await emit_finding(f)
+                if f.fingerprint not in existing_fps:
+                    existing_fps.add(f.fingerprint)
+                    f.scan_id = "active"
+                    findings.append(f)
+                    await emit_finding(f)
 
             # --- Stage 6: Browser Posture & GraphQL (85% - 100%) ---
-            await emit_progress(85, "Auditing Subresource Integrity, Mixed Content, and GraphQL schemas...")
+            await emit_progress(85, f"Auditing Subresource Integrity & Mixed Content across {len(html_contents) or 1} HTML pages...")
             await rate_limiter.acquire()
 
-            browser_findings = await audit_browser_posture(
-                target.value,
-                client=client,
-                emit_log=emit_log,
-            )
-            for f in browser_findings:
-                f.scan_id = "active"
-                findings.append(f)
-                await emit_finding(f)
+            # Audit browser posture on all crawled HTML pages
+            for page_url, html_str in html_contents.items():
+                browser_findings = await audit_browser_posture(
+                    page_url,
+                    client=client,
+                    html_content=html_str,
+                )
+                for f in browser_findings:
+                    if f.fingerprint not in existing_fps:
+                        existing_fps.add(f.fingerprint)
+                        f.scan_id = "active"
+                        findings.append(f)
+                        await emit_finding(f)
 
             gql_findings = await audit_graphql_endpoints(
                 target.value,
@@ -219,9 +258,11 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 emit_log=emit_log,
             )
             for f in gql_findings:
-                f.scan_id = "active"
-                findings.append(f)
-                await emit_finding(f)
+                if f.fingerprint not in existing_fps:
+                    existing_fps.add(f.fingerprint)
+                    f.scan_id = "active"
+                    findings.append(f)
+                    await emit_finding(f)
 
         await emit_progress(100, "Web DAST assessment completed.")
         await emit_log(LogLevel.INFO, f"Web DAST engine finished with {len(findings)} total findings.")

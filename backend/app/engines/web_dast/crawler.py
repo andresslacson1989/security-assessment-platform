@@ -50,6 +50,8 @@ class WebCrawler:
 
         self.visited_hashes: Set[str] = set()
         self.discovered_endpoints: List[DiscoveredEndpoint] = []
+        self.page_responses: Dict[str, httpx.Response] = {}
+        self.page_html: Dict[str, str] = {}
 
     def _hash_url(self, url: str) -> str:
         return hashlib.sha256(url.lower().encode("utf-8")).hexdigest()
@@ -178,12 +180,14 @@ class WebCrawler:
 
             try:
                 resp = await self.client.get(current_url, follow_redirects=self.config.follow_redirects)
+                self.page_responses[current_url] = resp
                 status_code = resp.status_code
                 content_type = resp.headers.get("content-type", "")
                 is_html = "text/html" in content_type.lower()
                 has_forms = False
 
                 if is_html:
+                    self.page_html[current_url] = resp.text
                     soup = BeautifulSoup(resp.text, "html.parser")
                     forms = soup.find_all("form")
                     if forms:

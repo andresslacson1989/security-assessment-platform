@@ -22,6 +22,7 @@ async def audit_browser_posture(
     target_value: str,
     client: httpx.AsyncClient,
     emit_log: Optional[LogCallback] = None,
+    html_content: Optional[str] = None,
 ) -> List[Finding]:
     """
     Parses HTML DOM to detect external scripts lacking SRI and passive mixed content.
@@ -32,16 +33,19 @@ async def audit_browser_posture(
     parsed_target = urllib.parse.urlparse(url)
     target_host = parsed_target.hostname or ""
 
-    if emit_log:
-        await emit_log(LogLevel.INFO, f"Parsing HTML DOM for SRI and Mixed Content on {url}...")
+    if html_content is None:
+        if emit_log:
+            await emit_log(LogLevel.INFO, f"Parsing HTML DOM for SRI and Mixed Content on {url}...")
 
-    try:
-        resp = await client.get(url, follow_redirects=True)
-        if resp.status_code != 200 or "text/html" not in resp.headers.get("content-type", ""):
+        try:
+            resp = await client.get(url, follow_redirects=True)
+            if resp.status_code != 200 or "text/html" not in resp.headers.get("content-type", ""):
+                return findings
+            html = resp.text
+        except Exception:
             return findings
-        html = resp.text
-    except Exception:
-        return findings
+    else:
+        html = html_content
 
     soup = BeautifulSoup(html, "html.parser")
 
