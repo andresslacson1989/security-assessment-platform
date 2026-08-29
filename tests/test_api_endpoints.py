@@ -1,5 +1,5 @@
 """
-Integration test suite for FastAPI REST endpoints and SSE streaming.
+Integration test suite for FastAPI REST endpoints and SSE streaming (v3.1.0).
 """
 
 import asyncio
@@ -8,7 +8,19 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from app.main import app
-from app.core.models import TargetType, ScanProfile, ScanStatus, ScanJob, Target, Severity, calculate_fingerprint
+from app.core.models import (
+    TargetType,
+    ScanProfile,
+    ScanStatus,
+    ScanJob,
+    Target,
+    Severity,
+    AuthType,
+    AuthConfig,
+    CrawlerConfig,
+    DiscoveredEndpoint,
+    calculate_fingerprint,
+)
 from app.core.storage import save_scan
 from app.core.orchestrator import orchestrator
 
@@ -46,13 +58,24 @@ async def test_scan_lifecycle_api():
         })
         assert bad_resp.status_code == 400
 
-        # 2. Start valid scan with empty enabled_engines so it executes immediately
+        # 2. Start valid scan with crawler & auth config
         start_resp = await ac.post("/api/scans/start", json={
             "target_type": "URL",
             "target_value": "https://example.com",
             "target_name": "Test Site",
             "profile": "CUSTOM",
             "enabled_engines": [],
+            "config": {
+                "crawler": {
+                    "enabled": True,
+                    "max_depth": 2,
+                    "max_pages": 15,
+                },
+                "auth": {
+                    "auth_type": "HEADER",
+                    "headers": {"Authorization": "Bearer test-token"},
+                }
+            }
         })
         assert start_resp.status_code == 201
         start_data = start_resp.json()
@@ -68,6 +91,9 @@ async def test_scan_lifecycle_api():
         get_data = get_resp.json()
         assert get_data["id"] == scan_id
         assert get_data["target"]["name"] == "Test Site"
+        assert "discovered_endpoints" in get_data
+        assert "pages_crawled" in get_data["summary"]
+        assert "authenticated_session_active" in get_data["summary"]
 
         # 4. List scan history
         hist_resp = await ac.get("/api/scans/history?limit=10&offset=0")

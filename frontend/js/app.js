@@ -1,6 +1,6 @@
 /**
  * CyberAssess Security Platform - Frontend HUD Controller
- * Pure Vanilla Zero-Build Architecture (Contract 07 & Contract 04)
+ * Pure Vanilla Zero-Build Architecture (Contract 07 & Contract 04 v3.1.0)
  */
 
 class ScanStreamManager {
@@ -8,6 +8,7 @@ class ScanStreamManager {
     this.currentScanId = null;
     this.eventSource = null;
     this.allFindings = [];
+    this.discoveredEndpoints = [];
     this.activeFilter = "ALL";
     this.searchQuery = "";
 
@@ -29,6 +30,29 @@ class ScanStreamManager {
     this.btnCancel = document.getElementById("btn-cancel");
     this.btnToggleAdvanced = document.getElementById("btn-toggle-advanced");
     this.advancedPanel = document.getElementById("advanced-config-panel");
+
+    // Header Auth Indicator
+    this.authStatusBadge = document.getElementById("auth-status-badge");
+
+    // Crawler Config Controls
+    this.cfgCrawlerEnabled = document.getElementById("cfg-crawler-enabled");
+    this.cfgCrawlerDepth = document.getElementById("cfg-crawler-depth");
+    this.valCrawlerDepth = document.getElementById("val-crawler-depth");
+    this.cfgCrawlerPages = document.getElementById("cfg-crawler-pages");
+    this.cfgCrawlerExclude = document.getElementById("cfg-crawler-exclude");
+
+    // Auth Pills & Subforms
+    this.authPills = document.querySelectorAll(".auth-pill");
+    this.subformAuthHeader = document.getElementById("subform-auth-header");
+    this.subformAuthCookie = document.getElementById("subform-auth-cookie");
+    this.subformAuthForm = document.getElementById("subform-auth-form");
+
+    // Discovered Endpoints HUD
+    this.endpointsHud = document.getElementById("endpoints-hud");
+    this.endpointsCountBadge = document.getElementById("endpoints-count-badge");
+    this.endpointsTableBody = document.getElementById("endpoints-table-body");
+    this.btnToggleEndpoints = document.getElementById("btn-toggle-endpoints");
+    this.endpointsTableContainer = document.getElementById("endpoints-table-container");
 
     // Progress HUD
     this.progressHud = document.getElementById("progress-hud");
@@ -91,6 +115,33 @@ class ScanStreamManager {
       this.advancedPanel.style.display = isVisible ? "none" : "block";
     });
 
+    // Crawler Depth Slider
+    if (this.cfgCrawlerDepth) {
+      this.cfgCrawlerDepth.addEventListener("input", (e) => {
+        if (this.valCrawlerDepth) this.valCrawlerDepth.innerText = e.target.value;
+      });
+    }
+
+    // Auth Pill Selection
+    this.authPills.forEach((pill) => {
+      const radio = pill.querySelector('input[type="radio"]');
+      pill.addEventListener("click", () => {
+        this.authPills.forEach((p) => p.classList.remove("active"));
+        pill.classList.add("active");
+        radio.checked = true;
+        this.toggleAuthSubforms(radio.value);
+      });
+    });
+
+    // Toggle Endpoints HUD Table
+    if (this.btnToggleEndpoints) {
+      this.btnToggleEndpoints.addEventListener("click", () => {
+        const isHidden = this.endpointsTableContainer.style.display === "none";
+        this.endpointsTableContainer.style.display = isHidden ? "block" : "none";
+        this.btnToggleEndpoints.innerText = isHidden ? "Collapse" : "Expand";
+      });
+    }
+
     // Form Submission (Launch Scan)
     this.scanForm.addEventListener("submit", (e) => this.handleStartScan(e));
 
@@ -124,6 +175,29 @@ class ScanStreamManager {
     this.historyModal.addEventListener("click", (e) => {
       if (e.target === this.historyModal) this.closeHistoryModal();
     });
+  }
+
+  toggleAuthSubforms(authType) {
+    if (this.subformAuthHeader) this.subformAuthHeader.style.display = authType === "HEADER" ? "block" : "none";
+    if (this.subformAuthCookie) this.subformAuthCookie.style.display = authType === "COOKIE" ? "block" : "none";
+    if (this.subformAuthForm) this.subformAuthForm.style.display = authType === "FORM_LOGIN" ? "block" : "none";
+
+    this.updateAuthStatusBadge(authType, false);
+  }
+
+  updateAuthStatusBadge(authType, isActive = false) {
+    if (!this.authStatusBadge) return;
+    this.authStatusBadge.className = "auth-status-badge";
+    if (authType === "NONE") {
+      this.authStatusBadge.classList.add("badge-none");
+      this.authStatusBadge.innerText = "AUTH: NONE";
+    } else if (isActive) {
+      this.authStatusBadge.classList.add("badge-auth-active");
+      this.authStatusBadge.innerText = `AUTH: ${authType} (ACTIVE)`;
+    } else {
+      this.authStatusBadge.classList.add("badge-none");
+      this.authStatusBadge.innerText = `AUTH: ${authType}`;
+    }
   }
 
   async checkSystemHealth() {
@@ -195,6 +269,52 @@ class ScanStreamManager {
     return selected;
   }
 
+  getAuthConfig() {
+    const checkedRadio = document.querySelector('input[name="auth_type"]:checked');
+    const authType = checkedRadio ? checkedRadio.value : "NONE";
+
+    const authConfig = { auth_type: authType };
+
+    if (authType === "HEADER") {
+      const hdrName = document.getElementById("cfg-auth-hdr-name").value.trim() || "Authorization";
+      const hdrVal = document.getElementById("cfg-auth-hdr-val").value.trim();
+      authConfig.headers = hdrVal ? { [hdrName]: hdrVal } : {};
+    } else if (authType === "COOKIE") {
+      const cookieName = document.getElementById("cfg-auth-cookie-name").value.trim() || "sessionid";
+      const cookieVal = document.getElementById("cfg-auth-cookie-val").value.trim();
+      authConfig.cookies = cookieVal ? { [cookieName]: cookieVal } : {};
+    } else if (authType === "FORM_LOGIN") {
+      authConfig.login_url = document.getElementById("cfg-auth-login-url").value.trim() || null;
+      authConfig.username_field = document.getElementById("cfg-auth-user-field").value.trim() || "username";
+      authConfig.username = document.getElementById("cfg-auth-username").value.trim() || null;
+      authConfig.password_field = document.getElementById("cfg-auth-pass-field").value.trim() || "password";
+      authConfig.password = document.getElementById("cfg-auth-password").value || null;
+      authConfig.logged_in_indicator = document.getElementById("cfg-auth-indicator").value.trim() || null;
+    }
+
+    return authConfig;
+  }
+
+  getCrawlerConfig() {
+    const enabled = this.cfgCrawlerEnabled ? this.cfgCrawlerEnabled.checked : true;
+    const maxDepth = parseInt(this.cfgCrawlerDepth?.value || "3");
+    const maxPages = parseInt(this.cfgCrawlerPages?.value || "50");
+    const excludeRaw = this.cfgCrawlerExclude?.value || "";
+    const excludePatterns = excludeRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    return {
+      enabled: enabled,
+      max_depth: maxDepth,
+      max_pages: maxPages,
+      exclude_patterns: excludePatterns,
+      follow_redirects: true,
+      parse_sitemap: true,
+    };
+  }
+
   async handleStartScan(e) {
     e.preventDefault();
     const targetVal = this.targetInput.value.trim();
@@ -209,6 +329,9 @@ class ScanStreamManager {
     const timeoutSec = parseInt(document.getElementById("cfg-timeout").value) || 10;
     const customUa = document.getElementById("cfg-user-agent").value.trim();
 
+    const crawlerConfig = this.getCrawlerConfig();
+    const authConfig = this.getAuthConfig();
+
     const payload = {
       target_type: targetType,
       target_value: targetVal,
@@ -219,6 +342,8 @@ class ScanStreamManager {
         rate_limit_rps: rateLimit,
         timeout_seconds: timeoutSec,
         custom_headers: customUa ? { "User-Agent": customUa } : {},
+        crawler: crawlerConfig,
+        auth: authConfig,
       },
     };
 
@@ -228,8 +353,10 @@ class ScanStreamManager {
     this.resultsDashboard.style.display = "block";
 
     this.allFindings = [];
+    this.discoveredEndpoints = [];
     this.renderScorecard(null);
     this.renderFindings();
+    this.renderDiscoveredEndpoints();
 
     this.appendLog("orchestrator", "INFO", `Launching scan on target: ${targetVal}`);
 
@@ -290,22 +417,76 @@ class ScanStreamManager {
       this.updateLiveSummaryCounts();
     });
 
+    this.eventSource.addEventListener("auth_status", (e) => {
+      const data = JSON.parse(e.data);
+      this.updateAuthStatusBadge(data.auth_type, data.session_active);
+      this.appendLog("auth_session", data.authenticated ? "INFO" : "WARNING", data.message || "Auth status updated.");
+    });
+
+    this.eventSource.addEventListener("crawl_discovered", (e) => {
+      const ep = JSON.parse(e.data);
+      this.addDiscoveredEndpoint(ep);
+    });
+
     this.eventSource.addEventListener("completed", (e) => {
       const summary = JSON.parse(e.data);
       this.renderScorecard(summary);
       this.updateProgress(100, "Assessment complete.");
       this.btnLaunch.style.display = "inline-flex";
       this.btnCancel.style.display = "none";
+      if (summary.authenticated_session_active) {
+        this.updateAuthStatusBadge("ACTIVE", true);
+      }
       this.eventSource.close();
     });
 
     this.eventSource.addEventListener("error", (e) => {
-      // EventSource automatic reconnect or error
       if (this.eventSource.readyState === EventSource.CLOSED) {
         this.btnLaunch.style.display = "inline-flex";
         this.btnCancel.style.display = "none";
       }
     });
+  }
+
+  addDiscoveredEndpoint(endpoint) {
+    if (!this.discoveredEndpoints.some((e) => e.url === endpoint.url)) {
+      this.discoveredEndpoints.push(endpoint);
+      this.renderDiscoveredEndpoints();
+    }
+  }
+
+  renderDiscoveredEndpoints() {
+    if (!this.endpointsHud) return;
+
+    if (this.discoveredEndpoints.length === 0) {
+      this.endpointsHud.style.display = "none";
+      return;
+    }
+
+    this.endpointsHud.style.display = "block";
+    if (this.endpointsCountBadge) {
+      this.endpointsCountBadge.innerText = `${this.discoveredEndpoints.length} Endpoint${this.discoveredEndpoints.length === 1 ? "" : "s"}`;
+    }
+
+    this.endpointsTableBody.innerHTML = this.discoveredEndpoints
+      .map((ep) => {
+        let statusClass = "status-badge-2xx";
+        if (ep.status_code >= 500) statusClass = "status-badge-5xx";
+        else if (ep.status_code >= 400) statusClass = "status-badge-4xx";
+        else if (ep.status_code >= 300) statusClass = "status-badge-3xx";
+
+        return `
+        <tr>
+          <td><span style="color: var(--text-dim);">D${ep.depth}</span></td>
+          <td><span style="color: var(--accent-cyan); font-weight: 700;">${this.escapeHtml(ep.method || "GET")}</span></td>
+          <td><code style="word-break: break-all;">${this.escapeHtml(ep.url)}</code></td>
+          <td><span class="${statusClass}">${ep.status_code || 200}</span></td>
+          <td>${ep.has_forms ? '<span class="tag-form">FORM</span>' : '<span style="color: var(--text-dim);">-</span>'}</td>
+          <td>${ep.is_authenticated ? '<span class="tag-auth">AUTH</span>' : '<span style="color: var(--text-dim);">PUBLIC</span>'}</td>
+        </tr>
+      `;
+      })
+      .join("");
   }
 
   updateProgress(percent, stage) {
@@ -538,11 +719,17 @@ class ScanStreamManager {
       this.targetInput.value = job.target.value;
       this.targetName.value = job.target.name || "";
       this.allFindings = job.findings || [];
+      this.discoveredEndpoints = job.discovered_endpoints || [];
 
       this.updateProgress(job.progress_percent || 100, job.current_stage || "Completed.");
       this.renderScorecard(job.summary);
       this.renderFindings();
+      this.renderDiscoveredEndpoints();
       this.updateExportLinks(job.id);
+
+      if (job.summary?.authenticated_session_active) {
+        this.updateAuthStatusBadge("ACTIVE", true);
+      }
 
       this.resultsDashboard.style.display = "block";
       this.progressHud.style.display = "block";

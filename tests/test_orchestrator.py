@@ -1,5 +1,5 @@
 """
-Unit tests for Engine Plugin Interface, Token Bucket Rate Limiter, Circuit Breaker, and Async Orchestrator.
+Unit tests for Engine Plugin Interface, Token Bucket Rate Limiter, Circuit Breaker, and Async Orchestrator (v3.1.0).
 """
 
 import asyncio
@@ -47,6 +47,7 @@ class MockSuccessfulEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        **kwargs,
     ) -> List[Finding]:
         await emit_log(LogLevel.INFO, "Mock starting...")
         await emit_progress(50, "Halfway done...")
@@ -93,6 +94,7 @@ class MockFailingEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        **kwargs,
     ) -> List[Finding]:
         await emit_log(LogLevel.INFO, "Simulating fatal socket error...")
         raise ConnectionResetError("Simulated connection reset")
@@ -230,7 +232,7 @@ async def test_orchestrator_cancellation():
         def is_applicable(self, target: Target) -> bool:
             return True
 
-        async def run(self, target, config, emit_log, emit_progress, emit_finding):
+        async def run(self, target, config, emit_log, emit_progress, emit_finding, **kwargs):
             await emit_progress(10, "Sleeping...")
             await asyncio.sleep(5.0)
             return []

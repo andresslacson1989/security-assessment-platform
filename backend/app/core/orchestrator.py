@@ -1,5 +1,5 @@
 """
-Contract 03 & 04 Background Scan Orchestrator and Event Dispatcher.
+Contract 03 & 04 Background Scan Orchestrator and Event Dispatcher (v3.1.0).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from app.core.models import (
     LogEntry,
     LogLevel,
     ScanJobSummary,
+    DiscoveredEndpoint,
     utc_now,
     calculate_fingerprint,
 )
@@ -188,6 +189,29 @@ class ScanOrchestrator:
 
         await self._broadcast(scan_id, "finding", finding.model_dump(mode="json"))
 
+    async def emit_auth_status(self, scan_id: str, data: dict) -> None:
+        """
+        Emits an authentication status event and records active session state.
+        """
+        job = self._active_jobs.get(scan_id)
+        if job:
+            job.summary.authenticated_session_active = bool(data.get("session_active", False))
+
+        await self._broadcast(scan_id, "auth_status", data)
+
+    async def emit_endpoint_discovered(self, scan_id: str, endpoint: DiscoveredEndpoint) -> None:
+        """
+        Emits a crawl discovery event and updates job discovered endpoints and pages count.
+        """
+        job = self._active_jobs.get(scan_id)
+        if job:
+            existing_urls = {ep.url for ep in job.discovered_endpoints}
+            if endpoint.url not in existing_urls:
+                job.discovered_endpoints.append(endpoint)
+                job.summary.pages_crawled = max(1, len(job.discovered_endpoints))
+
+        await self._broadcast(scan_id, "crawl_discovered", endpoint.model_dump(mode="json"))
+
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
         await self._broadcast(scan_id, "completed", {
             "scan_id": scan_id,
@@ -200,6 +224,8 @@ class ScanOrchestrator:
             "medium_count": summary.medium_count,
             "low_count": summary.low_count,
             "info_count": summary.info_count,
+            "pages_crawled": summary.pages_crawled,
+            "authenticated_session_active": summary.authenticated_session_active,
             "completed_at": utc_now().isoformat(),
         })
 
@@ -264,13 +290,29 @@ class ScanOrchestrator:
                 async def _find_cb(f: Finding) -> None:
                     await self.emit_finding(scan_id, f)
 
+                async def _auth_cb(data: dict) -> None:
+                    await self.emit_auth_status(scan_id, data)
+
+                async def _ep_cb(ep: DiscoveredEndpoint) -> None:
+                    await self.emit_endpoint_discovered(scan_id, ep)
+
                 try:
+                    import inspect
+                    sig = inspect.signature(engine.run)
+                    run_kwargs = {}
+                    accepts_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                    if "emit_auth_status" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["emit_auth_status"] = _auth_cb
+                    if "emit_endpoint_discovered" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["emit_endpoint_discovered"] = _ep_cb
+
                     engine_findings = await engine.run(
                         job.target,
                         job.config,
                         _log_cb,
                         _prog_cb,
                         _find_cb,
+                        **run_kwargs,
                     )
                     # Deduplicate and append
                     for finding in engine_findings:
@@ -292,6 +334,7 @@ class ScanOrchestrator:
             job.current_stage = "Assessment complete."
             job.completed_at = utc_now()
             job.summary = calculate_scan_grade(job.findings, duration_seconds=duration)
+            job.summary.pages_crawled = max(1, len(job.discovered_endpoints))
 
             save_scan(job)
             await self.emit_progress(scan_id, 100, "Assessment complete.", ScanStatus.COMPLETED)

@@ -1,6 +1,6 @@
 /*
   Cyber-Security SOC Dark Theme HUD Design System
-  Contract 07 Styling Tokens & UI Specifications
+  Contract 07 Styling Tokens & UI Specifications (v3.1.0)
 */
 
 :root {
@@ -98,6 +98,36 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
+}
+
+.auth-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  font-family: var(--font-mono);
+}
+
+.auth-status-badge.badge-none {
+  background-color: rgba(148, 163, 184, 0.1);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.auth-status-badge.badge-auth-active {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.auth-status-badge.badge-auth-failed {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--color-critical);
+  border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
 .system-status-indicator {
@@ -167,6 +197,8 @@ body {
 
 .flex-1 { flex: 1; min-width: 220px; }
 .flex-2 { flex: 2; min-width: 300px; }
+.flex-row { display: flex; }
+.align-center { align-items: center; }
 
 .form-group label {
   display: block;
@@ -332,19 +364,133 @@ body {
   font-size: 11px;
 }
 
-/* --- Advanced Config Panel --- */
+/* --- Advanced Config Panel & Auth Drawer --- */
 .advanced-config-panel {
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: rgba(0, 0, 0, 0.3);
   border: 1px dashed var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 16px;
+  padding: 18px;
   margin-bottom: 20px;
+}
+
+.advanced-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  margin-bottom: 12px;
+  letter-spacing: 0.5px;
 }
 
 .config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
+}
+
+.highlight-val {
+  color: var(--accent-cyan);
+  font-weight: 800;
+  font-family: var(--font-mono);
+}
+
+.form-range {
+  width: 100%;
+  accent-color: var(--accent-cyan);
+  cursor: pointer;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  margin-right: 10px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  transition: .3s;
+  border-radius: 24px;
+}
+
+.switch-slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--text-muted);
+  transition: .3s;
+  border-radius: 50%;
+}
+
+.toggle-switch input:checked + .switch-slider {
+  background-color: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+}
+
+.toggle-switch input:checked + .switch-slider:before {
+  transform: translateX(20px);
+  background-color: #ffffff;
+}
+
+.switch-label {
+  font-size: 13px;
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+/* Auth Pills */
+.auth-type-selector {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.auth-pill {
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+
+.auth-pill input[type="radio"] {
+  display: none;
+}
+
+.auth-pill.active {
+  background-color: rgba(6, 182, 212, 0.15);
+  border-color: var(--accent-cyan);
+  color: #ffffff;
+}
+
+.auth-subform {
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  margin-top: 10px;
 }
 
 /* --- Progress HUD --- */
@@ -402,6 +548,62 @@ body {
   background: linear-gradient(90deg, #0284c7, #06b6d4, #10b981);
   box-shadow: 0 0 10px rgba(6, 182, 212, 0.8);
   transition: width 0.3s ease;
+}
+
+/* --- Discovered Endpoints HUD Card --- */
+.endpoints-card {
+  border-color: #1e293b;
+}
+
+.endpoints-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.endpoints-badge {
+  background-color: rgba(6, 182, 212, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.endpoints-table-wrapper {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.monospace-table {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.status-badge-2xx { color: var(--accent-emerald); font-weight: 700; }
+.status-badge-3xx { color: var(--accent-blue); font-weight: 700; }
+.status-badge-4xx { color: var(--color-medium); font-weight: 700; }
+.status-badge-5xx { color: var(--color-critical); font-weight: 700; }
+
+.tag-form {
+  background-color: rgba(234, 179, 8, 0.15);
+  color: var(--color-medium);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tag-auth {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--accent-emerald);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 /* --- Terminal Console --- */

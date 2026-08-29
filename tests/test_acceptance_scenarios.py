@@ -1,5 +1,5 @@
 """
-Contract 05 End-to-End Acceptance Test Suite (All 8 Test Scenarios).
+Contract 05 End-to-End Acceptance Test Suite (All 10 Test Scenarios - v3.1.0).
 Verifies complete system functionality against formal contract deliverables and Definition of Done.
 """
 
@@ -21,11 +21,17 @@ from app.core.models import (
     Finding,
     Evidence,
     Severity,
+    AuthType,
+    AuthConfig,
+    CrawlerConfig,
+    DiscoveredEndpoint,
+    ScanConfig,
     calculate_fingerprint,
     mask_secret,
 )
 from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
+from app.core.orchestrator import ScanOrchestrator
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.engines.network.dns_hygiene import audit_dns_hygiene
 from app.engines.network.port_checker import audit_exposed_ports
@@ -34,6 +40,8 @@ from app.engines.web_dast.headers_cookies import audit_security_headers_and_cook
 from app.engines.web_dast.cors_analyzer import audit_cors_policies
 from app.engines.web_dast.api_inspector import audit_sensitive_exposure_and_methods
 from app.engines.web_dast.graphql_auditor import audit_graphql_endpoints
+from app.engines.web_dast.crawler import WebCrawler
+from app.engines.web_dast.auth_session import AuthSessionManager
 from app.engines.code_sast.secret_scanner import audit_code_secrets, calculate_shannon_entropy
 from app.engines.code_sast.crypto_lint import audit_crypto_patterns
 from app.engines.code_sast.injection_lint import audit_injection_patterns
@@ -412,3 +420,227 @@ def test_scenario_8_multiformat_exporters():
     parsed = json.loads(json_doc)
     assert parsed["id"] == job.id
     assert parsed["summary"]["overall_security_grade"] == "F"
+
+
+# ==============================================================================
+# Scenario 9: Scoped Web Crawler Discovery & Boundary Enforcement (v3.1.0)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_9_scoped_web_crawler_discovery():
+    mock_client = AsyncMock()
+
+    async def mock_get(url, **kwargs):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.headers = {"content-type": "text/html; charset=utf-8"}
+
+        if url in ("https://target.com", "https://target.com/"):
+            resp.text = """
+            <html>
+              <body>
+                <a href="/about">About Us</a>
+                <a href="/contact">Contact</a>
+                <a href="https://external-cdn.com/asset">External CDN</a>
+                <a href="/user/logout">Logout</a>
+              </body>
+            </html>
+            """
+        elif url == "https://target.com/about":
+            resp.text = """
+            <html>
+              <body>
+                <a href="/about/team">Team Page</a>
+              </body>
+            </html>
+            """
+        elif url == "https://target.com/about/team":
+            resp.text = """
+            <html>
+              <body>
+                <a href="/about/team/lead">Team Lead Profile (Depth 3)</a>
+              </body>
+            </html>
+            """
+        elif url == "https://target.com/contact":
+            resp.text = """
+            <html>
+              <body>
+                <form action="/contact" method="POST">
+                  <input type="text" name="name">
+                  <button type="submit">Submit</button>
+                </form>
+              </body>
+            </html>
+            """
+        elif url == "https://target.com/robots.txt":
+            resp.headers = {"content-type": "text/plain"}
+            resp.text = "User-agent: *\nSitemap: https://target.com/sitemap.xml\nDisallow: /admin\n"
+        elif url == "https://target.com/sitemap.xml":
+            resp.headers = {"content-type": "application/xml"}
+            resp.text = """<?xml version="1.0" encoding="UTF-8"?>
+            <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+               <url><loc>https://target.com/pricing</loc></url>
+            </urlset>
+            """
+        else:
+            resp.text = "<html><body>Discovered Page</body></html>"
+
+        return resp
+
+    mock_client.get = AsyncMock(side_effect=mock_get)
+
+    crawler_config = CrawlerConfig(
+        enabled=True,
+        max_depth=2,
+        max_pages=20,
+        exclude_patterns=["*logout*"],
+        parse_sitemap=True,
+    )
+
+    crawler = WebCrawler(
+        target_url="https://target.com",
+        config=crawler_config,
+        client=mock_client,
+    )
+
+    endpoints = await crawler.crawl()
+    crawled_urls = [e.url for e in endpoints]
+
+    # Verify root, depth 1, and depth 2 are crawled
+    assert any("https://target.com" in u for u in crawled_urls)
+    assert "https://target.com/about" in crawled_urls
+    assert "https://target.com/contact" in crawled_urls
+    assert "https://target.com/about/team" in crawled_urls
+
+    # Verify depth limit enforcement: depth 3 (/about/team/lead) MUST NOT be crawled
+    assert "https://target.com/about/team/lead" not in crawled_urls
+
+    # Verify same-origin scope enforcement: external URL MUST NOT be crawled
+    assert "https://external-cdn.com/asset" not in crawled_urls
+
+    # Verify exclude pattern enforcement: /user/logout MUST NOT be crawled
+    assert "https://target.com/user/logout" not in crawled_urls
+
+    # Verify sitemap seed was crawled
+    assert "https://target.com/pricing" in crawled_urls
+
+    # Verify form detection on /contact
+    contact_ep = next((e for e in endpoints if e.url == "https://target.com/contact"), None)
+    assert contact_ep is not None
+    assert contact_ep.has_forms is True
+    assert len(endpoints) >= 3
+
+
+# ==============================================================================
+# Scenario 10: Authenticated DAST Session & Form Auditing (v3.1.0)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_10_authenticated_dast_session_scanning():
+    mock_client = AsyncMock()
+
+    # Mock Login GET returning CSRF token
+    login_get_resp = MagicMock(spec=httpx.Response)
+    login_get_resp.status_code = 200
+    login_get_resp.headers = {"content-type": "text/html"}
+    login_get_resp.text = """
+    <html>
+      <body>
+        <form action="/login" method="POST">
+          <input type="hidden" name="_csrf" value="mock_csrf_val">
+          <input type="text" name="username">
+          <input type="password" name="password">
+          <button type="submit">Sign In</button>
+        </form>
+      </body>
+    </html>
+    """
+
+    # Mock Login POST confirming session
+    login_post_resp = MagicMock(spec=httpx.Response)
+    login_post_resp.status_code = 200
+    login_post_resp.headers = {"content-type": "text/html"}
+    login_post_resp.text = "<html><body>Welcome, auditor user! Active Session Dashboard</body></html>"
+
+    mock_client.get = AsyncMock(return_value=login_get_resp)
+    mock_client.post = AsyncMock(return_value=login_post_resp)
+
+    # Set mock cookie without HttpOnly and without Secure on HTTPS
+    client = httpx.AsyncClient()
+    client.cookies.set("session_id", "auth_xyz123", domain="app.test", path="/")
+
+    auth_config = AuthConfig(
+        auth_type=AuthType.FORM_LOGIN,
+        login_url="https://app.test/login",
+        username_field="username",
+        username="auditor",
+        password_field="password",
+        password="password123",
+        csrf_token_field="_csrf",
+        logged_in_indicator="Welcome",
+    )
+
+    auth_manager = AuthSessionManager(
+        target_url="https://app.test",
+        config=auth_config,
+        client=client,
+    )
+
+    # Execute authentication
+    with patch.object(auth_manager, "client", mock_client):
+        auth_success = await auth_manager.authenticate()
+        assert auth_success is True
+
+    # Prepare mock unauthenticated response for broken access control check (DAST-AUTH-003)
+    mock_unauth_resp = MagicMock(spec=httpx.Response)
+    mock_unauth_resp.status_code = 200
+    mock_unauth_resp.text = """
+    <!DOCTYPE html>
+    <html>
+      <head><title>Admin Dashboard</title></head>
+      <body>
+        <h1>Confidential Executive Data</h1>
+        <p>User database records, salary schedules, and billing statements.</p>
+      </body>
+    </html>
+    """
+
+    discovered_endpoints = [
+        DiscoveredEndpoint(url="https://app.test/admin/dashboard", method="GET", depth=1, is_authenticated=True),
+        DiscoveredEndpoint(url="https://app.test/api/export?token=sk_test_sensitive_token_12345", method="GET", depth=1),
+    ]
+
+    html_contents = {
+        "https://app.test/settings": """
+        <html>
+          <body>
+            <form action="/update-profile" method="POST">
+              <input type="text" name="display_name">
+              <button type="submit">Update</button>
+            </form>
+          </body>
+        </html>
+        """
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_unauth_resp):
+        findings = await auth_manager.audit_auth_and_forms(
+            discovered_endpoints=discovered_endpoints,
+            html_contents=html_contents,
+        )
+
+    check_ids = {f.check_id for f in findings}
+
+    # Verify DAST-AUTH-002: Insecure session cookie (missing HttpOnly/Secure)
+    assert "DAST-AUTH-002" in check_ids
+
+    # Verify DAST-AUTH-003: Broken Access Control (Unprotected sensitive endpoint)
+    assert "DAST-AUTH-003" in check_ids
+
+    # Verify DAST-AUTH-004: Sensitive credentials in query string
+    assert "DAST-AUTH-004" in check_ids
+    token_finding = next(f for f in findings if f.check_id == "DAST-AUTH-004")
+    assert "sk_test_sensitive_token_12345" not in token_finding.evidence.observed_value
+    assert "*" in token_finding.evidence.observed_value
+
+    # Verify DAST-FORM-002: State-changing form missing anti-CSRF token
+    assert "DAST-FORM-002" in check_ids

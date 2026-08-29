@@ -1,5 +1,5 @@
 """
-Contract 02 & 08 Data Models and Pydantic v2 Schemas.
+Contract 02 & 08 Data Models and Pydantic v2 Schemas (v3.1.0).
 """
 
 from __future__ import annotations
@@ -71,6 +71,64 @@ class LogLevel(str, Enum):
     WARNING = "WARNING"
     ERROR = "ERROR"
     DEBUG = "DEBUG"
+
+
+class AuthType(str, Enum):
+    """
+    Supported authentication mechanisms for authenticated scans.
+    """
+    NONE = "NONE"
+    HEADER = "HEADER"
+    COOKIE = "COOKIE"
+    FORM_LOGIN = "FORM_LOGIN"
+
+
+class DiscoveredEndpoint(BaseModel):
+    """
+    URL endpoint discovered during crawling or API discovery.
+    """
+    url: str = Field(..., description="Target URL")
+    method: str = Field(default="GET", description="HTTP Method")
+    depth: int = Field(default=0, ge=0, description="Crawl tree depth")
+    status_code: Optional[int] = Field(default=None, description="HTTP status code")
+    content_type: Optional[str] = Field(default=None, description="Content-Type header")
+    is_authenticated: bool = Field(default=False, description="Whether endpoint requires/has authenticated session")
+    has_forms: bool = Field(default=False, description="Whether page contains input forms")
+
+
+class AuthConfig(BaseModel):
+    """
+    Authentication configuration for authenticated vulnerability scanning.
+    """
+    auth_type: AuthType = Field(default=AuthType.NONE, description="Authentication mechanism")
+    headers: Dict[str, str] = Field(default_factory=dict, description="Custom auth headers (e.g. Bearer token, Authorization)")
+    cookies: Dict[str, str] = Field(default_factory=dict, description="Session cookies (e.g. sessionid, jwt)")
+    login_url: Optional[str] = Field(default=None, description="Form login URL")
+    username_field: str = Field(default="username", description="Form username input field name")
+    username: Optional[str] = Field(default=None, description="Username/email value")
+    password_field: str = Field(default="password", description="Form password input field name")
+    password: Optional[str] = Field(default=None, description="Password value")
+    csrf_token_field: Optional[str] = Field(default=None, description="CSRF token input field name if required")
+    logged_in_indicator: Optional[str] = Field(default=None, description="String or regex indicating active login session")
+    logout_url_patterns: List[str] = Field(
+        default_factory=lambda: ["logout", "signout", "sign_out", "log_out", "exit", "destroy"],
+        description="URL patterns to avoid hitting during crawling to preserve session"
+    )
+
+
+class CrawlerConfig(BaseModel):
+    """
+    Configuration for automated web application crawler.
+    """
+    enabled: bool = Field(default=True, description="Enable automated crawl discovery")
+    max_depth: int = Field(default=3, ge=1, le=5, description="Maximum link crawl depth")
+    max_pages: int = Field(default=50, ge=1, le=200, description="Maximum total pages to crawl")
+    exclude_patterns: List[str] = Field(
+        default_factory=lambda: ["*logout*", "*signout*", "*delete*", "*destroy*", "*purge*"],
+        description="URL glob patterns to exclude from crawling"
+    )
+    follow_redirects: bool = Field(default=True, description="Follow HTTP redirects")
+    parse_sitemap: bool = Field(default=True, description="Parse /sitemap.xml and /robots.txt")
 
 
 class Target(BaseModel):
@@ -159,6 +217,8 @@ class ScanJobSummary(BaseModel):
     overall_security_grade: str = Field(default="A+", description="Letter grade: A+, A, B, C, D, or F")
     duration_seconds: float = Field(default=0.0, ge=0.0)
     engine_breakdown: Dict[str, int] = Field(default_factory=dict, description="Finding counts per engine")
+    pages_crawled: int = Field(default=1, ge=0, description="Total pages/endpoints crawled")
+    authenticated_session_active: bool = Field(default=False, description="Whether authenticated scan session was established")
 
 
 class LogEntry(BaseModel):
@@ -180,6 +240,8 @@ class ScanConfig(BaseModel):
     custom_headers: Dict[str, str] = Field(default_factory=dict)
     port_list: List[int] = Field(default_factory=list)
     include_subdomains: bool = Field(default=False)
+    crawler: CrawlerConfig = Field(default_factory=CrawlerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 class ScanJob(BaseModel):
@@ -199,5 +261,6 @@ class ScanJob(BaseModel):
     summary: ScanJobSummary = Field(default_factory=ScanJobSummary)
     findings: List[Finding] = Field(default_factory=list)
     logs: List[LogEntry] = Field(default_factory=list)
+    discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list)
     started_at: Optional[datetime] = Field(default=None)
     completed_at: Optional[datetime] = Field(default=None)

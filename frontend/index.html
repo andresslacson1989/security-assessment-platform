@@ -18,6 +18,9 @@
         </div>
       </div>
       <div class="header-controls">
+        <div class="auth-status-indicator" id="auth-status-indicator" title="Authentication Session Status">
+          <span class="auth-status-badge badge-none" id="auth-status-badge">AUTH: NONE</span>
+        </div>
         <div class="system-status-indicator" id="system-status-indicator" title="API Status">
           <span class="pulse-dot"></span>
           <span class="status-label" id="system-status-text">SYSTEM ONLINE</span>
@@ -35,7 +38,7 @@
       <section class="card launch-hud">
         <div class="card-header">
           <h2>🎯 Target Specification & Profile</h2>
-          <button class="btn btn-sm btn-ghost" id="btn-toggle-advanced">⚙️ Advanced Config</button>
+          <button class="btn btn-sm btn-ghost" id="btn-toggle-advanced">⚙️ Advanced & Authentication</button>
         </div>
         <div class="card-body">
           <form id="scan-form">
@@ -94,6 +97,112 @@
 
             <!-- Collapsible Advanced Config Panel -->
             <div class="advanced-config-panel" id="advanced-config-panel" style="display: none;">
+              
+              <!-- Crawler Configuration Block -->
+              <div class="advanced-section-title">🕸️ Scoped Asynchronous Web Crawler</div>
+              <div class="config-grid">
+                <div class="form-group flex-row align-center">
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="cfg-crawler-enabled" checked>
+                    <span class="switch-slider"></span>
+                  </label>
+                  <span class="switch-label">Enable Discovery Crawler</span>
+                </div>
+                <div class="form-group">
+                  <label for="cfg-crawler-depth">Max Depth: <span id="val-crawler-depth" class="highlight-val">3</span></label>
+                  <input type="range" id="cfg-crawler-depth" class="form-range" min="1" max="5" value="3">
+                </div>
+                <div class="form-group">
+                  <label for="cfg-crawler-pages">Max Page Limit</label>
+                  <input type="number" id="cfg-crawler-pages" class="form-control" min="5" max="200" value="50">
+                </div>
+                <div class="form-group flex-2">
+                  <label for="cfg-crawler-exclude">Exclude URL Patterns (Comma-separated globs)</label>
+                  <input type="text" id="cfg-crawler-exclude" class="form-control" value="*logout*, *signout*, *delete*, *destroy*, *purge*">
+                </div>
+              </div>
+
+              <!-- Authenticated Scanning Configuration Block -->
+              <div class="advanced-section-title" style="margin-top: 18px;">🔑 Authenticated Assessment Credentials</div>
+              <div class="auth-type-selector">
+                <label class="auth-pill active">
+                  <input type="radio" name="auth_type" value="NONE" checked>
+                  <span>None (Public)</span>
+                </label>
+                <label class="auth-pill">
+                  <input type="radio" name="auth_type" value="HEADER">
+                  <span>Custom Header (JWT / Token)</span>
+                </label>
+                <label class="auth-pill">
+                  <input type="radio" name="auth_type" value="COOKIE">
+                  <span>Session Cookie</span>
+                </label>
+                <label class="auth-pill">
+                  <input type="radio" name="auth_type" value="FORM_LOGIN">
+                  <span>Form Login Automation</span>
+                </label>
+              </div>
+
+              <!-- Subform: Header Auth -->
+              <div class="auth-subform" id="subform-auth-header" style="display: none;">
+                <div class="config-grid">
+                  <div class="form-group">
+                    <label for="cfg-auth-hdr-name">Header Name</label>
+                    <input type="text" id="cfg-auth-hdr-name" class="form-control" value="Authorization">
+                  </div>
+                  <div class="form-group flex-2">
+                    <label for="cfg-auth-hdr-val">Header Value</label>
+                    <input type="text" id="cfg-auth-hdr-val" class="form-control" placeholder="e.g. Bearer eyJhbGciOi...">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Subform: Cookie Auth -->
+              <div class="auth-subform" id="subform-auth-cookie" style="display: none;">
+                <div class="config-grid">
+                  <div class="form-group">
+                    <label for="cfg-auth-cookie-name">Cookie Name</label>
+                    <input type="text" id="cfg-auth-cookie-name" class="form-control" placeholder="e.g. sessionid">
+                  </div>
+                  <div class="form-group flex-2">
+                    <label for="cfg-auth-cookie-val">Cookie Value</label>
+                    <input type="text" id="cfg-auth-cookie-val" class="form-control" placeholder="e.g. 1a2b3c4d5e...">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Subform: Form Login -->
+              <div class="auth-subform" id="subform-auth-form" style="display: none;">
+                <div class="config-grid">
+                  <div class="form-group flex-2">
+                    <label for="cfg-auth-login-url">Login Endpoint URL</label>
+                    <input type="text" id="cfg-auth-login-url" class="form-control" placeholder="e.g. https://example.com/login">
+                  </div>
+                  <div class="form-group">
+                    <label for="cfg-auth-user-field">Username Field Name</label>
+                    <input type="text" id="cfg-auth-user-field" class="form-control" value="username">
+                  </div>
+                  <div class="form-group">
+                    <label for="cfg-auth-username">Username / Email</label>
+                    <input type="text" id="cfg-auth-username" class="form-control" placeholder="admin@example.com">
+                  </div>
+                  <div class="form-group">
+                    <label for="cfg-auth-pass-field">Password Field Name</label>
+                    <input type="text" id="cfg-auth-pass-field" class="form-control" value="password">
+                  </div>
+                  <div class="form-group">
+                    <label for="cfg-auth-password">Password</label>
+                    <input type="password" id="cfg-auth-password" class="form-control" placeholder="••••••••">
+                  </div>
+                  <div class="form-group">
+                    <label for="cfg-auth-indicator">Logged-In Indicator (Text in response)</label>
+                    <input type="text" id="cfg-auth-indicator" class="form-control" placeholder="e.g. Welcome, Dashboard">
+                  </div>
+                </div>
+              </div>
+
+              <!-- General Network Parameters -->
+              <div class="advanced-section-title" style="margin-top: 18px;">⚙️ Execution & Rate Limiting</div>
               <div class="config-grid">
                 <div class="form-group">
                   <label for="cfg-rate-limit">Rate Limit (Requests / Sec)</label>
@@ -103,7 +212,7 @@
                   <label for="cfg-timeout">Connection Timeout (Seconds)</label>
                   <input type="number" id="cfg-timeout" class="form-control" min="2" max="60" value="10">
                 </div>
-                <div class="form-group">
+                <div class="form-group flex-2">
                   <label for="cfg-user-agent">Custom User-Agent</label>
                   <input type="text" id="cfg-user-agent" class="form-control" placeholder="Default: CyberAssess/3.0">
                 </div>
@@ -136,6 +245,34 @@
         </div>
       </section>
 
+      <!-- Discovered Attack Surface Endpoints HUD Table -->
+      <section class="card endpoints-card" id="endpoints-hud" style="display: none;">
+        <div class="card-header">
+          <div class="endpoints-header-left">
+            <h2>🕸️ Discovered Attack Surface</h2>
+            <span class="endpoints-badge" id="endpoints-count-badge">0 Endpoints</span>
+          </div>
+          <button class="btn btn-xs btn-ghost" id="btn-toggle-endpoints">Collapse</button>
+        </div>
+        <div class="card-body endpoints-table-wrapper" id="endpoints-table-container">
+          <table class="data-table monospace-table">
+            <thead>
+              <tr>
+                <th style="width: 60px;">Depth</th>
+                <th style="width: 80px;">Method</th>
+                <th>Discovered URL</th>
+                <th style="width: 90px;">Status</th>
+                <th style="width: 80px;">Forms</th>
+                <th style="width: 90px;">Auth</th>
+              </tr>
+            </thead>
+            <tbody id="endpoints-table-body">
+              <!-- Dynamically populated via SSE crawl_discovered -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- Real-Time Telemetry Terminal Console -->
       <section class="card terminal-section">
         <div class="terminal-header">
@@ -156,7 +293,7 @@
           <div class="log-line info">
             <span class="log-time">[SYSTEM]</span>
             <span class="log-engine">[orchestrator]</span>
-            <span class="log-msg">CyberAssess Security Engine v3.0.0 ready. Standing by for scan target.</span>
+            <span class="log-msg">CyberAssess Security Engine v3.1.0 ready. Standing by for scan target.</span>
           </div>
         </div>
       </section>

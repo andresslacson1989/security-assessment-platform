@@ -1,8 +1,9 @@
 """
-Test suite verifying Core Models, Deterministic Grading Engine, and Storage Layer.
+Test suite verifying Core Models, Deterministic Grading Engine, and Storage Layer (v3.1.0).
 """
 
 from datetime import datetime, timezone
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -14,6 +15,10 @@ from app.core.models import (
     ScanProfile,
     ScanStatus,
     LogLevel,
+    AuthType,
+    AuthConfig,
+    CrawlerConfig,
+    DiscoveredEndpoint,
     Target,
     Evidence,
     Finding,
@@ -46,6 +51,85 @@ def test_target_and_evidence_models():
     )
     assert evidence.location == "https://example.com"
     assert evidence.observed_value == "Server: Apache/2.4.41"
+
+
+def test_auth_and_crawler_models():
+    # 1. AuthConfig defaults and customization
+    auth = AuthConfig(
+        auth_type=AuthType.HEADER,
+        headers={"Authorization": "Bearer test-jwt-token"},
+        cookies={"sessionid": "sess_12345"},
+    )
+    assert auth.auth_type == AuthType.HEADER
+    assert auth.headers["Authorization"] == "Bearer test-jwt-token"
+    assert "logout" in auth.logout_url_patterns
+
+    # 2. Form Login AuthConfig
+    form_auth = AuthConfig(
+        auth_type=AuthType.FORM_LOGIN,
+        login_url="https://example.com/login",
+        username="admin",
+        password="secretpassword",
+        csrf_token_field="_csrf",
+        logged_in_indicator="Welcome, admin",
+    )
+    assert form_auth.auth_type == AuthType.FORM_LOGIN
+    assert form_auth.username == "admin"
+    assert form_auth.password == "secretpassword"
+
+    # 3. CrawlerConfig validation
+    crawler = CrawlerConfig(
+        enabled=True,
+        max_depth=4,
+        max_pages=100,
+        exclude_patterns=["*logout*", "*signout*"],
+    )
+    assert crawler.max_depth == 4
+    assert crawler.max_pages == 100
+    assert crawler.follow_redirects is True
+    assert crawler.parse_sitemap is True
+
+    # 4. DiscoveredEndpoint
+    endpoint = DiscoveredEndpoint(
+        url="https://example.com/dashboard",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="text/html",
+        is_authenticated=True,
+        has_forms=True,
+    )
+    assert endpoint.url == "https://example.com/dashboard"
+    assert endpoint.depth == 1
+    assert endpoint.is_authenticated is True
+    assert endpoint.has_forms is True
+
+    # 5. ScanConfig with crawler & auth integration
+    cfg = ScanConfig(
+        rate_limit_rps=10,
+        crawler=crawler,
+        auth=auth,
+    )
+    assert cfg.crawler.max_depth == 4
+    assert cfg.auth.auth_type == AuthType.HEADER
+
+    # 6. ScanJob serialization with discovered_endpoints and new summary fields
+    target = Target(name="Web Target", type=TargetType.URL, value="https://example.com")
+    job = ScanJob(
+        target=target,
+        config=cfg,
+        discovered_endpoints=[endpoint],
+    )
+    job.summary.pages_crawled = 15
+    job.summary.authenticated_session_active = True
+
+    # JSON roundtrip validation
+    json_data = json.loads(job.model_dump_json())
+    assert len(json_data["discovered_endpoints"]) == 1
+    assert json_data["discovered_endpoints"][0]["url"] == "https://example.com/dashboard"
+    assert json_data["summary"]["pages_crawled"] == 15
+    assert json_data["summary"]["authenticated_session_active"] is True
+    assert json_data["config"]["auth"]["auth_type"] == "HEADER"
 
 
 def test_fingerprint_and_secret_masking():
