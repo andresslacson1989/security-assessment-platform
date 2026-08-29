@@ -20,6 +20,13 @@ from app.core.rate_limiter import TokenBucketRateLimiter
 from app.engines.base import LogCallback
 
 
+STATIC_ASSET_EXTENSIONS = {
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".webp", ".woff", ".woff2", ".ttf", ".eot", ".otf", ".mp4", ".mp3",
+    ".webm", ".ogg", ".wav", ".pdf", ".zip", ".tar", ".gz", ".map",
+}
+
+
 class WebCrawler:
     """
     Asynchronous Breadth-First Search (BFS) crawler for automated endpoint and attack surface discovery.
@@ -95,6 +102,12 @@ class WebCrawler:
         parsed = urllib.parse.urlparse(candidate_url)
         if parsed.netloc.lower() != self.target_netloc:
             return False
+
+        # Ignore static asset files (.js, .css, .png, etc.) so crawl budget visits actual pages/routes
+        path_lower = parsed.path.lower()
+        for ext in STATIC_ASSET_EXTENSIONS:
+            if path_lower.endswith(ext):
+                return False
 
         # Match against exclude patterns (e.g. *logout*, *delete*)
         url_lower = candidate_url.lower()
@@ -199,10 +212,6 @@ class WebCrawler:
 
                         for a in soup.find_all("a", href=True):
                             extracted_links.add(a["href"])
-                        for link in soup.find_all("link", href=True):
-                            extracted_links.add(link["href"])
-                        for script in soup.find_all("script", src=True):
-                            extracted_links.add(script["src"])
                         for form in forms:
                             if form.get("action"):
                                 extracted_links.add(form["action"])
