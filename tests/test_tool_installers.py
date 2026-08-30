@@ -39,14 +39,15 @@ def manager():
 
 @pytest.mark.asyncio
 async def test_manager_get_all_tools_info(manager):
-    """Verifies that all 10 tools are registered with valid installation metadata."""
+    """Verifies that all 22 tools are registered with valid installation metadata."""
     tools = await manager.get_all_tools_info()
-    assert len(tools) == 10
+    assert len(tools) == 22
     names = {t.name for t in tools}
     expected_names = {
-        "sslyze", "bandit", "semgrep", "checkov",
-        "nuclei", "ffuf", "gitleaks", "trivy",
-        "nmap", "nikto"
+        "sslyze", "bandit", "semgrep", "checkov", "prowler", "schemathesis",
+        "nuclei", "ffuf", "gitleaks", "trivy", "subfinder", "httpx", "katana",
+        "syft", "grype", "osv-scanner", "trufflehog", "dockle", "kube-bench",
+        "nmap", "nikto", "retire"
     }
     assert names == expected_names
 
@@ -56,14 +57,26 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["bandit"].install_method == ToolInstallMethod.PIP
     assert tool_map["semgrep"].install_method == ToolInstallMethod.PIP
     assert tool_map["checkov"].install_method == ToolInstallMethod.PIP
+    assert tool_map["prowler"].install_method == ToolInstallMethod.PIP
+    assert tool_map["schemathesis"].install_method == ToolInstallMethod.PIP
 
     assert tool_map["nuclei"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["ffuf"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["gitleaks"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["trivy"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["subfinder"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["httpx"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["katana"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["syft"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["grype"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["osv-scanner"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["trufflehog"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["dockle"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["kube-bench"].install_method == ToolInstallMethod.STANDALONE_BINARY
 
     assert tool_map["nmap"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
     assert tool_map["nikto"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
+    assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
 
 
 @pytest.mark.asyncio
@@ -236,7 +249,7 @@ def test_tool_management_api_endpoints(client, manager):
     resp = client.get("/api/system/tools")
     assert resp.status_code == 200
     tools = resp.json()
-    assert len(tools) == 10
+    assert len(tools) == 22
 
     # 2. GET /api/system/tools/nuclei/status
     resp = client.get("/api/system/tools/nuclei/status")

@@ -1511,3 +1511,352 @@ def test_scenario_20_containerization_dockerfile_and_compose_validation():
     assert "linux/amd64,linux/arm64" in str(wf_data)
 
 
+# ============================================================================
+# Scenario 21: High-Speed EASM & Headless SPA Discovery (Subfinder + Httpx + Katana)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
+    """
+    Contract 05 (Scenario 21): High-Speed EASM & Headless SPA Discovery.
+    Validates Subfinder passive subdomain recon, Httpx active technology probing,
+    and Katana headless SPA route crawling.
+    """
+    from app.engines.network.engine import NetworkAssessmentEngine
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from app.adapters.subfinder_adapter import SubfinderAdapter
+    from app.adapters.httpx_adapter import HttpxAdapter
+    from app.adapters.katana_adapter import KatanaAdapter
+
+    net_engine = NetworkAssessmentEngine()
+    dast_engine = WebDastAssessmentEngine()
+
+    target = Target(name="EASM Target", type=TargetType.DOMAIN, value="corp.example.com")
+    config = ScanConfig()
+    config.osint.subdomain_enumeration = False
+    config.crawler.enabled = False
+
+    emitted_logs = []
+    emitted_findings = []
+    discovered_subs = []
+    discovered_eps = []
+
+    async def emit_log(lvl, msg):
+        emitted_logs.append((lvl, msg))
+
+    async def emit_prog(pct, msg):
+        pass
+
+    async def emit_find(f):
+        emitted_findings.append(f)
+
+    async def emit_sub(sd):
+        discovered_subs.append(sd)
+
+    async def emit_ep(ep):
+        discovered_eps.append(ep)
+
+    mock_sf_stdout = '{"host":"vpn.corp.example.com","sources":["crtsh"]}\n{"host":"api.corp.example.com","sources":["virustotal"]}\n'
+    mock_hx_stdout = '{"url":"https://api.corp.example.com","status_code":200,"title":"API Gateway","tech":["FastAPI","Uvicorn"]}\n'
+    mock_katana_stdout = '{"request":{"endpoint":"https://corp.example.com/app/dashboard","method":"GET"},"response":{"status_code":200}}\n'
+
+    with patch.object(SubfinderAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(SubfinderAdapter, "resolve_binary_path", return_value="/bin/subfinder"), \
+         patch.object(SubfinderAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_sf_stdout, ""))), \
+         patch.object(HttpxAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(HttpxAdapter, "resolve_binary_path", return_value="/bin/httpx"), \
+         patch.object(HttpxAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_hx_stdout, ""))), \
+         patch.object(KatanaAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(KatanaAdapter, "resolve_binary_path", return_value="/bin/katana"), \
+         patch.object(KatanaAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_katana_stdout, ""))), \
+         patch("app.engines.network.engine.audit_tls_certificates", new=AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new=AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_dns_hygiene", new=AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_exposed_ports", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_browser_posture", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])):
+
+        net_findings = await net_engine.run(
+            target, config, emit_log, emit_prog, emit_find,
+            emit_subdomain_discovered=emit_sub,
+            emit_endpoint_discovered=emit_ep,
+        )
+        assert len(discovered_subs) >= 2
+        assert any(f.source_tool == "subfinder" for f in net_findings)
+        assert any(f.source_tool == "httpx" for f in net_findings)
+
+        dast_target = Target(name="Web App", type=TargetType.URL, value="https://corp.example.com")
+        dast_findings = await dast_engine.run(
+            dast_target, config, emit_log, emit_prog, emit_find,
+            emit_endpoint_discovered=emit_ep,
+        )
+        assert len(discovered_eps) >= 1
+        assert any(f.source_tool == "katana" for f in dast_findings)
+
+
+# ============================================================================
+# Scenario 22: Software Supply Chain & SBOM Export (Syft + Grype + OSV-Scanner + Retire.js)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_scenario_22_software_supply_chain_and_sbom_export(tmp_path):
+    """
+    Contract 05 (Scenario 22): Software Supply Chain & SBOM Lifecycle.
+    Validates Syft SBOM generation, Grype vulnerability matching, Google OSV scanning,
+    and CycloneDX / SPDX format serialization.
+    """
+    from app.engines.code_sast.engine import CodeSastAssessmentEngine
+    from app.adapters.syft_adapter import SyftAdapter
+    from app.adapters.grype_adapter import GrypeAdapter
+    from app.adapters.osv_scanner_adapter import OSVScannerAdapter
+    from app.adapters.retirejs_adapter import RetireJSAdapter
+    from app.exporters.sbom_cyclonedx import export_cyclonedx_sbom
+    from app.exporters.sbom_spdx import export_spdx_sbom
+
+    engine = CodeSastAssessmentEngine()
+    target = Target(name="App Code", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+    config = ScanConfig()
+
+    emitted_logs = []
+    emitted_findings = []
+    recorded_sbom = []
+
+    async def emit_log(lvl, msg):
+        emitted_logs.append((lvl, msg))
+
+    async def emit_prog(pct, msg):
+        pass
+
+    async def emit_find(f):
+        emitted_findings.append(f)
+
+    def record_sbom(s):
+        recorded_sbom.append(s)
+
+    mock_cdx = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "components": [
+            {"name": "django", "version": "3.2.0", "type": "library", "purl": "pkg:pypi/django@3.2.0"},
+            {"name": "cryptography", "version": "3.4.0", "type": "library", "purl": "pkg:pypi/cryptography@3.4.0"},
+        ],
+    }
+    mock_grype = {
+        "matches": [
+            {
+                "vulnerability": {"id": "CVE-2021-3281", "severity": "High", "description": "Django Directory Traversal"},
+                "artifact": {"name": "django", "version": "3.2.0", "type": "python"},
+            }
+        ]
+    }
+    mock_osv = {
+        "results": [
+            {
+                "source": {"path": str(tmp_path / "requirements.txt")},
+                "packages": [
+                    {
+                        "package": {"name": "django", "version": "3.2.0", "ecosystem": "PyPI"},
+                        "vulnerabilities": [{"id": "PYSEC-2021-12", "summary": "Django traversal vuln"}],
+                    }
+                ],
+            }
+        ]
+    }
+
+    with patch.object(SyftAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(SyftAdapter, "resolve_binary_path", return_value="/bin/syft"), \
+         patch.object(SyftAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_cdx), ""))), \
+         patch.object(GrypeAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(GrypeAdapter, "resolve_binary_path", return_value="/bin/grype"), \
+         patch.object(GrypeAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_grype), ""))), \
+         patch.object(OSVScannerAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(OSVScannerAdapter, "resolve_binary_path", return_value="/bin/osv-scanner"), \
+         patch.object(OSVScannerAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_osv), ""))), \
+         patch.object(RetireJSAdapter, "is_available", AsyncMock(return_value=False)):
+
+        findings = await engine.run(
+            target, config, emit_log, emit_prog, emit_find,
+            record_sbom_report=record_sbom,
+        )
+
+        assert any(f.source_tool == "syft" for f in findings)
+        assert any(f.source_tool == "grype" for f in findings)
+        assert any(f.source_tool == "osv_scanner" for f in findings)
+        assert len(recorded_sbom) == 1
+
+        # Test SBOM Exporters
+        job = ScanJob(target=target, findings=findings, sbom_report=recorded_sbom[0])
+        cdx_doc = export_cyclonedx_sbom(job)
+        spdx_doc = export_spdx_sbom(job)
+
+        assert "CycloneDX" in cdx_doc
+        assert "SPDX-2.3" in spdx_doc
+
+
+# ============================================================================
+# Scenario 23: Live-Verified Secret Auditing (TruffleHog)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_scenario_23_live_verified_secret_auditing(tmp_path):
+    """
+    Contract 05 (Scenario 23): Live-Verified Secret Auditing.
+    Validates TruffleHog deep credential scanning with active verification flag.
+    """
+    from app.engines.code_sast.engine import CodeSastAssessmentEngine
+    from app.adapters.trufflehog_adapter import TruffleHogAdapter
+
+    engine = CodeSastAssessmentEngine()
+    target = Target(name="Backend Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+    config = ScanConfig()
+
+    emitted_logs = []
+    emitted_findings = []
+
+    async def emit_log(lvl, msg):
+        emitted_logs.append((lvl, msg))
+
+    async def emit_prog(pct, msg):
+        pass
+
+    async def emit_find(f):
+        emitted_findings.append(f)
+
+    mock_th_stdout = (
+        '{"DetectorName":"GitHub","Verified":true,"Raw":"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",'
+        '"SourceMetadata":{"Data":{"Filesystem":{"file":"deploy.sh"}}},'
+        '"VerificationDetails":{"Endpoint":"https://api.github.com/user"}}\n'
+    )
+
+    with patch.object(TruffleHogAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(TruffleHogAdapter, "resolve_binary_path", return_value="/bin/trufflehog"), \
+         patch.object(TruffleHogAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_th_stdout, ""))):
+
+        findings = await engine.run(target, config, emit_log, emit_prog, emit_find)
+        verified_findings = [f for f in findings if f.source_tool == "trufflehog" and f.verified_secret and f.verified_secret.is_live]
+
+        assert len(verified_findings) == 1
+        assert verified_findings[0].severity == Severity.CRITICAL
+        assert verified_findings[0].cvss_score == 10.0
+
+
+# ============================================================================
+# Scenario 24: Cloud, Container & Kubernetes CIS Benchmarks (Prowler + Kube-Bench + Dockle)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_scenario_24_cloud_container_and_k8s_cis_benchmarks(tmp_path):
+    """
+    Contract 05 (Scenario 24): Cloud, Container & Kubernetes CIS Benchmarks.
+    Validates Dockle container linting, Kube-bench Kubernetes auditing, and Prowler CSPM checks.
+    """
+    from app.engines.infra_iac.engine import InfraIacAssessmentEngine
+    from app.adapters.dockle_adapter import DockleAdapter
+    from app.adapters.kubebench_adapter import KubeBenchAdapter
+    from app.adapters.prowler_adapter import ProwlerAdapter
+
+    engine = InfraIacAssessmentEngine()
+    target = Target(name="Cluster & Cloud", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+    config = ScanConfig()
+
+    emitted_logs = []
+    emitted_findings = []
+    recorded_cis = []
+
+    async def emit_log(lvl, msg):
+        emitted_logs.append((lvl, msg))
+
+    async def emit_prog(pct, msg):
+        pass
+
+    async def emit_find(f):
+        emitted_findings.append(f)
+
+    def record_cis(c):
+        recorded_cis.append(c)
+
+    mock_dockle = {"details": [{"code": "CIS-DI-0001", "title": "Avoid root user", "level": "WARN"}]}
+    mock_kb = {"Controls": [{"id": "1.1", "tests": [{"results": [{"test_number": "1.1.1", "status": "FAIL", "test_desc": "Permissions"}]}]}]}
+    mock_prowler = '{"CheckID":"iam_root_mfa_enabled","Status":"FAIL","Severity":"critical","StatusExtended":"MFA not enabled on root account"}\n'
+
+    with patch.object(DockleAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(DockleAdapter, "resolve_binary_path", return_value="/bin/dockle"), \
+         patch.object(DockleAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_dockle), ""))), \
+         patch.object(KubeBenchAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(KubeBenchAdapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
+         patch.object(KubeBenchAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_kb), ""))), \
+         patch.object(ProwlerAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(ProwlerAdapter, "resolve_binary_path", return_value="/bin/prowler"), \
+         patch.object(ProwlerAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_prowler, ""))):
+
+        findings = await engine.run(
+            target, config, emit_log, emit_prog, emit_find,
+            record_cis_result=record_cis,
+        )
+
+        assert any(f.source_tool == "dockle" for f in findings)
+        assert any(f.source_tool == "kube_bench" for f in findings)
+        assert any(f.source_tool == "prowler" for f in findings)
+        assert len(recorded_cis) == 3
+
+
+# ============================================================================
+# Scenario 25: Property-Based API Contract Security (Schemathesis)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_scenario_25_property_based_api_contract_security():
+    """
+    Contract 05 (Scenario 25): Property-Based API Contract Security.
+    Validates Schemathesis property-based fuzzing against OpenAPI specifications.
+    """
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from app.adapters.schemathesis_adapter import SchemathesisAdapter
+
+    engine = WebDastAssessmentEngine()
+    target = Target(name="REST API", type=TargetType.URL, value="https://api.example.com/openapi.json")
+    config = ScanConfig()
+    config.crawler.enabled = False
+
+    emitted_logs = []
+    emitted_findings = []
+
+    async def emit_log(lvl, msg):
+        emitted_logs.append((lvl, msg))
+
+    async def emit_prog(pct, msg):
+        pass
+
+    async def emit_find(f):
+        emitted_findings.append(f)
+
+    mock_schema_report = {
+        "errors": [
+            {
+                "title": "500 Server Error for invalid payload",
+                "endpoint": "https://api.example.com/items",
+                "method": "POST",
+            }
+        ]
+    }
+
+    with patch.object(SchemathesisAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(SchemathesisAdapter, "resolve_binary_path", return_value="/bin/schemathesis"), \
+         patch.object(SchemathesisAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_schema_report), ""))), \
+         patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_browser_posture", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])):
+
+        findings = await engine.run(target, config, emit_log, emit_prog, emit_find)
+        schema_findings = [f for f in findings if f.source_tool == "schemathesis"]
+
+        assert len(schema_findings) >= 1
+        assert schema_findings[0].check_id == "API-SCHEMA-001"
+        assert schema_findings[0].severity == Severity.HIGH

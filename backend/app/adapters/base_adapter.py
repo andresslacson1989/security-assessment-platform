@@ -17,8 +17,10 @@ from app.core.binary_resolver import resolve_tool_binary, safe_execute_subproces
 
 class BaseToolAdapter(ABC):
     """
-    Authoritative abstract contract for external CLI security tool adapters (Nmap, Nuclei, Semgrep, Trivy).
+    Authoritative abstract contract for external CLI security tool adapters.
     """
+
+    safe_execute_subprocess = staticmethod(safe_execute_subprocess)
 
     @property
     @abstractmethod
@@ -90,7 +92,7 @@ class BaseToolAdapter(ABC):
         if not cmd:
             return -1, "", "Empty command provided"
 
-        code, stdout, stderr = await safe_execute_subprocess(
+        code, stdout, stderr = await self.safe_execute_subprocess(
             cmd=cmd,
             timeout=timeout,
             cwd=cwd,

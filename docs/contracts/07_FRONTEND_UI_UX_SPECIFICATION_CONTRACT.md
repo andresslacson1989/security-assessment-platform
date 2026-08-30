@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -37,6 +37,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
   --color-medium: #eab308;        /* Warning Amber */
   --color-low: #3b82f6;           /* Info Blue */
   --color-info: #06b6d4;          /* Cyber Cyan */
+  --color-verified: #10b981;      /* Verified Secret Emerald Glow */
 }
 ```
 
@@ -47,7 +48,9 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
-│ [⚙️ Manage Toolbox & Adapters]                                              │
+│ [⚙️ Manage 22 Security Tools]  [📦 Export SBOM: CycloneDX / SPDX]          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
 │    [FFUF: Active] [NIKTO: Fallback] [SEMGREP: Active] [GITLEAKS: Active]    │
@@ -116,12 +119,20 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
 
-6. **Toolbox & Adapters Manager Modal (`#tool-manager-modal`):**
+6. **Toolbox & Adapters Manager Modal (`#tool-manager-modal`) & Setup Guide Modal (`#tool-instructions-modal`):**
    - Opened via header button `⚙️ Manage Toolbox & Adapters` or clicking missing tool badge.
-   - **Tool Matrix Table:** Lists all 10 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `SYSTEM PACKAGE`), and individual `⚡ Install` / `Reinstall` trigger buttons.
+   - **Tool Matrix Table:** Lists all 10 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `OS / PKG MGR`), and individual action buttons:
+     - For automated tools (`PIP`, `STANDALONE BINARY`): `⚡ Install` / `Reinstall` / `⏹ Cancel`.
+     - For system package manager tools (`OS / PKG MGR` like `Nmap`, `Nikto`): `📖 How to Install` (when missing) or `📖 Setup Guide` (when installed).
+   - **Interactive Tool Setup & Guide Modal (`#tool-instructions-modal`):**
+     - Subtitle explaining tool role and OS requirements.
+     - Option cards sorted with **Recommended First** (e.g. `winget install Insecure.Nmap`, Strawberry Perl + git clone for Nikto).
+     - One-click copy code boxes (`btn-copy-code`) for copy-pasteable PowerShell/bash commands.
+     - Cyan parameter breakdowns (`.instruction-explanation`) detailing what each flag does (`winget install`, `git clone`, `-h <target>`, `-T4`, etc.).
+     - Actionable step-by-step verification commands (`nmap --version`, `perl -v`, `nikto -Version`).
+     - Live **"🔄 Re-check Status"** trigger re-probing backend capabilities in real-time.
    - **Batch Installer Action:** Master `⚡ Install All Missing Tools` button triggering parallel user-space installations.
    - **Live Installation Terminal Console:** Real-time progress bar, stage indicator, and auto-scrolling monospace terminal connected to `/api/system/tools/events`.
-   - **System Package Helper Guidance:** For `Nmap` and `Nikto`, displays copyable native commands (`winget`, `brew`, `apt`).
 
 7. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
 

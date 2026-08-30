@@ -35,12 +35,14 @@ from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
 from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.nikto_adapter import NiktoAdapter
+from app.adapters.katana_adapter import KatanaAdapter
+from app.adapters.schemathesis_adapter import SchemathesisAdapter
 
 
 class WebDastAssessmentEngine(BaseAssessmentEngine):
     """
-    Coordinator engine for Web Application, REST API, and Modern Browser DAST assessments.
-    Follows Adapters First-in-Line Architecture (Nuclei + FFuF + Nikto primary, native active parameter fuzzing, crawler, and browser posture enrichment).
+    Coordinator engine for Web Application, REST API, SPA, and Modern Browser DAST assessments.
+    Follows Adapters First-in-Line Architecture (Nuclei + FFuF + Nikto + Katana + Schemathesis primary, native active parameter fuzzing, crawler, and browser posture enrichment).
     """
 
     @property
@@ -57,7 +59,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             "Evaluates OWASP Top 10 security response headers (CSP, HSTS, X-Frame), cookie security flags "
             "(HttpOnly, Secure, SameSite), Cross-Origin Resource Sharing (CORS) misconfigurations, "
             "exposed environment/git files (.env, .git/HEAD), OpenAPI schemas, Subresource Integrity, "
-            "public GraphQL introspection, authenticated session security, and anti-CSRF form posture."
+            "public GraphQL introspection, authenticated session security, dynamic SPA crawling (Katana), "
+            "property-based API fuzzing (Schemathesis), and anti-CSRF form posture."
         )
 
     def is_applicable(self, target: Target) -> bool:
@@ -93,7 +96,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             connect=5.0,
         )
 
-        # --- Stage 0: Primary Tool Adapters First-in-Line (FFuF, Nikto, Nuclei) ---
+        # --- Stage 0: Primary Tool Adapters First-in-Line (FFuF, Nikto, Nuclei, Katana, Schemathesis) ---
         await emit_progress(5, "Running primary external DAST tool adapters...")
 
         # 0.1 FFuF Adapter (High-Speed Content Discovery)
@@ -171,6 +174,53 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     await emit_log(LogLevel.INFO, "Nuclei CLI not available - using native parameter fuzzer fallback")
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Nuclei adapter error: {e}")
+
+        # 0.4 Katana Adapter (Headless SPA Dynamic Crawler)
+        if getattr(config.adapters, "enable_katana", True):
+            katana_adapter = KatanaAdapter()
+            custom_path = getattr(config.adapters, "katana_path", None) or getattr(config.adapters, "custom_katana_path", None)
+            try:
+                if await katana_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Katana headless SPA crawler...")
+                    katana_findings = await katana_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        emit_endpoint=emit_endpoint_discovered,
+                        scan_id="active",
+                    )
+                    for f in katana_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "katana"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Katana adapter error: {e}")
+
+        # 0.5 Schemathesis Adapter (API Contract & Fuzz Testing)
+        if getattr(config.adapters, "enable_schemathesis", True):
+            schemathesis_adapter = SchemathesisAdapter()
+            custom_path = getattr(config.adapters, "schemathesis_path", None) or getattr(config.adapters, "custom_schemathesis_path", None)
+            try:
+                if await schemathesis_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Schemathesis API contract fuzzer...")
+                    schema_findings = await schemathesis_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in schema_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "schemathesis"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Schemathesis adapter error: {e}")
 
         async with httpx.AsyncClient(headers=headers, timeout=timeout, verify=False) as client:
             # --- Stage 1: Authentication & Session Initialization (15% - 25%) ---

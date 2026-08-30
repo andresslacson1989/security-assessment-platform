@@ -1,0 +1,132 @@
+"""
+Httpx Tool Adapter for Web Port & Technology Stack Fingerprinting.
+Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (Section 4.2)
+"""
+
+from __future__ import annotations
+import json
+import re
+from typing import Optional, List, Callable, Awaitable, Dict, Any
+from urllib.parse import urlparse
+
+from app.core.models import (
+    Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
+    calculate_fingerprint, DiscoveredEndpoint
+)
+from app.adapters.base_adapter import BaseToolAdapter
+
+
+class HttpxAdapter(BaseToolAdapter):
+    """
+    Adapter for ProjectDiscovery's Httpx fast HTTP probing and technology fingerprinting tool.
+    """
+
+    @property
+    def tool_name(self) -> str:
+        return "httpx"
+
+    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+        binary = self.resolve_binary_path(custom_path)
+        if not binary:
+            return None
+        code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=10.0)
+        output = stdout + " " + stderr
+        match = re.search(r"v\d+\.\d+\.\d+", output, re.IGNORECASE)
+        if match:
+            return f"httpx {match.group(0)}"
+        return "httpx" if code == 0 else None
+
+    async def run(
+        self,
+        target: Target,
+        config: ScanConfig,
+        emit_log: Callable[[LogLevel, str], Awaitable[None]],
+        emit_finding: Callable[[Finding], Awaitable[None]],
+        **kwargs,
+    ) -> List[Finding]:
+        findings: List[Finding] = []
+        scan_id = kwargs.get("scan_id", "local-scan")
+        emit_endpoint: Optional[Callable[[DiscoveredEndpoint], Awaitable[None]]] = kwargs.get("emit_endpoint")
+
+        binary = self.resolve_binary_path(config.adapters.httpx_path or config.adapters.custom_httpx_path)
+        if not binary:
+            await emit_log(LogLevel.WARNING, "Httpx binary not found. Skipping Httpx probe.")
+            return findings
+
+        target_url = target.value
+        if not target_url.startswith("http://") and not target_url.startswith("https://"):
+            target_url = f"https://{target_url}"
+
+        await emit_log(LogLevel.INFO, f"Executing Httpx HTTP probe and tech stack identification on: {target_url}")
+        cmd = [binary, "-u", target_url, "-json", "-silent", "-title", "-tech-detect", "-status-code", "-follow-redirects"]
+
+        code, stdout, stderr = await self.execute_command(cmd, timeout=45.0, emit_log=emit_log)
+        if code != 0 and not stdout:
+            await emit_log(LogLevel.WARNING, f"Httpx exited with code {code}: {stderr.strip()[:200]}")
+            return findings
+
+        probed_results = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                url = data.get("url") or data.get("input") or target_url
+                status_code = data.get("status_code", 200)
+                title = data.get("title", "")
+                tech_list = data.get("tech", [])
+                webserver = data.get("webserver", "")
+
+                probed_results.append(data)
+
+                # Emit discovered endpoint
+                if emit_endpoint:
+                    endpoint_model = DiscoveredEndpoint(
+                        url=url,
+                        method="GET",
+                        status_code=status_code,
+                        content_type=data.get("content_type", "text/html"),
+                    )
+                    await emit_endpoint(endpoint_model)
+
+                # If exposed technologies or outdated webserver
+                observed_info = []
+                if webserver:
+                    observed_info.append(f"Server: {webserver}")
+                if tech_list:
+                    observed_info.append(f"Technologies: {', '.join(tech_list)}")
+                if title:
+                    observed_info.append(f"Page Title: {title}")
+
+                if observed_info:
+                    evidence = Evidence(
+                        location=url,
+                        observed_value=" | ".join(observed_info),
+                        expected_value="Server banners and framework fingerprints minimized or masked",
+                        raw_response_snippet=json.dumps(data, indent=2),
+                    )
+                    finding = Finding(
+                        scan_id=scan_id,
+                        engine="network",
+                        source_tool="httpx",
+                        check_id="EASM-EXPOSURE-001",
+                        category="Attack Surface Recon",
+                        title=f"Web Service Fingerprinted: {url}",
+                        severity=Severity.INFO,
+                        cvss_score=0.0,
+                        cwe_id="CWE-200",
+                        description=f"Httpx successfully probed web endpoint {url} (HTTP {status_code}). Identified components: {', '.join(observed_info)}.",
+                        impact="Detailed technology stack disclosure assists attackers in mapping known CVEs and tailored exploits.",
+                        remediation="Suppress verbose Server headers and application framework signatures (e.g. X-Powered-By).",
+                        references=["https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/01-Information_Gathering/02-Fingerprint_Web_Server"],
+                        evidence=evidence,
+                        fingerprint=calculate_fingerprint("EASM-EXPOSURE-001", url, " | ".join(observed_info)),
+                    )
+                    findings.append(finding)
+                    await emit_finding(finding)
+            except Exception as e:
+                continue
+
+        await emit_log(LogLevel.INFO, f"Httpx completed probe: {len(probed_results)} HTTP responses analyzed.")
+        return findings

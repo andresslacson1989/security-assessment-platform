@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.1.0 (Interactive Setup Modal, Parameter Explanations & Capabilities Lifecycle Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -37,6 +37,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
   --color-medium: #eab308;        /* Warning Amber */
   --color-low: #3b82f6;           /* Info Blue */
   --color-info: #06b6d4;          /* Cyber Cyan */
+  --color-verified: #10b981;      /* Verified Secret Emerald Glow */
 }
 ```
 
@@ -47,7 +48,9 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
-│ [⚙️ Manage Toolbox & Adapters]                                              │
+│ [⚙️ Manage 22 Security Tools]  [📦 Export SBOM: CycloneDX / SPDX]          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
 │    [FFUF: Active] [NIKTO: Fallback] [SEMGREP: Active] [GITLEAKS: Active]    │

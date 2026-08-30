@@ -142,3 +142,50 @@ def test_json_exporter_roundtrip():
     restored_job = ScanJob.model_validate(parsed)
     assert restored_job.id == job.id
     assert restored_job.summary.overall_security_grade == "F"  # Critical finding forces F
+
+
+def test_cyclonedx_sbom_exporter():
+    from app.exporters.sbom_cyclonedx import export_cyclonedx_sbom
+    from app.core.models import SBOMReport, SBOMComponent, SBOMExportFormat
+
+    job = create_sample_job()
+    job.sbom_report = SBOMReport(
+        format=SBOMExportFormat.CYCLONEDX_JSON,
+        components_count=2,
+        components=[
+            SBOMComponent(name="express", version="4.17.1", type="library", purl="pkg:npm/express@4.17.1", license="MIT"),
+            SBOMComponent(name="lodash", version="4.17.20", type="library", purl="pkg:npm/lodash@4.17.20", license="MIT"),
+        ],
+    )
+    cdx_str = export_cyclonedx_sbom(job)
+    parsed = json.loads(cdx_str)
+
+    assert parsed["bomFormat"] == "CycloneDX"
+    assert parsed["specVersion"] == "1.5"
+    assert len(parsed["components"]) == 2
+    assert parsed["components"][0]["name"] == "express"
+    assert parsed["components"][0]["version"] == "4.17.1"
+
+
+def test_spdx_sbom_exporter():
+    from app.exporters.sbom_spdx import export_spdx_sbom
+    from app.core.models import SBOMReport, SBOMComponent, SBOMExportFormat
+
+    job = create_sample_job()
+    job.sbom_report = SBOMReport(
+        format=SBOMExportFormat.SPDX_JSON,
+        components_count=2,
+        components=[
+            SBOMComponent(name="requests", version="2.28.1", type="library", purl="pkg:pypi/requests@2.28.1", license="Apache-2.0"),
+            SBOMComponent(name="cryptography", version="38.0.0", type="library", purl="pkg:pypi/cryptography@38.0.0", license="Apache-2.0"),
+        ],
+    )
+    spdx_str = export_spdx_sbom(job)
+    parsed = json.loads(spdx_str)
+
+    assert parsed["spdxVersion"] == "SPDX-2.3"
+    assert parsed["dataLicense"] == "CC0-1.0"
+    # Root package + 2 component packages = 3 packages
+    assert len(parsed["packages"]) == 3
+    assert parsed["packages"][1]["name"] == "requests"
+    assert len(parsed["relationships"]) == 2

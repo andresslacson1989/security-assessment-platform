@@ -11,6 +11,8 @@ from app.core.orchestrator import orchestrator
 from app.exporters.html_exporter import export_scan_to_html
 from app.exporters.sarif_exporter import export_scan_to_sarif
 from app.exporters.json_exporter import export_scan_to_json
+from app.exporters.sbom_cyclonedx import export_cyclonedx_sbom
+from app.exporters.sbom_spdx import export_spdx_sbom
 
 router = APIRouter()
 
@@ -71,6 +73,48 @@ async def export_raw_json_report(scan_id: str):
     return Response(
         content=json_str,
         media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+@router.get("/{scan_id}/export/sbom/cyclonedx", summary="Export CycloneDX 1.5 JSON SBOM")
+async def export_cyclonedx_sbom_report(scan_id: str):
+    """
+    Downloads a CycloneDX 1.5 standardized Software Bill of Materials (SBOM) JSON.
+    """
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
+
+    sbom_json = export_cyclonedx_sbom(job)
+    filename = f"sbom-cyclonedx-{scan_id[:8]}.json"
+
+    return Response(
+        content=sbom_json,
+        media_type="application/vnd.cyclonedx+json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+@router.get("/{scan_id}/export/sbom/spdx", summary="Export SPDX 2.3 JSON SBOM")
+async def export_spdx_sbom_report(scan_id: str):
+    """
+    Downloads an SPDX 2.3 standardized Software Bill of Materials (SBOM) JSON.
+    """
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
+
+    sbom_json = export_spdx_sbom(job)
+    filename = f"sbom-spdx-{scan_id[:8]}.json"
+
+    return Response(
+        content=sbom_json,
+        media_type="application/spdx+json; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"'
         },

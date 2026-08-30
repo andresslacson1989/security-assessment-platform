@@ -42,6 +42,17 @@ SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
         "download_url": "https://github.com/sullo/nikto",
         "version_cmd": ["-Version"],
     },
+    "retire": {
+        "display_name": "Retire.js Client-Side JavaScript CVE Auditor",
+        "category": "Code SAST",
+        "command_hint": {
+            "windows": "npm install -g retire (or clone https://github.com/RetireJS/retire.js)",
+            "linux": "npm install -g retire",
+            "darwin": "npm install -g retire",
+        },
+        "download_url": "https://github.com/RetireJS/retire.js",
+        "version_cmd": ["--version"],
+    },
 }
 
 

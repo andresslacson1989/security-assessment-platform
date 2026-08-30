@@ -865,26 +865,23 @@ class TestCheckovAdapter:
 class TestCapabilitiesAndRegistry:
     def test_adapter_registry(self):
         registry = get_adapter_registry()
-        expected_tools = {"nmap", "sslyze", "nuclei", "ffuf", "nikto", "semgrep", "gitleaks", "bandit", "trivy", "checkov"}
+        expected_tools = {
+            "nmap", "sslyze", "subfinder", "httpx",
+            "nuclei", "ffuf", "nikto", "katana", "schemathesis",
+            "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
+            "trivy", "syft", "grype", "osv-scanner",
+            "checkov", "prowler", "kube-bench", "dockle",
+        }
         assert set(registry.keys()) == expected_tools
-        assert isinstance(registry["nmap"], NmapAdapter)
-        assert isinstance(registry["sslyze"], SslyzeAdapter)
-        assert isinstance(registry["nuclei"], NucleiAdapter)
-        assert isinstance(registry["ffuf"], FfufAdapter)
-        assert isinstance(registry["nikto"], NiktoAdapter)
-        assert isinstance(registry["semgrep"], SemgrepAdapter)
-        assert isinstance(registry["gitleaks"], GitleaksAdapter)
-        assert isinstance(registry["bandit"], BanditAdapter)
-        assert isinstance(registry["trivy"], TrivyAdapter)
-        assert isinstance(registry["checkov"], CheckovAdapter)
+        assert len(registry) == 22
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_fallback(self):
-        # All tools missing -> NATIVE_FALLBACK for all 10 tools
+        # All tools missing -> NATIVE_FALLBACK for all 22 tools
         with patch.object(BaseToolAdapter, "resolve_binary_path", return_value=None):
             with patch.object(BaseToolAdapter, "is_available", return_value=False):
                 caps = await discover_system_capabilities()
-                assert len(caps.tools) == 10
+                assert len(caps.tools) == 22
                 assert caps.native_engines_ready is True
                 for t in caps.tools:
                     assert t.available is False
@@ -905,6 +902,13 @@ class TestCapabilitiesAndRegistry:
         mock_semgrep.is_available = AsyncMock(return_value=True)
         mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.60.0")
 
+        all_tools = [
+            "nmap", "sslyze", "subfinder", "httpx",
+            "nuclei", "ffuf", "nikto", "katana", "schemathesis",
+            "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
+            "trivy", "syft", "grype", "osv-scanner",
+            "checkov", "prowler", "kube-bench", "dockle",
+        ]
         mock_registry = {
             tool: MagicMock(
                 tool_name=tool,
@@ -912,7 +916,7 @@ class TestCapabilitiesAndRegistry:
                 is_available=AsyncMock(return_value=False),
                 get_version=AsyncMock(return_value=None),
             )
-            for tool in ["sslyze", "nuclei", "ffuf", "nikto", "gitleaks", "bandit", "trivy", "checkov"]
+            for tool in all_tools if tool not in ("nmap", "semgrep")
         }
         mock_registry["nmap"] = mock_nmap
         mock_registry["semgrep"] = mock_semgrep
@@ -988,5 +992,479 @@ class TestCapabilitiesAndRegistry:
 
             assert tool_map["semgrep"].execution_mode == ToolExecutionMode.ADAPTER_ACTIVE
             assert tool_map["semgrep"].available is True
+
+
+# ============================================================================
+# 12. SubfinderAdapter Tests
+# ============================================================================
+
+class TestSubfinderAdapter:
+    @pytest.mark.asyncio
+    async def test_subfinder_run_success(self):
+        from app.adapters.subfinder_adapter import SubfinderAdapter
+        adapter = SubfinderAdapter()
+        target = Target(name="Domain", type=TargetType.DOMAIN, value="example.com")
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        discovered_subs = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        async def emit_subdomain(sd):
+            discovered_subs.append(sd)
+
+        mock_json_lines = (
+            '{"host":"api.example.com","ip":"93.184.216.34","sources":["crtsh"]}\n'
+            '{"host":"admin.example.com","ip":"93.184.216.35","sources":["virustotal"]}\n'
+        )
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/subfinder"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, emit_subdomain=emit_subdomain)
+            assert len(findings) == 1
+            assert len(discovered_subs) == 2
+            assert discovered_subs[0].domain == "api.example.com"
+            assert findings[0].check_id == "EASM-SUB-001"
+
+
+# ============================================================================
+# 13. HttpxAdapter Tests
+# ============================================================================
+
+class TestHttpxAdapter:
+    @pytest.mark.asyncio
+    async def test_httpx_run_success(self):
+        from app.adapters.httpx_adapter import HttpxAdapter
+        adapter = HttpxAdapter()
+        target = Target(name="Web", type=TargetType.URL, value="https://example.com")
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        endpoints = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        async def emit_endpoint(ep):
+            endpoints.append(ep)
+
+        mock_json_lines = (
+            '{"url":"https://example.com","status_code":200,"title":"Example","webserver":"nginx/1.24.0","tech":["Nginx","Cloudflare"]}\n'
+        )
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
+            assert len(findings) == 1
+            assert len(endpoints) == 1
+            assert endpoints[0].url == "https://example.com"
+            assert findings[0].check_id == "EASM-EXPOSURE-001"
+
+
+# ============================================================================
+# 14. KatanaAdapter Tests
+# ============================================================================
+
+class TestKatanaAdapter:
+    @pytest.mark.asyncio
+    async def test_katana_run_success(self):
+        from app.adapters.katana_adapter import KatanaAdapter
+        adapter = KatanaAdapter()
+        target = Target(name="SPA", type=TargetType.URL, value="https://spa.example.com")
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        endpoints = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        async def emit_endpoint(ep):
+            endpoints.append(ep)
+
+        mock_json_lines = (
+            '{"request":{"endpoint":"https://spa.example.com/api/v1/users","method":"GET"},"response":{"status_code":200}}\n'
+        )
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/katana"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
+            assert len(findings) == 1
+            assert len(endpoints) == 1
+            assert endpoints[0].url == "https://spa.example.com/api/v1/users"
+            assert findings[0].check_id == "DAST-SPA-001"
+
+
+# ============================================================================
+# 15. SchemathesisAdapter Tests
+# ============================================================================
+
+class TestSchemathesisAdapter:
+    @pytest.mark.asyncio
+    async def test_schemathesis_run_success(self):
+        from app.adapters.schemathesis_adapter import SchemathesisAdapter
+        adapter = SchemathesisAdapter()
+        target = Target(name="API", type=TargetType.URL, value="https://api.example.com/openapi.json")
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        mock_report = {
+            "errors": [
+                {
+                    "title": "500 Internal Server Error returned for POST /users",
+                    "endpoint": "https://api.example.com/users",
+                    "method": "POST",
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/schemathesis"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding)
+            assert len(findings) == 1
+            assert findings[0].check_id == "API-SCHEMA-001"
+            assert findings[0].severity == Severity.HIGH
+
+
+# ============================================================================
+# 16. TruffleHogAdapter Tests
+# ============================================================================
+
+class TestTruffleHogAdapter:
+    @pytest.mark.asyncio
+    async def test_trufflehog_run_success(self, tmp_path):
+        from app.adapters.trufflehog_adapter import TruffleHogAdapter
+        adapter = TruffleHogAdapter()
+        target = Target(name="Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        mock_json_lines = (
+            '{"DetectorName":"AWS","Verified":true,"Raw":"AKIAIOSFODNN7EXAMPLE","SourceMetadata":{"Data":{"Filesystem":{"file":"config.py"}}},"VerificationDetails":{"Endpoint":"https://sts.amazonaws.com"}}\n'
+        )
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/trufflehog"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding)
+            assert len(findings) == 1
+            assert findings[0].check_id == "SEC-VERIFIED-001"
+            assert findings[0].severity == Severity.CRITICAL
+            assert findings[0].verified_secret is not None
+            assert findings[0].verified_secret.is_live is True
+
+
+# ============================================================================
+# 17. RetireJSAdapter Tests
+# ============================================================================
+
+class TestRetireJSAdapter:
+    @pytest.mark.asyncio
+    async def test_retirejs_run_success(self, tmp_path):
+        from app.adapters.retirejs_adapter import RetireJSAdapter
+        adapter = RetireJSAdapter()
+        target = Target(name="Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        mock_report = {
+            "data": [
+                {
+                    "file": str(tmp_path / "jquery.js"),
+                    "results": [
+                        {
+                            "component": "jquery",
+                            "version": "1.12.4",
+                            "vulnerabilities": [
+                                {
+                                    "severity": "medium",
+                                    "identifiers": {"CVE": ["CVE-2019-11358"], "summary": "Prototype Pollution in jQuery"},
+                                    "info": ["https://nvd.nist.gov/vuln/detail/CVE-2019-11358"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/retire"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding)
+            assert len(findings) == 1
+            assert findings[0].check_id == "SCA-JS-001"
+            assert "CVE-2019-11358" in findings[0].title
+
+
+# ============================================================================
+# 18. Syft & Grype & OSV-Scanner Adapters Tests
+# ============================================================================
+
+class TestSupplyChainAdapters:
+    @pytest.mark.asyncio
+    async def test_syft_run_success(self, tmp_path):
+        from app.adapters.syft_adapter import SyftAdapter
+        adapter = SyftAdapter()
+        target = Target(name="Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        recorded_sbom = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        def record_sbom(s):
+            recorded_sbom.append(s)
+
+        mock_cyclonedx = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {"name": "fastapi", "version": "0.100.0", "type": "library", "purl": "pkg:pypi/fastapi@0.100.0"},
+                {"name": "pydantic", "version": "2.0.0", "type": "library", "purl": "pkg:pypi/pydantic@2.0.0"},
+            ],
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/syft"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_cyclonedx), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, record_sbom_report=record_sbom)
+            assert len(findings) == 1
+            assert findings[0].check_id == "SCA-SBOM-001"
+            assert len(recorded_sbom) == 1
+            assert len(recorded_sbom[0].components) == 2
+
+    @pytest.mark.asyncio
+    async def test_grype_run_success(self, tmp_path):
+        from app.adapters.grype_adapter import GrypeAdapter
+        adapter = GrypeAdapter()
+        target = Target(name="Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        mock_grype = {
+            "matches": [
+                {
+                    "vulnerability": {
+                        "id": "CVE-2023-9999",
+                        "severity": "High",
+                        "description": "Critical vulnerability in requests",
+                        "fix": {"versions": ["2.31.0"]},
+                    },
+                    "artifact": {"name": "requests", "version": "2.28.0", "type": "python"},
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/grype"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_grype), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding)
+            assert len(findings) == 1
+            assert findings[0].check_id == "SCA-SBOM-001"
+            assert "CVE-2023-9999" in findings[0].title
+
+    @pytest.mark.asyncio
+    async def test_osv_scanner_run_success(self, tmp_path):
+        from app.adapters.osv_scanner_adapter import OSVScannerAdapter
+        adapter = OSVScannerAdapter()
+        target = Target(name="Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        mock_osv = {
+            "results": [
+                {
+                    "source": {"path": str(tmp_path / "package-lock.json")},
+                    "packages": [
+                        {
+                            "package": {"name": "axios", "version": "0.21.1", "ecosystem": "npm"},
+                            "vulnerabilities": [
+                                {
+                                    "id": "GHSA-cph5-m8f7-6c5x",
+                                    "summary": "Server-Side Request Forgery in axios",
+                                    "database_specific": {"severity": "HIGH"},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/osv-scanner"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_osv), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding)
+            assert len(findings) == 1
+            assert findings[0].check_id == "SCA-OSV-001"
+
+
+# ============================================================================
+# 19. CIS Benchmarks (Prowler, Kube-Bench, Dockle) Adapters Tests
+# ============================================================================
+
+class TestCISBenchmarkAdapters:
+    @pytest.mark.asyncio
+    async def test_dockle_run_success(self):
+        from app.adapters.dockle_adapter import DockleAdapter
+        adapter = DockleAdapter()
+        target = Target(name="Dockerfile", type=TargetType.DOCKERFILE, value="nginx:alpine")
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        recorded_cis = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        def record_cis(c):
+            recorded_cis.append(c)
+
+        mock_dockle = {
+            "details": [
+                {
+                    "code": "CIS-DI-0001",
+                    "title": "Create a user for the container",
+                    "level": "WARN",
+                    "alerts": ["Last user should not be root"],
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/dockle"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_dockle), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
+            assert len(findings) == 1
+            assert findings[0].check_id == "DOCKER-CIS-001"
+            assert len(recorded_cis) == 1
+
+    @pytest.mark.asyncio
+    async def test_kubebench_run_success(self, tmp_path):
+        from app.adapters.kubebench_adapter import KubeBenchAdapter
+        adapter = KubeBenchAdapter()
+        target = Target(name="K8s", type=TargetType.IAC_MANIFEST, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        recorded_cis = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        def record_cis(c):
+            recorded_cis.append(c)
+
+        mock_kb = {
+            "Controls": [
+                {
+                    "id": "1.1",
+                    "tests": [
+                        {
+                            "section": "1.1.1",
+                            "results": [
+                                {
+                                    "test_number": "1.1.1",
+                                    "test_desc": "Ensure that the API server pod specification file permissions are set to 644 or more restrictive",
+                                    "status": "FAIL",
+                                    "remediation": "chmod 644 /etc/kubernetes/manifests/kube-apiserver.yaml",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_kb), ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
+            assert len(findings) == 1
+            assert findings[0].check_id == "K8S-CIS-001"
+            assert len(recorded_cis) == 1
+
+    @pytest.mark.asyncio
+    async def test_prowler_run_success(self, tmp_path):
+        from app.adapters.prowler_adapter import ProwlerAdapter
+        adapter = ProwlerAdapter()
+        target = Target(name="Cloud", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+        config = ScanConfig()
+        emitted_logs = []
+        emitted_findings = []
+        recorded_cis = []
+
+        async def emit_log(lvl, msg):
+            emitted_logs.append((lvl, msg))
+
+        async def emit_finding(f):
+            emitted_findings.append(f)
+
+        def record_cis(c):
+            recorded_cis.append(c)
+
+        mock_prowler_lines = (
+            '{"CheckID":"s3_bucket_public_access","Status":"FAIL","Severity":"critical","StatusExtended":"Bucket is publicly accessible","Region":"us-east-1","ResourceID":"my-public-bucket","Remediation":{"Recommendation":{"Text":"Block public access"}}}\n'
+        )
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/prowler"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_prowler_lines, ""))):
+            findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
+            assert len(findings) == 1
+            assert findings[0].check_id == "CLOUD-CIS-001"
+            assert len(recorded_cis) == 1
+
+
 
 

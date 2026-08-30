@@ -14,12 +14,14 @@ from app.engines.network.subdomain_recon import audit_subdomain_osint
 from app.engines.network.banner_grabber import audit_service_banners
 from app.adapters.nmap_adapter import NmapAdapter
 from app.adapters.sslyze_adapter import SslyzeAdapter
+from app.adapters.subfinder_adapter import SubfinderAdapter
+from app.adapters.httpx_adapter import HttpxAdapter
 
 
 class NetworkAssessmentEngine(BaseAssessmentEngine):
     """
-    Coordinator engine for Network Perimeter, TLS/SSL and DNS hygiene security assessments.
-    Follows Adapters First-in-Line Architecture (SSLyze + Nmap primary, native DNS/OSINT enrichment, native fallback).
+    Coordinator engine for Network Perimeter, TLS/SSL, EASM and DNS hygiene security assessments.
+    Follows Adapters First-in-Line Architecture (SSLyze + Nmap + Subfinder + Httpx primary, native DNS/OSINT enrichment, native fallback).
     """
 
     @property
@@ -28,14 +30,14 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
 
     @property
     def display_name(self) -> str:
-        return "Network & TLS Infrastructure Auditor"
+        return "Network Perimeter & EASM Auditor"
 
     @property
     def description(self) -> str:
         return (
             "Audits SSL/TLS certificates for expiration and SAN validity, deprecated protocols "
             "(TLS 1.0/1.1, SSLv3), DNS email security (SPF, DMARC, MTA-STS, BIMI), DNSSEC, "
-            "and sensitive database/management port exposure."
+            "external attack surface subdomains (Subfinder, crt.sh), HTTP exposure (Httpx), and port exposure (Nmap)."
         )
 
     def is_applicable(self, target: Target) -> bool:
@@ -55,8 +57,10 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
     ) -> List[Finding]:
         findings: List[Finding] = []
         scan_id = kwargs.get("scan_id", "active")
+        subdomain_cb = kwargs.get("emit_subdomain_discovered")
+        endpoint_cb = kwargs.get("emit_endpoint_discovered")
 
-        # --- Stage 1: TLS / SSL Audit (SSLyze Adapter First -> Native Fallback) (0% - 35%) ---
+        # --- Stage 1: TLS / SSL Audit (SSLyze Adapter First -> Native Fallback) (0% - 30%) ---
         await emit_progress(10, "Auditing SSL/TLS certificate validity and ciphers...")
 
         sslyze_executed = False
@@ -100,7 +104,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 findings.append(f)
                 await emit_finding(f)
 
-            await emit_progress(25, "Testing for deprecated TLS protocols and ciphers...")
+            await emit_progress(20, "Testing for deprecated TLS protocols and ciphers...")
             tls_proto_findings = await audit_tls_protocols_and_ciphers(
                 target.value,
                 emit_log=emit_log,
@@ -111,8 +115,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 findings.append(f)
                 await emit_finding(f)
 
-        # --- Stage 2: DNS & Email Hygiene (Proprietary Native Enrichment) (35% - 70%) ---
-        await emit_progress(45, "Auditing DNS email security records (SPF, DMARC, MTA-STS, DNSSEC)...")
+        # --- Stage 2: DNS & Email Hygiene (Proprietary Native Enrichment) (30% - 50%) ---
+        await emit_progress(35, "Auditing DNS email security records (SPF, DMARC, MTA-STS, DNSSEC)...")
         dns_findings = await audit_dns_hygiene(
             target.value,
             emit_log=emit_log,
@@ -123,8 +127,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             findings.append(f)
             await emit_finding(f)
 
-        # --- Stage 3: Port Exposure Scanner (Nmap Adapter First -> Native Fallback) (70% - 85%) ---
-        await emit_progress(75, "Scanning for exposed database and management ports...")
+        # --- Stage 3: Port Exposure Scanner (Nmap Adapter First -> Native Fallback) (50% - 70%) ---
+        await emit_progress(55, "Scanning for exposed database and management ports...")
 
         nmap_executed = False
         enable_nmap = getattr(config.adapters, "enable_nmap", True)
@@ -167,12 +171,10 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 findings.append(f)
                 await emit_finding(f)
 
-            # Native Banner Grabbing for detected open ports (NET-SVC-001)
             host, _ = extract_host_and_port(target.value)
             open_port_nums = []
             for f in port_findings:
                 try:
-                    # Extract port from location string e.g. "example.com:3306"
                     p_str = f.evidence.location.split(":")[-1]
                     open_port_nums.append(int(p_str))
                 except Exception:
@@ -183,12 +185,46 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                     findings.append(f)
                     await emit_finding(f)
 
-        # --- Stage 4: Passive OSINT Subdomain Recon & Takeover (85% - 100%) ---
+        # --- Stage 4: High-Speed EASM & Tech Fingerprinting (Subfinder + Httpx) (70% - 85%) ---
+        if getattr(config.adapters, "enable_subfinder", True):
+            subfinder_adapter = SubfinderAdapter()
+            custom_path = getattr(config.adapters, "subfinder_path", None) or getattr(config.adapters, "custom_subfinder_path", None)
+            try:
+                if await subfinder_adapter.is_available(custom_path):
+                    await emit_progress(72, "Executing Subfinder passive subdomain reconnaissance...")
+                    sf_findings = await subfinder_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id=scan_id,
+                        emit_subdomain=subdomain_cb,
+                    )
+                    findings.extend(sf_findings)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Subfinder adapter error: {e}")
+
+        if getattr(config.adapters, "enable_httpx", True):
+            httpx_adapter = HttpxAdapter()
+            custom_path = getattr(config.adapters, "httpx_path", None) or getattr(config.adapters, "custom_httpx_path", None)
+            try:
+                if await httpx_adapter.is_available(custom_path):
+                    await emit_progress(78, "Executing Httpx web port & tech stack probe...")
+                    hx_findings = await httpx_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id=scan_id,
+                        emit_endpoint=endpoint_cb,
+                    )
+                    findings.extend(hx_findings)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Httpx adapter error: {e}")
+
+        # --- Stage 5: Passive OSINT Subdomain Recon & Takeover (85% - 100%) ---
         if config.osint.subdomain_enumeration:
             await emit_progress(85, "Performing passive Certificate Transparency OSINT & subdomain takeover checks...")
-            await emit_log(LogLevel.INFO, "Harvesting public subdomains via crt.sh Certificate Transparency logs.")
-            
-            subdomain_cb = kwargs.get("emit_subdomain_discovered")
             osint_findings = await audit_subdomain_osint(
                 target.value,
                 config=config,

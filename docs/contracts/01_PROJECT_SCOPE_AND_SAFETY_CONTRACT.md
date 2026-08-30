@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Operational Limits
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards & Security Operations  
 
@@ -9,20 +9,32 @@
 
 ## 1. System Vision & Purpose
 
-The **Automated Security Assessment & Vulnerability Management Platform** is an enterprise-grade, automated, defensive penetration testing and vulnerability management platform. Designed for security architects, professional penetration testers, DevSecOps pipelines, and application developers, the platform provides deep, calculated, and mathematically verified security assessments across the complete modern software stack.
+The **Automated Security Assessment & Vulnerability Management Platform (CyberAssess)** is an enterprise-grade, automated, defensive penetration testing, Application Security Posture Management (ASPM), and External Attack Surface Management (EASM) platform. Designed for security architects, professional penetration testers, DevSecOps pipelines, and application developers, the platform provides deep, calculated, and mathematically verified security assessments across the complete modern software stack.
 
-When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Repository, Container Specification, or Infrastructure-as-Code Template), the platform automatically orchestrates a comprehensive battery of non-destructive, high-fidelity, and deterministic security checks across five core security domains:
-1. **Network Perimeter, TLS/SSL & DNS Infrastructure & Passive OSINT** (`network`)
-2. **Web Application, Scoped Crawling, Authenticated DAST & Active Parameter Fuzzing** (`web_dast`)
-3. **Static Code Analysis, Interprocedural AST Taint Flow, Git Secrets & Software Composition** (`code_sast`)
-4. **Infrastructure-as-Code, Container & Cloud Posture (IaC)** (`infra_iac`)
-5. **CI/CD Pipeline & Build Automation Security** (`cicd_audit`)
+When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Repository, Container Specification, Kubernetes Cluster, Cloud Account, or Infrastructure-as-Code Template), the platform automatically orchestrates a comprehensive battery of non-destructive, high-fidelity, and deterministic security checks across five core security domains:
+1. **Network Perimeter, EASM, TLS/SSL, DNS Infrastructure & Passive OSINT** (`network`):
+   - External asset mapping, multi-source subdomain enumeration, active HTTP probing, port auditing, and deep TLS protocol/cipher inspection.
+2. **Web Application, Headless SPA Crawling, Authenticated DAST, API Contract Fuzzing & Parameter Fuzzing** (`web_dast`):
+   - Chromium-driven SPA crawling, template-driven DAST, content discovery, server configuration audits, property-based OpenAPI/GraphQL contract testing, and benign parameter fuzzing.
+3. **Static Code Analysis, Interprocedural AST Taint Flow, Verified Secrets & Multi-Language SAST** (`code_sast`):
+   - Syntactic/semantic AST scanning, interprocedural taint propagation analysis, high-entropy secret detection, live API credential verification, and client-side JavaScript CVE auditing.
+4. **Software Supply Chain Security, SBOM Generation & Dependency Vulnerability Auditing** (`supply_chain` / `code_sast`):
+   - Standardized SBOM generation (CycloneDX 1.5, SPDX 2.3), vulnerability scanning from SBOM files, and precise commit-hash dependency vulnerability matching via Google OSV.
+5. **Infrastructure-as-Code, Container Hardening, Cloud Posture (CSPM) & CIS Benchmarks** (`infra_iac`):
+   - Static IaC template scanning, container image CIS Docker linter, official CIS Kubernetes Benchmark auditing, and multi-cloud security assessment (AWS, Azure, GCP).
 
-The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture** powered by an **Integrated In-App Tool Installation & Capabilities Manager**:
-- **Stage 1 (Primary Front-Line Tool Adapters):** When industry-standard CLI pentesting tools are present on the host system or container image (**Nmap**, **SSLyze**, **Nuclei**, **FFuF**, **Nikto**, **Semgrep**, **Gitleaks**, **Bandit**, **Trivy**, **Checkov**), they fire first as the primary authoritative assessment engines.
+The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture** spanning a fleet of **22 authoritative security tools** backed by native proprietary engines:
+- **EASM & Recon Fleet:** `nmap`, `sslyze`, `subfinder`, `httpx`
+- **Web DAST & Crawling Fleet:** `nuclei`, `ffuf`, `nikto`, `katana`
+- **SAST & Secret Fleet:** `semgrep`, `bandit`, `gitleaks`, `trufflehog`, `retire`
+- **Supply Chain & SCA Fleet:** `trivy`, `syft`, `grype`, `osv-scanner`
+- **Cloud, K8s & API Posture Fleet:** `checkov`, `prowler`, `kube-bench`, `dockle`, `schemathesis`
+
+- **Stage 1 (Primary Front-Line Tool Adapters):** When industry-standard CLI pentesting tools are present on the host system or container image, they fire first as the primary authoritative assessment engines.
 - **Stage 2 (Proprietary Native Enrichment):** Deep specialized modules run concurrently or following adapter runs to enrich the assessment with proprietary capabilities external tools do not provide (e.g. interprocedural AST taint flow tracing, active time/boolean SQLi fuzzing with reproduction cURLs, Certificate Transparency OSINT, CNAME takeover detection, and strict DNS hygiene).
 - **Stage 3 (Resilient Zero-Failure Native Fallbacks):** If any external tool binary is absent on the host or encounters an error, the system seamlessly falls back to its built-in pure Python engines, guaranteeing 100% operational portability on clean systems with zero dropped assessments.
-- **Integrated In-App Installation:** Users can install missing tool adapters with a single click directly from the web interface or REST API without leaving the platform or manually editing system configuration files.
+- **Production Container Distribution:** The platform ships as a hardened multi-stage Docker container pre-packaged with all 22 tools, CPAN Perl modules, and runtime dependencies, publishable to GitHub Container Registry (`ghcr.io`) for 1-command cloud/server deployment.
+- **Integrated In-App Installation:** Users running on bare metal can install missing tool adapters with a single click directly from the web interface or REST API without leaving the platform or manually editing system configuration files.
 
 The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), enables interactive HTTP request repeating, provides one-click standalone `curl` reproduction PoC commands, and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
 
@@ -76,8 +88,45 @@ When conducting authenticated scans inside protected application areas:
    - The crawler and DAST engines MUST automatically blacklist and skip any URL or form matching logout/sign-out patterns (e.g., `/logout`, `/signout`, `/sign_out`, `/auth/exit`, `/session/destroy`) to ensure the active session is not prematurely invalidated.
 2. **Form Interaction Safety:**
    - Forms discovered during authenticated crawls are analyzed passively (action target, method, input fields, CSRF protection). Mutating state-changing requests (`POST`/`PUT`/`DELETE`) MUST NOT be submitted with randomized data.
-3. **Session Heartbeat & Graceful Recovery:**
-   - The engine periodically evaluates a configurable `logged_in_indicator` (HTTP status code, response header, or body regex). If session invalidation or 401/403 status is observed, the engine re-authenticates automatically or logs a session expiry event without crashing.
+
+### 2.4 Headless SPA Crawling Safety Rules (`katana`)
+When executing headless Chromium-driven single-page application (SPA) crawling:
+1. **Isolated Sandbox & Resource Boundaries:**
+   - Headless browser processes execute with resource limits (maximum 10 concurrent tabs, memory ceiling 1.5 GB per process).
+   - Form auto-submission is strictly disabled for mutating HTTP methods (`POST`, `PUT`, `DELETE`).
+   - Browser navigation is locked to the explicit target domain origin. External script execution is sandboxed.
+2. **Deterministic Execution Timeout:**
+   - Maximum rendering wait time per DOM mutation: 5.0 seconds. Total crawl phase timeout: 120.0 seconds.
+
+### 2.5 Software Supply Chain & SBOM Safety Rules (`syft`, `grype`, `osv-scanner`)
+When generating SBOMs and analyzing dependency manifests:
+1. **Static Manifest Inspection Only:**
+   - Parsers evaluate lockfiles (`package-lock.json`, `poetry.lock`, `go.sum`, `Cargo.lock`, `pom.xml`, `requirements.txt`) statically without executing arbitrary build scripts (`setup.py`, `preinstall` hooks, or Makefile targets).
+2. **Zero Ingestion of Untrusted Binaries:**
+   - Package auditing relies on cryptographically verified database lookups against Google OSV and Anchore vulnerability feeds.
+
+### 2.6 Verified Secret Probing Constraints (`trufflehog`)
+When conducting live API key and secret verification:
+1. **Non-Destructive Metadata Probes:**
+   - Secret verification detectors MUST perform read-only identity queries (e.g. `aws sts get-caller-identity`, `GET /v1/me`, `users.identity`).
+   - The engine MUST NEVER perform state-changing or billing-incurring API requests.
+2. **Zero Credential Persistence:**
+   - Discovered raw secrets are held in volatile process memory only long enough to evaluate validity and generate masked evidence (`AKIA*************PLE`), then immediately dereferenced.
+
+### 2.7 Read-Only Cloud & Cluster Assessment Mandate (`prowler`, `kube-bench`, `dockle`)
+When auditing Cloud infrastructure, Kubernetes clusters, or Docker images:
+1. **Strictly Read-Only Permissions:**
+   - Audits operate exclusively with `ReadOnlyAccess` / `SecurityAudit` cloud policies and Kubernetes `view` / `ClusterRole` permissions (`Get`, `List`, `Watch`).
+   - The engine MUST NOT alter IAM policies, security groups, routing tables, Kubernetes manifests, or cluster state.
+2. **Local CIS Docker Linter Safety:**
+   - `dockle` inspects image tarballs and filesystem layers locally without spawning interactive containers or running privileged code.
+
+### 2.8 Property-Based API Contract Testing Safety (`schemathesis`)
+When testing OpenAPI / Swagger / GraphQL endpoints:
+1. **Safe Method Prioritization:**
+   - Automated property generation is restricted to safe idempotent methods (`GET`, `HEAD`, `OPTIONS`) by default.
+   - Mutating methods (`POST`, `PUT`, `PATCH`) execute only against synthetic sandbox test objects and require explicit user opt-in.
+   - `DELETE` endpoints are automatically excluded from automated property-based fuzzing.
 
 ---
 

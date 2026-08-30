@@ -131,6 +131,8 @@ class ScanStreamManager {
     this.btnExportHtml = document.getElementById("btn-export-html");
     this.btnExportSarif = document.getElementById("btn-export-sarif");
     this.btnExportJson = document.getElementById("btn-export-json");
+    this.btnExportCycloneDx = document.getElementById("btn-export-cyclonedx");
+    this.btnExportSpdx = document.getElementById("btn-export-spdx");
 
     // Findings
     this.findingsList = document.getElementById("findings-list-container");
@@ -896,6 +898,8 @@ class ScanStreamManager {
     this.btnExportHtml.href = `/api/scans/${scanId}/export/html`;
     this.btnExportSarif.href = `/api/scans/${scanId}/export/sarif`;
     this.btnExportJson.href = `/api/scans/${scanId}/export/json`;
+    if (this.btnExportCycloneDx) this.btnExportCycloneDx.href = `/api/scans/${scanId}/export/sbom/cyclonedx`;
+    if (this.btnExportSpdx) this.btnExportSpdx.href = `/api/scans/${scanId}/export/sbom/spdx`;
   }
 
   renderFindings() {
@@ -968,6 +972,15 @@ class ScanStreamManager {
         `
           : "";
 
+        const verifiedSecret = f.verified_secret && f.verified_secret.verified
+          ? `
+          <div class="verified-secret-badge" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #fca5a5; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 11px; margin-right: 6px;">
+            <span>⚡ VERIFIED LIVE CREDENTIAL</span>
+            <span style="color: #fff;">(${this.escapeHtml(f.verified_secret.credential_name || 'Active')})</span>
+          </div>
+        `
+          : "";
+
         return `
         <div class="finding-card ${sevClass}">
           <div class="finding-header" onclick="window.toggleCard('fc-${idx}')">
@@ -983,6 +996,7 @@ class ScanStreamManager {
           </div>
           <div class="finding-body" id="body-fc-${idx}">
             <div class="tags-row">
+              ${verifiedSecret}
               ${f.cwe_id ? `<span class="meta-tag">${this.escapeHtml(f.cwe_id)}</span>` : ""}
               ${f.owasp_category ? `<span class="meta-tag">${this.escapeHtml(f.owasp_category)}</span>` : ""}
               ${f.nist_control ? `<span class="meta-tag">${this.escapeHtml(f.nist_control)}</span>` : ""}

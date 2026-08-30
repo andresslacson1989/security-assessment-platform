@@ -1,7 +1,7 @@
 # Contract 02: Core Data Schema, Pydantic Models & Scoring Algorithm
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Data Models, State Machines, Serialization & Mathematical Scoring  
 
@@ -41,13 +41,17 @@ class Severity(str, Enum):
 ### 2.3 Scan Profiles (`ScanProfile`)
 ```python
 class ScanProfile(str, Enum):
-    FULL_STACK = "FULL_STACK"        # All 5 engines active + all 10 available adapters
-    QUICK_AUDIT = "QUICK_AUDIT"      # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"          # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Nikto
-    SAST_ONLY = "SAST_ONLY"          # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + Trivy
-    NETWORK_TLS = "NETWORK_TLS"      # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze
-    INFRA_ONLY = "INFRA_ONLY"        # Dockerfile + Compose + K8s + Terraform + Trivy + Checkov
-    CUSTOM = "CUSTOM"                # User-defined engine selection
+    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 22 available adapters
+    QUICK_AUDIT = "QUICK_AUDIT"                  # Network + Web DAST Header Check only
+    DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Nikto + Katana + Schemathesis
+    SAST_ONLY = "SAST_ONLY"                      # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + TruffleHog + RetireJS
+    NETWORK_TLS = "NETWORK_TLS"                  # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze + Subfinder + Httpx
+    INFRA_ONLY = "INFRA_ONLY"                    # Dockerfile + Compose + K8s + Terraform + Trivy + Checkov + Dockle + KubeBench + Prowler
+    EASM_EXPANDED = "EASM_EXPANDED"              # External Attack Surface: Subfinder + Httpx + Nmap + Katana + crt.sh
+    SUPPLY_CHAIN_SBOM = "SUPPLY_CHAIN_SBOM"      # Syft + Grype + OSV-Scanner + Trivy + Retire.js + SBOM Export
+    CLOUD_K8S_COMPLIANCE = "CLOUD_K8S_COMPLIANCE" # Prowler + Kube-bench + Checkov + Dockle (CIS Benchmarks)
+    API_CONTRACT_AUDIT = "API_CONTRACT_AUDIT"    # Schemathesis + Nuclei API + FFuF (OpenAPI/GraphQL Contract Fuzzing)
+    CUSTOM = "CUSTOM"                            # User-defined engine selection
 ```
 
 ### 2.4 Scan Status & State Machine (`ScanStatus`)
@@ -181,6 +185,7 @@ class DiscoveredEndpoint(BaseModel):
 ### 3.5 Hybrid Tool Adapter Configurations & Status Models
 ```python
 class ToolAdapterConfig(BaseModel):
+    # Core 10 Adapters
     enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")
     enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
     enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
@@ -191,19 +196,47 @@ class ToolAdapterConfig(BaseModel):
     enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")
     enable_trivy: bool = Field(default=True, description="Enable Trivy SCA and container vulnerability adapter")
     enable_checkov: bool = Field(default=True, description="Enable Checkov Infrastructure-as-Code policy adapter")
-    custom_nmap_path: Optional[str] = Field(default=None, description="Explicit path to nmap executable")
-    custom_sslyze_path: Optional[str] = Field(default=None, description="Explicit path to sslyze executable")
-    custom_nuclei_path: Optional[str] = Field(default=None, description="Explicit path to nuclei executable")
-    custom_ffuf_path: Optional[str] = Field(default=None, description="Explicit path to ffuf executable")
-    custom_nikto_path: Optional[str] = Field(default=None, description="Explicit path to nikto executable")
-    custom_semgrep_path: Optional[str] = Field(default=None, description="Explicit path to semgrep executable")
-    custom_gitleaks_path: Optional[str] = Field(default=None, description="Explicit path to gitleaks executable")
-    custom_bandit_path: Optional[str] = Field(default=None, description="Explicit path to bandit executable")
-    custom_trivy_path: Optional[str] = Field(default=None, description="Explicit path to trivy executable")
-    custom_checkov_path: Optional[str] = Field(default=None, description="Explicit path to checkov executable")
+
+    # Expanded 12 Enterprise Adapters (v8.0.0)
+    enable_subfinder: bool = Field(default=True, description="Enable Subfinder multi-source passive subdomain discovery adapter")
+    enable_httpx: bool = Field(default=True, description="Enable Httpx high-speed HTTP probing and tech fingerprint adapter")
+    enable_katana: bool = Field(default=True, description="Enable Katana headless Chromium SPA crawler adapter")
+    enable_syft: bool = Field(default=True, description="Enable Syft SBOM (CycloneDX / SPDX) generation adapter")
+    enable_grype: bool = Field(default=True, description="Enable Grype SBOM & container vulnerability adapter")
+    enable_osv_scanner: bool = Field(default=True, description="Enable Google OSV-Scanner dependency vulnerability adapter")
+    enable_retirejs: bool = Field(default=True, description="Enable Retire.js client-side JavaScript CVE adapter")
+    enable_trufflehog: bool = Field(default=True, description="Enable TruffleHog verified live secret detection adapter")
+    enable_prowler: bool = Field(default=True, description="Enable Prowler multi-cloud CIS benchmark posture adapter")
+    enable_kube_bench: bool = Field(default=True, description="Enable Kube-bench CIS Kubernetes benchmark adapter")
+    enable_dockle: bool = Field(default=True, description="Enable Dockle CIS Docker container hardening linter adapter")
+    enable_schemathesis: bool = Field(default=True, description="Enable Schemathesis property-based API contract fuzzer adapter")
+
+    # Custom Executable Paths
+    custom_nmap_path: Optional[str] = Field(default=None)
+    custom_sslyze_path: Optional[str] = Field(default=None)
+    custom_nuclei_path: Optional[str] = Field(default=None)
+    custom_ffuf_path: Optional[str] = Field(default=None)
+    custom_nikto_path: Optional[str] = Field(default=None)
+    custom_semgrep_path: Optional[str] = Field(default=None)
+    custom_gitleaks_path: Optional[str] = Field(default=None)
+    custom_bandit_path: Optional[str] = Field(default=None)
+    custom_trivy_path: Optional[str] = Field(default=None)
+    custom_checkov_path: Optional[str] = Field(default=None)
+    custom_subfinder_path: Optional[str] = Field(default=None)
+    custom_httpx_path: Optional[str] = Field(default=None)
+    custom_katana_path: Optional[str] = Field(default=None)
+    custom_syft_path: Optional[str] = Field(default=None)
+    custom_grype_path: Optional[str] = Field(default=None)
+    custom_osv_scanner_path: Optional[str] = Field(default=None)
+    custom_retirejs_path: Optional[str] = Field(default=None)
+    custom_trufflehog_path: Optional[str] = Field(default=None)
+    custom_prowler_path: Optional[str] = Field(default=None)
+    custom_kube_bench_path: Optional[str] = Field(default=None)
+    custom_dockle_path: Optional[str] = Field(default=None)
+    custom_schemathesis_path: Optional[str] = Field(default=None)
 
 class ToolStatus(BaseModel):
-    name: str = Field(..., description="Tool identifier (nmap, sslyze, nuclei, ffuf, nikto, semgrep, gitleaks, bandit, trivy, checkov)")
+    name: str = Field(..., description="Tool identifier (nmap, sslyze, nuclei, ffuf, nikto, semgrep, gitleaks, bandit, trivy, checkov, subfinder, httpx, katana, syft, grype, osv_scanner, retirejs, trufflehog, prowler, kube_bench, dockle, schemathesis)")
     available: bool = Field(..., description="Whether binary was detected and verified on PATH/filesystem")
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
@@ -371,11 +404,47 @@ class ToolStatus(BaseModel):
     is_installed: bool = False
     installable: bool = True
 
-class SystemCapabilities(BaseModel):
-    tools: List[ToolStatus] = Field(default_factory=list)
-    native_engines_ready: bool = True
-    os_platform: str = "Unknown"
+### 3.12 Software Bill of Materials (SBOM) & Supply Chain Models
+```python
+class SBOMExportFormat(str, Enum):
+    CYCLONEDX_JSON = "CYCLONEDX_JSON"
+    CYCLONEDX_XML = "CYCLONEDX_XML"
+    SPDX_JSON = "SPDX_JSON"
+    SPDX_TAG_VALUE = "SPDX_TAG_VALUE"
+
+class SBOMComponent(BaseModel):
+    name: str = Field(..., description="Package or component name")
+    version: str = Field(..., description="Installed package version string")
+    type: str = Field(default="library", description="Component type: library, application, container, operating-system")
+    purl: Optional[str] = Field(default=None, description="Package URL specification (e.g. pkg:npm/lodash@4.17.21)")
+    license: Optional[str] = Field(default=None, description="Declared SPDX license identifier")
+    cpe: Optional[str] = Field(default=None, description="Common Platform Enumeration string")
+    vulnerabilities_count: int = Field(default=0, description="Associated CVE/vulnerability count")
+
+class SBOMReport(BaseModel):
+    format: SBOMExportFormat = Field(default=SBOMExportFormat.CYCLONEDX_JSON)
+    spec_version: str = Field(default="1.5", description="Specification version string")
+    serial_number: str = Field(default_factory=lambda: f"urn:uuid:{uuid.uuid4()}")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    components: List[SBOMComponent] = Field(default_factory=list)
+    raw_document: Optional[str] = Field(default=None, description="Full serialized CycloneDX or SPDX document string")
 ```
+
+### 3.13 CIS Benchmark & Verified Secret Models
+```python
+class CISBenchmarkResult(BaseModel):
+    benchmark_name: str = Field(..., description="CIS Benchmark (e.g. 'CIS Kubernetes Benchmark v1.8', 'CIS Docker Benchmark v1.5')")
+    section_id: str = Field(..., description="Section identifier (e.g. '1.1.1', '4.1')")
+    title: str = Field(..., description="Benchmark control recommendation title")
+    status: str = Field(..., description="'PASS', 'FAIL', 'WARN', 'INFO'")
+    remediation: str = Field(..., description="Prescriptive remediation steps")
+    scored: bool = Field(default=True, description="Whether control is scored in CIS certification")
+
+class VerifiedSecretEvidence(BaseModel):
+    secret_type: str = Field(..., description="Type of secret (e.g. 'AWS Access Key', 'Stripe API Key', 'GitHub PAT')")
+    is_live: bool = Field(..., description="Whether real-time non-destructive probe confirmed credential is active")
+    account_id: Optional[str] = Field(default=None, description="Masked account or identity returned by authorization probe")
+    permissions_summary: Optional[str] = Field(default=None, description="Observed permission scope")
 ```
 
 ---

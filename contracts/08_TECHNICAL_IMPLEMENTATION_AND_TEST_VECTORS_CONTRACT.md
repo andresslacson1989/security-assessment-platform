@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Execution Algorithms & Test Vectors Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.1.0 (5-Tier Binary Resolution, Subprocess Execution & Capabilities Lifecycle Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Implementation Algorithms, Test Vectors, Parser Mechanics & Remediation Templates  
 
@@ -677,6 +677,71 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 ```
+
+---
+
+## 11. Expanded 22-Tool Enterprise Specifications & Execution Mechanics
+
+### 11.1 Subfinder Adapter (`SubfinderAdapter`)
+- **CLI Invocation:** `subfinder -d <domain> -silent -oJ`
+- **Output Parsing:** Streams JSON objects per line `{"host":"sub.example.com","sources":["crtsh","censys"]}`.
+- **Normalization:** Emits `DiscoveredSubdomain` with discovered IP resolution and `EASM-SUB-001` findings.
+
+### 11.2 Httpx Adapter (`HttpxAdapter`)
+- **CLI Invocation:** `httpx -u <target> -json -silent -title -tech-detect -status-code -location -tls-grab`
+- **Output Parsing:** Parses JSON response details containing status code, tech stack array, title, TLS version, and redirects.
+- **Normalization:** Emits `DiscoveredEndpoint` models and `EASM-EXPOSURE-001` findings.
+
+### 11.3 Katana Adapter (`KatanaAdapter`)
+- **CLI Invocation:** `katana -u <target> -jsonl -silent -headless -d 3 -jc -aff`
+- **Output Parsing:** Ingests dynamic DOM links, form actions, and AJAX/Fetch request routes rendered in headless Chromium.
+- **Normalization:** Emits `DiscoveredEndpoint` models with `has_forms` flags and feeds routes into `Nuclei` / `FFuF`.
+
+### 11.4 Syft Adapter (`SyftAdapter`)
+- **CLI Invocation:** `syft <dir> -o cyclonedx-json`
+- **Output Parsing:** Ingests CycloneDX 1.5 JSON containing components, packages, purls, and licenses.
+- **Normalization:** Populates `SBOMReport` and feeds component list into `Grype` / `OSV-Scanner`.
+
+### 11.5 Grype Adapter (`GrypeAdapter`)
+- **CLI Invocation:** `grype <dir> -o json`
+- **Output Parsing:** Parses JSON vulnerability list `matches[].vulnerability` and `artifact`.
+- **Normalization:** Emits `Finding` with `check_id="SCA-SBOM-001"`, CVSS scores, and fixed package versions.
+
+### 11.6 OSV-Scanner Adapter (`OSVScannerAdapter`)
+- **CLI Invocation:** `osv-scanner scan --format json -r <dir>`
+- **Output Parsing:** Parses JSON `results[].packages[].vulnerabilities[]` from Google's OSV database.
+- **Normalization:** Emits `Finding` with `check_id="SCA-OSV-001"`, CWE, CVSS score, and affected commit ranges.
+
+### 11.7 Retire.js Adapter (`RetireJSAdapter`)
+- **CLI Invocation:** `retire --path <dir> --outputformat json`
+- **Output Parsing:** Parses JSON array of vulnerable client-side JavaScript libraries (jQuery, Bootstrap, Angular, Lodash).
+- **Normalization:** Emits `Finding` with `check_id="SCA-JS-001"` and remediation suggestions.
+
+### 11.8 TruffleHog Adapter (`TruffleHogAdapter`)
+- **CLI Invocation:** `trufflehog filesystem <dir> --json --no-verification=false`
+- **Output Parsing:** Parses JSON lines containing verified secrets `{"DetectorName":"AWS","Verified":true,"Raw":"AKIA..."}`.
+- **Normalization:** Emits `Finding` with `check_id="SEC-VERIFIED-001"`, CVSS 10.0, masked secret, and verified authorization metadata.
+
+### 11.9 Prowler Adapter (`ProwlerAdapter`)
+- **CLI Invocation:** `prowler <provider> -M json`
+- **Output Parsing:** Parses CIS Foundations benchmark check results.
+- **Normalization:** Emits `Finding` with `check_id="CLOUD-CIS-001"` and `CISBenchmarkResult` models.
+
+### 11.10 Kube-bench Adapter (`KubeBenchAdapter`)
+- **CLI Invocation:** `kube-bench run --json`
+- **Output Parsing:** Parses CIS Kubernetes Benchmark results `Controls[].Tests[].Results[]`.
+- **Normalization:** Emits `Finding` with `check_id="K8S-CIS-001"` and remediation commands.
+
+### 11.11 Dockle Adapter (`DockleAdapter`)
+- **CLI Invocation:** `dockle -f json <image_tar>`
+- **Output Parsing:** Parses CIS Docker benchmark image audits (`CIS-DI-0001` to `CIS-DI-0010`).
+- **Normalization:** Emits `Finding` with `check_id="DOCKER-CIS-001"` and CIS remediation details.
+
+### 11.12 Schemathesis Adapter (`SchemathesisAdapter`)
+- **CLI Invocation:** `schemathesis run <schema_url> --report-format json`
+- **Output Parsing:** Parses property-based test results, unhandled 500 errors, and broken schema contracts.
+- **Normalization:** Emits `Finding` with `check_id="API-SCHEMA-001"` and reproduction cURL commands.
+
 
 
 

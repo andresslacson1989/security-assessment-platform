@@ -17,12 +17,17 @@ from app.adapters.semgrep_adapter import SemgrepAdapter
 from app.adapters.gitleaks_adapter import GitleaksAdapter
 from app.adapters.bandit_adapter import BanditAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
+from app.adapters.trufflehog_adapter import TruffleHogAdapter
+from app.adapters.retirejs_adapter import RetireJSAdapter
+from app.adapters.syft_adapter import SyftAdapter
+from app.adapters.grype_adapter import GrypeAdapter
+from app.adapters.osv_scanner_adapter import OSVScannerAdapter
 
 
 class CodeSastAssessmentEngine(BaseAssessmentEngine):
     """
-    Coordinator engine for Static Application Security Testing (SAST), Secret Scanning, and SCA.
-    Follows Adapters First-in-Line Architecture (Gitleaks + Bandit + Semgrep + Trivy primary, native AST Taint & Entropy enrichment).
+    Coordinator engine for Static Application Security Testing (SAST), Verified Secret Scanning, and Software Supply Chain (SCA & SBOM).
+    Follows Adapters First-in-Line Architecture (Gitleaks + TruffleHog + Bandit + Semgrep + RetireJS + Syft + Grype + OSV-Scanner + Trivy primary, native AST Taint & Entropy enrichment).
     """
 
     @property
@@ -31,14 +36,15 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
 
     @property
     def display_name(self) -> str:
-        return "Static Code Analysis, Secrets & Dependency SCA"
+        return "Static Code Analysis, Secrets & Supply Chain"
 
     @property
     def description(self) -> str:
         return (
             "Analyzes local repositories and source directories for hardcoded credentials (AWS, GitHub, Stripe), "
-            "weak cryptography (MD5, SHA-1, insecure PRNG, AES-ECB), injection flaws (SQLi, Command Injection, "
-            "unsafe deserialization), and outdated dependencies with known CVEs."
+            "verified live secrets (TruffleHog), weak cryptography (MD5, SHA-1, insecure PRNG, AES-ECB), "
+            "injection flaws (SQLi, Command Injection, unsafe deserialization), vulnerable front-end JS (Retire.js), "
+            "Software Bill of Materials generation (Syft CycloneDX/SPDX), Google OSV advisories, and package CVEs."
         )
 
     def is_applicable(self, target: Target) -> bool:
@@ -54,10 +60,12 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
         existing_fps = set()
         repo_path = target.value
+        record_sbom = kwargs.get("record_sbom_report")
 
         # --- Stage 0: Primary External Tool Adapters First-in-Line ---
         await emit_progress(5, "Running primary external SAST & Secret tool adapters...")
@@ -87,7 +95,30 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Gitleaks adapter error: {e}")
 
-        # 0.2 Bandit Adapter (Python AST Security Linter)
+        # 0.2 TruffleHog Adapter (Verified Live Secret Scanner)
+        if getattr(config.adapters, "enable_trufflehog", True):
+            trufflehog_adapter = TruffleHogAdapter()
+            custom_path = getattr(config.adapters, "trufflehog_path", None) or getattr(config.adapters, "custom_trufflehog_path", None)
+            try:
+                if await trufflehog_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing TruffleHog CLI adapter for verified secret detection...")
+                    th_findings = await trufflehog_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in th_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "trufflehog"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"TruffleHog adapter error: {e}")
+
+        # 0.3 Bandit Adapter (Python AST Security Linter)
         if getattr(config.adapters, "enable_bandit", True):
             bandit_adapter = BanditAdapter()
             custom_path = getattr(config.adapters, "bandit_path", None) or getattr(config.adapters, "custom_bandit_path", None)
@@ -112,7 +143,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Bandit adapter error: {e}")
 
-        # 0.3 Semgrep Adapter (Multi-Language AST SAST)
+        # 0.4 Semgrep Adapter (Multi-Language AST SAST)
         if getattr(config.adapters, "enable_semgrep", True):
             semgrep_adapter = SemgrepAdapter()
             custom_path = getattr(config.adapters, "semgrep_path", None) or getattr(config.adapters, "custom_semgrep_path", None)
@@ -137,7 +168,100 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Semgrep adapter error: {e}")
 
-        # 0.4 Trivy Adapter (SCA Dependency Vulnerabilities)
+        # 0.5 Retire.js Adapter (Client-Side JavaScript Vulnerabilities)
+        if getattr(config.adapters, "enable_retirejs", True):
+            retire_adapter = RetireJSAdapter()
+            custom_path = getattr(config.adapters, "retirejs_path", None) or getattr(config.adapters, "custom_retirejs_path", None)
+            try:
+                if await retire_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Retire.js adapter for client-side JS CVEs...")
+                    retire_findings = await retire_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in retire_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "retirejs"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Retire.js adapter error: {e}")
+
+        # 0.6 Syft Adapter (Software Bill of Materials Generation)
+        if getattr(config.adapters, "enable_syft", True):
+            syft_adapter = SyftAdapter()
+            custom_path = getattr(config.adapters, "syft_path", None) or getattr(config.adapters, "custom_syft_path", None)
+            try:
+                if await syft_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Syft SBOM generator...")
+                    syft_findings = await syft_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                        record_sbom_report=record_sbom,
+                    )
+                    for f in syft_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "syft"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Syft adapter error: {e}")
+
+        # 0.7 Grype Adapter (SBOM & Filesystem Vulnerability Matcher)
+        if getattr(config.adapters, "enable_grype", True):
+            grype_adapter = GrypeAdapter()
+            custom_path = getattr(config.adapters, "grype_path", None) or getattr(config.adapters, "custom_grype_path", None)
+            try:
+                if await grype_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Grype supply chain vulnerability matcher...")
+                    grype_findings = await grype_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in grype_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "grype"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Grype adapter error: {e}")
+
+        # 0.8 OSV-Scanner Adapter (Google OSV Database)
+        if getattr(config.adapters, "enable_osv_scanner", True):
+            osv_adapter = OSVScannerAdapter()
+            custom_path = getattr(config.adapters, "osv_scanner_path", None) or getattr(config.adapters, "custom_osv_scanner_path", None)
+            try:
+                if await osv_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Google OSV-Scanner dependency audit...")
+                    osv_findings = await osv_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in osv_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "osv_scanner"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"OSV-Scanner adapter error: {e}")
+
+        # 0.9 Trivy Adapter (SCA Dependency Vulnerabilities)
         if getattr(config.adapters, "enable_trivy", True):
             trivy_adapter = TrivyAdapter()
             custom_path = getattr(config.adapters, "trivy_path", None) or getattr(config.adapters, "custom_trivy_path", None)

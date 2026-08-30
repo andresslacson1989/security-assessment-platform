@@ -1,7 +1,7 @@
 # Contract 03: Engine Plugin Interface & Module Implementation Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.1.0 (5-Tier Binary Resolution, Subprocess Worker & Capabilities Lifecycle Management Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Assessment Engine Plugins, Submodules, Tool Adapters, In-App Installers & Execution Lifecycle  
 
@@ -13,7 +13,7 @@ Every assessment engine MUST subclass `BaseAssessmentEngine` defined in `backend
 
 ```python
 from abc import ABC, abstractmethod
-from typing import List, Callable, Awaitable, Optional
+from typing import List, Callable, Awaitable, Optional, Tuple
 from app.core.models import Target, Finding, ScanConfig, LogLevel, DiscoveredEndpoint, DiscoveredSubdomain
 
 # Asynchronous callback signatures for real-time telemetry streaming
@@ -95,9 +95,146 @@ class BaseAssessmentEngine(ABC):
 
 ## 3. Detailed Specifications for Core Engines & Submodules
 
-### 3.1 Engine 1: Network, TLS, DNS & OSINT Auditor (`network`)
-**Identifier:** `network`  
-**Display Name:** Network Perimeter, TLS/SSL & DNS Infrastructure  
+### 3.1 Engine 1: Network, EASM, TLS, DNS & OSINT Auditor (`network`)
+- Integrates `NmapAdapter`, `SslyzeAdapter`, `SubfinderAdapter`, `HttpxAdapter`.
+- Native fallback & enrichment: `port_checker`, `banner_grabber`, `tls_auditor`, `dns_hygiene`, `subdomain_recon` (Certificate Transparency).
+
+### 3.2 Engine 2: Web DAST, Headless SPA Crawler & API Contract Fuzzer (`web_dast`)
+- Integrates `NucleiAdapter`, `FfufAdapter`, `NiktoAdapter`, `KatanaAdapter`, `SchemathesisAdapter`.
+- Native fallback & enrichment: `headers_cookies`, `cors_analyzer`, `api_inspector`, `browser_posture`, `crawler`, `auth_session`, `parameter_fuzzer`.
+
+### 3.3 Engine 3: Code SAST, Taint Analysis & Verified Secrets (`code_sast`)
+- Integrates `SemgrepAdapter`, `BanditAdapter`, `GitleaksAdapter`, `TruffleHogAdapter`, `RetireJSAdapter`.
+- Native fallback & enrichment: `ast_taint_analyzer`, `secret_scanner`, `crypto_lint`, `injection_lint`, `git_history_scanner`.
+
+### 3.4 Engine 4: Software Supply Chain Security & SBOM (`supply_chain` / `code_sast`)
+- Integrates `TrivyAdapter`, `SyftAdapter`, `GrypeAdapter`, `OSVScannerAdapter`.
+- Native fallback & enrichment: `dependency_auditor`, `lockfile_parser`, `cve_lookup`.
+
+### 3.5 Engine 5: Infrastructure-as-Code, Container & Cloud CIS Benchmarks (`infra_iac`)
+- Integrates `CheckovAdapter`, `ProwlerAdapter`, `KubeBenchAdapter`, `DockleAdapter`.
+- Native fallback & enrichment: `dockerfile_auditor`, `compose_auditor`, `k8s_manifest_auditor`, `terraform_auditor`.
+
+---
+
+## 4. Pluggable Hybrid Tool Adapters Layer (`backend/app/adapters/`)
+
+### 4.1 Abstract Tool Adapter Interface (`BaseToolAdapter`)
+```python
+class BaseToolAdapter(ABC):
+    @property
+    @abstractmethod
+    def tool_name(self) -> str:
+        pass
+
+    def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
+        return UnifiedBinaryResolver.resolve(self.tool_name, custom_path)
+
+    async def is_available(self, custom_path: Optional[str] = None) -> bool:
+        path = self.resolve_binary_path(custom_path)
+        if not path:
+            return False
+        return os.path.isfile(path) or os.path.exists(path)
+
+    @abstractmethod
+    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+        pass
+
+    @abstractmethod
+    async def run(
+        self,
+        target: Target,
+        config: ScanConfig,
+        emit_log: Callable[[LogLevel, str], Awaitable[None]],
+        emit_finding: Callable[[Finding], Awaitable[None]],
+        **kwargs,
+    ) -> List[Finding]:
+        pass
+
+    async def execute_command(
+        self,
+        cmd: List[str],
+        timeout: float = 60.0,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
+    ) -> Tuple[int, str, str]:
+        return await safe_execute_subprocess(cmd=cmd, timeout=timeout, cwd=cwd, env=env)
+```
+
+### 4.2 Complete 22-Tool Enterprise Adapter Matrix
+
+| # | Tool Adapter | Binary | Execution Command | Output Format | Domain & Execution Role | Resilient Native Fallback | Finding Normalization |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 1 | **`NmapAdapter`** | `nmap` | `nmap -sV -sC --version-light -T4 -oX - <target>` | XML (`-oX -`) | **Network** Port & Service Scanner | `port_checker` + `banner_grabber` | Maps open ports and daemon versions to `NET-PORT-xxx`, `NET-SVC-001`. `source_tool="nmap"`. |
+| 2 | **`SslyzeAdapter`** | `sslyze` | `sslyze --json_out=- <host>:<port>` | JSON (`--json_out=-`) | **Network** Deep TLS/SSL Auditor | `tls_auditor` | Maps deprecated TLS protocols and ciphers to `NET-TLS-xxx`. `source_tool="sslyze"`. |
+| 3 | **`SubfinderAdapter`** | `subfinder` | `subfinder -d <domain> -silent -oJ` | JSON Lines | **EASM** Multi-Source Subdomain Recon | `subdomain_recon` (crt.sh) | Emits `DiscoveredSubdomain` records and `EASM-SUB-001`. `source_tool="subfinder"`. |
+| 4 | **`HttpxAdapter`** | `httpx` | `httpx -u <target> -json -silent -title -tech-detect -status-code` | JSON Lines | **EASM** Web Port & Technology Probe | `api_inspector` | Emits `DiscoveredEndpoint` models and `EASM-EXPOSURE-001`. `source_tool="httpx"`. |
+| 5 | **`NucleiAdapter`** | `nuclei` | `nuclei -u <target> -j -silent -tags cve,misconfig` | JSON Lines (`-j`) | **DAST** CVE Template Vulnerability Engine | `parameter_fuzzer` + `headers_cookies` | Maps Nuclei template IDs to canonical CWEs and `DAST-xxx`. `source_tool="nuclei"`. |
+| 6 | **`FfufAdapter`** | `ffuf` | `ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10` | JSON (`-of json`) | **DAST** High-Speed Content Discovery | `crawler` | Discovers hidden routes and backup files, emitting `DAST-EXP-xxx`. `source_tool="ffuf"`. |
+| 7 | **`NiktoAdapter`** | `nikto` | `nikto -h <target> -Format json -output - -Tuning 1,2,3,4,8,9,a,b,c` | JSON (`-Format json`) | **DAST** Web Server Misconfiguration | `headers_cookies` + `api_inspector` | Maps insecure headers and dangerous methods to `DAST-HDR-xxx` / `DAST-EXP-xxx`. `source_tool="nikto"`. |
+| 8 | **`KatanaAdapter`** | `katana` | `katana -u <target> -jsonl -silent -headless -d 3 -jc` | JSON Lines | **DAST** Headless SPA JavaScript Crawler | `crawler` (static HTML) | Discovers dynamic JS/React/Vue routes, emitting `DiscoveredEndpoint` and feeding DAST. `source_tool="katana"`. |
+| 9 | **`SchemathesisAdapter`** | `schemathesis` | `schemathesis run <schema_url> --report-format json` | JSON | **API** Property-Based Contract Fuzzer | `api_inspector` | Tests OpenAPI/GraphQL schemas against BOLA/BFLA/500s, emitting `API-SCHEMA-001`. `source_tool="schemathesis"`. |
+| 10 | **`SemgrepAdapter`** | `semgrep` | `semgrep scan --config auto --json <dir>` | JSON (`--json`) | **SAST** Multi-Language AST SAST | `injection_lint` + `crypto_lint` | Normalizes Semgrep rules into `SAST-xxx` with line numbers and diffs. `source_tool="semgrep"`. |
+| 11 | **`BanditAdapter`** | `bandit` | `bandit -r <dir> -f json` | JSON (`-f json`) | **SAST** Python AST Security Linter | `crypto_lint` + `injection_lint` | Maps high/medium AST flaws to `SAST-CRY-xxx` and `SAST-INJ-xxx`. `source_tool="bandit"`. |
+| 12 | **`GitleaksAdapter`** | `gitleaks` | `gitleaks detect --source <dir> --report-format json --report-path -` | JSON (`--report-format json`) | **SAST** Dedicated Git Secret Scanner | `secret_scanner` | Extracts hardcoded tokens and API keys with mandatory masking to `SAST-SEC-xxx`. `source_tool="gitleaks"`. |
+| 13 | **`TruffleHogAdapter`** | `trufflehog` | `trufflehog filesystem <dir> --json --no-verification=false` | JSON Lines | **SAST** Verified Live Secret Scanner | `secret_scanner` | Identifies active verified API credentials with live verification probes, emitting `SEC-VERIFIED-001`. `source_tool="trufflehog"`. |
+| 14 | **`RetireJSAdapter`** | `retire` | `retire --path <dir> --outputformat json` | JSON | **SAST** Client-Side JS Vulnerability Scanner | `dependency_auditor` | Audits front-end JavaScript libraries for known CVEs, emitting `SCA-JS-001`. `source_tool="retirejs"`. |
+| 15 | **`TrivyAdapter`** | `trivy` | `trivy fs --format json <dir>` | JSON (`--format json`) | **SCA** Dependency & Container Scanner | `dependency_auditor` | Maps package and container vulnerabilities to `SAST-DEP-001` and `IAC-DOCK-xxx`. `source_tool="trivy"`. |
+| 16 | **`SyftAdapter`** | `syft` | `syft <dir> -o cyclonedx-json` | CycloneDX JSON | **SCA** Software Bill of Materials (SBOM) Generator | `dependency_auditor` | Generates standardized CycloneDX/SPDX SBOMs and component inventories. `source_tool="syft"`. |
+| 17 | **`GrypeAdapter`** | `grype` | `grype <dir> -o json` | JSON | **SCA** SBOM & Filesystem Vulnerability Matcher | `dependency_auditor` | Matches SBOM packages against vulnerability feeds, emitting `SCA-SBOM-001`. `source_tool="grype"`. |
+| 18 | **`OSVScannerAdapter`** | `osv-scanner` | `osv-scanner scan --format json -r <dir>` | JSON | **SCA** Google OSV Lockfile Vulnerability Engine | `dependency_auditor` | Queries osv.dev for commit-hash accurate CVE matching, emitting `SCA-OSV-001`. `source_tool="osv_scanner"`. |
+| 19 | **`CheckovAdapter`** | `checkov` | `checkov -d <dir> -o json --compact` | JSON (`-o json`) | **IaC** Infrastructure Policy Engine | `terraform_auditor` + `k8s_manifest_auditor` | Maps failed Terraform, K8s, Compose checks to `IAC-TF-xxx`, `IAC-K8S-xxx`. `source_tool="checkov"`. |
+| 20 | **`DockleAdapter`** | `dockle` | `dockle -f json <image>` | JSON | **IaC** CIS Docker Container Hardening Linter | `dockerfile_auditor` | Checks image security (non-root, suid bits, CIS benchmark), emitting `DOCKER-CIS-001`. `source_tool="dockle"`. |
+| 21 | **`KubeBenchAdapter`** | `kube-bench` | `kube-bench run --json` | JSON | **IaC / Cloud** CIS Kubernetes Benchmark Auditor | `k8s_manifest_auditor` | Audits master/node configs against CIS Kubernetes Benchmark, emitting `K8S-CIS-001`. `source_tool="kube_bench"`. |
+| 22 | **`ProwlerAdapter`** | `prowler` | `prowler <provider> -M json` | JSON | **Cloud** Multi-Cloud CIS & Posture Auditor | `terraform_auditor` | Audits AWS/Azure/GCP against CIS Foundations Benchmarks, emitting `CLOUD-CIS-001`. `source_tool="prowler"`. |
+
+---
+
+## 5. In-App Tool Installers Engine (`backend/app/installers/`)
+
+### 5.1 Abstract Tool Installer Interface (`BaseToolInstaller`)
+```python
+class BaseToolInstaller(ABC):
+    @property
+    @abstractmethod
+    def tool_name(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def install_method(self) -> ToolInstallMethod:
+        pass
+
+    @abstractmethod
+    async def get_info(self) -> ToolInstallationInfo:
+        pass
+
+    @abstractmethod
+    async def install(
+        self,
+        emit_log: LogCallback,
+        emit_progress: ProgressCallback,
+        force: bool = False,
+    ) -> bool:
+        pass
+```
+
+### 5.2 Installer Implementations by Tool Category
+
+1. **`PipToolInstaller` (`sslyze`, `bandit`, `semgrep`, `checkov`, `prowler`, `schemathesis`):**
+   - Invokes: `sys.executable -m pip install --upgrade <package_name>`
+   - Bounded execution with thread-safe pipe streaming. Zero administrative elevation required.
+
+2. **`GithubReleaseInstaller` (`nuclei`, `ffuf`, `gitleaks`, `trivy`, `subfinder`, `httpx`, `katana`, `syft`, `grype`, `osv_scanner`, `trufflehog`, `dockle`, `kube_bench`):**
+   - Detects OS (`Windows`, `Linux`, `Darwin`) and CPU architecture (`amd64`, `arm64`).
+   - Downloads official release zip/tarball from GitHub Releases API / CDN.
+   - Extracts binary into `backend/bin/` with ZipSlip path traversal protection. Sets permissions `0o755`.
+
+3. **`SystemToolHelper` (`nmap`, `nikto`, `retire`):**
+   - Performs 5-tier binary discovery including Windows Registry uninstall scanning, multi-drive Program Files checks, and npm globals.
+   - Integrates with `#tool-instructions-modal` presenting verified parameter breakdowns for `winget`, Strawberry Perl, npm, apt, and brew.
+
 **Applicable Target Types:** `URL`, `DOMAIN`, `IP`  
 #### Submodules:
 - `tls_auditor.py` (`NET-TLS-001` to `007`)

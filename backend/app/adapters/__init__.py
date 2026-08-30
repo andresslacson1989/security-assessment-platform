@@ -26,6 +26,18 @@ from app.adapters.gitleaks_adapter import GitleaksAdapter
 from app.adapters.bandit_adapter import BanditAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
 from app.adapters.checkov_adapter import CheckovAdapter
+from app.adapters.subfinder_adapter import SubfinderAdapter
+from app.adapters.httpx_adapter import HttpxAdapter
+from app.adapters.katana_adapter import KatanaAdapter
+from app.adapters.schemathesis_adapter import SchemathesisAdapter
+from app.adapters.trufflehog_adapter import TruffleHogAdapter
+from app.adapters.retirejs_adapter import RetireJSAdapter
+from app.adapters.syft_adapter import SyftAdapter
+from app.adapters.grype_adapter import GrypeAdapter
+from app.adapters.osv_scanner_adapter import OSVScannerAdapter
+from app.adapters.prowler_adapter import ProwlerAdapter
+from app.adapters.kubebench_adapter import KubeBenchAdapter
+from app.adapters.dockle_adapter import DockleAdapter
 
 
 __all__ = [
@@ -40,6 +52,18 @@ __all__ = [
     "BanditAdapter",
     "TrivyAdapter",
     "CheckovAdapter",
+    "SubfinderAdapter",
+    "HttpxAdapter",
+    "KatanaAdapter",
+    "SchemathesisAdapter",
+    "TruffleHogAdapter",
+    "RetireJSAdapter",
+    "SyftAdapter",
+    "GrypeAdapter",
+    "OSVScannerAdapter",
+    "ProwlerAdapter",
+    "KubeBenchAdapter",
+    "DockleAdapter",
     "get_adapter_registry",
     "discover_system_capabilities",
 ]
@@ -47,19 +71,31 @@ __all__ = [
 
 def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
     """
-    Returns an initialized registry of all 10 available tool adapter instances.
+    Returns an initialized registry of all 22 available tool adapter instances.
     """
     return {
         "nmap": NmapAdapter(),
         "sslyze": SslyzeAdapter(),
+        "subfinder": SubfinderAdapter(),
+        "httpx": HttpxAdapter(),
         "nuclei": NucleiAdapter(),
         "ffuf": FfufAdapter(),
         "nikto": NiktoAdapter(),
+        "katana": KatanaAdapter(),
+        "schemathesis": SchemathesisAdapter(),
         "semgrep": SemgrepAdapter(),
-        "gitleaks": GitleaksAdapter(),
         "bandit": BanditAdapter(),
+        "gitleaks": GitleaksAdapter(),
+        "trufflehog": TruffleHogAdapter(),
+        "retire": RetireJSAdapter(),
         "trivy": TrivyAdapter(),
+        "syft": SyftAdapter(),
+        "grype": GrypeAdapter(),
+        "osv-scanner": OSVScannerAdapter(),
         "checkov": CheckovAdapter(),
+        "dockle": DockleAdapter(),
+        "kube-bench": KubeBenchAdapter(),
+        "prowler": ProwlerAdapter(),
     }
 
 
@@ -67,7 +103,7 @@ async def discover_system_capabilities(
     config: Optional[ToolAdapterConfig] = None,
 ) -> SystemCapabilities:
     """
-    Discovers installed CLI tools on the host system across all 10 adapters,
+    Discovers installed CLI tools on the host system across all 22 adapters,
     inspects their versions and paths, and returns the structured SystemCapabilities model.
     """
     cfg = config or ToolAdapterConfig()
@@ -78,14 +114,26 @@ async def discover_system_capabilities(
     adapter_configs = {
         "nmap": (cfg.enable_nmap, cfg.nmap_path or cfg.custom_nmap_path),
         "sslyze": (cfg.enable_sslyze, cfg.sslyze_path or cfg.custom_sslyze_path),
+        "subfinder": (cfg.enable_subfinder, cfg.subfinder_path or cfg.custom_subfinder_path),
+        "httpx": (cfg.enable_httpx, cfg.httpx_path or cfg.custom_httpx_path),
         "nuclei": (cfg.enable_nuclei, cfg.nuclei_path or cfg.custom_nuclei_path),
         "ffuf": (cfg.enable_ffuf, cfg.ffuf_path or cfg.custom_ffuf_path),
         "nikto": (cfg.enable_nikto, cfg.nikto_path or cfg.custom_nikto_path),
+        "katana": (cfg.enable_katana, cfg.katana_path or cfg.custom_katana_path),
+        "schemathesis": (cfg.enable_schemathesis, cfg.schemathesis_path or cfg.custom_schemathesis_path),
         "semgrep": (cfg.enable_semgrep, cfg.semgrep_path or cfg.custom_semgrep_path),
-        "gitleaks": (cfg.enable_gitleaks, cfg.gitleaks_path or cfg.custom_gitleaks_path),
         "bandit": (cfg.enable_bandit, cfg.bandit_path or cfg.custom_bandit_path),
+        "gitleaks": (cfg.enable_gitleaks, cfg.gitleaks_path or cfg.custom_gitleaks_path),
+        "trufflehog": (cfg.enable_trufflehog, cfg.trufflehog_path or cfg.custom_trufflehog_path),
+        "retire": (cfg.enable_retirejs, cfg.retirejs_path or cfg.custom_retirejs_path),
         "trivy": (cfg.enable_trivy, cfg.trivy_path or cfg.custom_trivy_path),
+        "syft": (cfg.enable_syft, cfg.syft_path or cfg.custom_syft_path),
+        "grype": (cfg.enable_grype, cfg.grype_path or cfg.custom_grype_path),
+        "osv-scanner": (cfg.enable_osv_scanner, cfg.osv_scanner_path or cfg.custom_osv_scanner_path),
         "checkov": (cfg.enable_checkov, cfg.checkov_path or cfg.custom_checkov_path),
+        "dockle": (cfg.enable_dockle, cfg.dockle_path or cfg.custom_dockle_path),
+        "kube-bench": (cfg.enable_kube_bench, cfg.kube_bench_path or cfg.custom_kube_bench_path),
+        "prowler": (cfg.enable_prowler, cfg.prowler_path or cfg.custom_prowler_path),
     }
 
     # Tool install methods mapping
@@ -94,12 +142,24 @@ async def discover_system_capabilities(
         "bandit": ToolInstallMethod.PIP,
         "semgrep": ToolInstallMethod.PIP,
         "checkov": ToolInstallMethod.PIP,
+        "prowler": ToolInstallMethod.PIP,
+        "schemathesis": ToolInstallMethod.PIP,
         "nuclei": ToolInstallMethod.STANDALONE_BINARY,
         "ffuf": ToolInstallMethod.STANDALONE_BINARY,
         "gitleaks": ToolInstallMethod.STANDALONE_BINARY,
         "trivy": ToolInstallMethod.STANDALONE_BINARY,
+        "subfinder": ToolInstallMethod.STANDALONE_BINARY,
+        "httpx": ToolInstallMethod.STANDALONE_BINARY,
+        "katana": ToolInstallMethod.STANDALONE_BINARY,
+        "syft": ToolInstallMethod.STANDALONE_BINARY,
+        "grype": ToolInstallMethod.STANDALONE_BINARY,
+        "osv-scanner": ToolInstallMethod.STANDALONE_BINARY,
+        "trufflehog": ToolInstallMethod.STANDALONE_BINARY,
+        "dockle": ToolInstallMethod.STANDALONE_BINARY,
+        "kube-bench": ToolInstallMethod.STANDALONE_BINARY,
         "nmap": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
         "nikto": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
+        "retire": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
     }
 
     for name, adapter in registry.items():
@@ -148,4 +208,3 @@ async def discover_system_capabilities(
         native_engines_ready=True,
         os_platform=platform.platform(),
     )
-

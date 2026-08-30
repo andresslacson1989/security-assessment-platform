@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Execution Algorithms & Test Vectors Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Implementation Algorithms, Test Vectors, Parser Mechanics & Remediation Templates  
 
@@ -292,8 +292,7 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Invocation:**
   ```python
   cmd = [gitleaks_path, "detect", "--source", repo_path, "--report-format", "json", "--report-path", "-"]
-  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  code, stdout, stderr = await self.execute_command(cmd, timeout=60.0)
   ```
 - **Parsing Mechanics:**
   - Parses JSON array of leak objects extracting `RuleID`, `Description`, `StartLine`, `File`, `Commit`, `Secret`.
@@ -303,8 +302,7 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Invocation:**
   ```python
   cmd = [bandit_path, "-r", repo_path, "-f", "json"]
-  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  code, stdout, stderr = await self.execute_command(cmd, timeout=60.0)
   ```
 - **Parsing Mechanics:**
   - Parses JSON results `results[]` extracting `test_id`, `issue_severity`, `issue_confidence`, `issue_text`, `line_number`, `filename`, `code`.
@@ -314,6 +312,7 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Invocation:**
   ```python
   cmd = [trivy_path, "fs", "--format", "json", repo_path]
+  code, stdout, stderr = await self.execute_command(cmd, timeout=60.0)
   ```
 - **Parsing Mechanics:**
   - Parses JSON output: `Results[].Vulnerabilities[]` extracting `VulnerabilityID`, `PkgName`, `InstalledVersion`, `FixedVersion`, `PrimaryURL`.
@@ -323,8 +322,7 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Invocation:**
   ```python
   cmd = [checkov_path, "-d", repo_path, "-o", "json", "--compact"]
-  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  code, stdout, stderr = await self.execute_command(cmd, timeout=60.0)
   ```
 - **Parsing Mechanics:**
   - Parses JSON output: `results.failed_checks[]` extracting `check_id`, `check_name`, `file_path`, `file_line_range`, `resource`, `guideline`.
@@ -345,22 +343,43 @@ The installer dynamically maps host OS (`sys.platform` / `platform.system()`) an
 | **`gitleaks`** | `gitleaks/gitleaks` | `gitleaks_*_windows_x64.zip` | `gitleaks_*_linux_x64.tar.gz` | `gitleaks_*_darwin_arm64.tar.gz` |
 | **`trivy`** | `aquasecurity/trivy` | `trivy_*_windows-64bit.zip` | `trivy_*_Linux-64bit.tar.gz` | `trivy_*_macOS-ARM64.tar.gz` |
 
-### 9.2 Pip Package Installation Execution Algorithm (`PipToolInstaller`)
+### 9.2 Thread-Isolated Pip Package Installation Execution Algorithm (`PipToolInstaller`)
 ```python
-# Technical Algorithm: Safe Pip Subprocess Invocation with Streaming Output
+# Technical Algorithm: Safe Pip Subprocess Invocation with Thread-Bridge Queue Streaming
+import subprocess, threading, asyncio
+
 async def install_pip_package(package_name: str, emit_log: Callable[[str], Awaitable[None]]) -> bool:
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", package_name]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT
-    )
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue()
+
+    def _worker():
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        for line in iter(proc.stdout.readline, ""):
+            asyncio.run_coroutine_threadsafe(queue.put(line.rstrip()), loop)
+        proc.stdout.close()
+        proc.wait()
+        asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+        return proc.returncode
+
+    worker_thread = threading.Thread(target=_worker, daemon=True)
+    worker_thread.start()
+
     while True:
-        line = await proc.stdout.readline()
-        if not line:
+        line = await queue.get()
+        if line is None:
             break
-        await emit_log(line.decode(errors="replace").rstrip())
-    return (await proc.wait()) == 0
+        await emit_log(line)
+        
+    await asyncio.to_thread(worker_thread.join)
+    return True
 ```
 
 ### 9.3 ZipSlip Path Traversal Protection & Archive Unpacking
@@ -381,5 +400,349 @@ def safe_extract_zip(zip_path: str, target_dir: str) -> None:
 1. Client connects to `/api/system/tools/events`.
 2. As installer executes, it yields chunks formatted as standard SSE frames (`event: install_progress`, `event: install_log`, `event: install_completed`, `event: install_failed`).
 3. Frontend listens with `EventSource` and appends output to the live terminal console.
+
+### 9.5 Deterministic 5-Tier Binary Resolution & Windows Registry Auto-Discovery
+```python
+# Technical Algorithm: Deterministic 5-Tier Executable Resolution
+def resolve_tool_binary(tool_name: str, custom_path: Optional[str] = None, local_bin_dir: Optional[str] = None) -> Optional[str]:
+    # Tier 1: Explicit custom configured path
+    if custom_path:
+        if os.path.isfile(custom_path): return os.path.abspath(custom_path)
+        resolved = shutil.which(custom_path)
+        if resolved: return resolved
+
+    # Tier 2: In-App Managed Binaries ('backend/bin/<tool>[.exe|.bat|.cmd|.pl]')
+    bin_dir = local_bin_dir or get_default_bin_dir()
+    for ext in [".exe", ".bat", ".cmd", ".pl", ""]:
+        cand = os.path.join(bin_dir, f"{tool_name}{ext}")
+        if os.path.isfile(cand): return os.path.abspath(cand)
+
+    # Tier 3: Python Environment Scripts (for pip-installed CLI tools)
+    py_dir = os.path.dirname(sys.executable)
+    for c in [os.path.join(py_dir, "Scripts", f"{tool_name}.exe"), os.path.join(sys.prefix, "Scripts", f"{tool_name}.exe")]:
+        if os.path.isfile(c): return os.path.abspath(c)
+
+    # Tier 4: System PATH lookup
+    path_match = shutil.which(tool_name)
+    if path_match: return path_match
+
+    # Tier 5: Windows Registry Scan & Multi-Drive Discovery
+    if sys.platform == "win32":
+        # 5a: Winreg Uninstall Key Scan (HKLM & HKCU DisplayName/InstallLocation/DisplayIcon)
+        reg_match = _find_in_windows_registry(tool_name)
+        if reg_match: return reg_match
+
+        # 5b: Active Drive Scan (C:, D:, E:, etc. in Program Files / tools)
+        std_match = _find_in_windows_standard_paths(tool_name)
+        if std_match: return std_match
+    return None
+```
+
+### 9.6 System Tool Health & Version Verification Gate
+To prevent false-positive capability reporting (e.g. Git-bundled Perl missing CPAN modules required by Nikto), system tools (`SYSTEM_PACKAGE_MANAGER`) MUST satisfy the following health gate before status is set to `INSTALLED`:
+1. Binary path resolved via `resolve_tool_binary()`.
+2. Version check command returns exit code `0`.
+3. STDOUT/STDERR contains valid version string and zero error keywords (`error:`, `not found`, `can't locate`, `failed`).
+4. If health gate fails, status remains `NOT_INSTALLED`, directing the user to the interactive in-app setup guide.
+
+---
+
+## 10. Production Containerization & Cloud Registry Distribution
+
+### 10.1 Multi-Stage Hardened Production Dockerfile Specification (`Dockerfile`)
+
+```dockerfile
+# Stage 1: Builder Stage (Download & verify official pre-compiled tool binaries)
+FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm AS builder
+
+ARG TARGETARCH
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    tar \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/bin
+
+# 1. Nuclei (v3.2.0)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_arm64.zip -o nuclei.zip; \
+    else \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip; \
+    fi && \
+    unzip -q nuclei.zip nuclei && \
+    chmod +x nuclei && \
+    rm nuclei.zip
+
+# 2. FFuF (v2.1.0)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_arm64.tar.gz | tar -xz ffuf; \
+    else \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz | tar -xz ffuf; \
+    fi && \
+    chmod +x ffuf
+
+# 3. Gitleaks (v8.18.2)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_arm64.tar.gz | tar -xz gitleaks; \
+    else \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar -xz gitleaks; \
+    fi && \
+    chmod +x gitleaks
+
+# 4. Trivy (v0.49.1)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-ARM64.tar.gz | tar -xz trivy; \
+    else \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz | tar -xz trivy; \
+    fi && \
+    chmod +x trivy
+
+# Stage 2: Final Hardened Production Runtime
+FROM python:3.11-slim-bookworm
+
+LABEL org.opencontainers.image.title="CyberAssess Security Assessment Platform" \
+      org.opencontainers.image.description="Full-Stack Automated Security Assessment & Vulnerability Management Platform" \
+      org.opencontainers.image.vendor="CyberAssess" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOST=0.0.0.0 \
+    PORT=8000
+
+# Install runtime system packages: Nmap, Perl with CPAN XML::Writer, Git, Curl, procps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nmap \
+    perl \
+    libxml-writer-perl \
+    libnet-ssleay-perl \
+    git \
+    curl \
+    ca-certificates \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Nikto via official upstream GitHub repo
+RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
+    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
+    chmod +x /opt/nikto/program/nikto.pl
+
+# Copy pre-compiled standalone binaries from builder stage
+COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
+COPY --from=builder /tmp/bin/ffuf /usr/local/bin/ffuf
+COPY --from=builder /tmp/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=builder /tmp/bin/trivy /usr/local/bin/trivy
+
+# Create application directories
+WORKDIR /app
+RUN mkdir -p /app/data/scans /app/backend /app/frontend
+
+# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, FastAPI, etc.)
+COPY backend/requirements.txt /app/backend/
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+
+# Copy backend application, frontend HUD assets, and root runner
+COPY backend/ /app/backend/
+COPY frontend/ /app/frontend/
+COPY run_platform.py /app/
+
+# Expose Web SOC HUD port
+EXPOSE 8000
+
+# Healthcheck probe against FastAPI system health API
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8000/api/system/health || exit 1
+
+# Launch Platform
+CMD ["python", "run_platform.py"]
+```
+
+### 10.2 Production Docker Compose Orchestration (`docker-compose.yml`)
+
+```yaml
+version: '3.8'
+
+services:
+  cyberassess:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/andresslacson1989/cyberassess:latest
+    container_name: cyberassess-platform
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persistent storage for scans and reports
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/system/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+### 10.3 Build Context Exclusion (`.dockerignore`)
+
+```dockerignore
+.git
+.github
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+data/scans/*
+tests/
+contracts/
+.idea/
+.vscode/
+*.log
+```
+
+### 10.4 GitHub Actions Automated Multi-Arch Registry Publishing (`.github/workflows/docker-publish.yml`)
+
+```yaml
+name: Build & Publish Container Image to GHCR
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+---
+
+## 11. Expanded 22-Tool Enterprise Specifications & Execution Mechanics
+
+### 11.1 Subfinder Adapter (`SubfinderAdapter`)
+- **CLI Invocation:** `subfinder -d <domain> -silent -oJ`
+- **Output Parsing:** Streams JSON objects per line `{"host":"sub.example.com","sources":["crtsh","censys"]}`.
+- **Normalization:** Emits `DiscoveredSubdomain` with discovered IP resolution and `EASM-SUB-001` findings.
+
+### 11.2 Httpx Adapter (`HttpxAdapter`)
+- **CLI Invocation:** `httpx -u <target> -json -silent -title -tech-detect -status-code -location -tls-grab`
+- **Output Parsing:** Parses JSON response details containing status code, tech stack array, title, TLS version, and redirects.
+- **Normalization:** Emits `DiscoveredEndpoint` models and `EASM-EXPOSURE-001` findings.
+
+### 11.3 Katana Adapter (`KatanaAdapter`)
+- **CLI Invocation:** `katana -u <target> -jsonl -silent -headless -d 3 -jc -aff`
+- **Output Parsing:** Ingests dynamic DOM links, form actions, and AJAX/Fetch request routes rendered in headless Chromium.
+- **Normalization:** Emits `DiscoveredEndpoint` models with `has_forms` flags and feeds routes into `Nuclei` / `FFuF`.
+
+### 11.4 Syft Adapter (`SyftAdapter`)
+- **CLI Invocation:** `syft <dir> -o cyclonedx-json`
+- **Output Parsing:** Ingests CycloneDX 1.5 JSON containing components, packages, purls, and licenses.
+- **Normalization:** Populates `SBOMReport` and feeds component list into `Grype` / `OSV-Scanner`.
+
+### 11.5 Grype Adapter (`GrypeAdapter`)
+- **CLI Invocation:** `grype <dir> -o json`
+- **Output Parsing:** Parses JSON vulnerability list `matches[].vulnerability` and `artifact`.
+- **Normalization:** Emits `Finding` with `check_id="SCA-SBOM-001"`, CVSS scores, and fixed package versions.
+
+### 11.6 OSV-Scanner Adapter (`OSVScannerAdapter`)
+- **CLI Invocation:** `osv-scanner scan --format json -r <dir>`
+- **Output Parsing:** Parses JSON `results[].packages[].vulnerabilities[]` from Google's OSV database.
+- **Normalization:** Emits `Finding` with `check_id="SCA-OSV-001"`, CWE, CVSS score, and affected commit ranges.
+
+### 11.7 Retire.js Adapter (`RetireJSAdapter`)
+- **CLI Invocation:** `retire --path <dir> --outputformat json`
+- **Output Parsing:** Parses JSON array of vulnerable client-side JavaScript libraries (jQuery, Bootstrap, Angular, Lodash).
+- **Normalization:** Emits `Finding` with `check_id="SCA-JS-001"` and remediation suggestions.
+
+### 11.8 TruffleHog Adapter (`TruffleHogAdapter`)
+- **CLI Invocation:** `trufflehog filesystem <dir> --json --no-verification=false`
+- **Output Parsing:** Parses JSON lines containing verified secrets `{"DetectorName":"AWS","Verified":true,"Raw":"AKIA..."}`.
+- **Normalization:** Emits `Finding` with `check_id="SEC-VERIFIED-001"`, CVSS 10.0, masked secret, and verified authorization metadata.
+
+### 11.9 Prowler Adapter (`ProwlerAdapter`)
+- **CLI Invocation:** `prowler <provider> -M json`
+- **Output Parsing:** Parses CIS Foundations benchmark check results.
+- **Normalization:** Emits `Finding` with `check_id="CLOUD-CIS-001"` and `CISBenchmarkResult` models.
+
+### 11.10 Kube-bench Adapter (`KubeBenchAdapter`)
+- **CLI Invocation:** `kube-bench run --json`
+- **Output Parsing:** Parses CIS Kubernetes Benchmark results `Controls[].Tests[].Results[]`.
+- **Normalization:** Emits `Finding` with `check_id="K8S-CIS-001"` and remediation commands.
+
+### 11.11 Dockle Adapter (`DockleAdapter`)
+- **CLI Invocation:** `dockle -f json <image_tar>`
+- **Output Parsing:** Parses CIS Docker benchmark image audits (`CIS-DI-0001` to `CIS-DI-0010`).
+- **Normalization:** Emits `Finding` with `check_id="DOCKER-CIS-001"` and CIS remediation details.
+
+### 11.12 Schemathesis Adapter (`SchemathesisAdapter`)
+- **CLI Invocation:** `schemathesis run <schema_url> --report-format json`
+- **Output Parsing:** Parses property-based test results, unhandled 500 errors, and broken schema contracts.
+- **Normalization:** Emits `Finding` with `check_id="API-SCHEMA-001"` and reproduction cURL commands.
+
+
+
 
 

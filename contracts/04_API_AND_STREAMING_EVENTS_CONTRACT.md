@@ -1,7 +1,7 @@
 # Contract 04: REST API, OpenAPI & Real-Time Streaming Events Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST API Endpoints, OpenAPI 3.1 Schemas & SSE Streaming Protocol  
 
@@ -21,7 +21,7 @@ Content-Type: `application/json; charset=utf-8`
 ```json
 {
   "status": "HEALTHY",
-  "version": "6.0.0",
+  "version": "8.0.0",
   "timestamp": "2026-08-30T04:45:00Z",
   "uptime_seconds": 18450.2,
   "storage": {
@@ -33,7 +33,7 @@ Content-Type: `application/json; charset=utf-8`
 ```
 
 #### `GET /api/system/capabilities`
-Returns host tool discovery status, binary paths, versions, and execution modes for all 10 enterprise adapters.
+Returns host tool discovery status, binary paths, versions, and execution modes for all 22 enterprise adapters.
 - **Response (200 OK):**
 ```json
 {
@@ -256,6 +256,12 @@ Deletes scan record from disk.
 
 #### `GET /api/scans/{scan_id}/export/json`
 - **Output:** Complete JSON dump conforming to the `ScanJob` schema.
+
+#### `GET /api/scans/{scan_id}/export/sbom/cyclonedx`
+- **Output:** Standard CycloneDX 1.5 JSON Software Bill of Materials containing all inventory packages, versions, licenses, and hashes (`application/vnd.cyclonedx+json`).
+
+#### `GET /api/scans/{scan_id}/export/sbom/spdx`
+- **Output:** Standard SPDX 2.3 JSON Software Bill of Materials (`application/spdx+json`).
 
 ---
 

@@ -14,6 +14,8 @@ from app.core.models import (
     CrawlerConfig,
     AuthConfig,
     AuthType,
+    FuzzingConfig,
+    ToolAdapterConfig,
     DiscoveredEndpoint,
 )
 from app.engines.web_dast.headers_cookies import audit_security_headers_and_cookies
@@ -219,6 +221,11 @@ async def test_web_dast_engine_full_run():
         config = ScanConfig(
             crawler=CrawlerConfig(enabled=True, max_depth=2, max_pages=10),
             auth=AuthConfig(auth_type=AuthType.HEADER, headers={"Authorization": "Bearer test"}),
+            fuzzing=FuzzingConfig(enabled=False),
+            adapters=ToolAdapterConfig(
+                enable_nuclei=False, enable_ffuf=False, enable_nikto=False,
+                enable_katana=False, enable_schemathesis=False,
+            ),
         )
 
         res = await engine.run(
@@ -286,6 +293,11 @@ async def test_web_dast_engine_audits_all_crawled_pages():
     config = ScanConfig(
         crawler=CrawlerConfig(enabled=True, max_depth=2, max_pages=10, parse_sitemap=False),
         auth=AuthConfig(auth_type=AuthType.NONE),
+        fuzzing=FuzzingConfig(enabled=False),
+        adapters=ToolAdapterConfig(
+            enable_nuclei=False, enable_ffuf=False, enable_nikto=False,
+            enable_katana=False, enable_schemathesis=False,
+        ),
     )
 
     findings = []

@@ -13,12 +13,15 @@ from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_manifests
 from app.engines.infra_iac.terraform_auditor import audit_terraform_files
 from app.adapters.checkov_adapter import CheckovAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
+from app.adapters.dockle_adapter import DockleAdapter
+from app.adapters.kubebench_adapter import KubeBenchAdapter
+from app.adapters.prowler_adapter import ProwlerAdapter
 
 
 class InfraIacAssessmentEngine(BaseAssessmentEngine):
     """
-    Coordinator engine for Container Hardening, Docker Compose, Kubernetes, and Terraform IaC security audits.
-    Follows Adapters First-in-Line Architecture (Checkov + Trivy primary, native HCL/YAML/Dockerfile manifest auditors fallback & enrichment).
+    Coordinator engine for Container Hardening, Docker Compose, Kubernetes, Terraform IaC, and CIS Benchmarks.
+    Follows Adapters First-in-Line Architecture (Checkov + Trivy + Dockle + Kube-bench + Prowler primary, native HCL/YAML/Dockerfile manifest auditors fallback & enrichment).
     """
 
     @property
@@ -27,14 +30,15 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
 
     @property
     def display_name(self) -> str:
-        return "Infrastructure-as-Code & Container Auditor"
+        return "Infrastructure-as-Code & Cloud Posture Auditor"
 
     @property
     def description(self) -> str:
         return (
             "Audits Dockerfiles (root user, unpinned base images, build secrets), Docker Compose "
             "(privileged mode, socket mounts, exposed DB ports), Kubernetes manifests (host namespaces, "
-            "allowPrivilegeEscalation, resource limits), and Terraform files (public S3, 0.0.0.0/0 SSH, IAM wildcards)."
+            "allowPrivilegeEscalation, resource limits), Terraform files (public S3, 0.0.0.0/0 SSH, IAM wildcards), "
+            "CIS Docker Benchmark (Dockle), CIS Kubernetes Benchmark (kube-bench), and Multi-Cloud CIS Foundations (Prowler)."
         )
 
     def is_applicable(self, target: Target) -> bool:
@@ -50,13 +54,15 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
         existing_fps = set()
         target_path = target.value
+        record_cis = kwargs.get("record_cis_result")
 
-        # --- Stage 0: Primary External IaC Tool Adapters First-in-Line ---
-        await emit_progress(5, "Running primary external IaC & Container tool adapters...")
+        # --- Stage 0: Primary External IaC & CIS Tool Adapters First-in-Line ---
+        await emit_progress(5, "Running primary external IaC & CIS benchmark tool adapters...")
 
         # 0.1 Checkov Adapter (IaC Security Policy Engine)
         if getattr(config.adapters, "enable_checkov", True):
@@ -107,6 +113,78 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                     await emit_log(LogLevel.INFO, "Trivy CLI not available - using native Dockerfile auditor")
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e}")
+
+        # 0.3 Dockle Adapter (CIS Docker Container Hardening)
+        if getattr(config.adapters, "enable_dockle", True):
+            dockle_adapter = DockleAdapter()
+            custom_path = getattr(config.adapters, "dockle_path", None) or getattr(config.adapters, "custom_dockle_path", None)
+            try:
+                if await dockle_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Dockle CIS Docker container hardening audit...")
+                    dockle_findings = await dockle_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                        record_cis_result=record_cis,
+                    )
+                    for f in dockle_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "dockle"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Dockle adapter error: {e}")
+
+        # 0.4 Kube-bench Adapter (CIS Kubernetes Benchmark)
+        if getattr(config.adapters, "enable_kube_bench", True):
+            kb_adapter = KubeBenchAdapter()
+            custom_path = getattr(config.adapters, "kube_bench_path", None) or getattr(config.adapters, "custom_kube_bench_path", None)
+            try:
+                if await kb_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Kube-bench CIS Kubernetes compliance audit...")
+                    kb_findings = await kb_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                        record_cis_result=record_cis,
+                    )
+                    for f in kb_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "kube_bench"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Kube-bench adapter error: {e}")
+
+        # 0.5 Prowler Adapter (Multi-Cloud CIS Foundations)
+        if getattr(config.adapters, "enable_prowler", True):
+            prowler_adapter = ProwlerAdapter()
+            custom_path = getattr(config.adapters, "prowler_path", None) or getattr(config.adapters, "custom_prowler_path", None)
+            try:
+                if await prowler_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Prowler multi-cloud CIS Foundations posture audit...")
+                    prowler_findings = await prowler_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                        record_cis_result=record_cis,
+                    )
+                    for f in prowler_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "prowler"
+                            f.scan_id = "active"
+                            findings.append(f)
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Prowler adapter error: {e}")
 
         # --- Stage 1: Dockerfile Container Hardening ---
         await emit_progress(25, "Auditing Dockerfiles for root user, unpinned base images, and secrets...")

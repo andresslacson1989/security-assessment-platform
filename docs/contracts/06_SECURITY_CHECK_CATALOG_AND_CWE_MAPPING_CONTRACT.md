@@ -1,9 +1,9 @@
-# Contract 06: Master Security Check Catalog & CWE / OWASP / NIST Taxonomy Contract
+# Contract 06: Master Security Check Catalog & CWE / OWASP / NIST Mapping
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
+**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Canonical Security Rules, Vulnerability Taxonomy & Compliance Mapping  
+**Scope Authority:** Canonical Check Identifiers, CVSS 3.1 Baselines, Taxonomy & Standards Alignment  Mapping  
 
 ---
 
@@ -154,20 +154,30 @@ When findings are produced by external tool adapters, they MUST be normalized in
 | **Nmap** | Outdated Service Banner | `NET-SVC-001` | Service Posture | 7.5 | CWE-200 |
 | **SSLyze** | Deprecated SSL/TLS Protocol or Insecure Cipher | `NET-TLS-002` / `NET-TLS-003` | Cryptographic Failures | 7.5 | CWE-326 / CWE-327 |
 | **SSLyze** | Certificate Validity / Hostname Mismatch | `NET-TLS-001` / `NET-TLS-004` | Cryptographic Failures | 9.1 | CWE-295 |
+| **Subfinder** | Discovered Attack Surface Subdomain | `EASM-SUB-001` | Attack Surface Recon | 3.1 | CWE-200 |
+| **Httpx** | Live Web Service / Tech Stack Exposure | `EASM-EXPOSURE-001` | Attack Surface Recon | 4.3 | CWE-200 |
 | **Nuclei** | `http/cves/*` (CVE-YYYY-XXXX) | `DAST-INJ-001` or `DAST-EXP-001` | Web Vulnerability | From Nuclei (Mapped to 9.8/7.5/5.3) | Mapped from Nuclei metadata |
 | **Nuclei** | `http/misconfiguration/*` | `DAST-HDR-xxx` or `DAST-CORS-xxx` | Misconfiguration | 5.0 - 7.5 | CWE-16 / CWE-942 |
 | **FFuF** | Discovered Exposed Backup / Config File | `DAST-EXP-001` / `DAST-EXP-002` | Sensitive Exposure | 9.8 | CWE-552 |
 | **FFuF** | Discovered Hidden Administrative Endpoint | `DAST-EXP-003` / `DAST-EXP-004` | Broken Access Control | 7.5 | CWE-200 |
 | **Nikto** | Outdated Web Server Component / Banner | `NET-SVC-001` / `DAST-HDR-007` | Service Posture | 5.3 - 7.5 | CWE-200 |
 | **Nikto** | Dangerous HTTP Methods (TRACE / PUT) | `DAST-METH-001` | Misconfiguration | 4.3 | CWE-489 |
+| **Katana** | Discovered Single-Page App Endpoint | `DAST-SPA-001` | Endpoint Discovery | 3.1 | CWE-200 |
+| **Schemathesis** | OpenAPI / GraphQL Contract Fuzzing Crash | `API-SCHEMA-001` | API Security | 7.5 | CWE-20 |
 | **Semgrep** | Rule matching SQL injection | `SAST-TAINT-001` | Code Injection | 9.8 | CWE-89 |
 | **Semgrep** | Rule matching Command injection | `SAST-TAINT-002` | Code Injection | 9.8 | CWE-78 |
 | **Semgrep** | Rule matching Hardcoded Key | `SAST-SEC-xxx` | Hardcoded Secrets | 7.5 - 9.8 | CWE-798 |
 | **Gitleaks** | Git Commit Secret Leak (AWS, Stripe, Private Key) | `SAST-GIT-001` / `SAST-SEC-xxx` | Hardcoded Secrets | 9.8 | CWE-798 |
 | **Bandit** | Python Insecure Cryptography (MD5, ECB) | `SAST-CRY-001` / `SAST-CRY-003` | Cryptographic Failures | 7.5 | CWE-327 |
 | **Bandit** | Python Shell Execution (`subprocess(shell=True)`) | `SAST-INJ-002` | Code Injection | 9.8 | CWE-78 |
-| **Trivy** | Package Dependency CVE | `SAST-DEP-001` | Vulnerable Dependencies | From CVE CVSS | CWE-1395 |
-| **Trivy** | Dockerfile misconfiguration | `IAC-DOCK-xxx` | Container Posture | 7.8 | CWE-250 |
+| **TruffleHog** | Verified Live / Active API Credential Leak | `SEC-VERIFIED-001` | Verified Credentials | 10.0 | CWE-798 |
+| **Retire.js** | Client-Side JS Library CVE / Prototype Pollution | `SCA-JS-001` | Vulnerable JS Library | 7.5 | CWE-1395 |
+| **Trivy** | Package Dependency CVE / Container Vulnerability | `SAST-DEP-001` / `IAC-DOCK-xxx` | Vulnerable Dependencies | From CVE CVSS | CWE-1395 |
+| **Syft / Grype** | SBOM Vulnerability Match | `SCA-SBOM-001` | Supply Chain Security | 7.5 - 9.8 | CWE-1395 |
+| **OSV-Scanner** | Open Source Vulnerability Database Match | `SCA-OSV-001` | Supply Chain Security | 7.5 - 9.8 | CWE-1395 |
 | **Checkov** | Terraform Open Security Group / Public Bucket | `IAC-TF-001` / `IAC-TF-002` | Cloud Misconfiguration | 7.5 - 8.2 | CWE-284 |
 | **Checkov** | Kubernetes Privileged Pod / Host Namespace | `IAC-K8S-001` / `IAC-K8S-002` | Container Posture | 7.8 - 8.5 | CWE-250 |
+| **Dockle** | CIS Docker Container Hardening Violation | `DOCKER-CIS-001` | Container Hardening | 7.5 | CWE-250 |
+| **Kube-bench** | CIS Kubernetes Benchmark Control Failure | `K8S-CIS-001` | Cluster Compliance | 7.5 - 8.5 | CWE-284 |
+| **Prowler** | Multi-Cloud CIS Foundations Benchmark Failure | `CLOUD-CIS-001` | Cloud Compliance | 7.5 - 9.0 | CWE-284 |
 

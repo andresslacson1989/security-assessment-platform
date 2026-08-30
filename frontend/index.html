@@ -37,59 +37,36 @@
       </div>
     </header>
 
-    <!-- Hybrid Tool Capabilities Pill Bar (Contract 07 v5.0.0) -->
+    <!-- Hybrid Tool Capabilities Pill Bar (Contract 07 v8.0.0) -->
     <div class="tool-status-bar" id="tool-status-bar" title="External Security Tool Adapter Status">
-      <span class="tool-status-label">ADAPTERS:</span>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-nmap" title="Nmap Network Scanner">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">NMAP</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-sslyze" title="SSLyze Deep TLS/SSL Auditor">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">SSLYZE</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-nuclei" title="Nuclei CVE Template Scanner">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">NUCLEI</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-ffuf" title="FFuF Content Discovery Engine">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">FFUF</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-nikto" title="Nikto Web Server Scanner">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">NIKTO</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-semgrep" title="Semgrep SAST Engine">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">SEMGREP</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-gitleaks" title="Gitleaks Git History Secret Scanner">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">GITLEAKS</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-bandit" title="Bandit Python AST Security Linter">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">BANDIT</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-trivy" title="Trivy SCA & Container Scanner">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">TRIVY</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
-      <div class="tool-pill tool-pill--fallback" id="tool-pill-checkov" title="Checkov Infrastructure-as-Code Policy Engine">
-        <span class="tool-pill-icon">🟡</span>
-        <span class="tool-pill-name">CHECKOV</span>
-        <span class="tool-pill-mode">NATIVE FALLBACK</span>
-      </div>
+      <span class="tool-status-label">FLEET (22):</span>
+      <!-- Network & EASM -->
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-nmap" title="Nmap Network Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">NMAP</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-sslyze" title="SSLyze Deep TLS/SSL Auditor"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">SSLYZE</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-subfinder" title="Subfinder Passive Subdomain Recon"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">SUBFINDER</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-httpx" title="Httpx Fast HTTP Probe & Fingerprinter"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">HTTPX</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <!-- Web DAST & API -->
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-nuclei" title="Nuclei CVE Template Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">NUCLEI</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-ffuf" title="FFuF Content Discovery Engine"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">FFUF</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-nikto" title="Nikto Web Server Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">NIKTO</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-katana" title="Katana Headless SPA Crawler"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">KATANA</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-schemathesis" title="Schemathesis API Contract Fuzzer"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">SCHEMATHESIS</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <!-- SAST & Secrets -->
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-semgrep" title="Semgrep AST SAST Engine"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">SEMGREP</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-bandit" title="Bandit Python AST Security Linter"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">BANDIT</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-gitleaks" title="Gitleaks Git History Secret Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">GITLEAKS</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-trufflehog" title="TruffleHog Verified Live Credential Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">TRUFFLEHOG</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-retire" title="Retire.js Client-Side JS Vulnerability Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">RETIRE.JS</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <!-- Supply Chain & SBOM -->
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-syft" title="Syft CycloneDX/SPDX SBOM Generator"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">SYFT</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-grype" title="Grype Vulnerability Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">GRYPE</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-osv-scanner" title="Google OSV Open Source Vulnerability Engine"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">OSV-SCANNER</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-trivy" title="Trivy Container & Dependency SCA Scanner"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">TRIVY</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <!-- IaC & Posture -->
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-checkov" title="Checkov IaC Policy Engine"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">CHECKOV</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-prowler" title="Prowler Multi-Cloud CIS Foundations Auditor"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">PROWLER</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-kube-bench" title="Kube-bench CIS Kubernetes Benchmark"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">KUBE-BENCH</span><span class="tool-pill-mode">FALLBACK</span></div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-dockle" title="Dockle CIS Docker Container Linter"><span class="tool-pill-icon">🟡</span><span class="tool-pill-name">DOCKLE</span><span class="tool-pill-mode">FALLBACK</span></div>
     </div>
 
     <!-- Main Workspace Container -->
@@ -440,6 +417,12 @@
             <a href="#" class="btn btn-sm btn-outline" id="btn-export-json" target="_blank">
               <span>💾</span> Raw JSON
             </a>
+            <a href="#" class="btn btn-sm btn-outline" id="btn-export-cyclonedx" target="_blank">
+              <span>📦</span> CycloneDX 1.5 SBOM
+            </a>
+            <a href="#" class="btn btn-sm btn-outline" id="btn-export-spdx" target="_blank">
+              <span>📋</span> SPDX 2.3 SBOM
+            </a>
           </div>
         </div>
 
@@ -531,8 +514,8 @@
         <div class="modal-body toolbox-manager-body">
           <div class="toolbox-actions-bar">
             <div class="toolbox-summary-stats">
-              <span class="stat-pill"><strong id="toolbox-installed-count">0</strong> / 10 Tools Active</span>
-              <span class="stat-pill stat-pill--user-space">8 User-Space (Zero Elevation)</span>
+              <span class="stat-pill"><strong id="toolbox-installed-count">0</strong> / 22 Tools Active</span>
+              <span class="stat-pill stat-pill--user-space">19 User-Space (Zero Elevation)</span>
             </div>
             <button class="btn btn-primary" id="btn-install-all-tools">
               <span>⚡</span> Install All Missing Tools

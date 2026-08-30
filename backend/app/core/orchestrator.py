@@ -344,14 +344,22 @@ class ScanOrchestrator:
                 async def _find_cb(f: Finding) -> None:
                     await self.emit_finding(scan_id, f)
 
-                async def _auth_cb(data: dict) -> None:
-                    await self.emit_auth_status(scan_id, data)
-
                 async def _ep_cb(ep: DiscoveredEndpoint) -> None:
                     await self.emit_endpoint_discovered(scan_id, ep)
 
+                async def _auth_cb(data: dict) -> None:
+                    await self.emit_auth_status(scan_id, data)
+
                 async def _subdomain_cb(sd: DiscoveredSubdomain) -> None:
                     await self.emit_subdomain_discovered(scan_id, sd)
+
+                def _sbom_cb(sbom: SBOMReport) -> None:
+                    if job:
+                        job.sbom_report = sbom
+
+                def _cis_cb(cis_res: CISBenchmarkResult) -> None:
+                    if job:
+                        job.cis_results.append(cis_res)
 
                 try:
                     import inspect
@@ -364,6 +372,10 @@ class ScanOrchestrator:
                         run_kwargs["emit_endpoint_discovered"] = _ep_cb
                     if "emit_subdomain_discovered" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_subdomain_discovered"] = _subdomain_cb
+                    if "record_sbom_report" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["record_sbom_report"] = _sbom_cb
+                    if "record_cis_result" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["record_cis_result"] = _cis_cb
 
                     engine_findings = await engine.run(
                         job.target,

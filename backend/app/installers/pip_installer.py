@@ -48,6 +48,20 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "binary_name": "checkov",
         "command_hint": "pip install --upgrade checkov",
     },
+    "prowler": {
+        "display_name": "Prowler Multi-Cloud CIS Benchmark & Posture Auditor",
+        "category": "Cloud Posture",
+        "package_name": "prowler",
+        "binary_name": "prowler",
+        "command_hint": "pip install --upgrade prowler",
+    },
+    "schemathesis": {
+        "display_name": "Schemathesis Property-Based API Contract Fuzzer",
+        "category": "API Security",
+        "package_name": "schemathesis",
+        "binary_name": "schemathesis",
+        "command_hint": "pip install --upgrade schemathesis",
+    },
 }
 
 

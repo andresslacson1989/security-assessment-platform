@@ -33,19 +33,33 @@ class ToolInstallationManager:
 
     def __init__(self):
         self._installers: Dict[str, BaseToolInstaller] = {
-            # Pip packages
+            # Pip packages (6 tools)
             "sslyze": PipToolInstaller("sslyze"),
             "bandit": PipToolInstaller("bandit"),
             "semgrep": PipToolInstaller("semgrep"),
             "checkov": PipToolInstaller("checkov"),
-            # Standalone GitHub release binaries
+            "prowler": PipToolInstaller("prowler"),
+            "schemathesis": PipToolInstaller("schemathesis"),
+
+            # Standalone GitHub release binaries (13 tools)
             "nuclei": GithubReleaseInstaller("nuclei"),
             "ffuf": GithubReleaseInstaller("ffuf"),
             "gitleaks": GithubReleaseInstaller("gitleaks"),
             "trivy": GithubReleaseInstaller("trivy"),
-            # System / driver helpers
+            "subfinder": GithubReleaseInstaller("subfinder"),
+            "httpx": GithubReleaseInstaller("httpx"),
+            "katana": GithubReleaseInstaller("katana"),
+            "syft": GithubReleaseInstaller("syft"),
+            "grype": GithubReleaseInstaller("grype"),
+            "osv-scanner": GithubReleaseInstaller("osv-scanner"),
+            "trufflehog": GithubReleaseInstaller("trufflehog"),
+            "dockle": GithubReleaseInstaller("dockle"),
+            "kube-bench": GithubReleaseInstaller("kube-bench"),
+
+            # System / driver helpers & package manager tools (3 tools)
             "nmap": SystemToolHelper("nmap"),
             "nikto": SystemToolHelper("nikto"),
+            "retire": SystemToolHelper("retire"),
         }
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._tool_to_task: Dict[str, str] = {}
