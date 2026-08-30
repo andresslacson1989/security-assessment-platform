@@ -630,32 +630,99 @@ The platform uses a **local Docker build workflow** to eliminate GitHub Actions 
 
 #### Production Release Practice (Version-Tagged Releases)
 - Developer creates a semantic version tag (`git tag -a v8.0.0`) locally.
-- Runs `scripts/build_and_push.ps1 -Production` which builds **both** `linux/amd64` and `linux/arm64` using QEMU locally.
+- Runs `scripts/build_and_push.ps1 -Production -Tag v8.0.0` which builds **both** `linux/amd64` and `linux/arm64` using QEMU locally.
 - Pushes universal multi-arch manifest to `ghcr.io` tagged with `v8.0.0`, `v8.0`, `v8`, and `latest`.
 - Estimated build times:
   - **AMD64 layer (native):** ~3–8 min (warm cache)
-  - **ARM64 layer (QEMU emulated):** ~30–50 min (compiled once locally, cached permanently)
+  - **ARM64 layer (QEMU emulated):** ~30–50 min (compiled once locally, cached permanently on disk)
 
-#### Build Script (`scripts/build_and_push.ps1`)
+---
+
+#### Build Commands (`scripts/build_and_push.ps1`)
 
 ```powershell
-# Development build (AMD64 only, fast):
+# ── DEVELOPMENT BUILD (AMD64 only, fast warm cache) ──────────────────────────
 .\scripts\build_and_push.ps1
 
-# Production release build (AMD64 + ARM64, multi-arch):
+# ── PRODUCTION RELEASE BUILD (AMD64 + ARM64, multi-arch) ─────────────────────
 .\scripts\build_and_push.ps1 -Production
 
-# Tag a release and build for production:
-git tag -a v8.0.0 -m "Release v8.0.0 - 22-Tool Enterprise Security Platform"
-git push origin v8.0.0
+# ── FULL PRODUCTION RELEASE WITH VERSION TAG ──────────────────────────────────
 .\scripts\build_and_push.ps1 -Production -Tag v8.0.0
 ```
+
+---
+
+#### Full Docker Build Workflow — Step-by-Step
+
+**Prerequisites (one-time setup):**
+1. Install **Docker Desktop** for Windows: https://www.docker.com/products/docker-desktop
+2. Authenticate **GitHub CLI**: `gh auth login` (select GitHub.com → HTTPS → browser)
+3. Ensure Docker Desktop is **running** (system tray icon must be active before building)
+
+**Development Build Workflow (every day):**
+```powershell
+# Step 1: Make your code changes and run local tests
+pytest tests/ -v
+
+# Step 2: Commit and push your code
+git add -A
+git commit -m "feat: your change description"
+git push origin main
+
+# Step 3: Build and publish the updated container image
+.\scripts\build_and_push.ps1
+# Output:
+#   Login Succeeded
+#   Building: DEVELOPMENT (AMD64)
+#   Image:    ghcr.io/andresslacson1989/security-assessment-platform
+#   Tags:     latest, sha-<commit>
+#   Build & Push Complete!
+
+# Step 4: Pull and run the updated image anywhere
+docker pull ghcr.io/andresslacson1989/security-assessment-platform:latest
+docker run -p 8000:8000 ghcr.io/andresslacson1989/security-assessment-platform:latest
+```
+
+**Production Release Workflow (when releasing a version):**
+```powershell
+# Step 1: Verify 100% tests pass
+pytest tests/ -v
+# Expected: 153 passed
+
+# Step 2: Run LocalCI validation
+.\scripts\run_localci.ps1 -Branch main -Pipeline python313
+# Expected: LocalCI Run PASSED (153/153 tests - 100% Verified)!
+
+# Step 3: Commit all changes and push
+git add -A
+git commit -m "release: v8.0.0 - 22-Tool Enterprise Security Platform"
+git push origin main
+
+# Step 4: Create and push a semantic version tag
+git tag -a v8.0.0 -m "Release v8.0.0 - 22-Tool Enterprise Security Platform"
+git push origin v8.0.0
+
+# Step 5: Build and publish the universal multi-arch production image
+.\scripts\build_and_push.ps1 -Production -Tag v8.0.0
+# Output:
+#   Login Succeeded
+#   Building: PRODUCTION (AMD64 + ARM64)
+#   Image:    ghcr.io/andresslacson1989/security-assessment-platform
+#   Tags:     latest, sha-<commit>, v8.0.0, v8.0, v8
+#   Build & Push Complete!
+
+# Step 6: Verify image is available on GHCR
+docker pull ghcr.io/andresslacson1989/security-assessment-platform:v8.0.0
+docker pull ghcr.io/andresslacson1989/security-assessment-platform:latest
+```
+
+---
 
 #### Authentication
 - Requires the **GitHub CLI (`gh`) to be authenticated** (`gh auth login`).
 - Login to GHCR is handled automatically by the script using `gh auth token | docker login ghcr.io`.
 - No manual token handling or credential files required.
-
 
 
 ### 10.5 LocalCI On-Premises Pipeline Integration Specification (`.localci/ci.sh`)
