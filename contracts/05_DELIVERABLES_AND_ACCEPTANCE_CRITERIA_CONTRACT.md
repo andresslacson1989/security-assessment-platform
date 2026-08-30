@@ -60,7 +60,7 @@
 - [ ] **Production Multi-Stage Dockerfile (`Dockerfile`):** Hardened Debian/Python 3.11 base pre-packaging all 22 tools, CPAN Perl modules (`libxml-writer-perl`), non-root `appuser`, healthcheck endpoint probe, and layer caching.
 - [ ] **Docker Compose Orchestration (`docker-compose.yml`):** Production service definition with host volume mapping (`./data:/app/data`), port binding (`8000:8000`), resource constraints, and healthcheck restart policy.
 - [ ] **Docker Build Ignore (`.dockerignore`):** Minimal build context excluding test artifacts, local virtual environments, `.git`, and development caches.
-- [ ] **Automated Two-Tier CI/CD Workflow (`.github/workflows/docker-publish.yml`):** GitHub Actions pipeline building fast native AMD64 images for development and universal multi-arch (`linux/amd64`, `linux/arm64`) images on production release tags.
+- [ ] **Local Multi-Architecture Build & GHCR Publisher (`scripts/build_and_push.ps1`):** Fast local native AMD64 builds for development and universal multi-arch (`linux/amd64`, `linux/arm64`) publishing to GitHub Container Registry (`ghcr.io`).
 
 ---
 
