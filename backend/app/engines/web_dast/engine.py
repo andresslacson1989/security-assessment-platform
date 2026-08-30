@@ -34,7 +34,6 @@ from app.engines.web_dast.graphql_auditor import audit_graphql_endpoints
 from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
 from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
-from app.adapters.nikto_adapter import NiktoAdapter
 from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
 
@@ -42,7 +41,7 @@ from app.adapters.schemathesis_adapter import SchemathesisAdapter
 class WebDastAssessmentEngine(BaseAssessmentEngine):
     """
     Coordinator engine for Web Application, REST API, SPA, and Modern Browser DAST assessments.
-    Follows Adapters First-in-Line Architecture (Nuclei + FFuF + Nikto + Katana + Schemathesis primary, native active parameter fuzzing, crawler, and browser posture enrichment).
+    Follows Adapters First-in-Line Architecture (Nuclei + FFuF + Katana + Schemathesis primary, native active parameter fuzzing, crawler, and browser posture enrichment).
     """
 
     @property
@@ -56,11 +55,10 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
     @property
     def description(self) -> str:
         return (
-            "Evaluates OWASP Top 10 security response headers (CSP, HSTS, X-Frame), cookie security flags "
-            "(HttpOnly, Secure, SameSite), Cross-Origin Resource Sharing (CORS) misconfigurations, "
-            "exposed environment/git files (.env, .git/HEAD), OpenAPI schemas, Subresource Integrity, "
-            "public GraphQL introspection, authenticated session security, dynamic SPA crawling (Katana), "
-            "property-based API fuzzing (Schemathesis), and anti-CSRF form posture."
+            "Audits web applications for modern security headers, CORS policies, sensitive file exposures "
+            "(.env, .git, Actuators), HTTP methods, browser security posture, REST/GraphQL APIs, "
+            "vulnerability templates (Nuclei), endpoint fuzzing (FFuF), dynamic crawling (Katana), "
+            "API contract security (Schemathesis), and active non-destructive parameter fuzzing."
         )
 
     def is_applicable(self, target: Target) -> bool:
@@ -96,7 +94,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             connect=5.0,
         )
 
-        # --- Stage 0: Primary Tool Adapters First-in-Line (FFuF, Nikto, Nuclei, Katana, Schemathesis) ---
+        # --- Stage 0: Primary Tool Adapters First-in-Line (FFuF, Nuclei, Katana, Schemathesis) ---
         await emit_progress(5, "Running primary external DAST tool adapters...")
 
         # 0.1 FFuF Adapter (High-Speed Content Discovery)
@@ -125,32 +123,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"FFuF adapter error: {e}")
 
-        # 0.2 Nikto Adapter (Web Server Misconfigurations)
-        if getattr(config.adapters, "enable_nikto", True):
-            nikto_adapter = NiktoAdapter()
-            custom_path = getattr(config.adapters, "nikto_path", None) or getattr(config.adapters, "custom_nikto_path", None)
-            try:
-                if await nikto_adapter.is_available(custom_path):
-                    await emit_log(LogLevel.INFO, "Executing Nikto CLI adapter for server misconfiguration scanning...")
-                    nikto_findings = await nikto_adapter.run(
-                        target,
-                        config,
-                        emit_log,
-                        emit_finding,
-                        scan_id="active",
-                    )
-                    for f in nikto_findings:
-                        if f.fingerprint not in existing_fps:
-                            existing_fps.add(f.fingerprint)
-                            f.source_tool = "nikto"
-                            f.scan_id = "active"
-                            findings.append(f)
-                else:
-                    await emit_log(LogLevel.INFO, "Nikto CLI not available - using native headers & methods auditors")
-            except Exception as e:
-                await emit_log(LogLevel.WARNING, f"Nikto adapter error: {e}")
-
-        # 0.3 Nuclei Adapter (Community CVE and Template Scanning)
+        # 0.2 Nuclei Adapter (Community CVE and Template Scanning)
         if getattr(config.adapters, "enable_nuclei", True):
             nuclei_adapter = NucleiAdapter()
             custom_path = getattr(config.adapters, "nuclei_path", None) or getattr(config.adapters, "custom_nuclei_path", None)

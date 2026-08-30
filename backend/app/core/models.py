@@ -223,7 +223,7 @@ class ToolAdapterConfig(BaseModel):
     enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
     enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
     enable_ffuf: bool = Field(default=True, description="Enable FFuF high-speed content discovery adapter")
-    enable_nikto: bool = Field(default=True, description="Enable Nikto web server misconfiguration adapter")
+    enable_nikto: bool = Field(default=False, description="Enable legacy Nikto scanner (deprecated in favor of Nuclei)")
     enable_semgrep: bool = Field(default=True, description="Enable Semgrep multi-language AST SAST adapter")
     enable_gitleaks: bool = Field(default=True, description="Enable Gitleaks git history secret scanner adapter")
     enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")

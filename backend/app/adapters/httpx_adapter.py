@@ -31,10 +31,18 @@ class HttpxAdapter(BaseToolAdapter):
             return None
         code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=10.0)
         output = stdout + " " + stderr
-        match = re.search(r"v\d+\.\d+\.\d+", output, re.IGNORECASE)
-        if match:
-            return f"httpx {match.group(0)}"
-        return "httpx" if code == 0 else None
+        # Reject Python pip httpx CLI (which fails on -version with 'Usage: httpx')
+        if "projectdiscovery" in output.lower() or "httpx" in output.lower():
+            if code == 0 or "v" in output:
+                match = re.search(r"v\d+\.\d+\.\d+", output, re.IGNORECASE)
+                if match:
+                    return f"httpx {match.group(0)}"
+                return "httpx" if code == 0 else None
+        return None
+
+    async def is_available(self, custom_path: Optional[str] = None) -> bool:
+        ver = await self.get_version(custom_path)
+        return ver is not None
 
     async def run(
         self,

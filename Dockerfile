@@ -152,12 +152,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=8000
 
-# Install runtime system packages: Nmap, Perl with CPAN XML::Writer, Git, Curl, Node.js (for Retire.js), procps
+# Install runtime system packages: Nmap, Git, Curl, Node.js (for Retire.js), procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
-    perl \
-    libxml-writer-perl \
-    libnet-ssleay-perl \
     nodejs \
     npm \
     git \
@@ -166,11 +163,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && npm install -g retire \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Nikto via official upstream GitHub repo
-RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
-    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
-    chmod +x /opt/nikto/program/nikto.pl
 
 # Copy pre-compiled standalone binaries from builder stage
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei

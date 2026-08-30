@@ -1467,8 +1467,6 @@ def test_scenario_20_containerization_dockerfile_and_compose_validation():
     assert "python:3.11-slim-bookworm AS builder" in dockerfile_content
     assert "FROM python:3.11-slim-bookworm" in dockerfile_content
     assert "nmap" in dockerfile_content
-    assert "nikto" in dockerfile_content
-    assert "libxml-writer-perl" in dockerfile_content
     assert "nuclei" in dockerfile_content
     assert "ffuf" in dockerfile_content
     assert "gitleaks" in dockerfile_content

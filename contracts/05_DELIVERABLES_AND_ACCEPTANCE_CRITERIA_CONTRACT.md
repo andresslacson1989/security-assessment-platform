@@ -57,7 +57,7 @@
 - [ ] **Documentation (`README.md`):** Complete setup, usage, architecture guide, and API documentation.
 
 ### 1.4 Production Containerization & Cloud Distribution (`/`)
-- [ ] **Production Multi-Stage Dockerfile (`Dockerfile`):** Hardened Debian/Python 3.11 base pre-packaging all 22 tools, CPAN Perl modules (`libxml-writer-perl`), non-root `appuser`, healthcheck endpoint probe, and layer caching.
+- [ ] **Production Multi-Stage Dockerfile (`Dockerfile`):** Hardened Debian/Python 3.11 base pre-packaging modern enterprise tools, non-root `appuser`, healthcheck endpoint probe, and layer caching.
 - [ ] **Docker Compose Orchestration (`docker-compose.yml`):** Production service definition with host volume mapping (`./data:/app/data`), port binding (`8000:8000`), resource constraints, and healthcheck restart policy.
 - [ ] **Docker Build Ignore (`.dockerignore`):** Minimal build context excluding test artifacts, local virtual environments, `.git`, and development caches.
 - [ ] **Local Multi-Architecture Build & GHCR Publisher (`scripts/build_and_push.ps1`):** Fast local native AMD64 builds for development and universal multi-arch (`linux/amd64`, `linux/arm64`) publishing to GitHub Container Registry (`ghcr.io`).
@@ -84,10 +84,10 @@ The platform must pass all 25 acceptance test scenarios deterministically:
 14. **Scenario 14: Interactive HTTP Repeater & One-Click cURL PoC Generation**
 15. **Scenario 15: External Tool Adapter Discovery, Execution & Graceful Fallback**
 16. **Scenario 16: Adapters First-in-Line Priority Execution & Native Redundancy Pruning**
-17. **Scenario 17: Enterprise Tool Adapter Integrations (Gitleaks, Bandit, Checkov, FFuF, Nikto, SSLyze)**
+17. **Scenario 17: Enterprise Tool Adapter Integrations (Gitleaks, Bandit, Checkov, FFuF, SSLyze, Nuclei)**
 18. **Scenario 18: In-App Tool Installation Lifecycle for Pip & Standalone Binaries**
 19. **Scenario 19: Batch Tool Installer & Live SSE Event Streaming**
-20. **Scenario 20: Production Containerization, Health Probes & 10-Tool Pre-installation Parity**
+20. **Scenario 20: Production Containerization, Health Probes & Multi-Tool Pre-installation Parity**
 21. **Scenario 21: High-Speed EASM & Headless SPA Discovery (`subfinder`, `httpx`, `katana`)**
     - Verifies multi-source passive subdomain reconnaissance, live HTTP port probing, and headless JavaScript SPA crawling with endpoint deduplication.
 22. **Scenario 22: Software Supply Chain & SBOM Export (`syft`, `grype`, `osv-scanner`, `retire.js`)**

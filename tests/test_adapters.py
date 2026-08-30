@@ -885,7 +885,10 @@ class TestCapabilitiesAndRegistry:
                 assert caps.native_engines_ready is True
                 for t in caps.tools:
                     assert t.available is False
-                    assert t.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+                    if t.name == "nikto":
+                        assert t.execution_mode in (ToolExecutionMode.DISABLED, ToolExecutionMode.NATIVE_FALLBACK)
+                    else:
+                        assert t.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_active(self):
