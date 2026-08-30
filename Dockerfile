@@ -193,8 +193,9 @@ RUN mkdir -p /app/data/scans /app/backend /app/frontend
 
 # Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, Prowler, Schemathesis, FastAPI, etc.)
 COPY backend/requirements.txt /app/backend/
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt && \
-    pip install --no-cache-dir bandit sslyze semgrep checkov prowler schemathesis
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 -r /app/backend/requirements.txt && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 bandit sslyze semgrep checkov prowler schemathesis
 
 # Copy backend application, frontend HUD assets, and root runner
 COPY backend/ /app/backend/
