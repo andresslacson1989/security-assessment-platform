@@ -53,13 +53,14 @@
 ### 1.3 Developer & Ops Utilities
 - [ ] **One-Command Platform Runner (`run_platform.py`):** Single Python script that verifies dependencies, discovers tools, boots uvicorn, and automatically opens the dashboard in the default browser.
 - [ ] **Automated Test Suite (`/tests`):** Comprehensive `pytest` test suite with 100% engine check coverage across all 5 engines and 25 acceptance scenarios.
+- [ ] **LocalCI Pipeline Integration (`.localci/ci.sh`):** Automated test and capabilities verification script tailored for on-premises LocalCI (`python313` profile on CT107).
 - [ ] **Documentation (`README.md`):** Complete setup, usage, architecture guide, and API documentation.
 
 ### 1.4 Production Containerization & Cloud Distribution (`/`)
 - [ ] **Production Multi-Stage Dockerfile (`Dockerfile`):** Hardened Debian/Python 3.11 base pre-packaging all 22 tools, CPAN Perl modules (`libxml-writer-perl`), non-root `appuser`, healthcheck endpoint probe, and layer caching.
 - [ ] **Docker Compose Orchestration (`docker-compose.yml`):** Production service definition with host volume mapping (`./data:/app/data`), port binding (`8000:8000`), resource constraints, and healthcheck restart policy.
 - [ ] **Docker Build Ignore (`.dockerignore`):** Minimal build context excluding test artifacts, local virtual environments, `.git`, and development caches.
-- [ ] **Automated Multi-Architecture CI/CD Workflow (`.github/workflows/docker-publish.yml`):** GitHub Actions pipeline building multi-arch (`linux/amd64`, `linux/arm64`) images and publishing to GitHub Container Registry (`ghcr.io`).
+- [ ] **Automated Two-Tier CI/CD Workflow (`.github/workflows/docker-publish.yml`):** GitHub Actions pipeline building fast native AMD64 images for development and universal multi-arch (`linux/amd64`, `linux/arm64`) images on production release tags.
 
 ---
 
