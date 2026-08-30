@@ -37,6 +37,9 @@ Every vulnerability or misconfiguration detected by the platform MUST reference 
 | `NET-SVC-001` | Deprecated or Vulnerable Service Daemon Version Detected | `HIGH` | 7.5 | CWE-200 | A05:Security Misconfiguration | CM-6 | Service banner reveals outdated or vulnerable software version. |
 | `NET-OSINT-001` | Dangling DNS CNAME / Subdomain Takeover Vulnerability | `CRITICAL` | 9.1 | CWE-284 | A01:Broken Access Control | AC-3, SC-7 | Subdomain CNAME points to unregistered third-party cloud service. |
 | `NET-OSINT-002` | Sensitive Subdomain Discovered via Public Certificate Transparency | `MEDIUM` | 5.3 | CWE-200 | A05:Security Misconfiguration | CM-6 | Discovered public subdomain with sensitive prefix (admin, dev, staging, internal). |
+| `NET-ORIGIN-001` | Direct Origin Server IP Exposed via DNS / CT Logs | `HIGH` | 7.5 | CWE-200 | A05:Security Misconfiguration | AC-3, SC-7 | Subdomain resolves to non-Cloudflare/non-CDN public IP address, bypassing WAF protections. |
+| `NET-CT-001` | Unproxied Active Subdomain Discovered via Certificate Transparency | `MEDIUM` | 5.3 | CWE-200 | A05:Security Misconfiguration | CM-6 | Historical CT log reveals active subdomain resolving to public infrastructure outside protected CDN. |
+| `NET-CERT-004` | Wildcard Certificate Subject Alternative Name in CT Logs | `INFO` | 0.0 | CWE-200 | A05:Security Misconfiguration | SC-8 | Wildcard certificate (`*.domain.com`) discovered in CT logs covering all subdomains implicitly. |
 
 ---
 

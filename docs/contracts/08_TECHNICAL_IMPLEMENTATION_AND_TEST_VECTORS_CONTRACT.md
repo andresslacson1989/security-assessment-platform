@@ -130,6 +130,31 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 
 ---
 
+### 2.5 Certificate Transparency (CT) Log Mining & Direct Origin IP Exposure Auditor (`origin_exposure.py`)
+- **Technical Architecture & Objective:**
+  - Identifies real backend origin server IP addresses that are inadvertently exposed via historical Certificate Transparency (CT) logs or unprotected DNS records on domains otherwise protected by reverse-proxy CDNs/WAFs (e.g., Cloudflare, CloudFront, Fastly).
+  - Enables defense against direct-to-origin DDoS attacks, WAF rule bypassing, and unmitigated backend exploitation.
+- **Dual-Source CT Log Mining:**
+  - Queries `https://api.certspotter.com/v1/issuances?domain={domain}&include_subdomains=true&expand=dns_names&expand=issuer` and `https://crt.sh/?q=%25.{domain}&output=json`.
+  - Deduplicates all Subject Alternative Names (SANs) and logs CA issuer and issuance timestamps.
+  - Detects wildcard certificates (`*.domain.com`) triggering `NET-CERT-004` (INFO, CVSS 0.0).
+- **Cloudflare & CDN IP Range Matching Algorithm:**
+  - Evaluates resolved `A` (IPv4) and `AAAA` (IPv6) records against official Cloudflare CIDR blocks using Python's `ipaddress.ip_network`:
+    - IPv4: `103.21.244.0/22`, `103.22.200.0/22`, `103.31.4.0/22`, `104.16.0.0/13`, `104.24.0.0/14`, `108.162.192.0/18`, `131.0.72.0/22`, `141.101.64.0/18`, `162.158.0.0/15`, `172.64.0.0/13`, `173.245.48.0/20`, `188.114.96.0/20`, `190.93.240.0/20`, `197.234.240.0/22`, `198.41.128.0/17`
+    - IPv6: `2400:cb00::/32`, `2606:4700::/32`, `2803:f800::/32`, `2405:b500::/32`, `2405:8100::/32`, `2a06:98c0::/29`, `2c0f:f248::/32`
+  - Subdomains resolving to Cloudflare Anycast IPs are marked as `PROTECTED`.
+  - Subdomains resolving to non-Cloudflare public IPs (e.g. `5.223.x.x`) on a Cloudflare-protected domain are marked as `EXPOSED`.
+- **Safe Passive HTTP/HTTPS Probing:**
+  - For each exposed IP, sends a safe, non-destructive HTTP/HTTPS `HEAD` request (3s timeout) to port 80/443.
+  - Extracts response headers (`Server`, `X-Powered-By`) and TLS certificate Subject/SAN to confirm association with the target domain.
+  - Zero attack payloads or exploitation attempts (100% safe & non-destructive).
+- **Finding Generation:**
+  - If direct origin IP is exposed: triggers `NET-ORIGIN-001` (HIGH, CVSS 7.5, CWE-200, OWASP A05:2021).
+  - If active unproxied subdomain is indexed in CT logs: triggers `NET-CT-001` (MEDIUM, CVSS 5.3, CWE-200, OWASP A05:2021).
+  - If wildcard certificate is detected: triggers `NET-CERT-004` (INFO, CVSS 0.0, CWE-200).
+
+---
+
 ## 3. Engine 2: Web Application, API DAST & Parameter Fuzzer (`web_dast`)
 
 **Primary Dependencies:** `httpx.AsyncClient`, `bs4.BeautifulSoup`, `urllib.parse`

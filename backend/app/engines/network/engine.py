@@ -11,6 +11,7 @@ from app.engines.network.tls_auditor import audit_tls_certificates, audit_tls_pr
 from app.engines.network.dns_hygiene import audit_dns_hygiene
 from app.engines.network.port_checker import audit_exposed_ports
 from app.engines.network.subdomain_recon import audit_subdomain_osint
+from app.engines.network.origin_exposure import audit_origin_exposure
 from app.engines.network.banner_grabber import audit_service_banners
 from app.adapters.nmap_adapter import NmapAdapter
 from app.adapters.sslyze_adapter import SslyzeAdapter
@@ -222,9 +223,22 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Httpx adapter error: {e}")
 
-        # --- Stage 5: Passive OSINT Subdomain Recon & Takeover (85% - 100%) ---
+        # --- Stage 5: Passive OSINT Subdomain Recon, Origin Exposure & Takeover (85% - 100%) ---
         if config.osint.subdomain_enumeration:
-            await emit_progress(85, "Performing passive Certificate Transparency OSINT & subdomain takeover checks...")
+            await emit_progress(85, "Performing Certificate Transparency OSINT & direct origin exposure checks...")
+            origin_findings = await audit_origin_exposure(
+                target.value,
+                config=config,
+                scan_id=scan_id,
+                emit_subdomain=subdomain_cb,
+                emit_finding=emit_finding,
+                emit_log=emit_log,
+            )
+            for f in origin_findings:
+                f.scan_id = scan_id
+                findings.append(f)
+
+            await emit_progress(92, "Evaluating dangling CNAME subdomain takeover risks...")
             osint_findings = await audit_subdomain_osint(
                 target.value,
                 config=config,

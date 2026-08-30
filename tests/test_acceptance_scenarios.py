@@ -1500,15 +1500,21 @@ def test_scenario_20_containerization_dockerfile_and_compose_validation():
     assert "venv" in dockerignore_content
     assert "tests" in dockerignore_content
 
-    # 4. Verify GitHub Actions workflow
-    workflow_path = os.path.join(root_dir, ".github", "workflows", "docker-publish.yml")
-    assert os.path.isfile(workflow_path), "docker-publish.yml workflow must exist"
-    with open(workflow_path, "r", encoding="utf-8") as f:
-        wf_data = yaml.safe_load(f)
+    # 4. Verify Local Docker Build & Publish Workflow and LocalCI Pipeline
+    build_script_path = os.path.join(root_dir, "scripts", "build_and_push.ps1")
+    assert os.path.isfile(build_script_path), "build_and_push.ps1 script must exist"
+    with open(build_script_path, "r", encoding="utf-8") as f:
+        build_script_content = f.read()
 
-    assert wf_data["name"] == "Build & Publish Container Image to GHCR"
-    assert "ghcr.io" in str(wf_data)
-    assert "linux/amd64,linux/arm64" in str(wf_data)
+    assert "ghcr.io" in build_script_content
+    assert "linux/amd64,linux/arm64" in build_script_content
+    assert "gh auth token" in build_script_content
+
+    localci_script_path = os.path.join(root_dir, ".localci", "ci.sh")
+    assert os.path.isfile(localci_script_path), ".localci/ci.sh must exist"
+    with open(localci_script_path, "r", encoding="utf-8") as f:
+        localci_content = f.read()
+    assert "pytest tests/" in localci_content
 
 
 # ============================================================================
