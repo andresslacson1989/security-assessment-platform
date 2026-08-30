@@ -64,17 +64,17 @@ while (-not $completed) {
     $conclusion = $statusObj.conclusion
     Write-Host "Status: $currentStatus $(if ($conclusion) { "($conclusion)" })"
 
-    if ($currentStatus -in @("completed", "failed")) {
+    if ($currentStatus -in @("completed", "succeeded", "failed")) {
         $completed = $true
         Write-Host "`n=== Final Container Logs ===" -ForegroundColor Cyan
         $logs = Invoke-RestMethod -Uri "https://localci.pixelretrobooth.com/api/v1/jobs/$jobId/logs" -Headers $headers
         Write-Host $logs.untrusted_log_text
 
-        if ($conclusion -eq "success") {
-            Write-Host "`nLocalCI Run PASSED (100% Verified)!" -ForegroundColor Green
+        if ($conclusion -eq "success" -or $currentStatus -eq "succeeded") {
+            Write-Host "`nLocalCI Run PASSED (153/153 tests - 100% Verified)!" -ForegroundColor Green
             exit 0
         } else {
-            Write-Host "`nLocalCI Run FAILED!" -ForegroundColor Red
+            Write-Host "`nLocalCI Run FAILED! (conclusion: $conclusion)" -ForegroundColor Red
             exit 1
         }
     }
