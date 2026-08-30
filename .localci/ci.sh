@@ -33,11 +33,11 @@ pytest tests/ -v --tb=short
 echo "=== Step 4: Validating System Capabilities & Exporting Diagnostics ==="
 mkdir -p /output
 python3 -c "
-import sys, os
+import sys, os, asyncio
 sys.path.insert(0, 'backend')
 from app.core.models import SystemCapabilities
 from app.adapters import discover_system_capabilities
-caps = discover_system_capabilities()
+caps = asyncio.run(discover_system_capabilities())
 print(f'[LocalCI Diagnostic] System Capabilities: {len(caps.tools)} tool adapters registered')
 print(f'[LocalCI Diagnostic] Native Engines Ready: {caps.native_engines_ready}')
 "

@@ -737,11 +737,11 @@ pytest tests/ -v --tb=short
 mkdir -p /output
 echo "=== Validating System Capabilities Registry ==="
 python3 -c "
-import sys, os
+import sys, os, asyncio
 sys.path.insert(0, 'backend')
 from app.core.models import SystemCapabilities
 from app.adapters import discover_system_capabilities
-caps = discover_system_capabilities()
+caps = asyncio.run(discover_system_capabilities())
 print(f'Discovered System Capabilities: {len(caps.tools)} tools registered')
 " || true
 
