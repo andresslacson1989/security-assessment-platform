@@ -14,12 +14,15 @@ from app.engines.code_sast.injection_lint import audit_injection_patterns
 from app.engines.code_sast.ast_taint_analyzer import audit_ast_taint_flow
 from app.engines.code_sast.dependency_auditor import audit_dependencies
 from app.adapters.semgrep_adapter import SemgrepAdapter
+from app.adapters.gitleaks_adapter import GitleaksAdapter
+from app.adapters.bandit_adapter import BanditAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
 
 
 class CodeSastAssessmentEngine(BaseAssessmentEngine):
     """
     Coordinator engine for Static Application Security Testing (SAST), Secret Scanning, and SCA.
+    Follows Adapters First-in-Line Architecture (Gitleaks + Bandit + Semgrep + Trivy primary, native AST Taint & Entropy enrichment).
     """
 
     @property
@@ -53,68 +56,69 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         emit_finding: FindingCallback,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        existing_fps = set()
         repo_path = target.value
 
-        # --- Stage 1: Secret & Credential Scanning (0% - 40%) ---
-        await emit_progress(10, "Scanning repository for high-entropy secrets and hardcoded API tokens...")
-        await emit_log(LogLevel.INFO, f"Initiating secret and credential pattern audit in '{repo_path}'.")
+        # --- Stage 0: Primary External Tool Adapters First-in-Line ---
+        await emit_progress(5, "Running primary external SAST & Secret tool adapters...")
 
-        secret_findings = await audit_code_secrets(repo_path, emit_log=emit_log)
-        for f in secret_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+        # 0.1 Gitleaks Adapter (Dedicated Git History Secret Scanner)
+        if getattr(config.adapters, "enable_gitleaks", True):
+            gitleaks_adapter = GitleaksAdapter()
+            custom_path = getattr(config.adapters, "gitleaks_path", None) or getattr(config.adapters, "custom_gitleaks_path", None)
+            try:
+                if await gitleaks_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Gitleaks CLI adapter for git secret detection...")
+                    gitleaks_findings = await gitleaks_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in gitleaks_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "gitleaks"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Gitleaks CLI not available - using native secret & git history scanner")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Gitleaks adapter error: {e}")
 
-        # Historical Git Commit Secret Scanning (SAST-GIT-001)
-        git_findings = await audit_git_commit_history(repo_path)
-        for f in git_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+        # 0.2 Bandit Adapter (Python AST Security Linter)
+        if getattr(config.adapters, "enable_bandit", True):
+            bandit_adapter = BanditAdapter()
+            custom_path = getattr(config.adapters, "bandit_path", None) or getattr(config.adapters, "custom_bandit_path", None)
+            try:
+                if await bandit_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Bandit CLI adapter for Python AST security linting...")
+                    bandit_findings = await bandit_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in bandit_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "bandit"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Bandit CLI not available - using native AST crypto & injection linters")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Bandit adapter error: {e}")
 
-        # --- Stage 2: Insecure Cryptography & AST Injection Linting (40% - 75%) ---
-        await emit_progress(45, "Linting source code for weak crypto, insecure PRNG, and injection flaws...")
-        await emit_log(LogLevel.INFO, "Analyzing cryptographic primitives and dangerous shell/deserialization calls.")
-
-        crypto_findings = await audit_crypto_patterns(repo_path, emit_log=emit_log)
-        for f in crypto_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
-
-        inj_findings = await audit_injection_patterns(repo_path, emit_log=emit_log)
-        for f in inj_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
-
-        # Interprocedural AST Taint Flow Analysis (SAST-TAINT-001, SAST-TAINT-002)
-        taint_findings = audit_ast_taint_flow(repo_path)
-        for f in taint_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
-
-        # --- Stage 3: Dependency Software Composition Analysis (75% - 100%) ---
-        await emit_progress(80, "Auditing dependency manifests (requirements.txt, package.json) for CVEs...")
-        await emit_log(LogLevel.INFO, "Parsing dependency manifests for unpinned packages and known vulnerabilities.")
-
-        dep_findings = await audit_dependencies(repo_path, emit_log=emit_log)
-        for f in dep_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
-
-        # --- Stage 4: Semgrep Adapter (AST Rule-Based SAST) ---
-        enable_semgrep = getattr(config.adapters, "enable_semgrep", True)
-        if enable_semgrep:
+        # 0.3 Semgrep Adapter (Multi-Language AST SAST)
+        if getattr(config.adapters, "enable_semgrep", True):
             semgrep_adapter = SemgrepAdapter()
-            custom_path = getattr(config.adapters, "semgrep_path", None)
+            custom_path = getattr(config.adapters, "semgrep_path", None) or getattr(config.adapters, "custom_semgrep_path", None)
             try:
                 if await semgrep_adapter.is_available(custom_path):
-                    await emit_progress(87, "Running Semgrep AST rule-based static analysis...")
-                    await emit_log(LogLevel.INFO, "Executing Semgrep adapter for deep AST-based taint and injection analysis...")
-                    existing_fps = {f.fingerprint for f in findings}
+                    await emit_log(LogLevel.INFO, "Executing Semgrep CLI adapter for multi-language AST SAST...")
                     semgrep_findings = await semgrep_adapter.run(
                         target,
                         config,
@@ -129,22 +133,17 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
-                    await emit_log(LogLevel.INFO, "Semgrep CLI not available - native AST taint and secret scanner results used as fallback")
+                    await emit_log(LogLevel.INFO, "Semgrep CLI not available - using native AST taint & injection linters")
             except Exception as e:
-                await emit_log(LogLevel.WARNING, f"Semgrep adapter error: {e} - continuing with native SAST results")
-        else:
-            await emit_log(LogLevel.INFO, "Semgrep adapter disabled - native SAST checks used as fallback")
+                await emit_log(LogLevel.WARNING, f"Semgrep adapter error: {e}")
 
-        # --- Stage 5: Trivy Adapter (Deep SCA & Container CVE Scanning) ---
-        enable_trivy = getattr(config.adapters, "enable_trivy", True)
-        if enable_trivy:
+        # 0.4 Trivy Adapter (SCA Dependency Vulnerabilities)
+        if getattr(config.adapters, "enable_trivy", True):
             trivy_adapter = TrivyAdapter()
-            custom_path = getattr(config.adapters, "trivy_path", None)
+            custom_path = getattr(config.adapters, "trivy_path", None) or getattr(config.adapters, "custom_trivy_path", None)
             try:
                 if await trivy_adapter.is_available(custom_path):
-                    await emit_progress(93, "Running Trivy deep SCA and CVE analysis...")
-                    await emit_log(LogLevel.INFO, "Executing Trivy adapter for deep dependency CVE and container posture analysis...")
-                    existing_fps = {f.fingerprint for f in findings}
+                    await emit_log(LogLevel.INFO, "Executing Trivy CLI adapter for filesystem SCA vulnerability auditing...")
                     trivy_findings = await trivy_adapter.run(
                         target,
                         config,
@@ -159,13 +158,67 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
-                    await emit_log(LogLevel.INFO, "Trivy CLI not available - native dependency auditor results used as fallback")
+                    await emit_log(LogLevel.INFO, "Trivy CLI not available - using native dependency SCA manifest auditor")
             except Exception as e:
-                await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e} - continuing with native SCA results")
-        else:
-            await emit_log(LogLevel.INFO, "Trivy adapter disabled - native SCA checks used as fallback")
+                await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e}")
 
-        await emit_progress(100, "Code SAST and SCA assessment completed.")
-        await emit_log(LogLevel.INFO, f"Code SAST engine completed with {len(findings)} total findings.")
+        # --- Stage 1: Native Secret & Credential Scanning (Entropy + Regex) ---
+        await emit_progress(35, "Scanning repository for high-entropy secrets and hardcoded API tokens...")
+        secret_findings = await audit_code_secrets(repo_path, emit_log=emit_log)
+        for f in secret_findings:
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
+
+        # Historical Git Commit Secret Scanning (SAST-GIT-001)
+        git_findings = await audit_git_commit_history(repo_path)
+        for f in git_findings:
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
+
+        # --- Stage 2: Insecure Cryptography & AST Injection Linting ---
+        await emit_progress(55, "Linting source code for weak crypto, insecure PRNG, and injection flaws...")
+        crypto_findings = await audit_crypto_patterns(repo_path, emit_log=emit_log)
+        for f in crypto_findings:
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
+
+        inj_findings = await audit_injection_patterns(repo_path, emit_log=emit_log)
+        for f in inj_findings:
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
+
+        # Interprocedural AST Taint Flow Analysis (SAST-TAINT-001, SAST-TAINT-002)
+        taint_findings = audit_ast_taint_flow(repo_path)
+        for f in taint_findings:
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
+
+        # --- Stage 3: Native Dependency SCA Fallback ---
+        await emit_progress(80, "Auditing dependency manifests (requirements.txt, package.json) for CVEs...")
+        dep_findings = await audit_dependencies(repo_path, emit_log=emit_log)
+        for f in dep_findings:
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
+
+        await emit_progress(100, "Static code assessment completed.")
+        await emit_log(LogLevel.INFO, f"Code SAST engine finished with {len(findings)} total findings.")
 
         return findings

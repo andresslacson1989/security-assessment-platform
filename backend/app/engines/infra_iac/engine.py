@@ -11,11 +11,14 @@ from app.engines.infra_iac.dockerfile_auditor import audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_files
 from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_manifests
 from app.engines.infra_iac.terraform_auditor import audit_terraform_files
+from app.adapters.checkov_adapter import CheckovAdapter
+from app.adapters.trivy_adapter import TrivyAdapter
 
 
 class InfraIacAssessmentEngine(BaseAssessmentEngine):
     """
     Coordinator engine for Container Hardening, Docker Compose, Kubernetes, and Terraform IaC security audits.
+    Follows Adapters First-in-Line Architecture (Checkov + Trivy primary, native HCL/YAML/Dockerfile manifest auditors fallback & enrichment).
     """
 
     @property
@@ -49,47 +52,101 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         emit_finding: FindingCallback,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        existing_fps = set()
         target_path = target.value
 
-        # --- Stage 1: Dockerfile Container Hardening (0% - 25%) ---
-        await emit_progress(10, "Auditing Dockerfiles for root user, unpinned base images, and secrets...")
-        await emit_log(LogLevel.INFO, f"Scanning Dockerfile instructions in '{target_path}'.")
+        # --- Stage 0: Primary External IaC Tool Adapters First-in-Line ---
+        await emit_progress(5, "Running primary external IaC & Container tool adapters...")
 
+        # 0.1 Checkov Adapter (IaC Security Policy Engine)
+        if getattr(config.adapters, "enable_checkov", True):
+            checkov_adapter = CheckovAdapter()
+            custom_path = getattr(config.adapters, "checkov_path", None) or getattr(config.adapters, "custom_checkov_path", None)
+            try:
+                if await checkov_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Checkov CLI adapter for Infrastructure-as-Code policy auditing...")
+                    checkov_findings = await checkov_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in checkov_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "checkov"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Checkov CLI not available - using native IaC & manifest auditors")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Checkov adapter error: {e}")
+
+        # 0.2 Trivy Adapter (Container & Dockerfile SCA)
+        if getattr(config.adapters, "enable_trivy", True):
+            trivy_adapter = TrivyAdapter()
+            custom_path = getattr(config.adapters, "trivy_path", None) or getattr(config.adapters, "custom_trivy_path", None)
+            try:
+                if await trivy_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Trivy CLI adapter for container and manifest auditing...")
+                    trivy_findings = await trivy_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in trivy_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "trivy"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Trivy CLI not available - using native Dockerfile auditor")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e}")
+
+        # --- Stage 1: Dockerfile Container Hardening ---
+        await emit_progress(25, "Auditing Dockerfiles for root user, unpinned base images, and secrets...")
         dock_findings = await audit_dockerfiles(target_path, emit_log=emit_log)
         for f in dock_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
 
-        # --- Stage 2: Docker Compose Security (25% - 50%) ---
-        await emit_progress(35, "Evaluating Docker Compose services, socket mounts, and exposed ports...")
-        await emit_log(LogLevel.INFO, f"Analyzing docker-compose service specifications.")
-
+        # --- Stage 2: Docker Compose Security ---
+        await emit_progress(50, "Evaluating Docker Compose services, socket mounts, and exposed ports...")
         cmp_findings = await audit_compose_files(target_path, emit_log=emit_log)
         for f in cmp_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
 
-        # --- Stage 3: Kubernetes Security Standards (50% - 75%) ---
-        await emit_progress(60, "Checking Kubernetes manifests against Pod Security Standards...")
-        await emit_log(LogLevel.INFO, f"Auditing Kubernetes pod and deployment securityContext configurations.")
-
+        # --- Stage 3: Kubernetes Security Standards ---
+        await emit_progress(75, "Checking Kubernetes manifests against Pod Security Standards...")
         k8s_findings = await audit_k8s_manifests(target_path, emit_log=emit_log)
         for f in k8s_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
 
-        # --- Stage 4: Terraform & Cloud Infrastructure (75% - 100%) ---
-        await emit_progress(85, "Auditing Terraform cloud infrastructure (S3 ACLs, Security Groups, IAM)...")
-        await emit_log(LogLevel.INFO, f"Scanning Terraform HCL resources for cloud misconfigurations.")
-
+        # --- Stage 4: Terraform & Cloud Infrastructure ---
+        await emit_progress(90, "Auditing Terraform cloud infrastructure (S3 ACLs, Security Groups, IAM)...")
         tf_findings = await audit_terraform_files(target_path, emit_log=emit_log)
         for f in tf_findings:
-            f.scan_id = "active"
-            findings.append(f)
-            await emit_finding(f)
+            if f.fingerprint not in existing_fps:
+                existing_fps.add(f.fingerprint)
+                f.scan_id = "active"
+                findings.append(f)
+                await emit_finding(f)
 
         await emit_progress(100, "Infrastructure-as-Code & Container assessment completed.")
         await emit_log(LogLevel.INFO, f"Infra IaC engine finished with {len(findings)} total findings.")

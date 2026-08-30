@@ -13,11 +13,13 @@ from app.engines.network.port_checker import audit_exposed_ports
 from app.engines.network.subdomain_recon import audit_subdomain_osint
 from app.engines.network.banner_grabber import audit_service_banners
 from app.adapters.nmap_adapter import NmapAdapter
+from app.adapters.sslyze_adapter import SslyzeAdapter
 
 
 class NetworkAssessmentEngine(BaseAssessmentEngine):
     """
     Coordinator engine for Network Perimeter, TLS/SSL and DNS hygiene security assessments.
+    Follows Adapters First-in-Line Architecture (SSLyze + Nmap primary, native DNS/OSINT enrichment, native fallback).
     """
 
     @property
@@ -54,32 +56,62 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         findings: List[Finding] = []
         scan_id = kwargs.get("scan_id", "active")
 
-        # --- Stage 1: TLS / SSL Audit (0% - 35%) ---
-        await emit_progress(10, "Auditing SSL/TLS certificate validity and expiration...")
-        await emit_log(LogLevel.INFO, "Starting TLS/SSL certificate and cipher suite inspection.")
+        # --- Stage 1: TLS / SSL Audit (SSLyze Adapter First -> Native Fallback) (0% - 35%) ---
+        await emit_progress(10, "Auditing SSL/TLS certificate validity and ciphers...")
 
-        tls_cert_findings = await audit_tls_certificates(
-            target.value,
-            emit_log=emit_log,
-            timeout_seconds=min(5.0, config.timeout_seconds),
-        )
-        for f in tls_cert_findings:
-            f.scan_id = scan_id
-            findings.append(f)
-            await emit_finding(f)
+        sslyze_executed = False
+        enable_sslyze = getattr(config.adapters, "enable_sslyze", True)
+        if enable_sslyze:
+            sslyze_adapter = SslyzeAdapter()
+            custom_path = getattr(config.adapters, "sslyze_path", None) or getattr(config.adapters, "custom_sslyze_path", None)
+            try:
+                if await sslyze_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing SSLyze CLI adapter as primary deep TLS auditor...")
+                    sslyze_findings = await sslyze_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id=scan_id,
+                    )
+                    await emit_log(LogLevel.INFO, f"SSLyze audit completed successfully with {len(sslyze_findings)} findings.")
+                    for f in sslyze_findings:
+                        f.source_tool = "sslyze"
+                        f.scan_id = scan_id
+                        findings.append(f)
+                    sslyze_executed = True
+                else:
+                    await emit_log(LogLevel.INFO, "SSLyze CLI not available - using pure native TLS auditor fallback")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"SSLyze CLI execution error: {e}")
+                await emit_log(LogLevel.INFO, "SSLyze CLI not available - using pure native TLS auditor fallback")
+        else:
+            await emit_log(LogLevel.INFO, "SSLyze disabled - using pure native TLS auditor fallback")
 
-        await emit_progress(25, "Testing for deprecated TLS protocols and ciphers...")
-        tls_proto_findings = await audit_tls_protocols_and_ciphers(
-            target.value,
-            emit_log=emit_log,
-            timeout_seconds=min(3.0, config.timeout_seconds),
-        )
-        for f in tls_proto_findings:
-            f.scan_id = scan_id
-            findings.append(f)
-            await emit_finding(f)
+        # If SSLyze wasn't executed, run full native TLS auditor
+        if not sslyze_executed:
+            tls_cert_findings = await audit_tls_certificates(
+                target.value,
+                emit_log=emit_log,
+                timeout_seconds=min(5.0, config.timeout_seconds),
+            )
+            for f in tls_cert_findings:
+                f.scan_id = scan_id
+                findings.append(f)
+                await emit_finding(f)
 
-        # --- Stage 2: DNS & Email Hygiene (35% - 70%) ---
+            await emit_progress(25, "Testing for deprecated TLS protocols and ciphers...")
+            tls_proto_findings = await audit_tls_protocols_and_ciphers(
+                target.value,
+                emit_log=emit_log,
+                timeout_seconds=min(3.0, config.timeout_seconds),
+            )
+            for f in tls_proto_findings:
+                f.scan_id = scan_id
+                findings.append(f)
+                await emit_finding(f)
+
+        # --- Stage 2: DNS & Email Hygiene (Proprietary Native Enrichment) (35% - 70%) ---
         await emit_progress(45, "Auditing DNS email security records (SPF, DMARC, MTA-STS, DNSSEC)...")
         dns_findings = await audit_dns_hygiene(
             target.value,
@@ -91,7 +123,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             findings.append(f)
             await emit_finding(f)
 
-        # --- Stage 3: Port Exposure Scanner & Hybrid Nmap Adapter (70% - 100%) ---
+        # --- Stage 3: Port Exposure Scanner (Nmap Adapter First -> Native Fallback) (70% - 85%) ---
         await emit_progress(75, "Scanning for exposed database and management ports...")
 
         nmap_executed = False
@@ -101,7 +133,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             custom_path = getattr(config.adapters, "nmap_path", None) or getattr(config.adapters, "custom_nmap_path", None)
             try:
                 if await nmap_adapter.is_available(custom_path):
-                    await emit_log(LogLevel.INFO, "Executing Nmap CLI adapter for deep port and service auditing...")
+                    await emit_log(LogLevel.INFO, "Executing Nmap CLI adapter as primary port and service scanner...")
                     nmap_findings = await nmap_adapter.run(
                         target,
                         config,

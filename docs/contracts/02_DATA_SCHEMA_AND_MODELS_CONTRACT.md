@@ -1,7 +1,7 @@
 # Contract 02: Core Data Schema, Pydantic Models & Scoring Algorithm
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Data Models, State Machines, Serialization & Mathematical Scoring  
 
@@ -78,6 +78,23 @@ class ToolExecutionMode(str, Enum):
     ADAPTER_ACTIVE = "ADAPTER_ACTIVE"      # External CLI adapter executed as primary front-line engine
     NATIVE_FALLBACK = "NATIVE_FALLBACK"    # External CLI binary absent; resilient native Python engine executed
     DISABLED = "DISABLED"                  # Explicitly disabled in scan configuration
+```
+
+### 2.7 Tool Installation Method (`ToolInstallMethod`) & Status (`ToolInstallStatus`)
+```python
+class ToolInstallMethod(str, Enum):
+    PIP = "PIP"                                        # Pure Python package installed via sys.executable -m pip
+    STANDALONE_BINARY = "STANDALONE_BINARY"            # Standalone Go/compiled binary downloaded from GitHub Releases into backend/bin/
+    SYSTEM_PACKAGE_MANAGER = "SYSTEM_PACKAGE_MANAGER"  # System tool requiring OS package manager (winget/brew/apt) or elevated setup
+    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool (e.g. Nikto Perl script)
+    MANUAL = "MANUAL"                                  # Manual binary placement
+
+class ToolInstallStatus(str, Enum):
+    NOT_INSTALLED = "NOT_INSTALLED"
+    INSTALLING = "INSTALLING"
+    INSTALLED = "INSTALLED"
+    FAILED = "FAILED"
+    UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
 ```
 
 ---
@@ -310,6 +327,55 @@ class ScanJob(BaseModel):
     logs: List[LogEntry] = Field(default_factory=list)
     started_at: Optional[datetime] = Field(default=None)
     completed_at: Optional[datetime] = Field(default=None)
+
+### 3.10 Tool Installation & Lifecycle Models
+```python
+class ToolInstallationInfo(BaseModel):
+    name: str = Field(..., description="Machine name of tool (e.g. 'nuclei', 'bandit', 'sslyze')")
+    display_name: str = Field(..., description="Human-readable tool title (e.g. 'Nuclei Template Scanner')")
+    category: str = Field(..., description="Security domain (Network, Web DAST, Code SAST, Infra IaC)")
+    install_method: ToolInstallMethod = Field(..., description="Installation mechanism")
+    status: ToolInstallStatus = Field(default=ToolInstallStatus.NOT_INSTALLED)
+    version: Optional[str] = Field(default=None, description="Discovered version string")
+    path: Optional[str] = Field(default=None, description="Resolved binary executable path")
+    is_elevated_required: bool = Field(default=False, description="Whether root / UAC admin elevation is required")
+    install_command_hint: str = Field(..., description="CLI command snippet for manual or system package manager installation")
+    download_url: Optional[str] = Field(default=None, description="Direct download URL or repo reference")
+    error_message: Optional[str] = Field(default=None, description="Last installation error message if failed")
+    progress_percent: int = Field(default=0, ge=0, le=100, description="Real-time installation progress percentage")
+
+class ToolInstallRequest(BaseModel):
+    tool_name: str = Field(..., description="Tool machine name to install")
+    force: bool = Field(default=False, description="Reinstall or overwrite existing binary if present")
+
+class ToolInstallResponse(BaseModel):
+    task_id: str = Field(..., description="Async installation job task UUID")
+    tool_name: str = Field(..., description="Target tool name")
+    status: ToolInstallStatus = Field(..., description="Initial installation task status")
+    message: str = Field(..., description="Informational progress or queue message")
+
+class ToolBatchInstallRequest(BaseModel):
+    tool_names: List[str] = Field(default_factory=list, description="List of tools to install (empty installs all missing user-space tools)")
+    force: bool = Field(default=False, description="Force reinstallation")
+```
+
+### 3.11 Tool Status & Capabilities Models (`ToolStatus`, `SystemCapabilities`)
+```python
+class ToolStatus(BaseModel):
+    name: str
+    available: bool = False
+    version: Optional[str] = None
+    path: Optional[str] = None
+    execution_mode: ToolExecutionMode = ToolExecutionMode.NATIVE_FALLBACK
+    install_method: ToolInstallMethod = ToolInstallMethod.MANUAL
+    is_installed: bool = False
+    installable: bool = True
+
+class SystemCapabilities(BaseModel):
+    tools: List[ToolStatus] = Field(default_factory=list)
+    native_engines_ready: bool = True
+    os_platform: str = "Unknown"
+```
 ```
 
 ---

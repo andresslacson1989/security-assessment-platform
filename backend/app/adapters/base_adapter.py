@@ -8,9 +8,11 @@ from abc import ABC, abstractmethod
 import asyncio
 import os
 import shutil
+import sys
 from typing import Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel
+from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
 
 
 class BaseToolAdapter(ABC):
@@ -26,19 +28,19 @@ class BaseToolAdapter(ABC):
 
     def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
         """
-        Resolves executable path using custom_path first, then falls back to system PATH via shutil.which().
+        Deterministic 5-Tier Binary Resolution Order:
+        Tier 1: Explicit custom configured path (if file exists and is executable or on PATH)
+        Tier 2: In-App Managed Binaries directory ('backend/bin/<tool_name>[.exe|.bat|.cmd|.pl]')
+        Tier 3: Active Python environment Scripts / bin directory (for pip-installed tools)
+        Tier 4: System PATH discovery via shutil.which(tool_name)
+        Tier 5: Platform-Specific Auto-Discovery (Windows Registry, multi-drive Program Files, package managers, Unix paths)
         """
-        if custom_path:
-            # If custom_path is a direct file path that exists
-            if os.path.isfile(custom_path):
-                return os.path.abspath(custom_path)
-            # If custom_path is a binary name on PATH
-            resolved = shutil.which(custom_path)
-            if resolved:
-                return resolved
-
-        # Fall back to resolving tool_name in system PATH
-        return shutil.which(self.tool_name)
+        local_bin_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+        return resolve_tool_binary(
+            tool_name=self.tool_name,
+            custom_path=custom_path,
+            local_bin_dir=local_bin_dir,
+        )
 
     async def is_available(self, custom_path: Optional[str] = None) -> bool:
         """
@@ -88,77 +90,28 @@ class BaseToolAdapter(ABC):
         if not cmd:
             return -1, "", "Empty command provided"
 
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout,
-            )
-            stdout_str = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-            return proc.returncode if proc.returncode is not None else 0, stdout_str, stderr_str
+        code, stdout, stderr = await safe_execute_subprocess(
+            cmd=cmd,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+        )
 
-        except asyncio.TimeoutError:
-            if emit_log:
+        if code != 0 and emit_log:
+            if "timed out" in stderr.lower():
                 await emit_log(
                     LogLevel.WARNING,
-                    f"Tool adapter '{self.tool_name}' timed out after {timeout}s. Terminating child process...",
+                    f"Tool adapter '{self.tool_name}' timed out after {timeout}s.",
                 )
-            if proc:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=1.0)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-            return -1, "", f"Execution timed out after {timeout} seconds"
-
-        except asyncio.CancelledError:
-            if emit_log:
+            elif "not found" in stderr.lower():
                 await emit_log(
                     LogLevel.WARNING,
-                    f"Tool adapter '{self.tool_name}' cancelled. Terminating child process...",
+                    f"Executable not found for '{self.tool_name}': {stderr}",
                 )
-            if proc:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=0.5)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-            raise
-
-        except FileNotFoundError as e:
-            if emit_log:
-                await emit_log(
-                    LogLevel.WARNING,
-                    f"Executable not found for '{self.tool_name}': {e}",
-                )
-            return 127, "", f"Executable not found: {e}"
-
-        except PermissionError as e:
-            if emit_log:
+            elif "denied" in stderr.lower():
                 await emit_log(
                     LogLevel.ERROR,
-                    f"Permission denied executing '{self.tool_name}': {e}",
+                    f"Permission denied executing '{self.tool_name}': {stderr}",
                 )
-            return 126, "", f"Permission denied: {e}"
 
-        except Exception as e:
-            if emit_log:
-                await emit_log(
-                    LogLevel.ERROR,
-                    f"Unhandled error executing tool adapter '{self.tool_name}': {e}",
-                )
-            return -1, "", str(e)
+        return code, stdout, stderr

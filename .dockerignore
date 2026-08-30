@@ -1,0 +1,34 @@
+# Git & GitHub
+.git
+.github
+.gitignore
+
+# Python caches and bytecode
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Test files and historical scan outputs (runtime creates clean /app/data)
+data/scans/*
+tests/
+contracts/
+
+# IDE & Editor metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs & Temporary files
+*.log
+scratch/

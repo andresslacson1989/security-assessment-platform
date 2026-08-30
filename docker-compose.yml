@@ -1,0 +1,30 @@
+# ==============================================================================
+# CyberAssess Platform - Production Docker Compose Orchestration
+# Authoritative Contract Reference: contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md (Section 10.2)
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  cyberassess:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/andresslacson1989/cyberassess:latest
+    container_name: cyberassess-platform
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persistent host volume for scan reports and database
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/system/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

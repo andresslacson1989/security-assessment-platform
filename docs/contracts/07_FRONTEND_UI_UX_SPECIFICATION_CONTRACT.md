@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -33,24 +33,21 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
   /* Severity Hierarchy Colors */
   --color-critical: #ef4444;      /* Crimson Red */
-  --color-high: #f97316;          /* Bright Orange */
-  --color-medium: #eab308;        /* Amber Yellow */
-  --color-low: #3b82f6;           /* Dodger Blue */
-  --color-info: #10b981;          /* Emerald Green */
-
-  /* Typography */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  --color-high: #f97316;          /* High Orange */
+  --color-medium: #eab308;        /* Warning Amber */
+  --color-low: #3b82f6;           /* Info Blue */
+  --color-info: #06b6d4;          /* Cyber Cyan */
 }
 ```
 
 ---
 
-## 2. Dashboard Component Architecture
+## 2. Platform HUD Layout Structure
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
+│ [⚙️ Manage Toolbox & Adapters]                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
 │    [FFUF: Active] [NIKTO: Fallback] [SEMGREP: Active] [GITLEAKS: Active]    │
@@ -119,7 +116,14 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
 
-6. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
+6. **Toolbox & Adapters Manager Modal (`#tool-manager-modal`):**
+   - Opened via header button `⚙️ Manage Toolbox & Adapters` or clicking missing tool badge.
+   - **Tool Matrix Table:** Lists all 10 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `SYSTEM PACKAGE`), and individual `⚡ Install` / `Reinstall` trigger buttons.
+   - **Batch Installer Action:** Master `⚡ Install All Missing Tools` button triggering parallel user-space installations.
+   - **Live Installation Terminal Console:** Real-time progress bar, stage indicator, and auto-scrolling monospace terminal connected to `/api/system/tools/events`.
+   - **System Package Helper Guidance:** For `Nmap` and `Nikto`, displays copyable native commands (`winget`, `brew`, `apt`).
+
+7. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
 
 ---
 

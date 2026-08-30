@@ -16,6 +16,7 @@ class ScanStreamManager {
     this.attachEventListeners();
     this.checkSystemHealth();
     this.detectTargetType();
+    this.loadSystemCapabilities();
   }
 
   initElements() {
@@ -78,6 +79,27 @@ class ScanStreamManager {
     this.repRespHeaders = document.getElementById("rep-resp-headers");
     this.repRespBody = document.getElementById("rep-resp-body");
 
+    // Toolbox & Adapters Manager (Contract 07 v6.0.0)
+    this.btnOpenToolbox = document.getElementById("btn-open-toolbox");
+    this.btnCloseToolbox = document.getElementById("btn-close-toolbox");
+    this.toolboxModal = document.getElementById("toolbox-modal");
+    this.btnInstallAllTools = document.getElementById("btn-install-all-tools");
+    this.toolboxTableBody = document.getElementById("toolbox-table-body");
+    this.toolboxTerminalLog = document.getElementById("toolbox-terminal-log");
+    this.toolboxInstallProgressBar = document.getElementById("toolbox-install-progress-bar");
+    this.toolboxInstallStage = document.getElementById("toolbox-install-stage");
+    this.toolboxInstalledCount = document.getElementById("toolbox-installed-count");
+    this.toolEventsSource = null;
+
+    // Tool Setup & Installation Guide Modal
+    this.toolInstructionsModal = document.getElementById("tool-instructions-modal");
+    this.instToolTitle = document.getElementById("inst-tool-title");
+    this.instToolSubtitle = document.getElementById("inst-tool-subtitle");
+    this.instToolBody = document.getElementById("inst-tool-body");
+    this.instToolDocsLink = document.getElementById("inst-tool-docs-link");
+    this.btnInstRecheck = document.getElementById("btn-inst-recheck");
+    this._instRecheckTool = null;
+
     // Progress HUD
     this.progressHud = document.getElementById("progress-hud");
     this.progressBar = document.getElementById("progress-bar-fill");
@@ -99,6 +121,11 @@ class ScanStreamManager {
     this.countMedium = document.getElementById("count-medium");
     this.countLow = document.getElementById("count-low");
     this.countInfo = document.getElementById("count-info");
+    this.countTotal = document.getElementById("count-total");
+    this.countPassed = document.getElementById("count-passed");
+    this.metaEngineCount = document.getElementById("meta-engine-count");
+    this.metaDuration = document.getElementById("meta-duration");
+    this.metaChecks = document.getElementById("meta-checks");
 
     // Export Buttons
     this.btnExportHtml = document.getElementById("btn-export-html");
@@ -223,6 +250,40 @@ class ScanStreamManager {
     }
     if (this.btnRepSend) {
       this.btnRepSend.addEventListener("click", () => this.handleSendRepeater());
+    }
+
+    // Toolbox & Adapters Modal (Contract 07 v6.0.0)
+    if (this.btnOpenToolbox) {
+      this.btnOpenToolbox.addEventListener("click", () => this.openToolboxModal());
+    }
+    if (this.btnCloseToolbox) {
+      this.btnCloseToolbox.addEventListener("click", () => this.closeToolboxModal());
+    }
+    if (this.toolboxModal) {
+      this.toolboxModal.addEventListener("click", (e) => {
+        if (e.target === this.toolboxModal) this.closeToolboxModal();
+      });
+    }
+    if (this.btnInstallAllTools) {
+      this.btnInstallAllTools.addEventListener("click", () => this.handleInstallAllTools());
+    }
+
+    // Tool Setup & Installation Guide Modal
+    const closeInst = () => this.closeToolInstructionsModal();
+    document.getElementById("btn-close-tool-instructions")?.addEventListener("click", closeInst);
+    document.getElementById("btn-close-tool-instructions-footer")?.addEventListener("click", closeInst);
+    if (this.toolInstructionsModal) {
+      this.toolInstructionsModal.addEventListener("click", (e) => {
+        if (e.target === this.toolInstructionsModal) closeInst();
+      });
+    }
+    if (this.btnInstRecheck) {
+      this.btnInstRecheck.addEventListener("click", async () => {
+        if (this._instRecheckTool) {
+          closeInst();
+          await this.refreshToolboxData();
+        }
+      });
     }
   }
 
@@ -1056,6 +1117,396 @@ class ScanStreamManager {
     } catch (e) {
       console.error(e);
     }
+  }
+
+  async loadSystemCapabilities() {
+    try {
+      const res = await fetch("/api/system/capabilities");
+      if (!res.ok) return;
+      const data = await res.json();
+      const tools = data.tools || [];
+      let activeCount = 0;
+
+      tools.forEach((tool) => {
+        const pill = document.getElementById(`tool-pill-${tool.name}`);
+        if (pill) {
+          pill.classList.remove("tool-pill--active", "tool-pill--fallback", "tool-pill--disabled");
+          const modeSpan = pill.querySelector(".tool-pill-mode");
+          const iconSpan = pill.querySelector(".tool-pill-icon");
+
+          if (tool.execution_mode === "ADAPTER_ACTIVE" || tool.available) {
+            pill.classList.add("tool-pill--active");
+            if (modeSpan) modeSpan.innerText = tool.version || "ACTIVE";
+            if (iconSpan) iconSpan.innerText = "🟢";
+            activeCount++;
+          } else if (tool.execution_mode === "DISABLED") {
+            pill.classList.add("tool-pill--disabled");
+            if (modeSpan) modeSpan.innerText = "DISABLED";
+            if (iconSpan) iconSpan.innerText = "⚪";
+          } else {
+            pill.classList.add("tool-pill--fallback");
+            if (modeSpan) modeSpan.innerText = "NATIVE FALLBACK";
+            if (iconSpan) iconSpan.innerText = "🟡";
+          }
+        }
+      });
+
+      if (this.toolboxInstalledCount) {
+        this.toolboxInstalledCount.innerText = activeCount;
+      }
+    } catch (e) {
+      console.error("Failed to load system capabilities:", e);
+    }
+  }
+
+  async openToolboxModal() {
+    if (!this.toolboxModal) return;
+    this.toolboxModal.style.display = "flex";
+    this.connectToolEventsStream();
+    await this.refreshToolboxData();
+  }
+
+  closeToolboxModal() {
+    if (this.toolboxModal) {
+      this.toolboxModal.style.display = "none";
+    }
+  }
+
+  async refreshToolboxData() {
+    try {
+      const res = await fetch("/api/system/tools");
+      if (!res.ok) return;
+      const tools = await res.json();
+      this.renderToolboxTable(tools);
+    } catch (e) {
+      console.error("Failed to fetch tool list:", e);
+    }
+  }
+
+  renderToolboxTable(tools) {
+    if (!this.toolboxTableBody) return;
+    let installedCount = 0;
+
+    this.toolboxTableBody.innerHTML = tools
+      .map((t) => {
+        const isInstalled = t.status === "INSTALLED" || t.is_installed || (t.path && t.path.length > 0);
+        if (isInstalled) installedCount++;
+
+        let statusBadge = `<span class="badge-missing">NOT INSTALLED</span>`;
+        if (t.status === "INSTALLING") {
+          statusBadge = `<span class="badge-installing">INSTALLING (${t.progress_percent || 0}%)</span>`;
+        } else if (isInstalled) {
+          statusBadge = `<span class="badge-installed">INSTALLED</span>`;
+        }
+
+        const methodLabel = t.install_method === "SYSTEM_PACKAGE_MANAGER" ? "OS / PKG MGR" : t.install_method.replace("_", " ");
+        const methodBadge = `<span class="method-tag">${methodLabel}</span>`;
+        const pathOrVersion = t.version || (t.path ? `<code class="path-code">${this.escapeHtml(t.path)}</code>` : `<span style="color: var(--text-dim);">-</span>`);
+
+        let actionBtn = "";
+        if (t.install_method === "SYSTEM_PACKAGE_MANAGER") {
+          const btnText = isInstalled ? "📖 Setup Guide" : "📖 How to Install";
+          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.openToolInstructionsModal('${t.name}')">${btnText}</button>`;
+        } else if (t.status === "INSTALLING") {
+          actionBtn = `<button class="btn btn-xs btn-outline" style="color: var(--color-critical); border-color: var(--color-critical);" onclick="window.app.handleCancelTool('${t.name}')">⏹ Cancel</button>`;
+        } else if (isInstalled) {
+          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.handleInstallTool('${t.name}', true)">Reinstall</button>`;
+        } else {
+          actionBtn = `<button class="btn-install-tool" onclick="window.app.handleInstallTool('${t.name}', false)">⚡ Install</button>`;
+        }
+
+        return `
+          <tr>
+            <td>
+              <div class="tool-name-cell">
+                <span>${this.escapeHtml(t.display_name || t.name)}</span>
+              </div>
+            </td>
+            <td><code>${t.category}</code></td>
+            <td>${methodBadge}</td>
+            <td>${statusBadge}</td>
+            <td>${pathOrVersion}</td>
+            <td>${actionBtn}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    if (this.toolboxInstalledCount) {
+      this.toolboxInstalledCount.innerText = installedCount;
+    }
+  }
+
+  async handleCancelTool(toolName) {
+    this.appendToolboxLog(`[CANCEL] Requesting cancellation of '${toolName}' installation...`);
+    try {
+      const res = await fetch(`/api/system/tools/${toolName}/cancel`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        this.appendToolboxLog(`[CANCEL] ${data.message}`);
+        this.refreshToolboxData();
+      }
+    } catch (e) {
+      this.appendToolboxLog(`[ERROR] Failed to cancel: ${e.message}`);
+    }
+  }
+
+  // =========================================================================
+  // Tool Setup & Installation Guide Modal
+  // =========================================================================
+
+  /** Per-tool installation option data with all recommended methods */
+  _getToolInstallOptions(toolName) {
+    const DATA = {
+      nmap: {
+        displayName: "Nmap Network & Port Scanner (NSE)",
+        subtitle: "Enterprise-grade port discovery, banner grabber, and OS/service fingerprinting engine.",
+        docsUrl: "https://nmap.org/download.html",
+        options: [
+          {
+            title: "Option 1: Windows Package Manager (winget) — Recommended",
+            recommended: true,
+            desc: "Installs official Nmap alongside the required Npcap packet capture kernel driver.",
+            snippet: "winget install Insecure.Nmap",
+            explanation: "• 'winget install': Downloads and invokes the verified Microsoft package.\n• 'Insecure.Nmap': Official publisher identifier for Gordon Lyon's Nmap project.\n• Verification: Run 'nmap --version' in a new terminal.",
+          },
+          {
+            title: "Option 2: Official Windows Installer (with GUI & Npcap)",
+            recommended: false,
+            desc: "Direct executable setup wizard with custom drive installation options.",
+            snippet: "https://nmap.org/dist/nmap-setup.exe",
+            isLink: true,
+            explanation: "Download and run the installer. Ensure 'Npcap' is checked during setup so raw socket SYN packets can be sent.",
+          },
+          {
+            title: "Option 3: Chocolatey Package Manager",
+            recommended: false,
+            desc: "Automated install via Chocolatey.",
+            snippet: "choco install nmap",
+            explanation: "Fetches and runs the silent installer with Npcap dependencies.",
+          },
+          {
+            title: "Linux (Debian / Ubuntu / Kali / WSL)",
+            recommended: false,
+            desc: "Standard APT package repository install.",
+            snippet: "sudo apt-get update && sudo apt-get install -y nmap",
+            explanation: "• '-y': Automatically confirms prompts.\n• Verification: 'nmap --version'",
+          },
+          {
+            title: "macOS (Homebrew)",
+            recommended: false,
+            desc: "Standard Homebrew package.",
+            snippet: "brew install nmap",
+            explanation: "Verification: 'nmap --version'",
+          },
+        ],
+      },
+      nikto: {
+        displayName: "Nikto Web Server Scanner",
+        subtitle: "Perl-based web server scanner for 6,700+ dangerous files, outdated server versions, and HTTP misconfigurations.",
+        docsUrl: "https://github.com/sullo/nikto",
+        options: [
+          {
+            title: "Step 1: Install Strawberry Perl (Windows) — Required Prerequisite",
+            recommended: true,
+            desc: "Nikto is written in Perl and requires full CPAN library support (such as XML::Writer).",
+            snippet: "winget install StrawberryPerl.StrawberryPerl",
+            explanation: "• 'StrawberryPerl': Complete Perl distribution for Windows including CPAN runtime.\n• Verification: Close and reopen PowerShell, then run 'perl -v' (should output Perl 5.x).",
+          },
+          {
+            title: "Step 2: Clone Nikto Repository (Windows)",
+            recommended: true,
+            desc: "Download the latest Nikto source code directly from upstream GitHub.",
+            snippet: "git clone https://github.com/sullo/nikto.git",
+            explanation: "• 'git clone': Clones the official Nikto repository into a local 'nikto' folder.\n• Verification: Check that 'nikto\\program\\nikto.pl' exists.",
+          },
+          {
+            title: "Step 3 (Optional): Run Manual Test Scan Against Target",
+            recommended: false,
+            desc: "Test your Nikto installation directly from PowerShell against any web application.",
+            snippet: "perl .\\nikto\\program\\nikto.pl -h http://testphp.vulnweb.com",
+            explanation: "• 'perl': Executes the Perl runtime.\n• '.\\nikto\\program\\nikto.pl': Path to the Nikto scanner script.\n• '-h <target>': Specifies the target hostname or URL to audit.\n• Tip: In CyberAssess, the platform runs this automatically during Web DAST scans!",
+          },
+          {
+            title: "Alternative Method: Scoop Package Manager (Windows)",
+            recommended: false,
+            desc: "Install Scoop first (irm get.scoop.sh | iex), then run this to auto-configure Nikto shims.",
+            snippet: "scoop install nikto",
+            explanation: "Scoop automatically sets up Perl environment shims on Windows PATH.",
+          },
+          {
+            title: "Alternative Method: Docker Container (Zero Local Dependencies)",
+            recommended: false,
+            desc: "Runs Nikto in an isolated Linux container (requires Docker Desktop).",
+            snippet: "docker run --rm sullo/nikto -h http://example.com",
+            explanation: "• '--rm': Cleans up container upon scan completion.\n• 'sullo/nikto': Official Docker Hub image.",
+          },
+          {
+            title: "Linux (Debian / Ubuntu / Kali / WSL)",
+            recommended: false,
+            desc: "Direct APT install.",
+            snippet: "sudo apt-get update && sudo apt-get install -y nikto",
+            explanation: "Verification: 'nikto -Version'",
+          },
+          {
+            title: "macOS (Homebrew)",
+            recommended: false,
+            desc: "Direct Homebrew install.",
+            snippet: "brew install nikto",
+            explanation: "Verification: 'nikto -Version'",
+          },
+        ],
+      },
+    };
+    return DATA[toolName] || null;
+  }
+
+  openToolInstructionsModal(toolName) {
+    const data = this._getToolInstallOptions(toolName);
+    if (!data || !this.toolInstructionsModal) return;
+
+    this._instRecheckTool = toolName;
+
+    if (this.instToolTitle) this.instToolTitle.textContent = `📖 ${data.displayName} — Setup Guide`;
+    if (this.instToolSubtitle) this.instToolSubtitle.textContent = data.subtitle;
+    if (this.instToolDocsLink) {
+      this.instToolDocsLink.href = data.docsUrl;
+      this.instToolDocsLink.textContent = "🌐 Official Website";
+    }
+
+    if (this.instToolBody) {
+      this.instToolBody.innerHTML = data.options.map((opt) => {
+        const recBadge = opt.recommended
+          ? `<span class="instruction-badge-recommended">✓ Recommended</span>`
+          : "";
+        const snippetAction = opt.isLink
+          ? `<a href="${this.escapeHtml(opt.snippet)}" target="_blank" class="btn-copy-code">Open ↗</a>`
+          : `<button class="btn-copy-code" onclick="navigator.clipboard.writeText('${this.escapeHtml(opt.snippet)}').then(()=>this.textContent='Copied!').catch(()=>{})">📋 Copy</button>`;
+
+        const explanationHtml = opt.explanation
+          ? `<div class="instruction-explanation">${this.escapeHtml(opt.explanation).replace(/\n/g, '<br>')}</div>`
+          : "";
+
+        return `
+          <div class="instruction-option-card">
+            <div class="instruction-option-header">
+              <span class="instruction-option-title">${this.escapeHtml(opt.title)} ${recBadge}</span>
+            </div>
+            <p class="instruction-option-desc">${this.escapeHtml(opt.desc)}</p>
+            <div class="code-snippet-box">
+              <code>${this.escapeHtml(opt.snippet)}</code>
+              ${snippetAction}
+            </div>
+            ${explanationHtml}
+          </div>
+        `;
+      }).join("");
+    }
+
+    this.toolInstructionsModal.style.display = "flex";
+  }
+
+  closeToolInstructionsModal() {
+    if (this.toolInstructionsModal) this.toolInstructionsModal.style.display = "none";
+    this._instRecheckTool = null;
+  }
+
+  async handleInstallTool(toolName, force = false) {
+    this.appendToolboxLog(`[INIT] Requesting in-app installation for '${toolName}' (force=${force})...`);
+    this.updateToolboxStage(`Initiating ${toolName}...`, 5);
+    try {
+      const res = await fetch(`/api/system/tools/${toolName}/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: force }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        this.appendToolboxLog(`[ERROR] Failed to start install: ${err.detail || res.statusText}`);
+        return;
+      }
+      const data = await res.json();
+      this.appendToolboxLog(`[QUEUED] ${data.message} (Task ID: ${data.task_id})`);
+      this.refreshToolboxData();
+    } catch (e) {
+      this.appendToolboxLog(`[ERROR] Network error: ${e.message}`);
+    }
+  }
+
+  async handleInstallAllTools() {
+    this.appendToolboxLog(`[INIT] Requesting batch in-app installation for all missing user-space tools...`);
+    this.updateToolboxStage("Starting batch install...", 5);
+    try {
+      const res = await fetch("/api/system/tools/install-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: false }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        this.appendToolboxLog(`[ERROR] Failed to trigger batch install: ${err.detail || res.statusText}`);
+        return;
+      }
+      const data = await res.json();
+      this.appendToolboxLog(`[BATCH] Queued ${data.length} tool installation jobs.`);
+      this.refreshToolboxData();
+    } catch (e) {
+      this.appendToolboxLog(`[ERROR] Network error: ${e.message}`);
+    }
+  }
+
+  connectToolEventsStream() {
+    if (this.toolEventsSource) return;
+    try {
+      this.toolEventsSource = new EventSource("/api/system/tools/events");
+
+      this.toolEventsSource.addEventListener("install_progress", (e) => {
+        const d = JSON.parse(e.data);
+        this.updateToolboxStage(d.stage || `Installing ${d.tool_name}...`, d.percent || 0);
+      });
+
+      this.toolEventsSource.addEventListener("install_log", (e) => {
+        const d = JSON.parse(e.data);
+        this.appendToolboxLog(`[${d.tool_name}] ${d.message}`);
+      });
+
+      this.toolEventsSource.addEventListener("install_completed", (e) => {
+        const d = JSON.parse(e.data);
+        this.appendToolboxLog(`[SUCCESS] ${d.message || d.tool_name + ' installed.'}`);
+        this.updateToolboxStage(`${d.tool_name} installed successfully!`, 100);
+        this.refreshToolboxData();
+        this.loadSystemCapabilities();
+      });
+
+      this.toolEventsSource.addEventListener("install_failed", (e) => {
+        const d = JSON.parse(e.data);
+        this.appendToolboxLog(`[FAILURE] [${d.tool_name}] ${d.error}`);
+        this.updateToolboxStage(`Installation failed for ${d.tool_name}`, 0);
+        this.refreshToolboxData();
+      });
+
+      this.toolEventsSource.onerror = () => {
+        // Handled by browser reconnection
+      };
+    } catch (e) {
+      console.error("Failed to connect tool events stream:", e);
+    }
+  }
+
+  updateToolboxStage(stage, percent) {
+    if (this.toolboxInstallStage) {
+      this.toolboxInstallStage.innerText = stage;
+    }
+    if (this.toolboxInstallProgressBar) {
+      this.toolboxInstallProgressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    }
+  }
+
+  appendToolboxLog(msg) {
+    if (!this.toolboxTerminalLog) return;
+    const time = new Date().toLocaleTimeString();
+    this.toolboxTerminalLog.textContent += `\n[${time}] ${msg}`;
+    this.toolboxTerminalLog.scrollTop = this.toolboxTerminalLog.scrollHeight;
   }
 
   escapeHtml(str) {

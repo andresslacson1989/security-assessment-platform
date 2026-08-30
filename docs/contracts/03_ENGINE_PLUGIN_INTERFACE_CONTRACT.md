@@ -1,9 +1,9 @@
 # Contract 03: Engine Plugin Interface & Module Implementation Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Assessment Engine Plugins, Submodules, Tool Adapters & Execution Lifecycle  
+**Scope Authority:** Assessment Engine Plugins, Submodules, Tool Adapters, In-App Installers & Execution Lifecycle  
 
 ---
 
@@ -95,121 +95,57 @@ class BaseAssessmentEngine(ABC):
 
 ## 3. Detailed Specifications for Core Engines & Submodules
 
----
-
 ### 3.1 Engine 1: Network, TLS, DNS & OSINT Auditor (`network`)
-
 **Identifier:** `network`  
-**Display Name:** Network & TLS Infrastructure Auditor  
-**Applicable Target Types:** `URL`, `DOMAIN`, `IP`
-
+**Display Name:** Network Perimeter, TLS/SSL & DNS Infrastructure  
+**Applicable Target Types:** `URL`, `DOMAIN`, `IP`  
 #### Submodules:
-1. **`tls_auditor.py` (SSL/TLS Certificate, Protocols & Ciphers)**
-   - **`NET-TLS-001` (Expired SSL/TLS Certificate):** Inspects `notAfter` timestamp. Triggered if expired (CRITICAL, CVSS 9.1).
-   - **`NET-TLS-002` (SSL/TLS Certificate Expiring Soon):** Triggered if expiring within 7 days (HIGH, CVSS 7.5).
-   - **`NET-TLS-003` (SSL/TLS Certificate Expiring in <30 Days):** Triggered if expiring in 30 days (MEDIUM, CVSS 5.3).
-   - **`NET-TLS-004` (Hostname Mismatch / Self-Signed):** Validates SANs and CN (HIGH, CVSS 7.4).
-   - **`NET-TLS-005` (Deprecated TLS 1.0 / 1.1 Enabled):** Handshake with TLSv1.0/1.1 context (HIGH, CVSS 7.5).
-   - **`NET-TLS-006` (Deprecated Ciphersuite Vulnerable to SWEET32 / 3DES):** Probes for 64-bit block ciphers like 3DES/DES (MEDIUM, CVSS 5.9).
+- `tls_auditor.py` (`NET-TLS-001` to `006`)
+- `dns_hygiene.py` (`NET-DNS-001` to `005`)
+- `port_checker.py` (`NET-PORT-001` to `003`)
+- `banner_grabber.py` (`NET-SVC-001`)
+- `subdomain_recon.py` (`NET-OSINT-001` to `002`)
 
-2. **`dns_hygiene.py` (DNS Email Security, DNSSEC & Zone Hygiene)**
-   - **`NET-DNS-001` (Missing / Incomplete SPF Record):** Queries `TXT` for `v=spf1` (MEDIUM, CVSS 5.3).
-   - **`NET-DNS-002` (Permissive SPF `+all`):** Detects insecure `+all` mechanism (HIGH, CVSS 7.5).
-   - **`NET-DNS-003` (Missing DMARC Record):** Queries `_dmarc.{domain}` for `v=DMARC1` (MEDIUM, CVSS 5.3).
-   - **`NET-DNS-004` (Permissive DMARC Policy `p=none`):** Detects unenforced policy (LOW, CVSS 3.7).
-   - **`NET-DNS-005` (Missing CAA Record):** Queries `CAA` record (INFO, CVSS 0.0).
-   - **`NET-DNS-006` (Missing MTA-STS / TLS-RPT):** Queries `_mta-sts.{domain}` and `_smtp._tls.{domain}` (LOW, CVSS 3.5).
-   - **`NET-DNS-007` (Missing DNSSEC Deployment):** Queries `DNSKEY` and `DS` records (LOW, CVSS 3.7).
-   - **`NET-DNS-008` (DNS Zone Transfer AXFR Exposure):** Sends non-destructive AXFR query to check if unauthenticated zone dump is permitted (HIGH, CVSS 7.5).
-
-3. **`port_checker.py` & `banner_grabber.py` (Exposed Ports & Service Banners)**
-   - Concurrently checks critical service ports with 1.5s non-blocking timeout:
-     - `21` (FTP), `22` (SSH), `23` (Telnet), `3306` (MySQL), `5432` (PostgreSQL), `6379` (Redis), `27017` (MongoDB), `9200` (Elasticsearch).
-   - **`NET-PORT-001`:** Exposed Database Port (MySQL 3306 / Postgres 5432) (HIGH, CVSS 7.5).
-   - **`NET-PORT-002`:** Exposed In-Memory Cache (Redis 6379 / Mongo 27017 / Elasticsearch 9200) (HIGH, CVSS 7.5).
-   - **`NET-PORT-003`:** Exposed Insecure Remote Management (Telnet 23 / FTP 21) (HIGH, CVSS 7.5).
-   - **`NET-SVC-001`:** Deprecated or Vulnerable Service Daemon Version Detected via Banner (HIGH, CVSS 7.5).
-
-4. **`subdomain_recon.py` (Passive OSINT & Takeover Detection)**
-   - Queries Certificate Transparency logs (`https://crt.sh/?q=%25.{domain}&output=json`) with timeout and deduplication.
-   - Resolves discovered subdomains and evaluates CNAME pointers for dangling takeover targets (AWS S3, GitHub Pages, Heroku, Azure CDN).
-   - **`NET-OSINT-001` (Dangling DNS CNAME / Subdomain Takeover Vulnerability):** Subdomain CNAME points to unregistered third-party service (CRITICAL, CVSS 9.1).
-   - **`NET-OSINT-002` (Sensitive Subdomain Discovered on Public Infrastructure):** Discovered subdomains like `admin.*`, `dev.*`, `staging.*`, `internal.*` (MEDIUM, CVSS 5.3).
-
----
-
-### 3.2 Engine 2: Web Application & API DAST (`web_dast`)
-
+### 3.2 Engine 2: Web Application DAST & Fuzzing (`web_dast`)
 **Identifier:** `web_dast`  
-**Display Name:** Web Application, Browser Security & REST/GraphQL API DAST  
-**Applicable Target Types:** `URL`, `DOMAIN`
-
+**Display Name:** Web Application DAST & Active Fuzzer  
+**Applicable Target Types:** `URL`, `DOMAIN`  
 #### Submodules:
-1. **`headers_cookies.py` (Security Headers & Cookie Flags)**
-   - `DAST-HDR-001` (CSP), `DAST-HDR-002` (HSTS), `DAST-HDR-003` (HSTS Max-Age), `DAST-HDR-004` (X-Frame-Options), `DAST-HDR-005` (nosniff), `DAST-HDR-006` (Referrer-Policy), `DAST-HDR-007` (Server Version), `DAST-COOKIE-001` (HttpOnly), `DAST-COOKIE-002` (Secure), `DAST-COOKIE-003` (SameSite), `DAST-CCH-001` (Cache-Control).
+- `headers_cookies.py` (`DAST-HDR-001` to `005`, `DAST-CKI-001` to `003`)
+- `cors_analyzer.py` (`DAST-CORS-001` to `002`)
+- `api_inspector.py` (`DAST-API-001` to `003`)
+- `browser_posture.py` (`DAST-SRI-001`, `DAST-METH-001`)
+- `graphql_auditor.py` (`DAST-GQL-001` to `002`)
+- `crawler.py` (Multi-page BFS link and form discovery)
+- `auth_session.py` (`DAST-AUTH-001` to `004`, `DAST-FORM-001` to `002`)
+- `parameter_fuzzer.py` (`DAST-INJ-001`, `DAST-XSS-001`, `DAST-LFI-001`, `DAST-SSTI-001`, `DAST-REDIR-001`)
 
-2. **`cors_analyzer.py` (CORS Misconfiguration Analyzer)**
-   - `DAST-CORS-001` (Origin Reflection + Credentials), `DAST-CORS-002` (Wildcard + Credentials), `DAST-CORS-003` (Null Origin + Credentials).
-
-3. **`api_inspector.py` (Sensitive Exposure & Methods)**
-   - `DAST-EXP-001` (`.env`), `DAST-EXP-002` (`/.git/HEAD`), `DAST-EXP-003` (Spring Boot Actuator), `DAST-EXP-004` (OpenAPI Swagger), `DAST-METH-001` (`TRACE` method).
-
-4. **`browser_posture.py` & `graphql_auditor.py`**
-   - `DAST-SRI-001` (Subresource Integrity), `DAST-MIX-001` (Mixed Content), `DAST-GQL-001` (GraphQL Introspection).
-
-5. **`crawler.py` & `auth_session.py` (Scoped BFS Crawler & Authentication)**
-   - BFS link discovery with static bundle filtering.
-   - Session login (Header/Cookie/Form) with CSRF extraction and heartbeat monitor.
-   - `DAST-AUTH-001` (Cleartext Auth), `DAST-AUTH-002` (Insecure Session Cookie), `DAST-AUTH-003` (Broken Access Control), `DAST-AUTH-004` (Sensitive Query Strings), `DAST-FORM-001` (Insecure Form Action), `DAST-FORM-002` (Missing CSRF Token).
-
-6. **`parameter_fuzzer.py` (Active Parameter Fuzzing & Benign Injection Probes)**
-   - `DAST-INJ-001` (Time-based & Boolean SQLi), `DAST-XSS-001` (Canary Reflected XSS), `DAST-LFI-001` (Path Traversal), `DAST-SSTI-001` (Template Injection `{{7*7}}`), `DAST-REDIR-001` (Open Redirect).
-
----
-
-### 3.3 Engine 3: Static Code Analysis, Secrets, SCA & Taint AST (`code_sast`)
-
+### 3.3 Engine 3: Static Code Analysis & Secrets (`code_sast`)
 **Identifier:** `code_sast`  
-**Display Name:** Static Code Analysis, Secrets, Cryptography, SCA & Taint Analysis  
-**Applicable Target Types:** `LOCAL_PATH`
-
+**Display Name:** Static Code Analysis & Secret Scanner  
+**Applicable Target Types:** `LOCAL_PATH`  
 #### Submodules:
-1. **`secret_scanner.py` & `git_history_scanner.py` (Pattern & Historical Git Secrets)**
-   - `SAST-SEC-001` to `009` (AWS, GitHub, Stripe, GCP, Slack, Private Key, Database URI, RFC1918 IP).
-   - `SAST-GIT-001` (Historical Git Commit Secret).
+- `secret_scanner.py` (`SAST-SEC-001` to `009`)
+- `crypto_lint.py` (`SAST-CRY-001` to `003`)
+- `injection_lint.py` (`SAST-INJ-001` to `003`)
+- `dependency_auditor.py` (`SAST-DEP-001`)
+- `ast_taint_analyzer.py` (`SAST-TAINT-001` to `002`)
+- `git_history_scanner.py` (`SAST-GIT-001`)
 
-2. **`crypto_lint.py` & `injection_lint.py` (Insecure Cryptography, PRNG & Injection)**
-   - `SAST-CRY-001` (MD5/SHA1), `SAST-CRY-002` (Insecure PRNG), `SAST-CRY-003` (AES ECB Mode).
-   - `SAST-INJ-001` (Raw SQL Format), `SAST-INJ-002` (Shell Injection), `SAST-INJ-003` (Unsafe Deserialization).
-
-3. **`ast_taint_analyzer.py` (AST Interprocedural Taint Flow)**
-   - `SAST-TAINT-001` (AST User Input -> SQL Sink), `SAST-TAINT-002` (AST User Input -> Command Sink).
-
-4. **`dependency_auditor.py` (Software Composition Analysis - SCA)**
-   - `SAST-DEP-001` (Vulnerable Pinned Dependency), `SAST-DEP-002` (Unpinned Wildcard Dependency).
-
----
-
-### 3.4 Engine 4: Infrastructure & Container IaC (`infra_iac`)
-
+### 3.4 Engine 4: Infrastructure-as-Code & Containers (`infra_iac`)
 **Identifier:** `infra_iac`  
-**Display Name:** Infrastructure-as-Code, Container & Cloud Security  
-**Applicable Target Types:** `DOCKERFILE`, `IAC_MANIFEST`, `LOCAL_PATH`
-
+**Display Name:** Infrastructure-as-Code & Container Posture  
+**Applicable Target Types:** `DOCKERFILE`, `IAC_MANIFEST`, `LOCAL_PATH`  
 #### Submodules:
 - `dockerfile_auditor.py` (`IAC-DOCK-001` to `006`)
 - `compose_auditor.py` (`IAC-CMP-001` to `003`)
 - `k8s_manifest_auditor.py` (`IAC-K8S-001` to `004`)
 - `terraform_auditor.py` (`IAC-TF-001` to `004`)
 
----
-
 ### 3.5 Engine 5: CI/CD Pipeline & Build Security (`cicd_audit`)
-
 **Identifier:** `cicd_audit`  
 **Display Name:** CI/CD Pipeline & Workflow Security  
-**Applicable Target Types:** `LOCAL_PATH`
-
+**Applicable Target Types:** `LOCAL_PATH`  
 #### Submodules:
 - `github_actions_auditor.py` (`CICD-GHA-001` to `004`)
 
@@ -219,9 +155,10 @@ class BaseAssessmentEngine(ABC):
 
 To combine enterprise-grade penetration testing power with zero-dependency portability, the platform defines the `BaseToolAdapter` interface.
 
-### 4.1 Abstract Tool Adapter Interface
+### 4.1 Abstract Tool Adapter Interface & Binary Resolution Order
 ```python
 from abc import ABC, abstractmethod
+import os
 import shutil
 from typing import Optional, List, Callable, Awaitable
 from app.core.models import Target, Finding, ScanConfig, LogLevel
@@ -242,10 +179,25 @@ class BaseToolAdapter(ABC):
         """Name of executable: 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'."""
         pass
 
-    @abstractmethod
     def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
-        """Resolves executable path using custom_path or system PATH via shutil.which()."""
-        pass
+        """
+        Deterministic 3-Tier Binary Resolution Order:
+        Tier 1: Explicit custom configured path (if file exists and is executable)
+        Tier 2: In-App Managed Binaries directory ('backend/bin/<tool_name>[.exe]')
+        Tier 3: System PATH discovery via shutil.which(tool_name)
+        """
+        if custom_path and os.path.isfile(custom_path) and os.access(custom_path, os.X_OK):
+            return custom_path
+        
+        # Check local managed backend/bin directory
+        local_bin_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+        exts = [".exe", ""] if os.name == "nt" else ["", ".exe"]
+        for ext in exts:
+            candidate = os.path.join(local_bin_dir, f"{self.tool_name}{ext}")
+            if os.path.isfile(candidate):
+                return candidate
+
+        return shutil.which(self.tool_name)
 
     @abstractmethod
     async def is_available(self, custom_path: Optional[str] = None) -> bool:
@@ -287,3 +239,66 @@ class BaseToolAdapter(ABC):
 | **`TrivyAdapter`** | `trivy` | `trivy fs --format json <dir>` | JSON (`--format json`) | **Primary** SCA & Container Vulnerability Engine | `dependency_auditor.py` + `dockerfile_auditor.py` | Maps package and container vulnerabilities to `SAST-DEP-001` and `IAC-DOCK-xxx`. `source_tool="trivy"`. |
 | **`CheckovAdapter`** | `checkov` | `checkov -d <dir> -o json --compact` | JSON (`-o json`) | **Primary** Infrastructure-as-Code Policy Engine | `compose_auditor.py` + `k8s_manifest_auditor.py` + `terraform_auditor.py` | Maps failed IaC checks (Terraform, K8s, Compose) to `IAC-TF-xxx`, `IAC-K8S-xxx`, `IAC-CMP-xxx`. `source_tool="checkov"`. |
 
+---
+
+## 5. In-App Tool Installers Engine (`backend/app/installers/`)
+
+The platform includes a dedicated, pluggable tool installer architecture for 1-click in-app installation.
+
+### 5.1 Abstract Tool Installer Interface (`BaseToolInstaller`)
+```python
+from abc import ABC, abstractmethod
+from typing import Callable, Awaitable, Optional
+from app.core.models import ToolInstallMethod, ToolInstallationInfo, ToolInstallStatus
+
+LogCallback = Callable[[str], Awaitable[None]]
+ProgressCallback = Callable[[int, str], Awaitable[None]]
+
+class BaseToolInstaller(ABC):
+    @property
+    @abstractmethod
+    def tool_name(self) -> str:
+        """Name identifier of the tool."""
+        pass
+
+    @property
+    @abstractmethod
+    def install_method(self) -> ToolInstallMethod:
+        """Installation method (PIP, STANDALONE_BINARY, SYSTEM_PACKAGE_MANAGER)."""
+        pass
+
+    @abstractmethod
+    async def get_info(self) -> ToolInstallationInfo:
+        """Returns comprehensive installation status, version, and instructions."""
+        pass
+
+    @abstractmethod
+    async def install(
+        self,
+        emit_log: LogCallback,
+        emit_progress: ProgressCallback,
+        force: bool = False,
+    ) -> bool:
+        """Asynchronously executes installation with real-time log and progress callbacks."""
+        pass
+```
+
+### 5.2 Installer Implementations by Tool Category
+
+1. **`PipToolInstaller` (`sslyze`, `bandit`, `semgrep`, `checkov`):**
+   - Invokes: `sys.executable -m pip install --upgrade <package_name>`
+   - Bounded execution with real-time pipe streaming.
+   - Zero administrative elevation required.
+
+2. **`GithubReleaseInstaller` (`nuclei`, `ffuf`, `gitleaks`, `trivy`):**
+   - Automatically detects OS (`Windows`, `Linux`, `Darwin`) and CPU architecture (`amd64`, `arm64`).
+   - Downloads official release zip/tarball from GitHub API / CDN.
+   - Extracts binary into `backend/bin/` with ZipSlip path traversal protection.
+   - Sets executable permissions (`0o755`).
+   - Zero administrative elevation required.
+
+3. **`SystemToolHelper` (`nmap`, `nikto`):**
+   - Detects OS platform.
+   - For Windows: Generates `winget install Insecure.Nmap` or launches official installer.
+   - For Linux: Generates `sudo apt-get install nmap nikto` command snippets.
+   - For macOS: Generates `brew install nmap nikto` command snippets.

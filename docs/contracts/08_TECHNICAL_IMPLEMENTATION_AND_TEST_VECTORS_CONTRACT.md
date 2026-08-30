@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Execution Algorithms & Test Vectors Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Implementation Algorithms, Test Vectors, Parser Mechanics & Remediation Templates  
 
@@ -329,5 +329,57 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
 - **Parsing Mechanics:**
   - Parses JSON output: `results.failed_checks[]` extracting `check_id`, `check_name`, `file_path`, `file_line_range`, `resource`, `guideline`.
   - Normalizes into `Finding` with `source_tool="checkov"`.
+
+---
+
+## 9. In-App Tool Installation Engine Algorithms & Binary Resolution
+
+### 9.1 Asset Matrix for Standalone Pre-compiled Binaries (`GithubReleaseInstaller`)
+
+The installer dynamically maps host OS (`sys.platform` / `platform.system()`) and machine architecture (`platform.machine()`) to official release assets:
+
+| Tool | GitHub Repository | Windows (x86_64) Asset Pattern | Linux (x86_64) Asset Pattern | macOS (ARM64) Asset Pattern |
+| :--- | :--- | :--- | :--- | :--- |
+| **`nuclei`** | `projectdiscovery/nuclei` | `nuclei_*_windows_amd64.zip` | `nuclei_*_linux_amd64.zip` | `nuclei_*_macOS_arm64.zip` |
+| **`ffuf`** | `ffuf/ffuf` | `ffuf_*_windows_amd64.zip` | `ffuf_*_linux_amd64.tar.gz` | `ffuf_*_macOS_arm64.tar.gz` |
+| **`gitleaks`** | `gitleaks/gitleaks` | `gitleaks_*_windows_x64.zip` | `gitleaks_*_linux_x64.tar.gz` | `gitleaks_*_darwin_arm64.tar.gz` |
+| **`trivy`** | `aquasecurity/trivy` | `trivy_*_windows-64bit.zip` | `trivy_*_Linux-64bit.tar.gz` | `trivy_*_macOS-ARM64.tar.gz` |
+
+### 9.2 Pip Package Installation Execution Algorithm (`PipToolInstaller`)
+```python
+# Technical Algorithm: Safe Pip Subprocess Invocation with Streaming Output
+async def install_pip_package(package_name: str, emit_log: Callable[[str], Awaitable[None]]) -> bool:
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", package_name]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
+    )
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        await emit_log(line.decode(errors="replace").rstrip())
+    return (await proc.wait()) == 0
+```
+
+### 9.3 ZipSlip Path Traversal Protection & Archive Unpacking
+```python
+import zipfile, tarfile, os
+
+def safe_extract_zip(zip_path: str, target_dir: str) -> None:
+    target_dir = os.path.abspath(target_dir)
+    with zipfile.ZipFile(zip_path, 'r') as z:
+        for member in z.namelist():
+            dest_path = os.path.abspath(os.path.join(target_dir, member))
+            if not dest_path.startswith(target_dir + os.sep) and dest_path != target_dir:
+                raise SecurityError(f"ZipSlip traversal attempt detected: {member}")
+        z.extractall(target_dir)
+```
+
+### 9.4 Real-time SSE Telemetry Broadcast Pipeline
+1. Client connects to `/api/system/tools/events`.
+2. As installer executes, it yields chunks formatted as standard SSE frames (`event: install_progress`, `event: install_log`, `event: install_completed`, `event: install_failed`).
+3. Frontend listens with `EventSource` and appends output to the live terminal console.
 
 

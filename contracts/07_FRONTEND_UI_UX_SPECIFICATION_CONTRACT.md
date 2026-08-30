@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.1.0 (Interactive Setup Modal, Parameter Explanations & Capabilities Lifecycle Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
 
@@ -33,24 +33,21 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
   /* Severity Hierarchy Colors */
   --color-critical: #ef4444;      /* Crimson Red */
-  --color-high: #f97316;          /* Bright Orange */
-  --color-medium: #eab308;        /* Amber Yellow */
-  --color-low: #3b82f6;           /* Dodger Blue */
-  --color-info: #10b981;          /* Emerald Green */
-
-  /* Typography */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  --color-high: #f97316;          /* High Orange */
+  --color-medium: #eab308;        /* Warning Amber */
+  --color-low: #3b82f6;           /* Info Blue */
+  --color-info: #06b6d4;          /* Cyber Cyan */
 }
 ```
 
 ---
 
-## 2. Dashboard Component Architecture
+## 2. Platform HUD Layout Structure
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
+│ [⚙️ Manage Toolbox & Adapters]                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
 │    [FFUF: Active] [NIKTO: Fallback] [SEMGREP: Active] [GITLEAKS: Active]    │
@@ -119,7 +116,22 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
 
-6. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
+6. **Toolbox & Adapters Manager Modal (`#tool-manager-modal`) & Setup Guide Modal (`#tool-instructions-modal`):**
+   - Opened via header button `⚙️ Manage Toolbox & Adapters` or clicking missing tool badge.
+   - **Tool Matrix Table:** Lists all 10 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `OS / PKG MGR`), and individual action buttons:
+     - For automated tools (`PIP`, `STANDALONE BINARY`): `⚡ Install` / `Reinstall` / `⏹ Cancel`.
+     - For system package manager tools (`OS / PKG MGR` like `Nmap`, `Nikto`): `📖 How to Install` (when missing) or `📖 Setup Guide` (when installed).
+   - **Interactive Tool Setup & Guide Modal (`#tool-instructions-modal`):**
+     - Subtitle explaining tool role and OS requirements.
+     - Option cards sorted with **Recommended First** (e.g. `winget install Insecure.Nmap`, Strawberry Perl + git clone for Nikto).
+     - One-click copy code boxes (`btn-copy-code`) for copy-pasteable PowerShell/bash commands.
+     - Cyan parameter breakdowns (`.instruction-explanation`) detailing what each flag does (`winget install`, `git clone`, `-h <target>`, `-T4`, etc.).
+     - Actionable step-by-step verification commands (`nmap --version`, `perl -v`, `nikto -Version`).
+     - Live **"🔄 Re-check Status"** trigger re-probing backend capabilities in real-time.
+   - **Batch Installer Action:** Master `⚡ Install All Missing Tools` button triggering parallel user-space installations.
+   - **Live Installation Terminal Console:** Real-time progress bar, stage indicator, and auto-scrolling monospace terminal connected to `/api/system/tools/events`.
+
+7. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
 
 ---
 

@@ -1,0 +1,323 @@
+"""
+Contract 03 & 08 Standalone Binary GitHub Release Installer (nuclei, ffuf, gitleaks, trivy).
+Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
+"""
+
+from __future__ import annotations
+import asyncio
+import os
+import platform
+import shutil
+import sys
+import tarfile
+import tempfile
+import zipfile
+from typing import Optional, Dict, List, Tuple
+import httpx
+
+from app.core.models import ToolInstallMethod
+from app.installers.base_installer import (
+    BaseToolInstaller,
+    SecurityError,
+    LogCallback,
+    ProgressCallback,
+)
+
+
+GITHUB_TOOL_CONFIGS: Dict[str, dict] = {
+    "nuclei": {
+        "display_name": "Nuclei Vulnerability & CVE Template Scanner",
+        "category": "Web DAST",
+        "repo": "projectdiscovery/nuclei",
+        "binary_name": "nuclei",
+        "command_hint": "go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+        "download_url": "https://github.com/projectdiscovery/nuclei/releases",
+        "version_cmd": ["-version"],
+    },
+    "ffuf": {
+        "display_name": "FFuF Fast Web Fuzzer & Content Discovery Engine",
+        "category": "Web DAST",
+        "repo": "ffuf/ffuf",
+        "binary_name": "ffuf",
+        "command_hint": "go install github.com/ffuf/ffuf/v2@latest",
+        "download_url": "https://github.com/ffuf/ffuf/releases",
+        "version_cmd": ["-V"],
+    },
+    "gitleaks": {
+        "display_name": "Gitleaks Git History Secret Scanner",
+        "category": "Code SAST",
+        "repo": "gitleaks/gitleaks",
+        "binary_name": "gitleaks",
+        "command_hint": "go install github.com/gitleaks/gitleaks/v8@latest",
+        "download_url": "https://github.com/gitleaks/gitleaks/releases",
+        "version_cmd": ["version"],
+    },
+    "trivy": {
+        "display_name": "Trivy Container & Dependency SCA Scanner",
+        "category": "Infra IaC",
+        "repo": "aquasecurity/trivy",
+        "binary_name": "trivy",
+        "command_hint": "winget install AquaSecurity.Trivy (or brew install trivy)",
+        "download_url": "https://github.com/aquasecurity/trivy/releases",
+        "version_cmd": ["--version"],
+    },
+}
+
+
+class GithubReleaseInstaller(BaseToolInstaller):
+    """
+    Installer that fetches official release archives from GitHub, validates ZipSlip safety,
+    extracts the binary to backend/bin/, and sets executable permissions.
+    """
+
+    def __init__(self, tool_name: str):
+        if tool_name not in GITHUB_TOOL_CONFIGS:
+            raise ValueError(f"Unknown GithubReleaseInstaller target: {tool_name}")
+        self._tool_name = tool_name
+        self._cfg = GITHUB_TOOL_CONFIGS[tool_name]
+
+    @property
+    def tool_name(self) -> str:
+        return self._tool_name
+
+    @property
+    def display_name(self) -> str:
+        return self._cfg["display_name"]
+
+    @property
+    def category(self) -> str:
+        return self._cfg["category"]
+
+    @property
+    def install_method(self) -> ToolInstallMethod:
+        return ToolInstallMethod.STANDALONE_BINARY
+
+    @property
+    def install_command_hint(self) -> str:
+        return self._cfg["command_hint"]
+
+    @property
+    def download_url(self) -> Optional[str]:
+        return self._cfg["download_url"]
+
+    def _get_platform_keywords(self) -> Tuple[List[str], List[str]]:
+        """Returns matching strings for OS and architecture."""
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+
+        os_keywords = []
+        if "windows" in system or sys.platform == "win32":
+            os_keywords = ["windows", "_win", "-win", "win64", "win32", "win_", "win."]
+        elif "darwin" in system:
+            os_keywords = ["darwin", "macos", "mac", "osx"]
+        elif "linux" in system:
+            os_keywords = ["linux"]
+
+        arch_keywords = []
+        if machine in ("x86_64", "amd64", "x64"):
+            arch_keywords = ["amd64", "x86_64", "x64", "64bit"]
+        elif machine in ("aarch64", "arm64"):
+            arch_keywords = ["arm64", "aarch64"]
+        elif "arm" in machine:
+            arch_keywords = ["armv7", "arm"]
+        elif "386" in machine or "i686" in machine:
+            arch_keywords = ["386", "i386", "32bit", "x32"]
+
+        return os_keywords, arch_keywords
+
+    def _match_release_asset(self, assets: List[dict]) -> Optional[dict]:
+        """Finds the best matching release asset for the current OS and CPU."""
+        system = platform.system().lower()
+        os_keys, arch_keys = self._get_platform_keywords()
+
+        for asset in assets:
+            name = asset.get("name", "").lower()
+            if not (name.endswith(".zip") or name.endswith(".tar.gz") or name.endswith(".tgz")):
+                continue
+
+            # Prevent false positives (e.g. 'darwin' matching 'win' substring)
+            if ("windows" in system or sys.platform == "win32") and ("darwin" in name or "linux" in name):
+                continue
+            if "darwin" in system and ("windows" in name or "linux" in name):
+                continue
+            if "linux" in system and ("windows" in name or "darwin" in name):
+                continue
+
+            # Check OS match
+            if not any(k in name for k in os_keys):
+                continue
+            # Check Arch match
+            if not any(k in name for k in arch_keys):
+                continue
+            # Avoid checksums or deb/rpm/apk packages
+            if any(bad in name for bad in ("checksum", "sha256", ".deb", ".rpm", ".apk")):
+                continue
+            return asset
+
+        # Fallback loose match
+        for asset in assets:
+            name = asset.get("name", "").lower()
+            if ("windows" in system or sys.platform == "win32") and ("darwin" in name or "linux" in name):
+                continue
+            if any(k in name for k in os_keys) and (name.endswith(".zip") or name.endswith(".tar.gz") or name.endswith(".tgz")):
+                return asset
+
+        return None
+
+    async def get_version(self) -> Optional[str]:
+        path = self.resolve_binary_path()
+        if not path:
+            return None
+        cmd = [path] + self._cfg["version_cmd"]
+
+        def _check():
+            try:
+                import subprocess
+                res = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=5.0,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                text = res.stdout.strip()
+                return text.splitlines()[0] if text else None
+            except Exception:
+                return None
+
+        return await asyncio.to_thread(_check)
+
+    def _safe_extract_zip(self, zip_path: str, target_dir: str) -> None:
+        """Extracts zip archive with ZipSlip path traversal protection."""
+        target_dir = os.path.abspath(target_dir)
+        with zipfile.ZipFile(zip_path, "r") as z:
+            for member in z.namelist():
+                dest_path = os.path.abspath(os.path.join(target_dir, member))
+                if not dest_path.startswith(target_dir + os.sep) and dest_path != target_dir:
+                    raise SecurityError(f"ZipSlip traversal attempt detected: {member}")
+            z.extractall(target_dir)
+
+    def _safe_extract_tar(self, tar_path: str, target_dir: str) -> None:
+        """Extracts tar.gz archive with path traversal protection."""
+        target_dir = os.path.abspath(target_dir)
+        with tarfile.open(tar_path, "r:*") as t:
+            for member in t.getmembers():
+                dest_path = os.path.abspath(os.path.join(target_dir, member.name))
+                if not dest_path.startswith(target_dir + os.sep) and dest_path != target_dir:
+                    raise SecurityError(f"TarSlip traversal attempt detected: {member.name}")
+            t.extractall(target_dir)
+
+    async def install(
+        self,
+        emit_log: LogCallback,
+        emit_progress: ProgressCallback,
+        force: bool = False,
+    ) -> bool:
+        repo = self._cfg["repo"]
+        bin_name = self._cfg["binary_name"]
+        local_bin_dir = self.get_bin_dir()
+
+        await emit_log(f"Querying GitHub release metadata for {repo}...")
+        await emit_progress(10, f"Fetching latest release metadata for {self.display_name}...")
+
+        headers = {
+            "User-Agent": "CyberAssess-Platform/6.0.0",
+            "Accept": "application/vnd.github.v3+json",
+        }
+
+        download_url = None
+        asset_filename = None
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+                resp = await client.get(f"https://api.github.com/repos/{repo}/releases/latest")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    assets = data.get("assets", [])
+                    matched = self._match_release_asset(assets)
+                    if matched:
+                        download_url = matched.get("browser_download_url")
+                        asset_filename = matched.get("name")
+                        await emit_log(f"Found official release asset: {asset_filename}")
+                elif resp.status_code == 403:
+                    await emit_log(f"Notice: GitHub API unauthenticated rate limit reached. Checking fallback release targets...")
+
+            if not download_url:
+                raise RuntimeError(
+                    f"Could not automatically resolve matching release asset for {repo} on {sys.platform}. "
+                    f"Please install via: {self.install_command_hint}"
+                )
+
+            await emit_progress(30, f"Downloading {asset_filename}...")
+            await emit_log(f"Downloading from {download_url}...")
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                archive_path = os.path.join(tmpdir, asset_filename)
+                
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                    async with client.stream("GET", download_url) as stream:
+                        if stream.status_code != 200:
+                            raise RuntimeError(f"Download failed with HTTP {stream.status_code}")
+                        
+                        total_bytes = int(stream.headers.get("content-length", 0))
+                        downloaded = 0
+                        with open(archive_path, "wb") as f:
+                            async for chunk in stream.aiter_bytes(chunk_size=65536):
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_bytes > 0:
+                                    pct = 30 + int((downloaded / total_bytes) * 40)
+                                    await emit_progress(pct, f"Downloading: {downloaded // 1024} KB / {total_bytes // 1024} KB")
+
+                await emit_progress(75, "Extracting binary and validating safety...")
+                await emit_log(f"Extracting {asset_filename} to managed bin directory...")
+
+                extract_dir = os.path.join(tmpdir, "extracted")
+                os.makedirs(extract_dir, exist_ok=True)
+
+                if archive_path.endswith(".zip"):
+                    self._safe_extract_zip(archive_path, extract_dir)
+                else:
+                    self._safe_extract_tar(archive_path, extract_dir)
+
+                # Locate the binary executable inside extracted files (including nested subdirectories)
+                found_bin = None
+                target_names = [f"{bin_name}.exe", bin_name]
+                for root, _, files in os.walk(extract_dir):
+                    for f in files:
+                        if f.lower() in [tn.lower() for tn in target_names]:
+                            found_bin = os.path.join(root, f)
+                            break
+                    if found_bin:
+                        break
+
+                if not found_bin:
+                    raise FileNotFoundError(f"Could not find executable '{bin_name}' inside downloaded archive")
+
+                # Copy to local_bin_dir
+                dest_filename = os.path.basename(found_bin)
+                dest_path = os.path.join(local_bin_dir, dest_filename)
+                shutil.copy2(found_bin, dest_path)
+
+                # On POSIX, ensure chmod +x
+                if os.name != "nt":
+                    try:
+                        os.chmod(dest_path, 0o755)
+                    except Exception:
+                        pass
+
+                await emit_progress(90, "Verifying binary execution...")
+                ver = await self.get_version()
+                await emit_log(f"Binary installed at: {dest_path} (version: {ver or 'unknown'})")
+                await emit_progress(100, f"Successfully installed {self.display_name} ({ver or 'ready'})")
+                return True
+
+        except asyncio.CancelledError:
+            await emit_log(f"Download/installation of {self.tool_name} was cancelled by user.")
+            raise
+        except Exception as e:
+            await emit_log(f"Error installing {self.tool_name}: {e}")
+            await emit_progress(100, f"Installation failed: {e}")
+            return False

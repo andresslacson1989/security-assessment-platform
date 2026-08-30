@@ -1,7 +1,7 @@
 # Contract 06: Master Security Check Catalog & CWE / OWASP / NIST Taxonomy Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Canonical Security Rules, Vulnerability Taxonomy & Compliance Mapping  
 

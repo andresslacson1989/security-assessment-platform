@@ -21,9 +21,15 @@ from app.core.models import (
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.adapters.nmap_adapter import NmapAdapter, extract_host
+from app.adapters.sslyze_adapter import SslyzeAdapter
 from app.adapters.nuclei_adapter import NucleiAdapter, normalize_target_url
+from app.adapters.ffuf_adapter import FfufAdapter
+from app.adapters.nikto_adapter import NiktoAdapter
 from app.adapters.semgrep_adapter import SemgrepAdapter
+from app.adapters.gitleaks_adapter import GitleaksAdapter
+from app.adapters.bandit_adapter import BanditAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
+from app.adapters.checkov_adapter import CheckovAdapter
 from app.adapters import get_adapter_registry, discover_system_capabilities
 
 
@@ -481,25 +487,404 @@ class TestTrivyAdapter:
 
 
 # ============================================================================
-# 6. Adapter Registry & Capabilities Discovery Tests
+# 6. SSLyze Adapter Tests
+# ============================================================================
+
+class TestSslyzeAdapter:
+    def test_tool_name(self):
+        adapter = SslyzeAdapter()
+        assert adapter.tool_name == "sslyze"
+
+    @pytest.mark.asyncio
+    async def test_get_version(self):
+        adapter = SslyzeAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/sslyze"):
+            with patch.object(adapter, "execute_command", return_value=(0, "SSLyze v5.2.0\n", "")):
+                ver = await adapter.get_version()
+                assert "5.2.0" in ver
+
+    @pytest.mark.asyncio
+    async def test_run_sslyze_json_findings(self):
+        adapter = SslyzeAdapter()
+        sample_json = {
+            "server_scan_results": [
+                {
+                    "scan_result": {
+                        "ssl_2_0_cipher_suites": {"result": {"is_supported": True}},
+                        "ssl_3_0_cipher_suites": {"result": {"is_supported": False}},
+                        "tls_1_0_cipher_suites": {"result": {"is_supported": True}},
+                        "tls_1_1_cipher_suites": {"result": {"is_supported": False}},
+                        "certificate_info": {
+                            "result": {
+                                "certificate_deployments": [
+                                    {
+                                        "received_certificate_chain": [
+                                            {
+                                                "subject": {"rfc4514_string": "CN=example.com"},
+                                                "signature_hash_algorithm": {"name": "sha1"},
+                                                "not_valid_after": "2020-01-01T00:00:00",
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        "heartbleed": {"result": {"is_vulnerable_to_heartbleed": True}},
+                    }
+                }
+            ]
+        }
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+        target = Target(name="Target", type=TargetType.URL, value="https://example.com")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/sslyze"):
+            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
+                findings = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(findings) >= 3
+        check_ids = {f.check_id for f in findings}
+        assert "NET-TLS-001" in check_ids  # Deprecated TLS 1.0 / SSL 2.0
+        assert "NET-TLS-003" in check_ids  # Expired / weak cert
+        assert "NET-TLS-006" in check_ids  # Heartbleed
+
+
+# ============================================================================
+# 7. FFuF Adapter Tests
+# ============================================================================
+
+class TestFfufAdapter:
+    def test_tool_name(self):
+        adapter = FfufAdapter()
+        assert adapter.tool_name == "ffuf"
+
+    @pytest.mark.asyncio
+    async def test_get_version(self):
+        adapter = FfufAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/ffuf"):
+            with patch.object(adapter, "execute_command", return_value=(0, "ffuf version: 2.1.0-dev", "")):
+                ver = await adapter.get_version()
+                assert "2.1.0" in ver
+
+    @pytest.mark.asyncio
+    async def test_run_ffuf_json_findings(self):
+        adapter = FfufAdapter()
+        sample_json = {
+            "results": [
+                {
+                    "input": {"FUZZ": ".env"},
+                    "url": "https://example.com/.env",
+                    "status": 200,
+                    "length": 512,
+                    "words": 40,
+                    "lines": 12,
+                },
+                {
+                    "input": {"FUZZ": "admin/backup.sql"},
+                    "url": "https://example.com/admin/backup.sql",
+                    "status": 200,
+                    "length": 20480,
+                    "words": 500,
+                    "lines": 120,
+                },
+            ]
+        }
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+        mock_endpoint = AsyncMock()
+        target = Target(name="Target", type=TargetType.URL, value="https://example.com")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/ffuf"):
+            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
+                findings = await adapter.run(target, config, mock_log, mock_finding, emit_endpoint=mock_endpoint)
+
+        assert len(findings) == 2
+        assert mock_endpoint.call_count == 2
+        env_f = next(f for f in findings if ".env" in f.evidence.location)
+        assert env_f.severity == Severity.CRITICAL
+        assert env_f.check_id == "DAST-EXP-001"
+        assert env_f.source_tool == "ffuf"
+
+
+# ============================================================================
+# 8. Nikto Adapter Tests
+# ============================================================================
+
+class TestNiktoAdapter:
+    def test_tool_name(self):
+        adapter = NiktoAdapter()
+        assert adapter.tool_name == "nikto"
+
+    @pytest.mark.asyncio
+    async def test_get_version(self):
+        adapter = NiktoAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nikto"):
+            with patch.object(adapter, "execute_command", return_value=(0, "Nikto 2.5.0", "")):
+                ver = await adapter.get_version()
+                assert "2.5.0" in ver
+
+    @pytest.mark.asyncio
+    async def test_run_nikto_json_findings(self):
+        adapter = NiktoAdapter()
+        sample_json = {
+            "vulnerabilities": [
+                {
+                    "id": "999996",
+                    "OSVDB": "0",
+                    "url": "/cgi-bin/test.cgi",
+                    "msg": "The anti-clickjacking X-Frame-Options header is not present.",
+                },
+                {
+                    "id": "000001",
+                    "OSVDB": "3092",
+                    "url": "/phpmyadmin/",
+                    "msg": "Found phpmyadmin directory which may expose database credentials.",
+                },
+            ]
+        }
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+        target = Target(name="Target", type=TargetType.URL, value="https://example.com")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nikto"):
+            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
+                findings = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(findings) == 2
+        hdr_f = next(f for f in findings if "X-Frame-Options" in f.title)
+        assert hdr_f.check_id == "DAST-HDR-002"
+        assert hdr_f.source_tool == "nikto"
+
+
+# ============================================================================
+# 9. Gitleaks Adapter Tests
+# ============================================================================
+
+class TestGitleaksAdapter:
+    def test_tool_name(self):
+        adapter = GitleaksAdapter()
+        assert adapter.tool_name == "gitleaks"
+
+    @pytest.mark.asyncio
+    async def test_get_version(self):
+        adapter = GitleaksAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/gitleaks"):
+            with patch.object(adapter, "execute_command", return_value=(0, "8.18.2\n", "")):
+                ver = await adapter.get_version()
+                assert "8.18.2" in ver
+
+    @pytest.mark.asyncio
+    async def test_run_gitleaks_json_findings(self):
+        adapter = GitleaksAdapter()
+        sample_json = [
+            {
+                "Description": "AWS Access Key",
+                "StartLine": 14,
+                "EndLine": 14,
+                "StartColumn": 1,
+                "EndColumn": 21,
+                "Match": "AKIAIOSFODNN7EXAMPLE",
+                "Secret": "AKIAIOSFODNN7EXAMPLE",
+                "File": "config/aws.py",
+                "Commit": "abc1234def5678",
+                "Author": "dev@example.com",
+                "Date": "2026-01-01T00:00:00Z",
+                "Message": "Add aws config",
+                "RuleID": "aws-access-token",
+                "Fingerprint": "aws-key-fp",
+            }
+        ]
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+        target = Target(name="Target", type=TargetType.LOCAL_PATH, value=".")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/gitleaks"):
+            with patch.object(adapter, "execute_command", return_value=(1, json.dumps(sample_json), "")):
+                findings = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(findings) == 1
+        aws_f = findings[0]
+        assert aws_f.check_id == "SAST-SEC-001"
+        assert aws_f.severity == Severity.CRITICAL
+        assert aws_f.source_tool == "gitleaks"
+        assert "AKIA" in aws_f.evidence.observed_value
+        # Ensure secret masking
+        assert aws_f.evidence.observed_value != "AKIAIOSFODNN7EXAMPLE"
+
+
+# ============================================================================
+# 10. Bandit Adapter Tests
+# ============================================================================
+
+class TestBanditAdapter:
+    def test_tool_name(self):
+        adapter = BanditAdapter()
+        assert adapter.tool_name == "bandit"
+
+    @pytest.mark.asyncio
+    async def test_get_version(self):
+        adapter = BanditAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/bandit"):
+            with patch.object(adapter, "execute_command", return_value=(0, "bandit 1.7.8\n", "")):
+                ver = await adapter.get_version()
+                assert "1.7.8" in ver
+
+    @pytest.mark.asyncio
+    async def test_run_bandit_json_findings(self):
+        adapter = BanditAdapter()
+        sample_json = {
+            "results": [
+                {
+                    "test_id": "B303",
+                    "test_name": "blacklist_md5",
+                    "issue_severity": "MEDIUM",
+                    "issue_confidence": "HIGH",
+                    "issue_text": "Use of insecure MD5 hash function.",
+                    "line_number": 42,
+                    "line_range": [42],
+                    "filename": "app/auth.py",
+                    "code": "hashlib.md5(pwd.encode()).hexdigest()\n",
+                    "more_info": "https://bandit.readthedocs.io/en/1.7.8/plugins/b303_blacklist.html",
+                },
+                {
+                    "test_id": "B602",
+                    "test_name": "subprocess_popen_with_shell_equals_true",
+                    "issue_severity": "HIGH",
+                    "issue_confidence": "HIGH",
+                    "issue_text": "subprocess call with shell=True identified, security issue.",
+                    "line_number": 88,
+                    "line_range": [88],
+                    "filename": "app/utils.py",
+                    "code": "subprocess.Popen(cmd, shell=True)\n",
+                    "more_info": "https://bandit.readthedocs.io/en/1.7.8/plugins/b602_subprocess_popen_with_shell_equals_true.html",
+                },
+            ]
+        }
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+        target = Target(name="Target", type=TargetType.LOCAL_PATH, value=".")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/bandit"):
+            with patch.object(adapter, "execute_command", return_value=(1, json.dumps(sample_json), "")):
+                findings = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(findings) == 2
+        md5_f = next(f for f in findings if f.check_id == "SAST-CRY-001")
+        assert md5_f.severity == Severity.MEDIUM
+        assert md5_f.source_tool == "bandit"
+
+        sh_f = next(f for f in findings if f.check_id == "SAST-INJ-002")
+        assert sh_f.severity == Severity.HIGH
+        assert sh_f.source_tool == "bandit"
+
+
+# ============================================================================
+# 11. Checkov Adapter Tests
+# ============================================================================
+
+class TestCheckovAdapter:
+    def test_tool_name(self):
+        adapter = CheckovAdapter()
+        assert adapter.tool_name == "checkov"
+
+    @pytest.mark.asyncio
+    async def test_get_version(self):
+        adapter = CheckovAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/checkov"):
+            with patch.object(adapter, "execute_command", return_value=(0, "3.2.50\n", "")):
+                ver = await adapter.get_version()
+                assert "3.2.50" in ver
+
+    @pytest.mark.asyncio
+    async def test_run_checkov_json_findings(self):
+        adapter = CheckovAdapter()
+        sample_json = {
+            "results": {
+                "failed_checks": [
+                    {
+                        "check_id": "CKV_DOCKER_1",
+                        "bc_check_id": None,
+                        "check_name": "Ensure container does not run as root",
+                        "check_result": {"result": "FAILED"},
+                        "code_block": [["1", "FROM python:3.11\n"]],
+                        "file_path": "/Dockerfile",
+                        "file_line_range": [1, 2],
+                        "resource": "Dockerfile",
+                        "guideline": "https://docs.bridgecrew.io/docs/ensure-container-does-not-run-as-root",
+                        "severity": "HIGH",
+                    },
+                    {
+                        "check_id": "CKV_AWS_20",
+                        "bc_check_id": None,
+                        "check_name": "Ensure S3 bucket has an ACL defined granting public READ access",
+                        "check_result": {"result": "FAILED"},
+                        "code_block": [["10", "resource \"aws_s3_bucket\" \"data\" {\n"], ["11", "  acl = \"public-read\"\n"]],
+                        "file_path": "/main.tf",
+                        "file_line_range": [10, 15],
+                        "resource": "aws_s3_bucket.data",
+                        "guideline": "https://docs.bridgecrew.io/docs/s3_1-acl-read-permissions-everyone",
+                        "severity": "HIGH",
+                    }
+                ]
+            }
+        }
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+        target = Target(name="Target", type=TargetType.LOCAL_PATH, value=".")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/checkov"):
+            with patch.object(adapter, "execute_command", return_value=(1, json.dumps(sample_json), "")):
+                findings = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(findings) == 2
+        dock_f = next(f for f in findings if f.check_id == "IAC-DOCK-001")
+        assert dock_f.severity == Severity.HIGH
+        assert dock_f.source_tool == "checkov"
+
+        tf_f = next(f for f in findings if f.check_id == "IAC-TF-001")
+        assert tf_f.severity == Severity.HIGH
+        assert tf_f.source_tool == "checkov"
+
+
+# ============================================================================
+# 12. Adapter Registry & Capabilities Discovery Tests (10 Adapters Suite)
 # ============================================================================
 
 class TestCapabilitiesAndRegistry:
     def test_adapter_registry(self):
         registry = get_adapter_registry()
-        assert set(registry.keys()) == {"nmap", "nuclei", "semgrep", "trivy"}
+        expected_tools = {"nmap", "sslyze", "nuclei", "ffuf", "nikto", "semgrep", "gitleaks", "bandit", "trivy", "checkov"}
+        assert set(registry.keys()) == expected_tools
         assert isinstance(registry["nmap"], NmapAdapter)
+        assert isinstance(registry["sslyze"], SslyzeAdapter)
         assert isinstance(registry["nuclei"], NucleiAdapter)
+        assert isinstance(registry["ffuf"], FfufAdapter)
+        assert isinstance(registry["nikto"], NiktoAdapter)
         assert isinstance(registry["semgrep"], SemgrepAdapter)
+        assert isinstance(registry["gitleaks"], GitleaksAdapter)
+        assert isinstance(registry["bandit"], BanditAdapter)
         assert isinstance(registry["trivy"], TrivyAdapter)
+        assert isinstance(registry["checkov"], CheckovAdapter)
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_fallback(self):
-        # All tools missing -> NATIVE_FALLBACK
+        # All tools missing -> NATIVE_FALLBACK for all 10 tools
         with patch.object(BaseToolAdapter, "resolve_binary_path", return_value=None):
             with patch.object(BaseToolAdapter, "is_available", return_value=False):
                 caps = await discover_system_capabilities()
-                assert len(caps.tools) == 4
+                assert len(caps.tools) == 10
                 assert caps.native_engines_ready is True
                 for t in caps.tools:
                     assert t.available is False
@@ -507,7 +892,7 @@ class TestCapabilitiesAndRegistry:
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_active(self):
-        # Nmap and Semgrep available, Nuclei and Trivy missing
+        # Mock active tools
         mock_nmap = MagicMock(spec=NmapAdapter)
         mock_nmap.tool_name = "nmap"
         mock_nmap.resolve_binary_path.return_value = "/usr/bin/nmap"
@@ -520,24 +905,17 @@ class TestCapabilitiesAndRegistry:
         mock_semgrep.is_available = AsyncMock(return_value=True)
         mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.60.0")
 
-        mock_nuclei = MagicMock(spec=NucleiAdapter)
-        mock_nuclei.tool_name = "nuclei"
-        mock_nuclei.resolve_binary_path.return_value = None
-        mock_nuclei.is_available = AsyncMock(return_value=False)
-        mock_nuclei.get_version = AsyncMock(return_value=None)
-
-        mock_trivy = MagicMock(spec=TrivyAdapter)
-        mock_trivy.tool_name = "trivy"
-        mock_trivy.resolve_binary_path.return_value = None
-        mock_trivy.is_available = AsyncMock(return_value=False)
-        mock_trivy.get_version = AsyncMock(return_value=None)
-
         mock_registry = {
-            "nmap": mock_nmap,
-            "nuclei": mock_nuclei,
-            "semgrep": mock_semgrep,
-            "trivy": mock_trivy,
+            tool: MagicMock(
+                tool_name=tool,
+                resolve_binary_path=MagicMock(return_value=None),
+                is_available=AsyncMock(return_value=False),
+                get_version=AsyncMock(return_value=None),
+            )
+            for tool in ["sslyze", "nuclei", "ffuf", "nikto", "gitleaks", "bandit", "trivy", "checkov"]
         }
+        mock_registry["nmap"] = mock_nmap
+        mock_registry["semgrep"] = mock_semgrep
 
         with patch("app.adapters.get_adapter_registry", return_value=mock_registry):
             caps = await discover_system_capabilities()
@@ -585,18 +963,18 @@ class TestCapabilitiesAndRegistry:
         mock_semgrep.is_available = AsyncMock(return_value=True)
         mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.60.0")
 
-        mock_trivy = MagicMock(spec=TrivyAdapter)
-        mock_trivy.tool_name = "trivy"
-        mock_trivy.resolve_binary_path.return_value = "/usr/bin/trivy"
-        mock_trivy.is_available = AsyncMock(return_value=True)
-        mock_trivy.get_version = AsyncMock(return_value="trivy 0.50.0")
-
         mock_registry = {
-            "nmap": mock_nmap,
-            "nuclei": mock_nuclei,
-            "semgrep": mock_semgrep,
-            "trivy": mock_trivy,
+            tool: MagicMock(
+                tool_name=tool,
+                resolve_binary_path=MagicMock(return_value=None),
+                is_available=AsyncMock(return_value=False),
+                get_version=AsyncMock(return_value=None),
+            )
+            for tool in ["sslyze", "ffuf", "nikto", "gitleaks", "bandit", "trivy", "checkov"]
         }
+        mock_registry["nmap"] = mock_nmap
+        mock_registry["nuclei"] = mock_nuclei
+        mock_registry["semgrep"] = mock_semgrep
 
         with patch("app.adapters.get_adapter_registry", return_value=mock_registry):
             caps = await discover_system_capabilities(config=config)
@@ -610,4 +988,5 @@ class TestCapabilitiesAndRegistry:
 
             assert tool_map["semgrep"].execution_mode == ToolExecutionMode.ADAPTER_ACTIVE
             assert tool_map["semgrep"].available is True
+
 

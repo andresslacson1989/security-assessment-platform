@@ -33,7 +33,7 @@ async def test_system_endpoints():
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "HEALTHY"
-        assert data["version"] == "4.1.0"
+        assert data["version"] == "6.0.0"
         assert "uptime_seconds" in data
         assert "storage" in data
         assert data["storage"]["status"] == "OK"
@@ -56,7 +56,9 @@ async def test_system_endpoints():
         data_caps = resp_caps.json()
         assert "tools" in data_caps
         assert "native_engines_ready" in data_caps
-        assert len(data_caps["tools"]) == 4
+        assert len(data_caps["tools"]) == 10
+        tool_names = {t["name"] for t in data_caps["tools"]}
+        assert {"nmap", "sslyze", "nuclei", "ffuf", "nikto", "semgrep", "gitleaks", "bandit", "trivy", "checkov"} == tool_names
 
 
 

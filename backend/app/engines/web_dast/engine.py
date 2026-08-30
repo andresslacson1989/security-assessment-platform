@@ -33,11 +33,14 @@ from app.engines.web_dast.browser_posture import audit_browser_posture
 from app.engines.web_dast.graphql_auditor import audit_graphql_endpoints
 from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
 from app.adapters.nuclei_adapter import NucleiAdapter
+from app.adapters.ffuf_adapter import FfufAdapter
+from app.adapters.nikto_adapter import NiktoAdapter
 
 
 class WebDastAssessmentEngine(BaseAssessmentEngine):
     """
     Coordinator engine for Web Application, REST API, and Modern Browser DAST assessments.
+    Follows Adapters First-in-Line Architecture (Nuclei + FFuF + Nikto primary, native active parameter fuzzing, crawler, and browser posture enrichment).
     """
 
     @property
@@ -75,11 +78,12 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        existing_fps = set()
         rate_limiter = TokenBucketRateLimiter(rate_rps=config.rate_limit_rps)
 
         headers = {
             "User-Agent": config.custom_headers.get(
-                "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CyberAssess-Security-Scanner/3.0"
+                "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CyberAssess-Security-Scanner/5.0"
             )
         }
         headers.update(config.custom_headers)
@@ -89,9 +93,88 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             connect=5.0,
         )
 
+        # --- Stage 0: Primary Tool Adapters First-in-Line (FFuF, Nikto, Nuclei) ---
+        await emit_progress(5, "Running primary external DAST tool adapters...")
+
+        # 0.1 FFuF Adapter (High-Speed Content Discovery)
+        if getattr(config.adapters, "enable_ffuf", True):
+            ffuf_adapter = FfufAdapter()
+            custom_path = getattr(config.adapters, "ffuf_path", None) or getattr(config.adapters, "custom_ffuf_path", None)
+            try:
+                if await ffuf_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing FFuF CLI adapter for endpoint and content discovery...")
+                    ffuf_findings = await ffuf_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        emit_endpoint=emit_endpoint_discovered,
+                        scan_id="active",
+                    )
+                    for f in ffuf_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "ffuf"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "FFuF CLI not available - using native crawler and API inspector")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"FFuF adapter error: {e}")
+
+        # 0.2 Nikto Adapter (Web Server Misconfigurations)
+        if getattr(config.adapters, "enable_nikto", True):
+            nikto_adapter = NiktoAdapter()
+            custom_path = getattr(config.adapters, "nikto_path", None) or getattr(config.adapters, "custom_nikto_path", None)
+            try:
+                if await nikto_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Nikto CLI adapter for server misconfiguration scanning...")
+                    nikto_findings = await nikto_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in nikto_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "nikto"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Nikto CLI not available - using native headers & methods auditors")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Nikto adapter error: {e}")
+
+        # 0.3 Nuclei Adapter (Community CVE and Template Scanning)
+        if getattr(config.adapters, "enable_nuclei", True):
+            nuclei_adapter = NucleiAdapter()
+            custom_path = getattr(config.adapters, "nuclei_path", None) or getattr(config.adapters, "custom_nuclei_path", None)
+            try:
+                if await nuclei_adapter.is_available(custom_path):
+                    await emit_log(LogLevel.INFO, "Executing Nuclei CVE/misconfiguration template scanner...")
+                    nuclei_findings = await nuclei_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id="active",
+                    )
+                    for f in nuclei_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.source_tool = "nuclei"
+                            f.scan_id = "active"
+                            findings.append(f)
+                else:
+                    await emit_log(LogLevel.INFO, "Nuclei CLI not available - using native parameter fuzzer fallback")
+            except Exception as e:
+                await emit_log(LogLevel.WARNING, f"Nuclei adapter error: {e}")
+
         async with httpx.AsyncClient(headers=headers, timeout=timeout, verify=False) as client:
-            # --- Stage 1: Authentication & Session Initialization (0% - 15%) ---
-            await emit_progress(5, "Initializing authentication and session manager...")
+            # --- Stage 1: Authentication & Session Initialization (15% - 25%) ---
+            await emit_progress(15, "Initializing authentication and session manager...")
             auth_manager = AuthSessionManager(
                 target_url=target.value,
                 config=config.auth,
@@ -109,11 +192,10 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     "message": "Authenticated session established." if auth_success else "Authentication failed or not configured.",
                 })
 
-            # --- Stage 2: Web Crawling & Attack Surface Discovery (15% - 35%) ---
-            await emit_progress(15, "Discovering attack surface and crawling endpoints...")
+            # --- Stage 2: Web Crawling & Attack Surface Discovery (25% - 45%) ---
+            await emit_progress(25, "Discovering attack surface and crawling endpoints...")
             discovered_endpoints: List[DiscoveredEndpoint] = []
             html_contents: Dict[str, str] = {}
-
             page_responses: Dict[str, httpx.Response] = {}
 
             if config.crawler.enabled:
@@ -139,58 +221,33 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     url=target.value,
                     method="GET",
                     depth=0,
-                    is_authenticated=auth_manager.is_authenticated,
                 )
-                discovered_endpoints = [initial_ep]
+                discovered_endpoints.append(initial_ep)
                 if emit_endpoint_discovered:
                     await emit_endpoint_discovered(initial_ep)
 
-            # Ensure root HTML is cached
-            if target.value not in html_contents:
                 try:
-                    root_resp = await client.get(target.value, follow_redirects=True)
-                    page_responses[target.value] = root_resp
-                    if "text/html" in root_resp.headers.get("content-type", "").lower():
-                        html_contents[target.value] = root_resp.text
+                    resp = await client.get(target.value)
+                    html_contents[target.value] = resp.text
+                    page_responses[target.value] = resp
                 except Exception:
                     pass
 
-            # --- Stage 3: Security Headers, Cookies & Form Audits (35% - 55%) ---
-            await emit_progress(35, f"Auditing security headers, cookies, and forms across {len(discovered_endpoints)} discovered endpoints...")
-            await emit_log(LogLevel.INFO, f"Evaluating HTTP security headers across {len(page_responses) or 1} pages.")
-
-            # Audit headers on root and all crawled pages
-            existing_fps = {f.fingerprint for f in findings}
-            
-            # Root header audit
-            root_resp = page_responses.get(target.value)
-            root_header_findings = await audit_security_headers_and_cookies(
-                target.value,
-                client=client,
-                emit_log=emit_log,
-                response=root_resp,
-            )
-            for f in root_header_findings:
-                if f.fingerprint not in existing_fps:
-                    existing_fps.add(f.fingerprint)
-                    f.scan_id = "active"
-                    findings.append(f)
-                    await emit_finding(f)
-
-            # Crawled pages header audits
-            for page_url, page_resp in page_responses.items():
-                if page_url != target.value:
-                    ep_header_findings = await audit_security_headers_and_cookies(
-                        page_url,
-                        client=client,
-                        response=page_resp,
-                    )
-                    for f in ep_header_findings:
-                        if f.fingerprint not in existing_fps:
-                            existing_fps.add(f.fingerprint)
-                            f.scan_id = "active"
-                            findings.append(f)
-                            await emit_finding(f)
+            # --- Stage 3: HTTP Security Headers & Cookies (45% - 60%) ---
+            await emit_progress(50, f"Auditing HTTP security headers and cookies across {len(discovered_endpoints)} endpoints...")
+            for ep in discovered_endpoints:
+                cached_resp = page_responses.get(ep.url)
+                header_findings = await audit_security_headers_and_cookies(
+                    ep.url,
+                    client=client,
+                    response=cached_resp,
+                )
+                for f in header_findings:
+                    if f.fingerprint not in existing_fps:
+                        existing_fps.add(f.fingerprint)
+                        f.scan_id = "active"
+                        findings.append(f)
+                        await emit_finding(f)
 
             # Form & authentication audits across all crawled HTML pages
             auth_form_findings = await auth_manager.audit_auth_and_forms(
@@ -204,43 +261,37 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     findings.append(f)
                     await emit_finding(f)
 
-            # --- Stage 4: CORS Policies (55% - 70%) ---
-            await emit_progress(55, "Testing CORS policies and origin reflection...")
-            await rate_limiter.acquire()
+            # --- Stage 4: CORS Policy Analyzer (60% - 70%) ---
+            await emit_progress(60, "Testing Cross-Origin Resource Sharing (CORS) configurations...")
+            for ep in discovered_endpoints[:10]:
+                cors_findings = await audit_cors_policies(
+                    ep.url,
+                    client=client,
+                    emit_log=emit_log,
+                )
+                for f in cors_findings:
+                    if f.fingerprint not in existing_fps:
+                        existing_fps.add(f.fingerprint)
+                        f.scan_id = "active"
+                        findings.append(f)
+                        await emit_finding(f)
 
-            cors_findings = await audit_cors_policies(
+            # --- Stage 5: Sensitive Exposure & API Inspector (70% - 80%) ---
+            await emit_progress(70, "Inspecting sensitive files, debug consoles, and HTTP methods...")
+            exposure_findings = await audit_sensitive_exposure_and_methods(
                 target.value,
                 client=client,
                 emit_log=emit_log,
             )
-            for f in cors_findings:
+            for f in exposure_findings:
                 if f.fingerprint not in existing_fps:
                     existing_fps.add(f.fingerprint)
                     f.scan_id = "active"
                     findings.append(f)
                     await emit_finding(f)
 
-            # --- Stage 5: Sensitive File & API Exposure (70% - 85%) ---
-            await emit_progress(70, "Scanning for exposed environment, git, and actuator endpoints...")
-            await rate_limiter.acquire()
-
-            exp_findings = await audit_sensitive_exposure_and_methods(
-                target.value,
-                client=client,
-                emit_log=emit_log,
-            )
-            for f in exp_findings:
-                if f.fingerprint not in existing_fps:
-                    existing_fps.add(f.fingerprint)
-                    f.scan_id = "active"
-                    findings.append(f)
-                    await emit_finding(f)
-
-            # --- Stage 6: Browser Posture & GraphQL (85% - 100%) ---
-            await emit_progress(85, f"Auditing Subresource Integrity & Mixed Content across {len(html_contents) or 1} HTML pages...")
-            await rate_limiter.acquire()
-
-            # Audit browser posture on all crawled HTML pages
+            # --- Stage 6: Browser Posture & GraphQL (80% - 85%) ---
+            await emit_progress(80, f"Auditing Subresource Integrity & Mixed Content across {len(html_contents) or 1} HTML pages...")
             for page_url, html_str in html_contents.items():
                 browser_findings = await audit_browser_posture(
                     page_url,
@@ -266,9 +317,9 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     findings.append(f)
                     await emit_finding(f)
 
-            # --- Stage 6.5: Active Parameter Fuzzing & Injection Probes (80% - 90%) ---
+            # --- Stage 7: Active Parameter Fuzzing & Injection Probes (85% - 95%) ---
             if config.fuzzing.enabled:
-                await emit_progress(80, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
+                await emit_progress(85, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
                 await emit_log(LogLevel.INFO, "Fuzzing discovered query parameters and forms with non-destructive payloads.")
                 fuzz_findings = await audit_parameter_fuzzing(
                     target.value,
@@ -284,34 +335,6 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         existing_fps.add(f.fingerprint)
                         f.scan_id = "active"
                         findings.append(f)
-
-            # --- Stage 7: Nuclei Adapter (CVE & Misconfiguration Templates) ---
-            enable_nuclei = getattr(config.adapters, "enable_nuclei", True)
-            if enable_nuclei:
-                nuclei_adapter = NucleiAdapter()
-                custom_path = getattr(config.adapters, "nuclei_path", None)
-                try:
-                    if await nuclei_adapter.is_available(custom_path):
-                        await emit_log(LogLevel.INFO, "Executing Nuclei CVE/misconfiguration template scanner...")
-                        nuclei_findings = await nuclei_adapter.run(
-                            target,
-                            config,
-                            emit_log,
-                            emit_finding,
-                            scan_id="active",
-                        )
-                        for f in nuclei_findings:
-                            if f.fingerprint not in existing_fps:
-                                existing_fps.add(f.fingerprint)
-                                f.source_tool = "nuclei"
-                                f.scan_id = "active"
-                                findings.append(f)
-                    else:
-                        await emit_log(LogLevel.INFO, "Nuclei CLI not available - native DAST checks already completed as fallback")
-                except Exception as e:
-                    await emit_log(LogLevel.WARNING, f"Nuclei adapter error: {e} - continuing with native DAST results")
-            else:
-                await emit_log(LogLevel.INFO, "Nuclei adapter disabled - native DAST checks already completed as fallback")
 
         await emit_progress(100, "Web DAST assessment completed.")
         await emit_log(LogLevel.INFO, f"Web DAST engine finished with {len(findings)} total findings.")

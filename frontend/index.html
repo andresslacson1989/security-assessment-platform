@@ -28,13 +28,16 @@
         <button class="btn btn-outline" id="btn-open-repeater">
           <span>⚡</span> HTTP Repeater
         </button>
+        <button class="btn btn-outline" id="btn-open-toolbox">
+          <span>⚙️</span> Manage Toolbox
+        </button>
         <button class="btn btn-outline" id="btn-open-history">
           <span>📜</span> History Archive
         </button>
       </div>
     </header>
 
-    <!-- Hybrid Tool Capabilities Pill Bar (Contract 07 v4.1.0) -->
+    <!-- Hybrid Tool Capabilities Pill Bar (Contract 07 v5.0.0) -->
     <div class="tool-status-bar" id="tool-status-bar" title="External Security Tool Adapter Status">
       <span class="tool-status-label">ADAPTERS:</span>
       <div class="tool-pill tool-pill--fallback" id="tool-pill-nmap" title="Nmap Network Scanner">
@@ -42,9 +45,24 @@
         <span class="tool-pill-name">NMAP</span>
         <span class="tool-pill-mode">NATIVE FALLBACK</span>
       </div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-sslyze" title="SSLyze Deep TLS/SSL Auditor">
+        <span class="tool-pill-icon">🟡</span>
+        <span class="tool-pill-name">SSLYZE</span>
+        <span class="tool-pill-mode">NATIVE FALLBACK</span>
+      </div>
       <div class="tool-pill tool-pill--fallback" id="tool-pill-nuclei" title="Nuclei CVE Template Scanner">
         <span class="tool-pill-icon">🟡</span>
         <span class="tool-pill-name">NUCLEI</span>
+        <span class="tool-pill-mode">NATIVE FALLBACK</span>
+      </div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-ffuf" title="FFuF Content Discovery Engine">
+        <span class="tool-pill-icon">🟡</span>
+        <span class="tool-pill-name">FFUF</span>
+        <span class="tool-pill-mode">NATIVE FALLBACK</span>
+      </div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-nikto" title="Nikto Web Server Scanner">
+        <span class="tool-pill-icon">🟡</span>
+        <span class="tool-pill-name">NIKTO</span>
         <span class="tool-pill-mode">NATIVE FALLBACK</span>
       </div>
       <div class="tool-pill tool-pill--fallback" id="tool-pill-semgrep" title="Semgrep SAST Engine">
@@ -52,9 +70,24 @@
         <span class="tool-pill-name">SEMGREP</span>
         <span class="tool-pill-mode">NATIVE FALLBACK</span>
       </div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-gitleaks" title="Gitleaks Git History Secret Scanner">
+        <span class="tool-pill-icon">🟡</span>
+        <span class="tool-pill-name">GITLEAKS</span>
+        <span class="tool-pill-mode">NATIVE FALLBACK</span>
+      </div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-bandit" title="Bandit Python AST Security Linter">
+        <span class="tool-pill-icon">🟡</span>
+        <span class="tool-pill-name">BANDIT</span>
+        <span class="tool-pill-mode">NATIVE FALLBACK</span>
+      </div>
       <div class="tool-pill tool-pill--fallback" id="tool-pill-trivy" title="Trivy SCA & Container Scanner">
         <span class="tool-pill-icon">🟡</span>
         <span class="tool-pill-name">TRIVY</span>
+        <span class="tool-pill-mode">NATIVE FALLBACK</span>
+      </div>
+      <div class="tool-pill tool-pill--fallback" id="tool-pill-checkov" title="Checkov Infrastructure-as-Code Policy Engine">
+        <span class="tool-pill-icon">🟡</span>
+        <span class="tool-pill-name">CHECKOV</span>
         <span class="tool-pill-mode">NATIVE FALLBACK</span>
       </div>
     </div>
@@ -485,6 +518,83 @@
       </div>
     </div>
 
+    <!-- Toolbox & Adapters Lifecycle Manager Modal (Contract 07 v6.0.0) -->
+    <div class="modal-overlay" id="toolbox-modal" style="display: none;">
+      <div class="modal-card modal-card--wide">
+        <div class="modal-header">
+          <div class="modal-header-title-group">
+            <h3>⚙️ Security Toolbox & Tool Adapters Manager</h3>
+            <span class="modal-header-subtitle">1-Click In-App Tool Installation & Capabilities Lifecycle Management</span>
+          </div>
+          <button class="btn-close" id="btn-close-toolbox">&times;</button>
+        </div>
+        <div class="modal-body toolbox-manager-body">
+          <div class="toolbox-actions-bar">
+            <div class="toolbox-summary-stats">
+              <span class="stat-pill"><strong id="toolbox-installed-count">0</strong> / 10 Tools Active</span>
+              <span class="stat-pill stat-pill--user-space">8 User-Space (Zero Elevation)</span>
+            </div>
+            <button class="btn btn-primary" id="btn-install-all-tools">
+              <span>⚡</span> Install All Missing Tools
+            </button>
+          </div>
+
+          <div class="toolbox-table-container">
+            <table class="data-table toolbox-table">
+              <thead>
+                <tr>
+                  <th>Tool Adapter</th>
+                  <th>Category</th>
+                  <th>Method</th>
+                  <th>Status</th>
+                  <th>Version / Resolved Path</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="toolbox-table-body">
+                <!-- Dynamically Populated Tool Rows -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Live In-App Installation Telemetry Terminal -->
+          <div class="toolbox-terminal-section" id="toolbox-terminal-section">
+            <div class="toolbox-terminal-header">
+              <span class="terminal-title">⚡ In-App Installation Live Telemetry Stream</span>
+              <span class="terminal-stage" id="toolbox-install-stage">Idle</span>
+            </div>
+            <div class="toolbox-progress-bar-container">
+              <div class="toolbox-progress-bar" id="toolbox-install-progress-bar" style="width: 0%;"></div>
+            </div>
+            <pre class="terminal-output toolbox-terminal-log" id="toolbox-terminal-log"><code>System ready. Click "⚡ Install" on any tool or "Install All Missing Tools" above.</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tool Setup & Installation Guide Modal -->
+    <div class="modal-overlay" id="tool-instructions-modal" style="display: none; z-index: 1050;">
+      <div class="modal-card modal-card--instructions">
+        <div class="modal-header">
+          <div class="modal-header-title-group">
+            <h3 id="inst-tool-title">📖 Tool Installation & Setup Guide</h3>
+            <span class="modal-header-subtitle" id="inst-tool-subtitle">Package manager, binary, and container configuration options</span>
+          </div>
+          <button class="btn-close" id="btn-close-tool-instructions">&times;</button>
+        </div>
+        <div class="modal-body instructions-body" id="inst-tool-body">
+          <!-- Dynamically populated options -->
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-subtle);">
+          <a id="inst-tool-docs-link" href="#" target="_blank" class="btn btn-xs btn-outline">🌐 Official Website</a>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-xs btn-primary" id="btn-inst-recheck">🔄 Re-check Status</button>
+            <button class="btn btn-xs btn-secondary" id="btn-close-tool-instructions-footer">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- History Drawer / Modal -->
     <div class="modal-overlay" id="history-modal" style="display: none;">
       <div class="modal-card">
@@ -517,6 +627,6 @@
 
   </div>
 
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=6.1.0"></script>
 </body>
 </html>

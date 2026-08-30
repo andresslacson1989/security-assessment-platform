@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Operational Limits
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 7.0.0 (Containerized Cloud Distribution, 10-Tool Parity & Security Lifecycle Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards & Security Operations  
 
@@ -18,10 +18,12 @@ When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Rep
 4. **Infrastructure-as-Code, Container & Cloud Posture (IaC)** (`infra_iac`)
 5. **CI/CD Pipeline & Build Automation Security** (`cicd_audit`)
 
-The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture**:
+The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture** powered by an **Integrated In-App Tool Installation & Capabilities Manager** and **Production Containerization (Docker / GHCR)**:
 - **Stage 1 (Primary Front-Line Tool Adapters):** When industry-standard CLI pentesting tools are present on the host system or container image (**Nmap**, **SSLyze**, **Nuclei**, **FFuF**, **Nikto**, **Semgrep**, **Gitleaks**, **Bandit**, **Trivy**, **Checkov**), they fire first as the primary authoritative assessment engines.
 - **Stage 2 (Proprietary Native Enrichment):** Deep specialized modules run concurrently or following adapter runs to enrich the assessment with proprietary capabilities external tools do not provide (e.g. interprocedural AST taint flow tracing, active time/boolean SQLi fuzzing with reproduction cURLs, Certificate Transparency OSINT, CNAME takeover detection, and strict DNS hygiene).
 - **Stage 3 (Resilient Zero-Failure Native Fallbacks):** If any external tool binary is absent on the host or encounters an error, the system seamlessly falls back to its built-in pure Python engines, guaranteeing 100% operational portability on clean systems with zero dropped assessments.
+- **Production Container Distribution:** The platform ships as a single, hardened Docker container pre-packaged with all 10 tools, CPAN Perl modules, and runtime dependencies, publishable to GitHub Container Registry (`ghcr.io`) for 1-command cloud/server deployment.
+- **Integrated In-App Installation:** Users running on bare metal can install missing tool adapters with a single click directly from the web interface or REST API without leaving the platform or manually editing system configuration files.
 
 The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), enables interactive HTTP request repeating, provides one-click standalone `curl` reproduction PoC commands, and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
 
@@ -105,13 +107,13 @@ The platform validates every target input against strict syntactic and semantic 
 To combine zero-dependency portability with enterprise-grade penetration testing power, the platform operates on an **"Adapters First-in-Line" Execution Architecture**:
 
 ```
-                              ┌───────────────────────────────────────────────┐
-                              │            CYBERASSESS ORCHESTRATOR           │
-                              └──────────────────────┬────────────────────────┘
-                                                     │
-               ┌─────────────────────────────────────┴─────────────────────────────────────┐
-               │                                                                           │
-               ▼                                                                           ▼
+                               ┌───────────────────────────────────────────────┐
+                               │            CYBERASSESS ORCHESTRATOR           │
+                               └──────────────────────┬────────────────────────┘
+                                                      │
+                ┌─────────────────────────────────────┴─────────────────────────────────────┐
+                │                                                                           │
+                ▼                                                                           ▼
 ┌─────────────────────────────┐                                             ┌─────────────────────────────┐
 │  STAGE 1: ADAPTERS FIRST    │                                             │ STAGE 2: NATIVE ENRICHMENT  │
 │  (Authoritative Front-Line) │                                             │ (Proprietary Deep Analysis) │
@@ -137,7 +139,7 @@ To combine zero-dependency portability with enterprise-grade penetration testing
 ```
 
 ### 4.1 Zero-Failure Fallback Guarantee & Priority Model
-1. **Host Discovery & Priority Resolution:** The orchestrator automatically probes system `PATH` and configured paths via `shutil.which` at startup and scan initialization. When an adapter is active, it runs first to establish the baseline findings.
+1. **Host Discovery & Priority Resolution:** The orchestrator automatically probes system `PATH`, local managed binaries directory (`backend/bin/`), and configured custom paths at startup and scan initialization. When an adapter is active, it runs first to establish baseline findings.
 2. **Transparent Native Fallback:** If an external binary (`nmap`, `sslyze`, `nuclei`, `ffuf`, `nikto`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`) is not installed or errors during execution, the platform automatically and seamlessly falls back to its built-in pure Python engines. The scan NEVER crashes due to missing external binaries.
 3. **Execution Mode Reporting:** Every finding records its `source_tool` (`"native"`, `"nmap"`, `"sslyze"`, `"nuclei"`, `"ffuf"`, `"nikto"`, `"semgrep"`, `"gitleaks"`, `"bandit"`, `"trivy"`, `"checkov"`) for audit transparency.
 
@@ -172,6 +174,20 @@ External tools MUST be invoked with strictly bounded, non-destructive arguments:
 - All CLI processes are spawned via `asyncio.create_subprocess_exec()` with strict memory/timeout limits.
 - Maximum execution timeout per tool: 60.0 seconds.
 - Subprocesses are assigned to dedicated process groups and are immediately terminated on scan cancellation or timeout.
+
+### 4.4 In-App Tool Installation & Lifecycle Management Safety Rules
+1. **User-Space Binary Isolation:**
+   - Standalone binaries downloaded in-app (`nuclei`, `ffuf`, `gitleaks`, `trivy`) MUST be placed in an isolated managed directory `backend/bin/` with strictly verified executable permissions (`0o755` on POSIX).
+   - Dynamic binary downloads MUST originate exclusively from official verified HTTPS release assets (e.g. GitHub Releases under official vendor repositories: `projectdiscovery/nuclei`, `ffuf/ffuf`, `gitleaks/gitleaks`, `aquasecurity/trivy`).
+2. **Safe Python Package Installation:**
+   - Python-based tools (`sslyze`, `bandit`, `semgrep`, `checkov`) MUST be installed by executing the active interpreter (`sys.executable -m pip install --upgrade <package>`) without elevating privileges.
+3. **Privilege Boundary Enforcement:**
+   - Tools requiring system-level network drivers or root privileges (e.g., Nmap needing Npcap on Windows or `sudo` raw sockets on Linux) MUST NOT attempt silent privilege escalation. The platform MUST guide the user with clear, copyable OS package manager commands (`winget`, `brew`, `apt`) or launch the official vendor setup installer with explicit OS user confirmation.
+4. **Archive Extraction Path Traversal Protection:**
+   - All `.zip` and `.tar.gz` archive extractions MUST validate target file paths to prevent directory traversal (`Zip Slip`) attacks outside `backend/bin/`.
+5. **Real-time Telemetry & Bounded Timeouts:**
+   - Tool installation tasks run asynchronously and stream output line-by-line over SSE (`event: install_progress`, `event: install_log`).
+   - Maximum download and installation timeout: 180.0 seconds per tool.
 
 ---
 

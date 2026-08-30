@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from app.core.models import Target, TargetType, ScanConfig, Severity
+from app.core.models import Target, TargetType, ScanConfig, Severity, ToolAdapterConfig
 from app.engines.code_sast.secret_scanner import (
     calculate_shannon_entropy,
     audit_code_secrets,
@@ -161,7 +161,7 @@ async def test_code_sast_engine_full_run():
     temp_dir = Path(tempfile.mkdtemp())
     try:
         target = Target(name="Local Repo", type=TargetType.LOCAL_PATH, value=str(temp_dir))
-        config = ScanConfig()
+        config = ScanConfig(adapters=ToolAdapterConfig(enable_semgrep=False, enable_bandit=False, enable_gitleaks=False, enable_checkov=False, enable_trivy=False))
 
         logs = []
         progress_updates = []

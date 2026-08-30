@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 
-from app.core.models import Target, TargetType, ScanConfig, Severity, LogLevel
+from app.core.models import Target, TargetType, ScanConfig, Severity, LogLevel, ToolAdapterConfig
 from app.engines.network.tls_auditor import (
     extract_host_and_port,
     matches_san,
@@ -130,7 +130,7 @@ async def test_network_engine_full_run():
         mock_port.return_value = []
 
         target = Target(name="Web App", type=TargetType.URL, value="https://example.com")
-        config = ScanConfig()
+        config = ScanConfig(adapters=ToolAdapterConfig(enable_nmap=False, enable_sslyze=False))
 
         results = await engine.run(target, config, log_cb, prog_cb, find_cb)
 

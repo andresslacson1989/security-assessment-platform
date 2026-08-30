@@ -1,7 +1,7 @@
 # Contract 04: REST API, OpenAPI & Real-Time Streaming Events Contract
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 5.0.0 (Enterprise Adapters First-in-Line & Penetration Testing Architecture Specification)  
+**Document Version:** 6.0.0 (In-App Tool Installation & Capabilities Lifecycle Management Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST API Endpoints, OpenAPI 3.1 Schemas & SSE Streaming Protocol  
 
@@ -21,7 +21,7 @@ Content-Type: `application/json; charset=utf-8`
 ```json
 {
   "status": "HEALTHY",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "timestamp": "2026-08-30T04:45:00Z",
   "uptime_seconds": 18450.2,
   "storage": {
@@ -295,9 +295,84 @@ Allows manual crafting, replay, and differential inspection of HTTP requests dir
 
 ---
 
+### 1.5 In-App Tool Management & Installation Endpoints
+
+#### `GET /api/system/tools`
+Returns comprehensive installation status, versions, and installation metadata for all 10 tools.
+- **Response (200 OK):**
+```json
+[
+  {
+    "name": "nuclei",
+    "display_name": "Nuclei Vulnerability Scanner",
+    "category": "Web DAST",
+    "install_method": "STANDALONE_BINARY",
+    "status": "NOT_INSTALLED",
+    "version": null,
+    "path": null,
+    "is_elevated_required": false,
+    "install_command_hint": "In-app automated 1-click install (or: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest)",
+    "download_url": "https://github.com/projectdiscovery/nuclei/releases",
+    "error_message": null,
+    "progress_percent": 0
+  },
+  {
+    "name": "sslyze",
+    "display_name": "SSLyze TLS/SSL Auditor",
+    "category": "Network / TLS",
+    "install_method": "PIP",
+    "status": "INSTALLED",
+    "version": "5.2.0",
+    "path": "/usr/local/bin/sslyze",
+    "is_elevated_required": false,
+    "install_command_hint": "pip install sslyze",
+    "download_url": "https://pypi.org/project/sslyze/",
+    "error_message": null,
+    "progress_percent": 100
+  }
+]
+```
+
+#### `POST /api/system/tools/{tool_name}/install`
+Asynchronously triggers in-app installation for a specific tool.
+- **Request Body (`application/json`):**
+```json
+{
+  "force": false
+}
+```
+- **Response (202 Accepted):**
+```json
+{
+  "task_id": "tool-inst-9a8b7c6d",
+  "tool_name": "nuclei",
+  "status": "INSTALLING",
+  "message": "Initiated automated download and extraction of Nuclei to backend/bin/"
+}
+```
+
+#### `POST /api/system/tools/install-all`
+Asynchronously batch installs all missing user-space tools (`sslyze`, `bandit`, `semgrep`, `checkov`, `nuclei`, `ffuf`, `gitleaks`, `trivy`).
+- **Response (202 Accepted):**
+```json
+[
+  {
+    "task_id": "tool-inst-1",
+    "tool_name": "nuclei",
+    "status": "INSTALLING",
+    "message": "Queued for installation"
+  }
+]
+```
+
+#### `GET /api/system/tools/{tool_name}/status`
+Returns real-time status and installation progress for a single tool.
+
+---
+
 ## 2. Real-Time Streaming Event Contract (SSE)
 
-Endpoint: `GET /api/scans/{scan_id}/events`  
+### 2.1 Scan Execution Stream (`GET /api/scans/{scan_id}/events`)
 Protocol: **Server-Sent Events (SSE)** (`text/event-stream; charset=utf-8`)
 
 Event Types emitted:
@@ -310,3 +385,12 @@ Event Types emitted:
 7. `event: finding` — Data: `{ Finding Object }` (emitted immediately on identification with `source_tool` and `reproduction_curl` when available)
 8. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "active_adapters": ["nmap", "semgrep"], "completed_at": "..."}`
 9. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`
+
+### 2.2 Tool Installation Telemetry Stream (`GET /api/system/tools/events`)
+Protocol: **Server-Sent Events (SSE)** (`text/event-stream; charset=utf-8`)
+
+Event Types emitted during in-app tool installations:
+1. `event: install_progress` — Data: `{"tool_name": "nuclei", "task_id": "...", "percent": 50, "stage": "Extracting binary to backend/bin/..."}`
+2. `event: install_log` — Data: `{"tool_name": "nuclei", "message": "Downloading https://github.com/.../nuclei_3.2.0_windows_amd64.zip (24.2 MB)..."}`
+3. `event: install_completed` — Data: `{"tool_name": "nuclei", "path": "backend/bin/nuclei.exe", "version": "nuclei v3.2.0", "message": "Nuclei installed successfully and ready for scans."}`
+4. `event: install_failed` — Data: `{"tool_name": "nuclei", "error": "Connection timed out after 30 seconds."}`

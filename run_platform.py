@@ -21,6 +21,11 @@ if str(backend_dir) not in sys.path:
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Ensure storage directory exists
 data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -51,7 +56,7 @@ def main():
     dashboard_url = f"http://{host}:{port}"
 
     print("=" * 72)
-    print(" 🛡️  CYBERASSESS AUTOMATED SECURITY ASSESSMENT PLATFORM v3.1.0")
+    print(" [CYBERASSESS] AUTOMATED SECURITY ASSESSMENT PLATFORM v6.0.0")
     print("=" * 72)
     print(f" [*] Local API Server   : {dashboard_url}")
     print(f" [*] Interactive Docs   : {dashboard_url}/docs")
@@ -71,13 +76,14 @@ def main():
     threading.Thread(target=open_browser, daemon=True).start()
 
     try:
-        # Run uvicorn server directly with app object or import string
+        # Run uvicorn server with auto-reload enabled
         uvicorn.run(
             "app.main:app",
             host=host,
             port=port,
             log_level="info",
-            reload=False,
+            reload=True,
+            reload_dirs=[str(backend_dir)],
         )
     except KeyboardInterrupt:
         print("\n[!] CyberAssess Security Platform shut down successfully.")

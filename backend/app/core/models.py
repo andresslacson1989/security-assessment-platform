@@ -48,14 +48,14 @@ class ScanProfile(str, Enum):
     """
     Scan profile configurations determining which engine subsets run.
     """
-    FULL_STACK = "FULL_STACK"            # All 5 engines active + all available adapters
+    FULL_STACK = "FULL_STACK"            # All 5 engines active + all 10 available adapters
     QUICK = "QUICK"                      # Fast audit alias
     QUICK_AUDIT = "QUICK_AUDIT"          # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"              # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei
-    SAST_ONLY = "SAST_ONLY"              # Static Code + Taint AST + Secrets + Semgrep + Trivy
-    NETWORK_ONLY = "NETWORK_ONLY"        # Network Ports + TLS Ciphers + DNS + OSINT + Nmap
-    NETWORK_TLS = "NETWORK_TLS"          # Network Ports + TLS Ciphers + DNS + OSINT + Nmap alias
-    INFRA_ONLY = "INFRA_ONLY"            # Dockerfile + Compose + K8s + Terraform + Trivy
+    DAST_ONLY = "DAST_ONLY"              # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Nikto
+    SAST_ONLY = "SAST_ONLY"              # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + Trivy
+    NETWORK_ONLY = "NETWORK_ONLY"        # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze
+    NETWORK_TLS = "NETWORK_TLS"          # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze alias
+    INFRA_ONLY = "INFRA_ONLY"            # Dockerfile + Compose + K8s + Terraform + Trivy + Checkov
     INFRA_CONTAINER = "INFRA_CONTAINER"  # Container and IaC focus
     API_FOCUSED = "API_FOCUSED"          # API & GraphQL inspection focus
     PASSIVE_OSINT = "PASSIVE_OSINT"      # OSINT and DNS reconnaissance
@@ -113,6 +113,28 @@ class ToolExecutionMode(str, Enum):
     ADAPTER_ACTIVE = "ADAPTER_ACTIVE"    # Host CLI tool found, verified, and active
     NATIVE_FALLBACK = "NATIVE_FALLBACK"  # Pure Python native fallback engine
     DISABLED = "DISABLED"                # Adapter explicitly disabled by user/config
+
+
+class ToolInstallMethod(str, Enum):
+    """
+    Installation method used to provision the tool.
+    """
+    PIP = "PIP"                                        # Pure Python package installed via sys.executable -m pip
+    STANDALONE_BINARY = "STANDALONE_BINARY"            # Standalone Go/compiled binary downloaded from GitHub Releases into backend/bin/
+    SYSTEM_PACKAGE_MANAGER = "SYSTEM_PACKAGE_MANAGER"  # System tool requiring OS package manager (winget/brew/apt) or elevated setup
+    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool (e.g. Nikto Perl script)
+    MANUAL = "MANUAL"                                  # Manual binary placement
+
+
+class ToolInstallStatus(str, Enum):
+    """
+    Installation lifecycle status for tools.
+    """
+    NOT_INSTALLED = "NOT_INSTALLED"
+    INSTALLING = "INSTALLING"
+    INSTALLED = "INSTALLED"
+    FAILED = "FAILED"
+    UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
 
 
 # ============================================================================
@@ -186,41 +208,57 @@ OsintConfig = OSINTConfig
 class ToolAdapterConfig(BaseModel):
     """
     Configuration for hybrid external binary tool adapters.
+    Supported enterprise tools:
+    - Network / TLS: Nmap, SSLyze
+    - Web DAST: Nuclei, FFuF, Nikto
+    - SAST / Secrets: Semgrep, Gitleaks, Bandit
+    - SCA / IaC: Trivy, Checkov
     """
-    enable_nmap: bool = Field(default=True, description="Enable Nmap adapter when binary is available on host")
-    enable_nuclei: bool = Field(default=True, description="Enable Nuclei adapter when binary is available on host")
-    enable_semgrep: bool = Field(default=True, description="Enable Semgrep adapter when binary is available on host")
-    enable_trivy: bool = Field(default=True, description="Enable Trivy adapter when binary is available on host")
+    enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")
+    enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
+    enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
+    enable_ffuf: bool = Field(default=True, description="Enable FFuF high-speed content discovery adapter")
+    enable_nikto: bool = Field(default=True, description="Enable Nikto web server misconfiguration adapter")
+    enable_semgrep: bool = Field(default=True, description="Enable Semgrep multi-language AST SAST adapter")
+    enable_gitleaks: bool = Field(default=True, description="Enable Gitleaks git history secret scanner adapter")
+    enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")
+    enable_trivy: bool = Field(default=True, description="Enable Trivy SCA and container vulnerability adapter")
+    enable_checkov: bool = Field(default=True, description="Enable Checkov Infrastructure-as-Code policy adapter")
+
     nmap_path: Optional[str] = Field(default=None, description="Explicit path to nmap executable")
+    sslyze_path: Optional[str] = Field(default=None, description="Explicit path to sslyze executable")
     nuclei_path: Optional[str] = Field(default=None, description="Explicit path to nuclei executable")
+    ffuf_path: Optional[str] = Field(default=None, description="Explicit path to ffuf executable")
+    nikto_path: Optional[str] = Field(default=None, description="Explicit path to nikto executable")
     semgrep_path: Optional[str] = Field(default=None, description="Explicit path to semgrep executable")
+    gitleaks_path: Optional[str] = Field(default=None, description="Explicit path to gitleaks executable")
+    bandit_path: Optional[str] = Field(default=None, description="Explicit path to bandit executable")
     trivy_path: Optional[str] = Field(default=None, description="Explicit path to trivy executable")
+    checkov_path: Optional[str] = Field(default=None, description="Explicit path to checkov executable")
+
     custom_nmap_path: Optional[str] = Field(default=None, description="Alias for nmap_path")
+    custom_sslyze_path: Optional[str] = Field(default=None, description="Alias for sslyze_path")
     custom_nuclei_path: Optional[str] = Field(default=None, description="Alias for nuclei_path")
+    custom_ffuf_path: Optional[str] = Field(default=None, description="Alias for ffuf_path")
+    custom_nikto_path: Optional[str] = Field(default=None, description="Alias for nikto_path")
     custom_semgrep_path: Optional[str] = Field(default=None, description="Alias for semgrep_path")
+    custom_gitleaks_path: Optional[str] = Field(default=None, description="Alias for gitleaks_path")
+    custom_bandit_path: Optional[str] = Field(default=None, description="Alias for bandit_path")
     custom_trivy_path: Optional[str] = Field(default=None, description="Alias for trivy_path")
+    custom_checkov_path: Optional[str] = Field(default=None, description="Alias for checkov_path")
 
     @model_validator(mode="after")
     def sync_paths(self) -> "ToolAdapterConfig":
-        if self.custom_nmap_path and not self.nmap_path:
-            self.nmap_path = self.custom_nmap_path
-        elif self.nmap_path and not self.custom_nmap_path:
-            self.custom_nmap_path = self.nmap_path
-
-        if self.custom_nuclei_path and not self.nuclei_path:
-            self.nuclei_path = self.custom_nuclei_path
-        elif self.nuclei_path and not self.custom_nuclei_path:
-            self.custom_nuclei_path = self.nuclei_path
-
-        if self.custom_semgrep_path and not self.semgrep_path:
-            self.semgrep_path = self.custom_semgrep_path
-        elif self.semgrep_path and not self.custom_semgrep_path:
-            self.custom_semgrep_path = self.semgrep_path
-
-        if self.custom_trivy_path and not self.trivy_path:
-            self.trivy_path = self.custom_trivy_path
-        elif self.trivy_path and not self.custom_trivy_path:
-            self.custom_trivy_path = self.trivy_path
+        tools = ["nmap", "sslyze", "nuclei", "ffuf", "nikto", "semgrep", "gitleaks", "bandit", "trivy", "checkov"]
+        for tool in tools:
+            path_attr = f"{tool}_path"
+            custom_path_attr = f"custom_{tool}_path"
+            p = getattr(self, path_attr, None)
+            cp = getattr(self, custom_path_attr, None)
+            if cp and not p:
+                setattr(self, path_attr, cp)
+            elif p and not cp:
+                setattr(self, custom_path_attr, p)
         return self
 
 
@@ -279,6 +317,53 @@ class ToolStatus(BaseModel):
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
     execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', or 'DISABLED'")
+    install_method: ToolInstallMethod = Field(default=ToolInstallMethod.MANUAL, description="Installation method for this tool")
+    is_installed: bool = Field(default=False, description="Whether tool binary is present and executable")
+    installable: bool = Field(default=True, description="Whether tool can be installed in-app")
+
+
+class ToolInstallationInfo(BaseModel):
+    """
+    Detailed installation status and metadata for a tool adapter.
+    """
+    name: str = Field(..., description="Machine name of tool (e.g. 'nuclei', 'bandit', 'sslyze')")
+    display_name: str = Field(..., description="Human-readable tool title")
+    category: str = Field(..., description="Security domain (Network, Web DAST, Code SAST, Infra IaC)")
+    install_method: ToolInstallMethod = Field(..., description="Installation mechanism")
+    status: ToolInstallStatus = Field(default=ToolInstallStatus.NOT_INSTALLED)
+    version: Optional[str] = Field(default=None, description="Discovered version string")
+    path: Optional[str] = Field(default=None, description="Resolved binary executable path")
+    is_elevated_required: bool = Field(default=False, description="Whether root / UAC admin elevation is required")
+    install_command_hint: str = Field(..., description="CLI command snippet for manual or system package manager installation")
+    download_url: Optional[str] = Field(default=None, description="Direct download URL or repo reference")
+    error_message: Optional[str] = Field(default=None, description="Last installation error message if failed")
+    progress_percent: int = Field(default=0, ge=0, le=100, description="Real-time installation progress percentage")
+
+
+class ToolInstallRequest(BaseModel):
+    """
+    Request body for initiating tool installation.
+    """
+    tool_name: Optional[str] = Field(default=None, description="Tool machine name to install")
+    force: bool = Field(default=False, description="Reinstall or overwrite existing binary if present")
+
+
+class ToolInstallResponse(BaseModel):
+    """
+    Response returned when tool installation is initiated.
+    """
+    task_id: str = Field(..., description="Async installation job task UUID")
+    tool_name: str = Field(..., description="Target tool name")
+    status: ToolInstallStatus = Field(..., description="Initial installation task status")
+    message: str = Field(..., description="Informational progress or queue message")
+
+
+class ToolBatchInstallRequest(BaseModel):
+    """
+    Request body for batch tool installation.
+    """
+    tool_names: List[str] = Field(default_factory=list, description="List of tools to install (empty installs all missing user-space tools)")
+    force: bool = Field(default=False, description="Force reinstallation")
 
 
 class SystemCapabilities(BaseModel):
@@ -345,7 +430,7 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
-    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'nuclei', 'semgrep', 'trivy'")
+    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
     category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")

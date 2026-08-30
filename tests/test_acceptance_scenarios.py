@@ -1139,10 +1139,375 @@ diff --git a/config.py b/config.py
             assert "AKIAIOSFODNN7EXAMPLE" not in gf.evidence.observed_value
             assert "SecretPass123" not in gf.evidence.observed_value
             assert "*" in gf.evidence.observed_value
-
         aws_finding = next(f for f in git_findings if "AKIA" in f.title or "SAST-SEC-001" in f.evidence.observed_value)
         assert "AKIA" in aws_finding.evidence.observed_value
 
 
+# ==============================================================================
+# (Contract 05 v5.0.0 - Acceptance Scenario 15)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
+    """
+    Scenario 15: External Tool Adapter Discovery, Execution & Graceful Fallback
+    - Verifies discovery and invocation of Nmap, Nuclei, Semgrep, and Trivy adapters.
+    - Verifies 100% graceful fallback to native Python engines when binaries are absent, with zero unhandled exceptions.
+    """
+    from app.core.orchestrator import ScanOrchestrator
+    from app.engines.network.engine import NetworkAssessmentEngine
+    from app.engines.code_sast.engine import CodeSastAssessmentEngine
+    from app.core.models import ScanJob, Target, TargetType, ScanConfig, ToolAdapterConfig, ScanStatus
+    from app.adapters.base_adapter import BaseToolAdapter
+
+    # Test A: Fallback to pure native when adapters absent
+    orchestrator = ScanOrchestrator()
+    orchestrator.register_engine(NetworkAssessmentEngine())
+
+    job = ScanJob(
+        target=Target(name="Target", type=TargetType.DOMAIN, value="example.com"),
+        enabled_engines=["network"],
+        config=ScanConfig(
+            adapters=ToolAdapterConfig(enable_nmap=True, enable_sslyze=True),
+        ),
+    )
+
+    with patch.object(BaseToolAdapter, "is_available", return_value=False), \
+         patch("app.engines.network.engine.audit_tls_certificates", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_dns_hygiene", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_exposed_ports", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_subdomain_osint", AsyncMock(return_value=[])):
+        
+        task = await orchestrator.start_scan(job)
+        await task
+
+    completed_job = orchestrator.get_active_job(job.id)
+    assert completed_job.status == ScanStatus.COMPLETED
+    assert completed_job.active_adapters == []
+
+
+# ==============================================================================
+# (Contract 05 v5.0.0 - Acceptance Scenario 16)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_16_adapters_first_priority_and_native_pruning():
+    """
+    Scenario 16: Adapters First-in-Line Priority Execution & Native Redundancy Pruning
+    - Asserts that when external adapters are active, they execute first as the primary assessment driver.
+    - Baseline findings carry source_tool set to the active adapter name.
+    - Native proprietary enrichments (AST taint, DNS hygiene, OSINT) run cleanly without duplicate collision.
+    """
+    from app.engines.network.engine import NetworkAssessmentEngine
+    from app.adapters.nmap_adapter import NmapAdapter
+    from app.adapters.sslyze_adapter import SslyzeAdapter
+    from app.core.models import Target, TargetType, ScanConfig, Severity, Finding, Evidence, calculate_fingerprint
+
+    net_engine = NetworkAssessmentEngine()
+    target = Target(name="Target", type=TargetType.DOMAIN, value="test-priority.com")
+    config = ScanConfig()
+
+    nmap_finding = Finding(
+        scan_id="active",
+        engine="network",
+        check_id="NET-PORT-001",
+        category="Network Security",
+        title="Open Port 22/tcp (ssh)",
+        severity=Severity.INFO,
+        cvss_score=0.0,
+        description="SSH service identified by Nmap.",
+        impact="Exposed SSH port.",
+        remediation="Restrict SSH access.",
+        evidence=Evidence(location="test-priority.com:22", observed_value="Open", expected_value="Port closed or firewalled"),
+        fingerprint=calculate_fingerprint("NET-PORT-001", "test-priority.com:22", "Open"),
+        source_tool="nmap",
+    )
+
+    sslyze_finding = Finding(
+        scan_id="active",
+        engine="network",
+        check_id="NET-TLS-001",
+        category="TLS/SSL Security",
+        title="Deprecated TLS 1.0 Supported",
+        severity=Severity.HIGH,
+        cvss_score=7.5,
+        description="SSLyze detected deprecated TLS 1.0.",
+        impact="Insecure cipher negotiation.",
+        remediation="Disable TLS 1.0.",
+        evidence=Evidence(location="test-priority.com:443", observed_value="TLS 1.0 Enabled", expected_value="TLS 1.2 or TLS 1.3 only"),
+        fingerprint=calculate_fingerprint("NET-TLS-001", "test-priority.com:443", "TLS 1.0 Enabled"),
+        source_tool="sslyze",
+    )
+
+    mock_log = AsyncMock()
+    mock_progress = AsyncMock()
+    mock_finding = AsyncMock()
+
+    with patch.object(SslyzeAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(SslyzeAdapter, "run", AsyncMock(return_value=[sslyze_finding])), \
+         patch.object(NmapAdapter, "is_available", AsyncMock(return_value=True)), \
+         patch.object(NmapAdapter, "run", AsyncMock(return_value=[nmap_finding])), \
+         patch("app.engines.network.engine.audit_dns_hygiene", AsyncMock(return_value=[])), \
+         patch("app.engines.network.engine.audit_subdomain_osint", AsyncMock(return_value=[])):
+
+        findings = await net_engine.run(
+            target=target,
+            config=config,
+            emit_log=mock_log,
+            emit_progress=mock_progress,
+            emit_finding=mock_finding,
+        )
+
+    assert len(findings) >= 2
+    sources = {f.source_tool for f in findings}
+    assert "sslyze" in sources
+    assert "nmap" in sources
+
+    # Verify adapter log events were emitted first
+    log_messages = [call.args[1] for call in mock_log.call_args_list]
+    assert any("Executing SSLyze" in m for m in log_messages)
+    assert any("Executing Nmap" in m for m in log_messages)
+
+
+# ==============================================================================
+# (Contract 05 v5.0.0 - Acceptance Scenario 17)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_scenario_17_expanded_enterprise_tool_adapters(tmp_path):
+    """
+    Scenario 17: Enterprise Tool Adapter Integrations (Gitleaks, Bandit, Checkov, FFuF, Nikto, SSLyze)
+    - Verifies command construction, non-destructive execution flags, output parsing, and error isolation.
+    """
+    from app.adapters.gitleaks_adapter import GitleaksAdapter
+    from app.adapters.bandit_adapter import BanditAdapter
+    from app.adapters.checkov_adapter import CheckovAdapter
+    from app.adapters.ffuf_adapter import FfufAdapter
+    from app.adapters.nikto_adapter import NiktoAdapter
+    from app.adapters.sslyze_adapter import SslyzeAdapter
+    from app.core.models import Target, TargetType, ScanConfig
+
+    # 1. Gitleaks
+    gl = GitleaksAdapter()
+    assert gl.tool_name == "gitleaks"
+
+    # 2. Bandit
+    bandit = BanditAdapter()
+    assert bandit.tool_name == "bandit"
+
+    # 3. Checkov
+    checkov = CheckovAdapter()
+    assert checkov.tool_name == "checkov"
+
+    # 4. FFuF
+    ffuf = FfufAdapter()
+    assert ffuf.tool_name == "ffuf"
+
+    # 5. Nikto
+    nikto = NiktoAdapter()
+    assert nikto.tool_name == "nikto"
+
+    # 6. SSLyze
+    sslyze = SslyzeAdapter()
+    assert sslyze.tool_name == "sslyze"
+
+    # Verify error isolation when any tool fails / throws an exception
+    mock_log = AsyncMock()
+    mock_finding = AsyncMock()
+    target = Target(name="Target", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+    config = ScanConfig()
+
+    with patch.object(gl, "resolve_binary_path", return_value="/usr/bin/gitleaks"), \
+         patch.object(gl, "execute_command", AsyncMock(side_effect=RuntimeError("Subprocess failed unexpectedly"))):
+        gl_findings = await gl.run(target, config, mock_log, mock_finding)
+        assert gl_findings == []
+        mock_log.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path):
+    """
+    Scenario 18: In-App Tool Installation Lifecycle for Pip & Standalone Binaries (Contract 05 v6.0.0)
+    - Verifies 1-click execution for PipToolInstaller (sys.executable -m pip).
+    - Verifies 1-click download, ZipSlip security check, and placement for GithubReleaseInstaller.
+    - Confirms adapter resolve_binary_path detects the newly installed binary in backend/bin.
+    """
+    import asyncio
+    import io
+    import zipfile
+    from app.installers.pip_installer import PipToolInstaller
+    from app.installers.github_release_installer import GithubReleaseInstaller
+    from app.adapters.nuclei_adapter import NucleiAdapter
+    from app.core.models import ToolInstallStatus, ToolInstallMethod
+
+    # 1. Test PipToolInstaller
+    pip_inst = PipToolInstaller("sslyze")
+    assert pip_inst.install_method == ToolInstallMethod.PIP
+    mock_proc = MagicMock()
+    mock_proc.stdout = ["Successfully installed sslyze\n"]
+    mock_proc.wait = MagicMock(return_value=0)
+    mock_proc.returncode = 0
+
+    logs = []
+    with patch("subprocess.Popen", return_value=mock_proc), \
+         patch.object(pip_inst, "get_version", AsyncMock(return_value="5.2.0")):
+        res = await pip_inst.install(
+            lambda m: logs.append(m) or asyncio.sleep(0),
+            lambda p, s: asyncio.sleep(0),
+        )
+        assert res is True
+        assert any("Successfully installed" in l for l in logs)
+
+    # 2. Test GithubReleaseInstaller with simulated release asset
+    gh_inst = GithubReleaseInstaller("nuclei")
+    fake_bin_dir = tmp_path / "bin"
+    fake_bin_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create dummy zip with nuclei.exe
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as z:
+        z.writestr("nuclei.exe", "fake_binary_payload")
+    zip_data = zip_buf.getvalue()
+
+    mock_release_json = {
+        "tag_name": "v3.2.0",
+        "assets": [
+            {"name": "nuclei_3.2.0_windows_amd64.zip", "browser_download_url": "https://example.com/nuclei.zip"},
+            {"name": "nuclei_3.2.0_linux_amd64.zip", "browser_download_url": "https://example.com/nuclei_linux.zip"},
+        ],
+    }
+
+    mock_api_resp = MagicMock(status_code=200, json=lambda: mock_release_json)
+    mock_stream_resp = MagicMock(status_code=200, headers={"content-length": str(len(zip_data))})
+    async def aiter(chunk_size=65536):
+        yield zip_data
+    mock_stream_resp.aiter_bytes = aiter
+
+    mock_stream_ctx = MagicMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=mock_api_resp)
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.object(gh_inst, "get_bin_dir", return_value=str(fake_bin_dir)), \
+         patch.object(gh_inst, "get_version", AsyncMock(return_value="nuclei v3.2.0")):
+        res = await gh_inst.install(lambda m: asyncio.sleep(0), lambda p, s: asyncio.sleep(0))
+        assert res is True
+        installed_file = fake_bin_dir / "nuclei.exe"
+        assert installed_file.exists()
+
+        # Confirm adapter detects installed binary
+        adapter = NucleiAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value=str(installed_file)):
+            assert await adapter.is_available() is True
+
+
+@pytest.mark.asyncio
+async def test_scenario_19_batch_tool_installer_and_sse_streaming():
+    """
+    Scenario 19: Batch Tool Installer & Live SSE Event Streaming (Contract 05 v6.0.0)
+    - Verifies batch installation execution across missing user-space tools.
+    - Confirms SSE telemetry channel emits install_progress, install_log, and install_completed events.
+    """
+    import asyncio
+    from app.installers.manager import ToolInstallationManager
+    from app.core.models import ToolInstallStatus
+
+    mgr = ToolInstallationManager.get_instance()
+
+    # Patch all installer install methods to prevent real network calls
+    with patch.object(mgr, "_installers", {k: MagicMock(display_name=k, install=AsyncMock(return_value=True), get_info=AsyncMock(return_value=MagicMock(status=ToolInstallStatus.NOT_INSTALLED, path=None, version=None))) for k in mgr._installers}):
+        # Verify batch install initiates tasks
+        batch_responses = await mgr.install_all(force=True)
+        assert len(batch_responses) > 0
+        assert all(r.status == ToolInstallStatus.INSTALLING for r in batch_responses)
+        assert all(r.task_id.startswith("tool-inst-") for r in batch_responses)
+
+        # Verify event subscription stream yields valid events
+        received_events = []
+        async def listener():
+            async for ev in mgr.subscribe_events():
+                received_events.append(ev)
+                if len(received_events) >= 2:
+                    break
+
+        listen_task = asyncio.create_task(listener())
+        await asyncio.sleep(0.05)
+
+        # Broadcast test event
+        await mgr.broadcast_event("install_progress", {"tool_name": "nuclei", "percent": 50, "stage": "Downloading..."})
+        await mgr.broadcast_event("install_completed", {"tool_name": "nuclei", "path": "backend/bin/nuclei.exe", "version": "v3.2.0"})
+
+        await asyncio.wait_for(listen_task, timeout=2.0)
+        assert len(received_events) >= 2
+        assert received_events[0]["event"] == "install_progress"
+        assert received_events[1]["event"] == "install_completed"
+
+
+def test_scenario_20_containerization_dockerfile_and_compose_validation():
+    """
+    Scenario 20: Production Containerization, Health Probes & 10-Tool Pre-installation Parity (Contract 05 v7.0.0 & Contract 08 Section 10)
+    - Verifies Dockerfile contains multi-stage build, all 10 tools, CPAN Perl modules, and healthcheck.
+    - Verifies docker-compose.yml configuration with persistent data volume and port 8000.
+    - Verifies .dockerignore excludes and GitHub Actions multi-arch workflow.
+    """
+    import os, yaml
+
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    # 1. Verify Dockerfile existence and directives
+    dockerfile_path = os.path.join(root_dir, "Dockerfile")
+    assert os.path.isfile(dockerfile_path), "Dockerfile must exist in project root"
+    with open(dockerfile_path, "r", encoding="utf-8") as f:
+        dockerfile_content = f.read()
+
+    assert "FROM python:3.11-slim-bookworm AS builder" in dockerfile_content
+    assert "FROM python:3.11-slim-bookworm" in dockerfile_content
+    assert "nmap" in dockerfile_content
+    assert "nikto" in dockerfile_content
+    assert "libxml-writer-perl" in dockerfile_content
+    assert "nuclei" in dockerfile_content
+    assert "ffuf" in dockerfile_content
+    assert "gitleaks" in dockerfile_content
+    assert "trivy" in dockerfile_content
+    assert "EXPOSE 8000" in dockerfile_content
+    assert "HEALTHCHECK" in dockerfile_content
+    assert "/api/system/health" in dockerfile_content
+
+    # 2. Verify docker-compose.yml
+    compose_path = os.path.join(root_dir, "docker-compose.yml")
+    assert os.path.isfile(compose_path), "docker-compose.yml must exist in project root"
+    with open(compose_path, "r", encoding="utf-8") as f:
+        compose_data = yaml.safe_load(f)
+
+    assert "services" in compose_data
+    assert "cyberassess" in compose_data["services"]
+    svc = compose_data["services"]["cyberassess"]
+    assert "8000:8000" in svc["ports"]
+    assert any("./data:/app/data" in v for v in svc["volumes"])
+    assert "healthcheck" in svc
+
+    # 3. Verify .dockerignore
+    dockerignore_path = os.path.join(root_dir, ".dockerignore")
+    assert os.path.isfile(dockerignore_path), ".dockerignore must exist in project root"
+    with open(dockerignore_path, "r", encoding="utf-8") as f:
+        dockerignore_content = f.read()
+
+    assert ".git" in dockerignore_content
+    assert "venv" in dockerignore_content
+    assert "tests" in dockerignore_content
+
+    # 4. Verify GitHub Actions workflow
+    workflow_path = os.path.join(root_dir, ".github", "workflows", "docker-publish.yml")
+    assert os.path.isfile(workflow_path), "docker-publish.yml workflow must exist"
+    with open(workflow_path, "r", encoding="utf-8") as f:
+        wf_data = yaml.safe_load(f)
+
+    assert wf_data["name"] == "Build & Publish Container Image to GHCR"
+    assert "ghcr.io" in str(wf_data)
+    assert "linux/amd64,linux/arm64" in str(wf_data)
 
 

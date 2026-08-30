@@ -23,7 +23,7 @@ async def get_system_health() -> Dict[str, Any]:
     uptime = time.time() - START_TIME
     return {
         "status": "HEALTHY",
-        "version": "4.1.0",
+        "version": "6.0.0",
         "timestamp": utc_now().isoformat(),
         "uptime_seconds": round(uptime, 2),
         "storage": {
