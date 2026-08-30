@@ -452,14 +452,15 @@ To prevent false-positive capability reporting (e.g. Git-bundled Perl missing CP
 ### 10.1 Multi-Stage Hardened Production Dockerfile Specification (`Dockerfile`)
 
 ```dockerfile
-# Stage 1: Build & Dependency Preparation Stage
-FROM python:3.11-slim-bookworm AS builder
+# Stage 1: Builder Stage (Download & verify official pre-compiled tool binaries)
+FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm AS builder
+
+ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install build essentials & download tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -467,70 +468,96 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Download official release binaries for standalone tools
 WORKDIR /tmp/bin
 
 # 1. Nuclei (v3.2.0)
-RUN curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip && \
-    unzip -q nuclei.zip nuclei && rm nuclei.zip
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_arm64.zip -o nuclei.zip; \
+    else \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip; \
+    fi && \
+    unzip -q nuclei.zip nuclei && \
+    chmod +x nuclei && \
+    rm nuclei.zip
 
 # 2. FFuF (v2.1.0)
-RUN curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz | tar -xz ffuf
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_arm64.tar.gz | tar -xz ffuf; \
+    else \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz | tar -xz ffuf; \
+    fi && \
+    chmod +x ffuf
 
 # 3. Gitleaks (v8.18.2)
-RUN curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar -xz gitleaks
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_arm64.tar.gz | tar -xz gitleaks; \
+    else \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar -xz gitleaks; \
+    fi && \
+    chmod +x gitleaks
 
 # 4. Trivy (v0.49.1)
-RUN curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz | tar -xz trivy
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-ARM64.tar.gz | tar -xz trivy; \
+    else \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz | tar -xz trivy; \
+    fi && \
+    chmod +x trivy
 
 # Stage 2: Final Hardened Production Runtime
 FROM python:3.11-slim-bookworm
 
 LABEL org.opencontainers.image.title="CyberAssess Security Assessment Platform" \
       org.opencontainers.image.description="Full-Stack Automated Security Assessment & Vulnerability Management Platform" \
+      org.opencontainers.image.vendor="CyberAssess" \
       org.opencontainers.image.licenses="MIT"
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
     PORT=8000
 
-# Install runtime system packages: Nmap, Nikto, full Perl with CPAN XML::Writer, Git
+# Install runtime system packages: Nmap, Perl with CPAN XML::Writer, Git, Curl, procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
-    nikto \
     perl \
     libxml-writer-perl \
+    libnet-ssleay-perl \
     git \
     curl \
     ca-certificates \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Nikto via official upstream GitHub repo
+RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
+    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
+    chmod +x /opt/nikto/program/nikto.pl
+
 # Copy pre-compiled standalone binaries from builder stage
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
 COPY --from=builder /tmp/bin/ffuf /usr/local/bin/ffuf
 COPY --from=builder /tmp/bin/gitleaks /usr/local/bin/gitleaks
 COPY --from=builder /tmp/bin/trivy /usr/local/bin/trivy
-RUN chmod +x /usr/local/bin/nuclei /usr/local/bin/ffuf /usr/local/bin/gitleaks /usr/local/bin/trivy
 
 # Create application directories
 WORKDIR /app
-RUN mkdir -p /app/data /app/backend /app/frontend
+RUN mkdir -p /app/data/scans /app/backend /app/frontend
 
-# Install Python requirements
+# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, FastAPI, etc.)
 COPY backend/requirements.txt /app/backend/
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
-# Copy backend, frontend, and entrypoint
+# Copy backend application, frontend HUD assets, and root runner
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY run_platform.py /app/
 
-# Expose HTTP port
+# Expose Web SOC HUD port
 EXPOSE 8000
 
-# Healthcheck probe against REST API health endpoint
+# Healthcheck probe against FastAPI system health API
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8000/api/system/health || exit 1
 

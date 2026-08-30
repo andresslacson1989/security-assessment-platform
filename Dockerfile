@@ -1,5 +1,5 @@
 # ==============================================================================
-# CyberAssess Platform - Production Multi-Stage Dockerfile
+# CyberAssess Platform - Production Multi-Stage Multi-Arch Dockerfile
 # Pre-packages all 10 Security Pentesting Tools & Python Runtime
 # Authoritative Contract Reference: contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md (Section 10)
 # ==============================================================================
@@ -7,13 +7,14 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Builder Stage (Download & verify official pre-compiled tool binaries)
 # ------------------------------------------------------------------------------
-FROM python:3.11-slim-bookworm AS builder
+FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm AS builder
+
+ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install minimal download tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -23,22 +24,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /tmp/bin
 
-# 1. Nuclei (v3.2.0) - High-speed DAST template engine
-RUN curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip && \
+# 1. Nuclei (v3.2.0)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_arm64.zip -o nuclei.zip; \
+    else \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip; \
+    fi && \
     unzip -q nuclei.zip nuclei && \
     chmod +x nuclei && \
     rm nuclei.zip
 
-# 2. FFuF (v2.1.0) - High-speed web fuzzer & content discovery
-RUN curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz | tar -xz ffuf && \
+# 2. FFuF (v2.1.0)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_arm64.tar.gz | tar -xz ffuf; \
+    else \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz | tar -xz ffuf; \
+    fi && \
     chmod +x ffuf
 
-# 3. Gitleaks (v8.18.2) - Git history & secret leak scanner
-RUN curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar -xz gitleaks && \
+# 3. Gitleaks (v8.18.2)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_arm64.tar.gz | tar -xz gitleaks; \
+    else \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar -xz gitleaks; \
+    fi && \
     chmod +x gitleaks
 
-# 4. Trivy (v0.49.1) - Container & dependency vulnerability scanner
-RUN curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz | tar -xz trivy && \
+# 4. Trivy (v0.49.1)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-ARM64.tar.gz | tar -xz trivy; \
+    else \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz | tar -xz trivy; \
+    fi && \
     chmod +x trivy
 
 # ------------------------------------------------------------------------------
@@ -57,17 +74,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=8000
 
-# Install runtime system packages: Nmap, Nikto, Perl with CPAN XML::Writer, Git, procps
+# Install runtime system packages: Nmap, Perl with CPAN XML::Writer, Git, Curl, procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
-    nikto \
     perl \
     libxml-writer-perl \
+    libnet-ssleay-perl \
     git \
     curl \
     ca-certificates \
     procps \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Nikto via official upstream GitHub repo
+RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
+    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
+    chmod +x /opt/nikto/program/nikto.pl
 
 # Copy pre-compiled standalone binaries from builder stage
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
