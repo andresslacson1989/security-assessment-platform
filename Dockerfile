@@ -24,11 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /tmp/bin
 
-# 1. Nuclei (v3.3.8)
+# 1. Nuclei (v3.11.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.8/nuclei_3.3.8_linux_arm64.zip -o nuclei.zip; \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_arm64.zip -o nuclei.zip; \
     else \
-      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.8/nuclei_3.3.8_linux_amd64.zip -o nuclei.zip; \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip -o nuclei.zip; \
     fi && \
     unzip -q nuclei.zip nuclei && \
     chmod +x nuclei && \
@@ -42,97 +42,97 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     chmod +x ffuf
 
-# 3. Gitleaks (v8.21.2)
+# 3. Gitleaks (v8.30.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_arm64.tar.gz | tar -xz gitleaks; \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_arm64.tar.gz | tar -xz gitleaks; \
     else \
-      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar -xz gitleaks; \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz gitleaks; \
     fi && \
     chmod +x gitleaks
 
-# 4. Trivy (v0.58.0)
+# 4. Trivy (v0.74.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-ARM64.tar.gz | tar -xz trivy; \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-ARM64.tar.gz | tar -xz trivy; \
     else \
-      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-64bit.tar.gz | tar -xz trivy; \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz | tar -xz trivy; \
     fi && \
     chmod +x trivy
 
-# 5. Subfinder (v2.6.8)
+# 5. Subfinder (v2.16.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/projectdiscovery/subfinder/releases/download/v2.6.8/subfinder_2.6.8_linux_arm64.zip -o subfinder.zip; \
+      curl -sSL https://github.com/projectdiscovery/subfinder/releases/download/v2.16.0/subfinder_2.16.0_linux_arm64.zip -o subfinder.zip; \
     else \
-      curl -sSL https://github.com/projectdiscovery/subfinder/releases/download/v2.6.8/subfinder_2.6.8_linux_amd64.zip -o subfinder.zip; \
+      curl -sSL https://github.com/projectdiscovery/subfinder/releases/download/v2.16.0/subfinder_2.16.0_linux_amd64.zip -o subfinder.zip; \
     fi && \
     unzip -q subfinder.zip subfinder && \
     chmod +x subfinder && \
     rm subfinder.zip
 
-# 6. Httpx (v1.6.9)
+# 6. Httpx (v1.10.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/projectdiscovery/httpx/releases/download/v1.6.9/httpx_1.6.9_linux_arm64.zip -o httpx.zip; \
+      curl -sSL https://github.com/projectdiscovery/httpx/releases/download/v1.10.0/httpx_1.10.0_linux_arm64.zip -o httpx.zip; \
     else \
-      curl -sSL https://github.com/projectdiscovery/httpx/releases/download/v1.6.9/httpx_1.6.9_linux_amd64.zip -o httpx.zip; \
+      curl -sSL https://github.com/projectdiscovery/httpx/releases/download/v1.10.0/httpx_1.10.0_linux_amd64.zip -o httpx.zip; \
     fi && \
     unzip -q httpx.zip httpx && \
     chmod +x httpx && \
     rm httpx.zip
 
-# 7. Katana (v1.1.2)
+# 7. Katana (v1.7.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/projectdiscovery/katana/releases/download/v1.1.2/katana_1.1.2_linux_arm64.zip -o katana.zip; \
+      curl -sSL https://github.com/projectdiscovery/katana/releases/download/v1.7.0/katana_1.7.0_linux_arm64.zip -o katana.zip; \
     else \
-      curl -sSL https://github.com/projectdiscovery/katana/releases/download/v1.1.2/katana_1.1.2_linux_amd64.zip -o katana.zip; \
+      curl -sSL https://github.com/projectdiscovery/katana/releases/download/v1.7.0/katana_1.7.0_linux_amd64.zip -o katana.zip; \
     fi && \
     unzip -q katana.zip katana && \
     chmod +x katana && \
     rm katana.zip
 
-# 8. Syft (v1.19.0)
+# 8. Syft (v1.51.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/anchore/syft/releases/download/v1.19.0/syft_1.19.0_linux_arm64.tar.gz | tar -xz syft; \
+      curl -sSL https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_arm64.tar.gz | tar -xz syft; \
     else \
-      curl -sSL https://github.com/anchore/syft/releases/download/v1.19.0/syft_1.19.0_linux_amd64.tar.gz | tar -xz syft; \
+      curl -sSL https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz | tar -xz syft; \
     fi && \
     chmod +x syft
 
-# 9. Grype (v0.87.0)
+# 9. Grype (v0.118.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/anchore/grype/releases/download/v0.87.0/grype_0.87.0_linux_arm64.tar.gz | tar -xz grype; \
+      curl -sSL https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.118.0_linux_arm64.tar.gz | tar -xz grype; \
     else \
-      curl -sSL https://github.com/anchore/grype/releases/download/v0.87.0/grype_0.87.0_linux_amd64.tar.gz | tar -xz grype; \
+      curl -sSL https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.118.0_linux_amd64.tar.gz | tar -xz grype; \
     fi && \
     chmod +x grype
 
-# 10. OSV-Scanner (v1.9.2)
+# 10. OSV-Scanner (v2.5.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/google/osv-scanner/releases/download/v1.9.2/osv-scanner_linux_arm64 -o osv-scanner; \
+      curl -sSL https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_arm64 -o osv-scanner; \
     else \
-      curl -sSL https://github.com/google/osv-scanner/releases/download/v1.9.2/osv-scanner_linux_amd64 -o osv-scanner; \
+      curl -sSL https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64 -o osv-scanner; \
     fi && \
     chmod +x osv-scanner
 
-# 11. TruffleHog (v3.88.5)
+# 11. TruffleHog (v3.97.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v3.88.5/trufflehog_3.88.5_linux_arm64.tar.gz | tar -xz trufflehog; \
+      curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.1/trufflehog_3.97.1_linux_arm64.tar.gz | tar -xz trufflehog; \
     else \
-      curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v3.88.5/trufflehog_3.88.5_linux_amd64.tar.gz | tar -xz trufflehog; \
+      curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.1/trufflehog_3.97.1_linux_amd64.tar.gz | tar -xz trufflehog; \
     fi && \
     chmod +x trufflehog
 
-# 12. Dockle (v0.4.14)
+# 12. Dockle (v0.4.15)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/goodwithtech/dockle/releases/download/v0.4.14/dockle_0.4.14_Linux-ARM64.tar.gz | tar -xz dockle; \
+      curl -sSL https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-ARM64.tar.gz | tar -xz dockle; \
     else \
-      curl -sSL https://github.com/goodwithtech/dockle/releases/download/v0.4.14/dockle_0.4.14_Linux-64bit.tar.gz | tar -xz dockle; \
+      curl -sSL https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-64bit.tar.gz | tar -xz dockle; \
     fi && \
     chmod +x dockle
 
-# 13. Kube-bench (v0.9.3)
+# 13. Kube-bench (v0.16.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/aquasecurity/kube-bench/releases/download/v0.9.3/kube-bench_0.9.3_linux_arm64.tar.gz | tar -xz kube-bench; \
+      curl -sSL https://github.com/aquasecurity/kube-bench/releases/download/v0.16.0/kube-bench_0.16.0_linux_arm64.tar.gz | tar -xz kube-bench; \
     else \
-      curl -sSL https://github.com/aquasecurity/kube-bench/releases/download/v0.9.3/kube-bench_0.9.3_linux_amd64.tar.gz | tar -xz kube-bench; \
+      curl -sSL https://github.com/aquasecurity/kube-bench/releases/download/v0.16.0/kube-bench_0.16.0_linux_amd64.tar.gz | tar -xz kube-bench; \
     fi && \
     chmod +x kube-bench
 
