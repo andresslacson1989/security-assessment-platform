@@ -616,88 +616,46 @@ contracts/
 *.log
 ```
 
-### 10.4 GitHub Actions Automated CI/CD Lifecycle Specification (`.github/workflows/docker-publish.yml`)
+### 10.4 Local Docker Build & GHCR Publish Specification (`scripts/build_and_push.ps1`)
 
-To achieve rapid developer feedback while guaranteeing enterprise universal architecture compatibility in production, the CI/CD pipeline implements a **two-tier build strategy**:
+The platform uses a **local Docker build workflow** to eliminate GitHub Actions runner wait times, cold cache resets, and QEMU emulation overhead. Builds run natively on the developer's machine and push directly to GitHub Container Registry (`ghcr.io`).
 
-#### 1. Fast Development Iteration (Routine Pushes to `main`)
-- Builds native `linux/amd64` directly on standard runners with zero QEMU software CPU emulation.
-- Completes in **~2 to 3 minutes**, publishing `latest` and `sha-<commit>` tags for continuous integration testing.
+#### Development Practice (Routine Local Builds)
+- Runs on the developer's local machine using Docker Desktop (native `linux/amd64`).
+- Uses Docker's **persistent local layer cache** — subsequent builds of unchanged layers take seconds.
+- Publishes `latest` and `sha-<commit>` tags directly to `ghcr.io`.
+- Estimated build times:
+  - **Cold (first build):** ~15–25 minutes (all 22 tools installed from scratch)
+  - **Warm (subsequent builds, Dockerfile unchanged):** ~1–3 minutes
 
-#### 2. Production Release Publishing (Version Tags `v*.*.*` & Manual Dispatch)
-- Triggers full multi-architecture build (`linux/amd64,linux/arm64`).
-- Generates universal multi-arch manifest lists on GHCR tagged with semantic versioning (`v8.0.0`, `v8.0`, `v8`).
+#### Production Release Practice (Version-Tagged Releases)
+- Developer creates a semantic version tag (`git tag -a v8.0.0`) locally.
+- Runs `scripts/build_and_push.ps1 -Production` which builds **both** `linux/amd64` and `linux/arm64` using QEMU locally.
+- Pushes universal multi-arch manifest to `ghcr.io` tagged with `v8.0.0`, `v8.0`, `v8`, and `latest`.
+- Estimated build times:
+  - **AMD64 layer (native):** ~3–8 min (warm cache)
+  - **ARM64 layer (QEMU emulated):** ~30–50 min (compiled once locally, cached permanently)
 
-#### Production Release Step-by-Step Procedure:
-1. Verify 100% test pass rate locally: `pytest tests/ -v`.
-2. Create and push a semantic version tag:
-   ```bash
-   git tag -a v8.0.0 -m "Release v8.0.0 - 22-Tool Enterprise Security Platform"
-   git push origin v8.0.0
-   ```
-3. GitHub Actions automatically detects the `v*.*.*` tag and publishes the universal multi-arch container to `ghcr.io`.
+#### Build Script (`scripts/build_and_push.ps1`)
 
-```yaml
-name: Build & Publish Container Image to GHCR
+```powershell
+# Development build (AMD64 only, fast):
+.\scripts\build_and_push.ps1
 
-on:
-  push:
-    branches: [ "main" ]
-    tags: [ 'v*.*.*' ]
-  workflow_dispatch:
+# Production release build (AMD64 + ARM64, multi-arch):
+.\scripts\build_and_push.ps1 -Production
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU for multi-arch builds (Production Releases Only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+# Tag a release and build for production:
+git tag -a v8.0.0 -m "Release v8.0.0 - 22-Tool Enterprise Security Platform"
+git push origin v8.0.0
+.\scripts\build_and_push.ps1 -Production -Tag v8.0.0
 ```
+
+#### Authentication
+- Requires `F:\gh.txt` containing a GitHub Personal Access Token (PAT) with `write:packages` scope.
+- Login is handled automatically by the script via `docker login ghcr.io`.
+
+
 
 ### 10.5 LocalCI On-Premises Pipeline Integration Specification (`.localci/ci.sh`)
 
