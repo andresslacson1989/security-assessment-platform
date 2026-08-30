@@ -51,12 +51,13 @@ def check_prerequisites():
 def main():
     check_prerequisites()
 
-    host = "127.0.0.1"
-    port = 8000
-    dashboard_url = f"http://{host}:{port}"
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
+    display_host = "localhost" if host == "0.0.0.0" else host
+    dashboard_url = f"http://{display_host}:{port}"
 
     print("=" * 72)
-    print(" [CYBERASSESS] AUTOMATED SECURITY ASSESSMENT PLATFORM v6.0.0")
+    print(" [CYBERASSESS] AUTOMATED SECURITY ASSESSMENT PLATFORM v8.0.0")
     print("=" * 72)
     print(f" [*] Local API Server   : {dashboard_url}")
     print(f" [*] Interactive Docs   : {dashboard_url}/docs")

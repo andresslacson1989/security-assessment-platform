@@ -10,7 +10,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/cyberassess:latest
+    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-platform
     restart: unless-stopped
     ports:
