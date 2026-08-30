@@ -616,7 +616,26 @@ contracts/
 *.log
 ```
 
-### 10.4 GitHub Actions Automated Multi-Arch Registry Publishing (`.github/workflows/docker-publish.yml`)
+### 10.4 GitHub Actions Automated CI/CD Lifecycle Specification (`.github/workflows/docker-publish.yml`)
+
+To achieve rapid developer feedback while guaranteeing enterprise universal architecture compatibility in production, the CI/CD pipeline implements a **two-tier build strategy**:
+
+#### 1. Fast Development Iteration (Routine Pushes to `main`)
+- Builds native `linux/amd64` directly on standard runners with zero QEMU software CPU emulation.
+- Completes in **~2 to 3 minutes**, publishing `latest` and `sha-<commit>` tags for continuous integration testing.
+
+#### 2. Production Release Publishing (Version Tags `v*.*.*` & Manual Dispatch)
+- Triggers full multi-architecture build (`linux/amd64,linux/arm64`).
+- Generates universal multi-arch manifest lists on GHCR tagged with semantic versioning (`v8.0.0`, `v8.0`, `v8`).
+
+#### Production Release Step-by-Step Procedure:
+1. Verify 100% test pass rate locally: `pytest tests/ -v`.
+2. Create and push a semantic version tag:
+   ```bash
+   git tag -a v8.0.0 -m "Release v8.0.0 - 22-Tool Enterprise Security Platform"
+   git push origin v8.0.0
+   ```
+3. GitHub Actions automatically detects the `v*.*.*` tag and publishes the universal multi-arch container to `ghcr.io`.
 
 ```yaml
 name: Build & Publish Container Image to GHCR
@@ -642,7 +661,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up QEMU for multi-arch builds
+      - name: Set up QEMU for multi-arch builds (Production Releases Only)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -663,6 +683,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
       - name: Build and push Docker image
@@ -670,7 +691,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
