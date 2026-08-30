@@ -24,37 +24,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /tmp/bin
 
-# 1. Nuclei (v3.2.0)
+# 1. Nuclei (v3.11.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_arm64.zip -o nuclei.zip; \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_arm64.zip -o nuclei.zip; \
     else \
-      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip; \
+      curl -sSL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip -o nuclei.zip; \
     fi && \
     unzip -q nuclei.zip nuclei && \
     chmod +x nuclei && \
     rm nuclei.zip
 
-# 2. FFuF (v2.1.0)
+# 2. FFuF (v2.2.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_arm64.tar.gz | tar -xz ffuf; \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.2.1/ffuf_2.2.1_linux_arm64.tar.gz | tar -xz ffuf; \
     else \
-      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_amd64.tar.gz | tar -xz ffuf; \
+      curl -sSL https://github.com/ffuf/ffuf/releases/download/v2.2.1/ffuf_2.2.1_linux_amd64.tar.gz | tar -xz ffuf; \
     fi && \
     chmod +x ffuf
 
-# 3. Gitleaks (v8.18.2)
+# 3. Gitleaks (v8.30.1)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_arm64.tar.gz | tar -xz gitleaks; \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_arm64.tar.gz | tar -xz gitleaks; \
     else \
-      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz | tar -xz gitleaks; \
+      curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz gitleaks; \
     fi && \
     chmod +x gitleaks
 
-# 4. Trivy (v0.49.1)
+# 4. Trivy (v0.74.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-ARM64.tar.gz | tar -xz trivy; \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-ARM64.tar.gz | tar -xz trivy; \
     else \
-      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz | tar -xz trivy; \
+      curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz | tar -xz trivy; \
     fi && \
     chmod +x trivy
 
