@@ -15,29 +15,11 @@ $Registry = "ghcr.io"
 $ImageName = "andresslacson1989/security-assessment-platform"
 $FullImage = "$Registry/$ImageName"
 
-# 1. Load GitHub PAT from F:\gh.txt
-$ghPath = "F:\gh.txt"
-if (!(Test-Path $ghPath)) {
-    Write-Error "GitHub credentials not found at $ghPath"
-    exit 1
-}
-$ghLines = Get-Content $ghPath
-$ghToken = ""
-foreach ($line in $ghLines) {
-    if ($line -match "^(ghp_|github_pat_)[A-Za-z0-9_]+") {
-        $ghToken = $matches[0]
-        break
-    }
-    if ($line -match "Access token:\s*(.+)") {
-        $ghToken = $matches[1].Trim()
-        break
-    }
-}
-if (-not $ghToken) {
-    $ghToken = ($ghLines | Where-Object { $_ -match "^(ghp_|github_pat_)" } | Select-Object -First 1).Trim()
-}
-if (-not $ghToken) {
-    Write-Error "Could not parse GitHub token from $ghPath"
+# 1. Get GitHub token from authenticated gh CLI
+Write-Host "Authenticating with GitHub CLI..." -ForegroundColor Cyan
+$ghToken = (gh auth token 2>&1).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $ghToken) {
+    Write-Error "Could not get GitHub token. Run 'gh auth login' first."
     exit 1
 }
 

@@ -652,8 +652,9 @@ git push origin v8.0.0
 ```
 
 #### Authentication
-- Requires `F:\gh.txt` containing a GitHub Personal Access Token (PAT) with `write:packages` scope.
-- Login is handled automatically by the script via `docker login ghcr.io`.
+- Requires the **GitHub CLI (`gh`) to be authenticated** (`gh auth login`).
+- Login to GHCR is handled automatically by the script using `gh auth token | docker login ghcr.io`.
+- No manual token handling or credential files required.
 
 
 
