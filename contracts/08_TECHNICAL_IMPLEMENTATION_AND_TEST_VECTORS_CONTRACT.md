@@ -713,7 +713,7 @@ To enable instant, zero-cost test execution and Continuous Integration on local 
 #### 2. Pipeline Execution Script Specification (`.localci/ci.sh`)
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
 
 echo "========================================================"
 echo "   CyberAssess Platform - LocalCI Automated Pipeline"
@@ -723,7 +723,7 @@ echo "Working Directory: $(pwd)"
 
 # 1. Prepare Virtual Environment
 python3 -m venv .venv
-source .venv/bin/activate
+. .venv/bin/activate
 
 # 2. Install Core Dependencies & Testing Framework
 pip install --upgrade pip setuptools wheel

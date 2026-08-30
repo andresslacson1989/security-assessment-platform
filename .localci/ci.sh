@@ -4,7 +4,7 @@
 # Target Stack: Python 3.13 LTS (LocalCI 'python313' Profile on CT107)
 # Authoritative Contract Reference: contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md (Section 10.5)
 # ==============================================================================
-set -euo pipefail
+set -eu
 
 echo "========================================================"
 echo "   CyberAssess Platform - LocalCI Automated Pipeline"
@@ -18,7 +18,7 @@ echo "========================================================"
 # 1. Prepare Virtual Environment
 echo "=== Step 1: Setting up Python 3.13 Virtual Environment ==="
 python3 -m venv .venv
-source .venv/bin/activate
+. .venv/bin/activate
 
 # 2. Install Core Dependencies & Testing Framework
 echo "=== Step 2: Installing Dependencies & Pytest Suite ==="
