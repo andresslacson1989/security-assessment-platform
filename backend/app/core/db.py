@@ -65,7 +65,7 @@ class DatabaseManager:
         return cls._instance
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
@@ -431,46 +431,42 @@ class DatabaseManager:
     # 2. Immutable Audit Logging with Cryptographic Chained Hashes
     # ========================================================================
 
-    def record_audit_event(self, event: AuditEvent) -> None:
+    def _insert_audit_event_conn(self, conn: sqlite3.Connection, event: "AuditEvent") -> None:
+        """Inserts an audit event using an already-open connection. Use this when the caller
+        already holds a write transaction to avoid a second-connection deadlock on SQLite."""
+        cur = conn.cursor()
+        cur.execute("SELECT event_hash FROM audit_events ORDER BY rowid DESC LIMIT 1")
+        last_row = cur.fetchone()
+        prev_hash = last_row["event_hash"] if (last_row and last_row["event_hash"]) else None
+
+        ts_str = event.timestamp.isoformat() if event.timestamp else utc_now().isoformat()
+        act_str = event.action.value if hasattr(event.action, "value") else str(event.action)
+        details_str = json.dumps(event.details, sort_keys=True)
+        canonical_payload = f"{event.id}|{ts_str}|{event.actor}|{event.organization_id}|{act_str}|{event.object_type}|{event.object_id}|{event.result}|{details_str}|{prev_hash or ''}"
+        event_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        event.previous_event_hash = prev_hash
+        event.event_hash = event_hash
+
+        conn.execute(
+            """
+            INSERT INTO audit_events (
+                id, timestamp, actor, organization_id, action, object_type,
+                object_id, result, source_ip, correlation_id, details_json,
+                previous_event_hash, event_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id, ts_str, event.actor, event.organization_id, act_str,
+                event.object_type, event.object_id, event.result, event.source_ip,
+                event.correlation_id, details_str, prev_hash, event_hash,
+            ),
+        )
+
+    def record_audit_event(self, event: "AuditEvent") -> None:
         """Appends an immutable security audit event to the relational audit log with chained cryptographic hash."""
         with self._get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT event_hash FROM audit_events ORDER BY rowid DESC LIMIT 1")
-            last_row = cur.fetchone()
-            prev_hash = last_row["event_hash"] if (last_row and last_row["event_hash"]) else None
-            
-            ts_str = event.timestamp.isoformat() if event.timestamp else utc_now().isoformat()
-            act_str = event.action.value if hasattr(event.action, "value") else str(event.action)
-            details_str = json.dumps(event.details, sort_keys=True)
-            canonical_payload = f"{event.id}|{ts_str}|{event.actor}|{event.organization_id}|{act_str}|{event.object_type}|{event.object_id}|{event.result}|{details_str}|{prev_hash or ''}"
-            event_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
-            event.previous_event_hash = prev_hash
-            event.event_hash = event_hash
+            self._insert_audit_event_conn(conn, event)
 
-            conn.execute(
-                """
-                INSERT INTO audit_events (
-                    id, timestamp, actor, organization_id, action, object_type,
-                    object_id, result, source_ip, correlation_id, details_json,
-                    previous_event_hash, event_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.id,
-                    ts_str,
-                    event.actor,
-                    event.organization_id,
-                    act_str,
-                    event.object_type,
-                    event.object_id,
-                    event.result,
-                    event.source_ip,
-                    event.correlation_id,
-                    details_str,
-                    prev_hash,
-                    event_hash,
-                ),
-            )
 
     def list_audit_events(
         self,

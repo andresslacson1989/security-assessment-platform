@@ -131,24 +131,25 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     Strictly verifies PBKDF2 hash with constant-time comparison.
     """
     username = payload.username.strip()
+    source_ip = request.client.host if request.client else None
+
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM users WHERE username = ?", (username,))
         row = cur.fetchone()
 
         if not row or not verify_password(payload.password, row["hashed_password"]):
-            # Record failed login audit event
-            db_manager.record_audit_event(
-                AuditEvent(
-                    actor=username or "unknown",
-                    action=AuditAction.LOGIN_FAILURE,
-                    object_type="user",
-                    object_id=username or "unknown",
-                    result="DENIED",
-                    source_ip=request.client.host if request.client else None,
-                    details={"reason": "Invalid credentials"},
-                )
+            # Record failed login audit event inline (same connection)
+            fail_event = AuditEvent(
+                actor=username or "unknown",
+                action=AuditAction.LOGIN_FAILURE,
+                object_type="user",
+                object_id=username or "unknown",
+                result="DENIED",
+                source_ip=source_ip,
+                details={"reason": "Invalid credentials"},
             )
+            db_manager._insert_audit_event_conn(conn, fail_event)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password.",
@@ -174,18 +175,17 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
         # Update last login timestamp
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now().isoformat(), user.id))
 
-        # Record successful login audit event
-        db_manager.record_audit_event(
-            AuditEvent(
-                actor=user.username,
-                organization_id=user.organization_id,
-                action=AuditAction.LOGIN_SUCCESS,
-                object_type="user",
-                object_id=user.id,
-                result="SUCCESS",
-                source_ip=request.client.host if request.client else None,
-            )
+        # Record successful login audit event inline (same connection)
+        success_event = AuditEvent(
+            actor=user.username,
+            organization_id=user.organization_id,
+            action=AuditAction.LOGIN_SUCCESS,
+            object_type="user",
+            object_id=user.id,
+            result="SUCCESS",
+            source_ip=source_ip,
         )
+        db_manager._insert_audit_event_conn(conn, success_event)
 
         token = create_access_token(user)
         return LoginResponse(access_token=token, user=user)
