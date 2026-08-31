@@ -97,7 +97,20 @@ The platform must pass all 25 acceptance test scenarios deterministically:
 24. **Scenario 24: Cloud, Container & Kubernetes CIS Benchmarks (`prowler`, `kube-bench`, `dockle`)**
     - Verifies CIS Docker image linting, CIS Kubernetes cluster benchmark auditing, and cloud security posture checks.
 25. **Scenario 25: Property-Based API Contract Security (`schemathesis`)**
-    - Verifies property-based fuzzing against OpenAPI/GraphQL schemas with automatic detection of broken authorization and server crash vectors.
+26. **Scenario 26: Strict Server-Side Request Forgery (SSRF) Protection & DNS Rebinding Gate**
+    - Verifies that requests to private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`), link-local/cloud metadata (`169.254.169.254`), and rebinding domains are blocked with HTTP 400.
+27. **Scenario 27: Zero-Trust Authentication, JWT Lifecycle & Multi-Tiered RBAC Enforcement**
+    - Verifies password hashing, token issuance, endpoint permission gates across `ADMIN`, `SECURITY_ANALYST`, `DEVELOPER`, and `VIEWER` roles, and API Key authorization.
+28. **Scenario 28: Target Path Sandboxing & Workspace Containment Jail**
+    - Verifies that path traversal sequences (`../../etc/passwd`) and restricted system directories (`/etc`, `/root`, `C:\Windows`) are rejected with validation errors.
+29. **Scenario 29: Cryptographic SHA-256 Checksum Verification & Manifest-Pinned Tool Supply Chain**
+    - Verifies that external tool downloads validate against pinned SHA-256 digests in `tool_manifest.py` and corrupted/tampered archives are rejected.
+30. **Scenario 30: Dual-Mode Relational Persistence (SQLite & PostgreSQL) & Asset Inventory**
+    - Verifies transactional entity storage, asset inventory tracking, and pagination across relational backends.
+31. **Scenario 31: Cross-Engine Finding Correlation & Root-Cause Vulnerability Aggregation**
+    - Verifies that matching SAST and DAST observations (e.g. source code injection + live endpoint exploit) are synthesized into a single high-confidence `UnifiedFinding`.
+32. **Scenario 32: Contextual Risk Scoring Engine & Vulnerability Lifecycle SLA Tracking**
+    - Verifies calculated risk based on Asset Criticality, Internet Exposure, and SLA countdown computation.
 
 ---
 
@@ -105,11 +118,13 @@ The platform must pass all 25 acceptance test scenarios deterministically:
 
 A release is marked **DONE** only when:
 1. All data structures strictly validate against Contract 02 Pydantic schemas.
-2. All 5 engines and 22 adapters catch all exceptions with zero orchestrator crashes.
-3. In-App Tool Installers successfully install, verify, and resolve binaries with zero elevation for user-space tools.
-4. Production Dockerfile and Compose configurations build and pass container health checks with 100% tool parity.
-5. Scoring math conforms to Contract 02 formulas with zero deviations.
-6. Frontend executes cleanly with zero JavaScript console errors.
-7. `pytest tests/ -v` passes with 100% success rate across all 25 scenarios.
+2. All 5 engines and 21 adapters catch all exceptions with zero orchestrator crashes.
+3. In-App Tool Installers successfully verify SHA-256 checksums and resolve binaries.
+4. SSRF protection, RBAC permission gates, and path sandboxes block 100% of malicious probes.
+5. Production Dockerfile and Compose configurations build and pass container health checks with 100% tool parity.
+6. Scoring math conforms to Contract 02 formulas with zero deviations.
+7. Frontend executes cleanly with zero JavaScript console errors.
+8. `pytest tests/ -v` passes with 100% success rate across all 32 scenarios.
+
 
 

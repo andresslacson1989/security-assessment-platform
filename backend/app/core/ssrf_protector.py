@@ -1,0 +1,152 @@
+"""
+Contract 01 §5.1, Contract 04 & Contract 08 §12.1:
+Strict Server-Side Request Forgery (SSRF) Protection Gateway & DNS Rebinding Defenses.
+"""
+
+from __future__ import annotations
+import ipaddress
+import socket
+import urllib.parse
+from typing import List, Tuple, Optional
+
+
+# Blocked IPv4 and IPv6 Networks
+BLOCKED_NETWORKS = [
+    # IPv4 Loopback & Unspecified
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    # IPv4 RFC 1918 Private Subnets
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    # IPv4 Link-Local & Cloud Metadata (AWS, GCP, Azure, OpenStack 169.254.169.254)
+    ipaddress.ip_network("169.254.0.0/16"),
+    # Carrier-Grade NAT (RFC 6598)
+    ipaddress.ip_network("100.64.0.0/10"),
+    # Multicast & Reserved
+    ipaddress.ip_network("224.0.0.0/4"),
+    ipaddress.ip_network("240.0.0.0/4"),
+    # IPv6 Loopback & Unspecified
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("::/128"),
+    # IPv6 Link-Local
+    ipaddress.ip_network("fe80::/10"),
+    # IPv6 Unique Local Unicast (RFC 4193)
+    ipaddress.ip_network("fc00::/7"),
+    # IPv6 Multicast
+    ipaddress.ip_network("ff00::/8"),
+]
+
+BLOCKED_HOSTNAMES = {
+    "localhost",
+    "localhost.localdomain",
+    "metadata.google.internal",
+    "metadata.internal",
+    "instance-data",
+    "169.254.169.254",
+}
+
+
+class SSRFProtectionError(ValueError):
+    """Raised when a target URL or resolved IP violates SSRF protection policy."""
+    pass
+
+
+def is_ip_allowed(ip_str: str) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluates whether an IPv4 or IPv6 address is safe for outbound scanning.
+    Returns (True, None) if allowed, or (False, reason) if blocked.
+    """
+    try:
+        ip_obj = ipaddress.ip_address(ip_str.strip())
+    except ValueError:
+        return False, f"Invalid IP address format: '{ip_str}'"
+
+    # Fast boolean checks from stdlib
+    if ip_obj.is_loopback:
+        return False, f"Loopback address '{ip_str}' is forbidden."
+    if ip_obj.is_private:
+        return False, f"Private intranet address '{ip_str}' is forbidden."
+    if ip_obj.is_link_local:
+        return False, f"Link-local / Cloud metadata address '{ip_str}' is forbidden."
+    if ip_obj.is_multicast:
+        return False, f"Multicast address '{ip_str}' is forbidden."
+    if ip_obj.is_reserved:
+        return False, f"Reserved address '{ip_str}' is forbidden."
+    if ip_obj.is_unspecified:
+        return False, f"Unspecified address '{ip_str}' is forbidden."
+
+    # Comprehensive CIDR containment check
+    for net in BLOCKED_NETWORKS:
+        if ip_obj in net:
+            return False, f"IP '{ip_str}' falls within blocked network '{net}'."
+
+    return True, None
+
+
+def resolve_hostname_ips(hostname: str) -> List[str]:
+    """
+    Resolves hostname to all corresponding IPv4 and IPv6 addresses.
+    """
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+        ips = list(dict.fromkeys(item[4][0] for item in addr_info if item and item[4]))
+        return ips
+    except socket.gaierror:
+        return []
+
+
+def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
+    """
+    Validates that a URL is well-formed, uses http/https, and does not target forbidden internal IPs.
+    If allow_internal is True (Admin override), internal private IPs are permitted.
+    """
+    if not url or not isinstance(url, str):
+        return False, "Target URL cannot be empty."
+
+    parsed = urllib.parse.urlparse(url.strip())
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False, f"Scheme '{parsed.scheme}' is disallowed. Must be 'http' or 'https'."
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "Target URL missing valid hostname."
+
+    hostname_lower = hostname.lower().strip("[]")
+
+    if not allow_internal:
+        # Check forbidden hostnames
+        if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.endswith(".internal"):
+            return False, f"Target hostname '{hostname}' is a reserved internal/metadata name."
+
+        # Check direct IP literals
+        try:
+            ip_obj = ipaddress.ip_address(hostname_lower)
+            allowed, reason = is_ip_allowed(str(ip_obj))
+            if not allowed:
+                return False, reason
+            return True, None
+        except ValueError:
+            pass  # Not an IP literal; proceed to DNS resolution
+
+        # Resolve hostname and check all IPs
+        resolved_ips = resolve_hostname_ips(hostname_lower)
+        if not resolved_ips:
+            # If hostname cannot be resolved, let request proceed to network engine (which will handle NXDOMAIN gracefully)
+            return True, None
+
+        for ip in resolved_ips:
+            allowed, reason = is_ip_allowed(ip)
+            if not allowed:
+                return False, f"Resolved IP '{ip}' for hostname '{hostname}' is blocked: {reason}"
+
+    return True, None
+
+
+def assert_safe_url(url: str, allow_internal: bool = False) -> None:
+    """
+    Convenience function that raises SSRFProtectionError if the URL fails validation.
+    """
+    allowed, reason = validate_target_url(url, allow_internal=allow_internal)
+    if not allowed:
+        raise SSRFProtectionError(reason or "SSRF validation failed.")

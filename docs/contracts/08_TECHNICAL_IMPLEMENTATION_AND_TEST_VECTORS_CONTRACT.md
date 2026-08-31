@@ -864,10 +864,32 @@ echo "========================================================"
 - **Output Parsing:** Parses CIS Docker benchmark image audits (`CIS-DI-0001` to `CIS-DI-0010`).
 - **Normalization:** Emits `Finding` with `check_id="DOCKER-CIS-001"` and CIS remediation details.
 
-### 11.12 Schemathesis Adapter (`SchemathesisAdapter`)
-- **CLI Invocation:** `schemathesis run <schema_url> --report-format json`
-- **Output Parsing:** Parses property-based test results, unhandled 500 errors, and broken schema contracts.
-- **Normalization:** Emits `Finding` with `check_id="API-SCHEMA-001"` and reproduction cURL commands.
+---
+
+## 12. Platform Defense & Security Regression Test Vectors
+
+### 12.1 SSRF Protection Test Vectors
+The platform test suite MUST execute the following test vectors against the SSRF gateway (`SSRFProtector` and `/api/tools/repeater`):
+1. `http://127.0.0.1:8000/` -> **Blocked** (`HTTP 400 Bad Request: SSRF Protection Blocked`)
+2. `http://localhost:8000/` -> **Blocked** (DNS pre-resolution identifies `127.0.0.1`)
+3. `http://169.254.169.254/latest/meta-data/` -> **Blocked** (Link-Local / Cloud Metadata)
+4. `http://10.0.0.1/admin` -> **Blocked** (RFC 1918 Private Subnet)
+5. `http://192.168.1.1/` -> **Blocked** (RFC 1918 Private Subnet)
+6. `http://172.16.0.5/` -> **Blocked** (RFC 1918 Private Subnet)
+7. `http://[::1]:8000/` -> **Blocked** (IPv6 Loopback)
+8. `http://attacker.com/redirect?to=http://127.0.0.1` -> **Blocked** (Redirect validation halts before following)
+
+### 12.2 RBAC & Auth Test Vectors
+1. Unauthenticated request to `/api/scans/start` -> **Blocked** (`HTTP 401 Unauthorized`)
+2. `VIEWER` role requesting `POST /api/system/tools/nuclei/install` -> **Blocked** (`HTTP 403 Forbidden`)
+3. `DEVELOPER` role requesting `DELETE /api/scans/{id}` -> **Blocked** (`HTTP 403 Forbidden`)
+4. `ADMIN` role requesting `POST /api/scans/start` -> **Allowed** (`HTTP 201 Created`)
+
+### 12.3 Target Path Sandboxing Test Vectors
+1. Target `LOCAL_PATH` with value `/etc/passwd` -> **Blocked** (`HTTP 400 Bad Request: Path sandbox violation`)
+2. Target `LOCAL_PATH` with value `../../../../Windows/System32` -> **Blocked** (`HTTP 400 Bad Request: Path sandbox violation`)
+3. Target `LOCAL_PATH` within authorized workspace `data/workspaces/sample-project` -> **Allowed**
+
 
 
 

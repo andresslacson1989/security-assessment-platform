@@ -471,14 +471,161 @@ $$\text{Final Score } S = \max(0.0, \min(100.0, S_{\text{raw}}))$$
 
 ---
 
-## 5. Finding Fingerprinting & Deduplication
+## 6. Zero-Trust Authentication, RBAC & Multi-Tenancy Models
 
 ```python
-import hashlib
+class UserRole(str, Enum):
+    ADMIN = "ADMIN"                      # Full administrative control, tool installs, user provisioning, SSRF bypass
+    SECURITY_ANALYST = "SECURITY_ANALYST" # Full scanning, HTTP Repeater, vulnerability triage, report exports
+    DEVELOPER = "DEVELOPER"              # Scans on assigned assets/projects, remediation updates
+    VIEWER = "VIEWER"                    # Read-only dashboard and report viewer
 
-def calculate_fingerprint(check_id: str, location: str, observed_value: str) -> str:
-    raw = f"{check_id}|{location.strip().lower()}|{observed_value.strip().lower()}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str = Field(..., min_length=3, max_length=50)
+    email: str = Field(...)
+    hashed_password: str = Field(...)
+    role: UserRole = Field(default=UserRole.VIEWER)
+    organization_id: Optional[str] = Field(default=None)
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Organization(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = Field(...)
+    slug: str = Field(...)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Project(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    organization_id: str = Field(...)
+    name: str = Field(...)
+    description: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class APIKey(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = Field(...)
+    key_prefix: str = Field(...)
+    hashed_secret: str = Field(...)
+    name: str = Field(...)
+    role: UserRole = Field(default=UserRole.SECURITY_ANALYST)
+    expires_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class TokenPayload(BaseModel):
+    sub: str = Field(..., description="User ID")
+    username: str = Field(...)
+    role: UserRole = Field(...)
+    org_id: Optional[str] = Field(default=None)
+    exp: int = Field(...)
 ```
-If a newly generated finding has an identical `fingerprint` to an existing finding in the `ScanJob`, the new finding MUST be discarded and its occurrence logged as a duplicate observation.
+
+---
+
+## 7. Asset Management & Continuous Inventory Models
+
+```python
+class AssetType(str, Enum):
+    WEB_APPLICATION = "WEB_APPLICATION"
+    API_ENDPOINT = "API_ENDPOINT"
+    DOMAIN = "DOMAIN"
+    IP_ADDRESS = "IP_ADDRESS"
+    GIT_REPOSITORY = "GIT_REPOSITORY"
+    CONTAINER_IMAGE = "CONTAINER_IMAGE"
+    KUBERNETES_CLUSTER = "KUBERNETES_CLUSTER"
+    CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
+
+class AssetCriticality(str, Enum):
+    CRITICAL = "CRITICAL"    # Tier 1 Revenue / Core Production (Factor: 1.5x)
+    HIGH = "HIGH"            # Production Supporting / Internal Sensitive (Factor: 1.2x)
+    MEDIUM = "MEDIUM"        # Staging / UAT / Pre-production (Factor: 1.0x)
+    LOW = "LOW"              # Development / Sandbox / Ephemeral (Factor: 0.7x)
+
+class Asset(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    organization_id: Optional[str] = Field(default=None)
+    project_id: Optional[str] = Field(default=None)
+    name: str = Field(..., min_length=2, max_length=120)
+    type: AssetType = Field(...)
+    target_value: str = Field(...)
+    criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
+    internet_exposed: bool = Field(default=True)
+    tags: List[str] = Field(default_factory=list)
+    owner: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_scanned_at: Optional[datetime] = Field(default=None)
+```
+
+---
+
+## 8. Vulnerability Lifecycle, Triage & SLA Tracking Models
+
+```python
+class FindingLifecycleStatus(str, Enum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    IN_PROGRESS = "IN_PROGRESS"
+    FIXED = "FIXED"
+    VERIFIED = "VERIFIED"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+
+class FindingComment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = Field(...)
+    username: str = Field(...)
+    comment: str = Field(...)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class SLAInfo(BaseModel):
+    severity: Severity = Field(...)
+    sla_days: int = Field(..., description="Allowed remediation window (Crit: 7d, High: 14d, Med: 30d, Low: 90d)")
+    due_date: datetime = Field(...)
+    is_breached: bool = Field(default=False)
+```
+
+---
+
+## 9. Cross-Engine Finding Correlation & Unified Finding Models
+
+```python
+class CorrelationType(str, Enum):
+    SAST_DAST_VERIFIED = "SAST_DAST_VERIFIED"  # Confirmed SAST flaw matching live DAST endpoint behavior
+    MULTI_TOOL_CONFIRMED = "MULTI_TOOL_CONFIRMED" # Confirmed by 2+ independent tool adapters
+    ENDPOINT_CLUSTERED = "ENDPOINT_CLUSTERED"   # Multiple related CVEs/exposures on identical route
+
+class UnifiedFinding(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    asset_id: Optional[str] = Field(default=None)
+    correlation_type: Optional[CorrelationType] = Field(default=None)
+    title: str = Field(...)
+    category: str = Field(...)
+    severity: Severity = Field(...)
+    cvss_score: float = Field(..., ge=0.0, le=10.0)
+    contextual_risk_score: float = Field(default=0.0, ge=0.0, le=10.0)
+    cwe_id: Optional[str] = Field(default=None)
+    contributing_tools: List[str] = Field(default_factory=list)
+    raw_finding_ids: List[str] = Field(default_factory=list)
+    lifecycle_status: FindingLifecycleStatus = Field(default=FindingLifecycleStatus.OPEN)
+    first_seen: datetime = Field(default_factory=datetime.utcnow)
+    last_seen: datetime = Field(default_factory=datetime.utcnow)
+    times_observed: int = Field(default=1)
+    sla: Optional[SLAInfo] = Field(default=None)
+    assigned_to: Optional[str] = Field(default=None)
+    remediation: str = Field(...)
+    comments: List[FindingComment] = Field(default_factory=list)
+```
+
+---
+
+## 10. Contextual Risk Scoring Algorithm
+
+$$\text{Contextual Risk Score } R = \min\left(10.0, \text{CVSS}_{\text{base}} \times C_{\text{asset}} \times E_{\text{exposure}} \times F_{\text{confidence}}\right)$$
+
+Where:
+- **$C_{\text{asset}}$ (Asset Criticality Factor):** `CRITICAL`: 1.5, `HIGH`: 1.2, `MEDIUM`: 1.0, `LOW`: 0.7
+- **$E_{\text{exposure}}$ (Internet Exposure Factor):** Exposed: 1.0, Internal/Isolated: 0.7
+- **$F_{\text{confidence}}$ (Correlation Confidence):** Single tool: 1.0, Multi-tool confirmed: 1.15, SAST+DAST verified: 1.3
+
 

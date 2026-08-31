@@ -45,17 +45,26 @@ async def lifespan(app: FastAPI):
     # Shutdown cleanup if required
 
 
+import os
+
+# Configurable CORS origins
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+
 app = FastAPI(
     title="CyberAssess Security Assessment & Vulnerability Platform",
-    version="6.0.0",
-    description="Production Automated Security Assessment, Vulnerability Scoring and Vulnerability Management Platform.",
+    version="9.0.0",
+    description="Enterprise Automated Security Assessment, Vulnerability Scoring and Vulnerability Management Platform.",
     lifespan=lifespan,
 )
 
 # CORS Middleware for modern browser SPAs and external API clients
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

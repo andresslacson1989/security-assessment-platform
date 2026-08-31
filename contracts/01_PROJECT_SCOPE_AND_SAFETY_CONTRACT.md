@@ -1,9 +1,9 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Operational Limits
 
 **Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
+**Document Version:** 9.0.0 (Enterprise ASPM & EASM Suite, 21-Tool Fleet, Zero-Trust Hardening, SSRF Gateway, Dual-Mode Persistence & Contextual Risk Architecture Specification)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Platform Core Architecture, Safety Standards & Security Operations  
+**Scope Authority:** Platform Core Architecture, Safety Standards, Zero-Trust Security Controls & Operations  
 
 ---
 
@@ -33,7 +33,7 @@ The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Archite
 - **Stage 1 (Primary Front-Line Tool Adapters):** When industry-standard CLI pentesting tools are present on the host system or container image, they fire first as the primary authoritative assessment engines.
 - **Stage 2 (Proprietary Native Enrichment):** Deep specialized modules run concurrently or following adapter runs to enrich the assessment with proprietary capabilities external tools do not provide (e.g. interprocedural AST taint flow tracing, active time/boolean SQLi fuzzing with reproduction cURLs, Certificate Transparency OSINT, CNAME takeover detection, and strict DNS hygiene).
 - **Stage 3 (Resilient Zero-Failure Native Fallbacks):** If any external tool binary is absent on the host or encounters an error, the system seamlessly falls back to its built-in pure Python engines, guaranteeing 100% operational portability on clean systems with zero dropped assessments.
-- **Production Container Distribution:** The platform ships as a hardened multi-stage Docker container pre-packaged with all 22 tools, CPAN Perl modules, and runtime dependencies, publishable to GitHub Container Registry (`ghcr.io`) for 1-command cloud/server deployment.
+- **Production Container Distribution:** The platform ships as a hardened multi-stage Docker container pre-packaged with all 21 tools, CPAN Perl modules, and runtime dependencies, publishable to GitHub Container Registry (`ghcr.io`) for 1-command cloud/server deployment.
 - **Integrated In-App Installation:** Users running on bare metal can install missing tool adapters with a single click directly from the web interface or REST API without leaving the platform or manually editing system configuration files.
 
 The platform calculates deterministic CVSS v3.1-aligned security scores and letter grades (`A+` to `F`), streams real-time execution logs and vulnerability findings over Server-Sent Events (SSE), enables interactive HTTP request repeating, provides one-click standalone `curl` reproduction PoC commands, and exports industry-standard reports (Interactive Standalone HTML, OASIS SARIF v2.1.0 for GitHub Code Scanning, and structured JSON).
@@ -97,13 +97,6 @@ When executing headless Chromium-driven single-page application (SPA) crawling:
    - Browser navigation is locked to the explicit target domain origin. External script execution is sandboxed.
 2. **Deterministic Execution Timeout:**
    - Maximum rendering wait time per DOM mutation: 5.0 seconds. Total crawl phase timeout: 120.0 seconds.
-
-### 2.5 Software Supply Chain & SBOM Safety Rules (`syft`, `grype`, `osv-scanner`)
-When generating SBOMs and analyzing dependency manifests:
-1. **Static Manifest Inspection Only:**
-   - Parsers evaluate lockfiles (`package-lock.json`, `poetry.lock`, `go.sum`, `Cargo.lock`, `pom.xml`, `requirements.txt`) statically without executing arbitrary build scripts (`setup.py`, `preinstall` hooks, or Makefile targets).
-2. **Zero Ingestion of Untrusted Binaries:**
-   - Package auditing relies on cryptographically verified database lookups against Google OSV and Anchore vulnerability feeds.
 
 ### 2.6 Verified Secret Probing Constraints (`trufflehog`)
 When conducting live API key and secret verification:
@@ -277,14 +270,64 @@ External tools MUST be invoked with strictly bounded, non-destructive arguments:
 
 ---
 
-## 7. Audit Trail & Legal Authorization Contract
+## 8. Platform Defense, Zero-Trust Access Control & SSRF Gateway
 
-- **User Consent Notice:** The platform UI displays a permanent notice: *"Only run security assessments against targets you own or have explicit written authorization to test."*
-- **Audit Logging:** Every scan record persistently logs:
-  - Unique UUID v4 `scan_id`
-  - Exact target identifier and resolved IP
-  - Selected profile, enabled engine list, and active tool adapters
-  - User agent / scanner identifier used
-  - Start timestamp, completion timestamp, and duration
-  - Total request count and bytes transferred
+To guarantee that CyberAssess itself cannot be weaponized or compromised when deployed on private intranets or cloud environments:
+
+### 8.1 Strict Server-Side Request Forgery (SSRF) Protection Gateway
+All arbitrary outbound request facilities (including the HTTP Repeater `/api/tools/repeater` and dynamic network probes) MUST pass through the centralized `SSRFProtector` gateway before socket connection:
+1. **CIDR Denylist Validation:**
+   - `127.0.0.0/8` (IPv4 Loopback)
+   - `::1/128` (IPv6 Loopback)
+   - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC 1918 Private Intranets)
+   - `169.254.0.0/16`, `fe80::/10` (Link-Local & Cloud Instance Metadata e.g. AWS/GCP/Azure `169.254.169.254`)
+   - `100.64.0.0/10` (Carrier-Grade NAT)
+   - `0.0.0.0/8`, `fc00::/7` (Unique Local Unicast)
+2. **DNS Pre-Resolution & Rebinding Protection:**
+   - The target hostname is resolved to IP addresses via trusted DNS resolvers.
+   - Every resolved IP address is verified against the CIDR blocklist.
+   - If any resolved IP is blocked, the request is immediately aborted with `HTTP 400 Bad Request: SSRF Protection Blocked`.
+   - Outbound HTTP connections bind directly to the pre-verified IP while injecting the original `Host` header to eliminate Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding vulnerabilities.
+3. **Redirect Chain Interception:**
+   - All HTTP redirect targets (`Location:` headers) are validated against the SSRF policy before following.
+4. **Authorized Intranet Override Gate:**
+   - Scanning internal infrastructure is permitted ONLY when authenticated under the `ADMIN` role with the explicit flag `allow_internal_target=true`.
+
+### 8.2 Zero-Trust Authentication & Role-Based Access Control (RBAC)
+1. **Authentication Boundary:**
+   - All REST and SSE API endpoints (`/api/scans/*`, `/api/tools/*`, `/api/assets/*`, `/api/findings/*`) require signed JWT Bearer tokens or verified `X-API-Key` headers.
+   - Password hashing uses standard PBKDF2-HMAC-SHA256 with cryptographic salt ($\ge 100,000$ iterations).
+2. **Multi-Tiered RBAC Matrix:**
+   - `ADMIN`: Full administrative control, user/organization provisioning, tool lifecycle, SSRF policy overrides.
+   - `SECURITY_ANALYST`: Scan creation, HTTP Repeater, full finding triage, report exports.
+   - `DEVELOPER`: Scans restricted to assigned assets/projects, finding remediation updates.
+   - `VIEWER`: Read-only access to completed scan dashboards and compliance reports.
+3. **CORS Hardening:**
+   - Production deployments restrict `Access-Control-Allow-Origin` to configured trusted origins (disallowing wildcard `*` with credentials).
+
+---
+
+## 9. Target Path Sandboxing & Workspace Containment
+
+When scanning local filesystem targets (`LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`):
+1. **Workspace Boundary Enforcement:**
+   - Target paths MUST resolve within allowed workspace roots (e.g. `data/workspaces/`, configured `ALLOWED_SCAN_ROOTS`, or relative project roots).
+2. **Sensitive System Directory Denylist:**
+   - The platform strictly rejects scanning of system-critical paths:
+     - POSIX: `/etc`, `/root`, `/var/run`, `/proc`, `/sys`, `/dev`, `~/.ssh`, `~/.aws`, `~/.kube`
+     - Windows: `C:\Windows`, `C:\Program Files`, `C:\Users\*\AppData`, `~/.ssh`, `~/.aws`
+3. **Symlink Resolution & Canonical Path Verification:**
+   - Real filesystem paths are resolved with `realpath()` prior to inspection. Traversal sequences (`../`) resolving outside permitted roots are rejected immediately.
+
+---
+
+## 10. Tool Supply Chain Integrity & Cryptographic Verification
+
+1. **Manifest-Pinned Versioning:**
+   - All downloadable external tool binaries are cataloged in an authoritative `ToolManifest` defining exact semantic versions and official repository sources.
+2. **Cryptographic SHA-256 Checksum Verification:**
+   - Downloaded release archives MUST be cryptographically validated against pre-computed SHA-256 digests across all supported OS/CPU combinations (`windows_amd64`, `linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`).
+   - Any archive with a mismatched hash is immediately discarded and logged as a security alert.
+3. **Quarantine Extraction:**
+   - Archives are unpacked in isolated temporary quarantine directories before atomic deployment to `backend/bin/`.
 

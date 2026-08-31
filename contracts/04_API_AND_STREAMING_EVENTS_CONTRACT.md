@@ -385,11 +385,88 @@ Event Types emitted:
 8. `event: completed` — Data: `{"scan_id": "...", "status": "COMPLETED", "overall_security_grade": "C", "weighted_score": 76.0, "total_findings": 10, "active_adapters": ["nmap", "semgrep"], "completed_at": "..."}`
 9. `event: error` — Data: `{"message": "Scan failed: Target host unreachable."}`
 
-### 2.2 Tool Installation Telemetry Stream (`GET /api/system/tools/events`)
-Protocol: **Server-Sent Events (SSE)** (`text/event-stream; charset=utf-8`)
+---
 
-Event Types emitted during in-app tool installations:
-1. `event: install_progress` — Data: `{"tool_name": "nuclei", "task_id": "...", "percent": 50, "stage": "Extracting binary to backend/bin/..."}`
-2. `event: install_log` — Data: `{"tool_name": "nuclei", "message": "Downloading https://github.com/.../nuclei_3.2.0_windows_amd64.zip (24.2 MB)..."}`
-3. `event: install_completed` — Data: `{"tool_name": "nuclei", "path": "backend/bin/nuclei.exe", "version": "nuclei v3.2.0", "message": "Nuclei installed successfully and ready for scans."}`
-4. `event: install_failed` — Data: `{"tool_name": "nuclei", "error": "Connection timed out after 30 seconds."}`
+## 3. Zero-Trust Authentication, Asset Management & Vulnerability Triage Endpoints
+
+### 3.1 Authentication & API Key Endpoints (`/api/auth`)
+
+#### `POST /api/auth/login`
+Authenticates a user and issues a signed JWT Bearer token.
+- **Request Body (`application/json`):**
+```json
+{
+  "username": "admin",
+  "password": "CorrectPassword123!"
+}
+```
+- **Response (200 OK):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "expires_in": 86400,
+  "user": {
+    "id": "u-1234",
+    "username": "admin",
+    "email": "admin@example.com",
+    "role": "ADMIN"
+  }
+}
+```
+
+#### `POST /api/auth/register`
+Registers a new user (Restricted to `ADMIN` in production, open for initial setup).
+
+#### `GET /api/auth/me`
+Returns current authenticated user profile and permissions.
+
+#### `POST /api/auth/api-keys`
+Generates a new programmatic API Key with scoped role permissions.
+
+---
+
+### 3.2 Continuous Asset Inventory Endpoints (`/api/assets`)
+
+#### `GET /api/assets`
+Returns paginated list of monitored organization assets with posture statistics.
+
+#### `POST /api/assets`
+Registers a new asset (Web App, Domain, Repository, Cloud Account) into continuous inventory.
+- **Request Body (`application/json`):**
+```json
+{
+  "name": "Customer Portal",
+  "type": "WEB_APPLICATION",
+  "target_value": "https://portal.example.com",
+  "criticality": "HIGH",
+  "internet_exposed": true,
+  "tags": ["production", "pci-dss"]
+}
+```
+
+#### `GET /api/assets/{asset_id}`
+Retrieves asset details, posture trend, active SLA breaches, and historical findings.
+
+---
+
+### 3.3 Vulnerability Lifecycle & Triage Endpoints (`/api/findings`)
+
+#### `GET /api/findings`
+Unified finding explorer with multi-scanner correlation filtering.
+- Query Parameters: `asset_id`, `severity`, `status` (`OPEN`, `FIXED`, `RISK_ACCEPTED`), `cwe_id`, `search`.
+
+#### `PATCH /api/findings/{finding_id}/status`
+Updates finding lifecycle state and logs triage action in audit trail.
+- **Request Body (`application/json`):**
+```json
+{
+  "status": "IN_PROGRESS",
+  "assigned_to": "alice@security.com",
+  "comment": "Assigned to frontend team to implement strict CSP headers."
+}
+```
+
+#### `POST /api/findings/{finding_id}/comments`
+Appends a collaboration note or remediation evidence to a finding.
+

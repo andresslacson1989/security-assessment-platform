@@ -655,3 +655,101 @@ class RepeaterResponse(BaseModel):
     content_length: int = Field(..., ge=0, description="Response payload content length in bytes")
     tls_version: Optional[str] = Field(default=None, description="Observed TLS version (e.g. TLSv1.3)")
     cipher: Optional[str] = Field(default=None, description="Observed TLS cipher suite")
+
+
+# ============================================================================
+# 7. Enterprise ASPM, RBAC, Asset Inventory & Finding Correlation Models
+# ============================================================================
+
+class AssetType(str, Enum):
+    WEB_APPLICATION = "WEB_APPLICATION"
+    API_ENDPOINT = "API_ENDPOINT"
+    DOMAIN = "DOMAIN"
+    IP_ADDRESS = "IP_ADDRESS"
+    GIT_REPOSITORY = "GIT_REPOSITORY"
+    CONTAINER_IMAGE = "CONTAINER_IMAGE"
+    KUBERNETES_CLUSTER = "KUBERNETES_CLUSTER"
+    CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
+
+
+class AssetCriticality(str, Enum):
+    CRITICAL = "CRITICAL"    # Factor: 1.5x
+    HIGH = "HIGH"            # Factor: 1.2x
+    MEDIUM = "MEDIUM"        # Factor: 1.0x
+    LOW = "LOW"              # Factor: 0.7x
+
+
+class Asset(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    organization_id: Optional[str] = Field(default=None)
+    project_id: Optional[str] = Field(default=None)
+    name: str = Field(..., min_length=2, max_length=120)
+    type: AssetType = Field(...)
+    target_value: str = Field(...)
+    criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
+    internet_exposed: bool = Field(default=True)
+    tags: List[str] = Field(default_factory=list)
+    owner: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_scanned_at: Optional[datetime] = Field(default=None)
+    active_findings_count: int = Field(default=0)
+
+
+class FindingLifecycleStatus(str, Enum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    IN_PROGRESS = "IN_PROGRESS"
+    FIXED = "FIXED"
+    VERIFIED = "VERIFIED"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+
+
+class FindingComment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = Field(...)
+    username: str = Field(...)
+    comment: str = Field(...)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SLAInfo(BaseModel):
+    severity: Severity = Field(...)
+    sla_days: int = Field(..., description="Allowed remediation window (Crit: 7d, High: 14d, Med: 30d, Low: 90d)")
+    due_date: datetime = Field(...)
+    is_breached: bool = Field(default=False)
+
+
+class CorrelationType(str, Enum):
+    SAST_DAST_VERIFIED = "SAST_DAST_VERIFIED"
+    MULTI_TOOL_CONFIRMED = "MULTI_TOOL_CONFIRMED"
+    ENDPOINT_CLUSTERED = "ENDPOINT_CLUSTERED"
+
+
+class UnifiedFinding(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    asset_id: Optional[str] = Field(default=None)
+    correlation_type: Optional[CorrelationType] = Field(default=None)
+    title: str = Field(...)
+    category: str = Field(...)
+    severity: Severity = Field(...)
+    cvss_score: float = Field(..., ge=0.0, le=10.0)
+    contextual_risk_score: float = Field(default=0.0, ge=0.0, le=10.0)
+    cwe_id: Optional[str] = Field(default=None)
+    contributing_tools: List[str] = Field(default_factory=list)
+    raw_finding_ids: List[str] = Field(default_factory=list)
+    lifecycle_status: FindingLifecycleStatus = Field(default=FindingLifecycleStatus.OPEN)
+    first_seen: datetime = Field(default_factory=datetime.utcnow)
+    last_seen: datetime = Field(default_factory=datetime.utcnow)
+    times_observed: int = Field(default=1)
+    sla: Optional[SLAInfo] = Field(default=None)
+    assigned_to: Optional[str] = Field(default=None)
+    remediation: str = Field(...)
+    comments: List[FindingComment] = Field(default_factory=list)
+
+
+class FindingTriageUpdate(BaseModel):
+    status: FindingLifecycleStatus = Field(...)
+    assigned_to: Optional[str] = Field(default=None)
+    comment: Optional[str] = Field(default=None)
+

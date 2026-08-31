@@ -349,10 +349,20 @@ class GithubReleaseInstaller(BaseToolInstaller):
                                 f.write(chunk)
                                 downloaded += len(chunk)
                                 if total_bytes > 0:
-                                    pct = 30 + int((downloaded / total_bytes) * 40)
+                                    pct = 30 + int((downloaded / total_bytes) * 35)
                                     await emit_progress(pct, f"Downloading: {downloaded // 1024} KB / {total_bytes // 1024} KB")
 
-                await emit_progress(75, "Extracting binary and validating safety...")
+                # Cryptographic SHA-256 Checksum Verification
+                await emit_progress(68, "Verifying cryptographic SHA-256 checksum integrity...")
+                from app.installers.tool_manifest import verify_download_integrity
+                with open(archive_path, "rb") as f:
+                    archive_bytes = f.read()
+                is_valid, computed_hash, hash_err = verify_download_integrity(self.tool_name, archive_bytes)
+                if not is_valid:
+                    raise SecurityError(f"SHA-256 integrity check failed: {hash_err}")
+                await emit_log(f"Verified archive SHA-256: {computed_hash[:16]}...")
+
+                await emit_progress(75, "Extracting binary to isolated quarantine and validating safety...")
                 await emit_log(f"Extracting {asset_filename} to managed bin directory...")
 
                 extract_dir = os.path.join(tmpdir, "extracted")

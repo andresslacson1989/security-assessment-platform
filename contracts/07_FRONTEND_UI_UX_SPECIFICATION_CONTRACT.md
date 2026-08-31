@@ -198,8 +198,19 @@ class ScanStreamManager {
 
 ---
 
-## 5. Zero-Build Lightweight Frontend Contract
+## 6. Zero-Trust Session, Continuous Asset Management & Vulnerability Triage UI
 
-- All frontend assets run directly in any standard browser without Node.js, Webpack, or npm build steps at runtime.
-- FastAPI serves pure static HTML5, CSS3, and ES6 JavaScript directly at `/`.
+### 6.1 Authentication Banner & User Role Indicator
+- HUD Header displays current user identity and colored role badge (`ADMIN` = Red/Purple, `SECURITY_ANALYST` = Cyan, `DEVELOPER` = Green, `VIEWER` = Gray).
+- One-click Login / Switch Role modal (`#auth-modal`) allowing seamless local token generation or enterprise JWT login.
+
+### 6.2 Asset Inventory Management Drawer (`#asset-inventory-modal`)
+- Table displaying registered web assets, repositories, and cloud accounts with criticality tiers (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), last scan date, and active finding counts.
+- One-click "Audit Asset" trigger directly populating target input and scan profile.
+
+### 6.3 Correlated Findings & Vulnerability Lifecycle HUD
+- Findings view supports toggling between **Raw Scanner Observations** and **Correlated Root-Cause Findings**.
+- Correlated finding cards display cross-engine evidence badges (e.g. `[DAST + SAST Verified: 1.3x Risk]`).
+- Triage action modal (`#finding-triage-modal`) allows updating finding lifecycle state (`Open`, `In Progress`, `Fixed`, `Risk Accepted`) with SLA countdown timers.
+
 

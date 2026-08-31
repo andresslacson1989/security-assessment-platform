@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import urllib.parse
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,9 @@ from app.core.models import (
 )
 from app.core.storage import get_scan, list_scans, delete_scan
 from app.core.orchestrator import orchestrator
+from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
+from app.core.path_sandbox import assert_safe_path, PathSandboxViolation
+from app.core.auth import get_current_user, require_admin, require_dev_or_higher, UserProfile, UserRole
 
 router = APIRouter()
 
@@ -35,39 +38,45 @@ class StartScanRequest(BaseModel):
     config: Optional[ScanConfig] = Field(default_factory=ScanConfig, description="Execution parameters")
 
 
-def validate_target_input(target_type: TargetType, target_value: str) -> None:
+def validate_target_input(target_type: TargetType, target_value: str, allow_internal: bool = False) -> None:
     """
-    Validates target value syntax according to target type specifications.
+    Validates target value syntax and security constraints according to target type specifications.
+    Enforces SSRF gateway validation on URLs and workspace containment sandboxing on filesystem paths.
     """
     val = target_value.strip()
     if not val:
         raise HTTPException(status_code=400, detail="Target value cannot be empty.")
 
     if target_type == TargetType.URL:
-        if not (val.startswith("http://") or val.startswith("https://")):
+        try:
+            assert_safe_url(val, allow_internal=allow_internal)
+        except SSRFProtectionError as err:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid URL format: '{val}'. Must start with 'http://' or 'https://'."
+                detail=f"SSRF Protection Gate: {str(err)}"
             )
-        parsed = urllib.parse.urlparse(val)
-        if not parsed.hostname:
-            raise HTTPException(status_code=400, detail=f"Invalid URL hostname in '{val}'.")
 
     elif target_type in (TargetType.LOCAL_PATH, TargetType.DOCKERFILE, TargetType.IAC_MANIFEST):
-        path = Path(val)
-        if not path.exists():
+        try:
+            assert_safe_path(val)
+        except PathSandboxViolation as err:
             raise HTTPException(
                 status_code=400,
-                detail=f"Target path does not exist on filesystem: '{val}'."
+                detail=f"Path Sandbox Violation: {str(err)}"
             )
 
 
 @router.post("/start", status_code=status.HTTP_201_CREATED, summary="Start Automated Security Scan")
-async def start_security_scan(payload: StartScanRequest) -> Dict[str, Any]:
+async def start_security_scan(
+    payload: StartScanRequest,
+    current_user: UserProfile = Depends(require_dev_or_higher),
+) -> Dict[str, Any]:
     """
     Validates the target, creates a ScanJob, and launches asynchronous security assessment in the background.
+    Protected by SSRF gateway, path sandboxing, and RBAC authentication.
     """
-    validate_target_input(payload.target_type, payload.target_value)
+    allow_internal = (current_user.role == UserRole.ADMIN)
+    validate_target_input(payload.target_type, payload.target_value, allow_internal=allow_internal)
 
     target_name = payload.target_name or payload.target_value
     target = Target(
@@ -108,42 +117,75 @@ async def start_security_scan(payload: StartScanRequest) -> Dict[str, Any]:
         },
         "profile": scan_job.profile.value,
         "enabled_engines": scan_job.enabled_engines,
-        "message": "Security assessment scan launched successfully.",
+        "active_adapters": scan_job.active_adapters,
+        "created_at": scan_job.started_at.isoformat() if scan_job.started_at else None,
     }
 
 
-@router.get("/history", summary="List Past Scans")
-async def list_scan_history(
-    limit: int = Query(default=20, ge=1, le=100, description="Max scans to return"),
-    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+@router.get("", summary="List All Stored Scan Jobs")
+@router.get("/", summary="List All Stored Scan Jobs", include_in_schema=False)
+@router.get("/history", summary="List All Stored Scan Jobs (History Alias)")
+async def get_all_scans(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Returns a paginated list of all past security assessments sorted descending by timestamp.
+    Returns paginated list of historical scan summaries.
     """
     scans, total = list_scans(limit=limit, offset=offset)
     return {
         "total": total,
         "limit": limit,
         "offset": offset,
-        "scans": [s.model_dump(mode="json") for s in scans],
+        "items": [
+            {
+                "id": s.id,
+                "target": {
+                    "name": s.target.name,
+                    "type": s.target.type.value,
+                    "value": s.target.value,
+                },
+                "profile": s.profile.value,
+                "status": s.status.value,
+                "progress_percent": s.progress_percent,
+                "overall_security_grade": s.summary.overall_security_grade if s.summary else "N/A",
+                "weighted_score": s.summary.weighted_score if s.summary else 0.0,
+                "total_findings": s.summary.total_findings if s.summary else len(s.findings),
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            }
+            for s in scans
+        ],
     }
 
 
-@router.get("/{scan_id}", summary="Get Scan Details Snapshot")
-async def get_scan_details(scan_id: str) -> Dict[str, Any]:
+@router.get("/{scan_id}", summary="Get Full Scan Job Details")
+async def get_scan_details(
+    scan_id: str,
+    current_user: UserProfile = Depends(get_current_user),
+) -> ScanJob:
     """
-    Retrieves full details, progress, logs, findings, and score summary for a scan job.
+    Returns full ScanJob model including findings, endpoints, and summary.
     """
     job = orchestrator.get_active_job(scan_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-    return job.model_dump(mode="json")
+    if job:
+        return job
+
+    stored_job = get_scan(scan_id)
+    if stored_job:
+        return stored_job
+
+    raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
 
-@router.post("/{scan_id}/cancel", summary="Cancel Running Scan")
-async def cancel_active_scan(scan_id: str) -> Dict[str, Any]:
+@router.post("/{scan_id}/cancel", summary="Cancel Running Scan Job")
+async def cancel_running_scan(
+    scan_id: str,
+    current_user: UserProfile = Depends(require_dev_or_higher),
+) -> Dict[str, Any]:
     """
-    Gracefully halts execution of an active background scan.
+    Signals orchestrator to abort scan execution and terminate subprocesses.
     """
     job = orchestrator.get_active_job(scan_id)
     if not job:
@@ -159,9 +201,12 @@ async def cancel_active_scan(scan_id: str) -> Dict[str, Any]:
 
 
 @router.delete("/{scan_id}", summary="Delete Scan Record")
-async def delete_scan_record(scan_id: str) -> Dict[str, Any]:
+async def delete_scan_record(
+    scan_id: str,
+    current_user: UserProfile = Depends(require_admin),
+) -> Dict[str, Any]:
     """
-    Removes a scan record from disk persistence.
+    Removes a scan record from persistence (Restricted to ADMIN).
     """
     success = delete_scan(scan_id)
     if not success:

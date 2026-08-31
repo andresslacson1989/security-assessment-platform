@@ -144,6 +144,27 @@ class ScanStreamManager {
     this.btnCloseHistory = document.getElementById("btn-close-history");
     this.historyModal = document.getElementById("history-modal");
     this.historyTableBody = document.getElementById("history-table-body");
+
+    // Asset Inventory Modal
+    this.btnOpenAssets = document.getElementById("btn-open-assets");
+    this.btnCloseAssets = document.getElementById("btn-close-assets");
+    this.assetsModal = document.getElementById("assets-modal");
+    this.assetsTableBody = document.getElementById("assets-table-body");
+    this.btnCreateAssetToggle = document.getElementById("btn-create-asset-toggle");
+    this.btnSaveNewAsset = document.getElementById("btn-save-new-asset");
+    this.assetCreateFormContainer = document.getElementById("asset-create-form-container");
+
+    // User Authentication Modal
+    this.btnOpenAuth = document.getElementById("btn-open-auth");
+    this.btnCloseAuth = document.getElementById("btn-close-auth");
+    this.authModal = document.getElementById("auth-modal");
+    this.btnSubmitLogin = document.getElementById("btn-submit-login");
+    this.btnLogout = document.getElementById("btn-logout");
+    this.userRoleBadge = document.getElementById("user-role-badge");
+    this.authUsernameInput = document.getElementById("auth-username-input");
+    this.authPasswordInput = document.getElementById("auth-password-input");
+    this.authCurrentUsername = document.getElementById("auth-current-username");
+    this.authCurrentRole = document.getElementById("auth-current-role");
   }
 
   attachEventListeners() {
@@ -286,6 +307,49 @@ class ScanStreamManager {
           await this.refreshToolboxData();
         }
       });
+    }
+
+    // Asset Inventory Modal Listeners
+    if (this.btnOpenAssets) {
+      this.btnOpenAssets.addEventListener("click", () => this.openAssetsModal());
+    }
+    if (this.btnCloseAssets) {
+      this.btnCloseAssets.addEventListener("click", () => this.closeAssetsModal());
+    }
+    if (this.assetsModal) {
+      this.assetsModal.addEventListener("click", (e) => {
+        if (e.target === this.assetsModal) this.closeAssetsModal();
+      });
+    }
+    if (this.btnCreateAssetToggle) {
+      this.btnCreateAssetToggle.addEventListener("click", () => {
+        if (this.assetCreateFormContainer) {
+          const isHidden = this.assetCreateFormContainer.style.display === "none";
+          this.assetCreateFormContainer.style.display = isHidden ? "block" : "none";
+        }
+      });
+    }
+    if (this.btnSaveNewAsset) {
+      this.btnSaveNewAsset.addEventListener("click", () => this.handleSaveNewAsset());
+    }
+
+    // User Authentication Modal Listeners
+    if (this.btnOpenAuth) {
+      this.btnOpenAuth.addEventListener("click", () => this.openAuthModal());
+    }
+    if (this.btnCloseAuth) {
+      this.btnCloseAuth.addEventListener("click", () => this.closeAuthModal());
+    }
+    if (this.authModal) {
+      this.authModal.addEventListener("click", (e) => {
+        if (e.target === this.authModal) this.closeAuthModal();
+      });
+    }
+    if (this.btnSubmitLogin) {
+      this.btnSubmitLogin.addEventListener("click", () => this.handleLogin());
+    }
+    if (this.btnLogout) {
+      this.btnLogout.addEventListener("click", () => this.handleLogout());
     }
   }
 
@@ -1467,6 +1531,135 @@ class ScanStreamManager {
     this.toolboxTerminalLog.scrollTop = this.toolboxTerminalLog.scrollHeight;
   }
 
+  // ========================================================================
+  // Asset Inventory Management & Posture Tracking
+  // ========================================================================
+
+  async openAssetsModal() {
+    if (!this.assetsModal) return;
+    this.assetsModal.style.display = "flex";
+    await this.loadAssets();
+  }
+
+  closeAssetsModal() {
+    if (this.assetsModal) this.assetsModal.style.display = "none";
+  }
+
+  async loadAssets() {
+    if (!this.assetsTableBody) return;
+    try {
+      const res = await fetch("/api/assets");
+      if (!res.ok) return;
+      const data = await res.json();
+      const assets = data.items || [];
+      if (assets.length === 0) {
+        this.assetsTableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No assets registered yet. Click "Add New Asset" above.</td></tr>`;
+        return;
+      }
+      this.assetsTableBody.innerHTML = assets.map(a => `
+        <tr>
+          <td><strong>${this.escapeHtml(a.name)}</strong></td>
+          <td><span class="meta-tag">${this.escapeHtml(a.type)}</span></td>
+          <td><code>${this.escapeHtml(a.target_value)}</code></td>
+          <td><span class="badge ${a.criticality === 'CRITICAL' ? 'badge-critical' : a.criticality === 'HIGH' ? 'badge-high' : 'badge-none'}">${a.criticality}</span></td>
+          <td>${a.active_findings_count || 0}</td>
+          <td>
+            <button class="btn btn-xs btn-primary" onclick="window.auditAsset('${this.escapeHtml(a.target_value)}', '${this.escapeHtml(a.type)}')">Audit</button>
+            <button class="btn btn-xs btn-danger" onclick="window.deleteAsset('${a.id}')">Delete</button>
+          </td>
+        </tr>
+      `).join("");
+    } catch (e) {
+      console.error("Failed to load assets:", e);
+    }
+  }
+
+  async handleSaveNewAsset() {
+    const nameEl = document.getElementById("asset-new-name");
+    const typeEl = document.getElementById("asset-new-type");
+    const critEl = document.getElementById("asset-new-criticality");
+    const targetEl = document.getElementById("asset-new-target");
+
+    if (!nameEl || !targetEl || !nameEl.value.trim() || !targetEl.value.trim()) {
+      alert("Please specify asset name and target URI / path.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: nameEl.value.trim(),
+          type: typeEl.value,
+          criticality: critEl.value,
+          target_value: targetEl.value.trim(),
+        }),
+      });
+      if (res.ok) {
+        nameEl.value = "";
+        targetEl.value = "";
+        if (this.assetCreateFormContainer) this.assetCreateFormContainer.style.display = "none";
+        await this.loadAssets();
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.detail || "Failed to save asset."}`);
+      }
+    } catch (e) {
+      alert(`Network error saving asset: ${e}`);
+    }
+  }
+
+  // ========================================================================
+  // User Authentication & Session Management
+  // ========================================================================
+
+  openAuthModal() {
+    if (this.authModal) this.authModal.style.display = "flex";
+  }
+
+  closeAuthModal() {
+    if (this.authModal) this.authModal.style.display = "none";
+  }
+
+  async handleLogin() {
+    const u = this.authUsernameInput ? this.authUsernameInput.value.trim() : "";
+    const p = this.authPasswordInput ? this.authPasswordInput.value.trim() : "";
+    if (!u || !p) {
+      alert("Please enter username and password.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem("cyberassess_token", data.access_token);
+        if (this.userRoleBadge) this.userRoleBadge.innerText = data.user.role;
+        if (this.authCurrentUsername) this.authCurrentUsername.innerText = data.user.username;
+        if (this.authCurrentRole) this.authCurrentRole.innerText = data.user.role;
+        this.closeAuthModal();
+      } else {
+        const err = await res.json();
+        alert(`Authentication failed: ${err.detail || 'Invalid credentials'}`);
+      }
+    } catch (e) {
+      alert(`Login connection error: ${e}`);
+    }
+  }
+
+  handleLogout() {
+    localStorage.removeItem("cyberassess_token");
+    if (this.userRoleBadge) this.userRoleBadge.innerText = "VIEWER";
+    if (this.authCurrentUsername) this.authCurrentUsername.innerText = "Anonymous";
+    if (this.authCurrentRole) this.authCurrentRole.innerText = "VIEWER";
+    this.closeAuthModal();
+  }
+
   escapeHtml(str) {
     if (!str) return "";
     return String(str)
@@ -1495,9 +1688,26 @@ window.copySnippet = function (id) {
   }
 };
 
-window.filterFindingsBySeverity = function (sev) {
-  const tab = document.querySelector(`.filter-tab[data-filter="${sev}"]`);
-  if (tab) tab.click();
+window.auditAsset = function (val, type) {
+  const input = document.getElementById("target-input");
+  if (input) {
+    input.value = val;
+    if (window.app) window.app.detectTargetType();
+    if (window.app) window.app.closeAssetsModal();
+    input.focus();
+  }
+};
+
+window.deleteAsset = async function (id) {
+  if (!confirm("Are you sure you want to delete this monitored asset?")) return;
+  try {
+    const res = await fetch(`/api/assets/${id}`, { method: "DELETE" });
+    if (res.ok && window.app) {
+      await window.app.loadAssets();
+    }
+  } catch (e) {
+    alert("Failed to delete asset: " + e);
+  }
 };
 
 document.addEventListener("DOMContentLoaded", () => {

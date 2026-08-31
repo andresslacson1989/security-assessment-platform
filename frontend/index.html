@@ -25,14 +25,20 @@
           <span class="pulse-dot"></span>
           <span class="status-label" id="system-status-text">SYSTEM ONLINE</span>
         </div>
+        <button class="btn btn-outline" id="btn-open-assets">
+          <span>📦</span> Assets
+        </button>
         <button class="btn btn-outline" id="btn-open-repeater">
           <span>⚡</span> HTTP Repeater
         </button>
         <button class="btn btn-outline" id="btn-open-toolbox">
-          <span>⚙️</span> Manage Toolbox
+          <span>⚙️</span> Toolbox
         </button>
         <button class="btn btn-outline" id="btn-open-history">
-          <span>📜</span> History Archive
+          <span>📜</span> History
+        </button>
+        <button class="btn btn-outline" id="btn-open-auth">
+          <span>👤</span> <span id="user-role-badge">ADMIN</span>
         </button>
       </div>
     </header>
@@ -577,6 +583,60 @@
       </div>
     </div>
 
+    <!-- Asset Inventory Drawer / Modal -->
+    <div class="modal-overlay" id="assets-modal" style="display: none;">
+      <div class="modal-card" style="max-width: 900px;">
+        <div class="modal-header">
+          <h3>📦 Monitored Attack Surface & Asset Inventory</h3>
+          <button class="btn-close" id="btn-close-assets">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <span style="font-size: 13px; color: var(--text-secondary);">Manage monitored Web Apps, Repositories, APIs and Cloud Environments</span>
+            <button class="btn btn-sm btn-primary" id="btn-create-asset-toggle">➕ Add New Asset</button>
+          </div>
+          <div id="asset-create-form-container" style="display: none; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 6px; margin-bottom: 15px; border: 1px solid var(--border-subtle);">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+              <input type="text" id="asset-new-name" class="form-control" placeholder="Asset Name (e.g. Core API)">
+              <select id="asset-new-type" class="form-control">
+                <option value="WEB_APPLICATION">Web Application</option>
+                <option value="API_ENDPOINT">API Endpoint</option>
+                <option value="DOMAIN">Domain</option>
+                <option value="GIT_REPOSITORY">Git Repository</option>
+              </select>
+              <select id="asset-new-criticality" class="form-control">
+                <option value="CRITICAL">Critical (1.5x Risk)</option>
+                <option value="HIGH">High (1.2x Risk)</option>
+                <option value="MEDIUM" selected>Medium (1.0x Risk)</option>
+                <option value="LOW">Low (0.7x Risk)</option>
+              </select>
+            </div>
+            <div style="display: flex; gap: 10px;">
+              <input type="text" id="asset-new-target" class="form-control" placeholder="Target URI or Path (e.g. https://api.example.com)">
+              <button class="btn btn-primary" id="btn-save-new-asset">Save Asset</button>
+            </div>
+          </div>
+          <div class="history-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Asset Name</th>
+                  <th>Type</th>
+                  <th>Target Value</th>
+                  <th>Criticality</th>
+                  <th>Findings</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="assets-table-body">
+                <!-- Asset Rows -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- History Drawer / Modal -->
     <div class="modal-overlay" id="history-modal" style="display: none;">
       <div class="modal-card">
@@ -607,8 +667,38 @@
       </div>
     </div>
 
+    <!-- User Authentication Modal -->
+    <div class="modal-overlay" id="auth-modal" style="display: none;">
+      <div class="modal-card" style="max-width: 450px;">
+        <div class="modal-header">
+          <h3>👤 User Authentication & RBAC</h3>
+          <button class="btn-close" id="btn-close-auth">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom: 15px;">
+            <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;">Authenticate with credentials or switch local development roles.</p>
+            <div class="form-group" style="margin-bottom: 10px;">
+              <label>Username</label>
+              <input type="text" id="auth-username-input" class="form-control" value="admin">
+            </div>
+            <div class="form-group" style="margin-bottom: 15px;">
+              <label>Password</label>
+              <input type="password" id="auth-password-input" class="form-control" value="admin123!">
+            </div>
+            <div style="display: flex; gap: 10px;">
+              <button class="btn btn-primary" id="btn-submit-login" style="flex: 1;">Login</button>
+              <button class="btn btn-secondary" id="btn-logout" style="flex: 1;">Logout</button>
+            </div>
+          </div>
+          <div id="auth-profile-info" style="font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;">
+            Current User: <strong id="auth-current-username">admin</strong> | Role: <span id="auth-current-role" class="badge">ADMIN</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <script src="/static/js/app.js?v=6.1.0"></script>
+  <script src="/static/js/app.js?v=9.0.0"></script>
 </body>
 </html>

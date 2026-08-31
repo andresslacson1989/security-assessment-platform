@@ -34,6 +34,10 @@ ENV/
 # Data & Scan Storage (keep repo clean of local scan runs)
 data/scans/*.json
 !data/scans/.gitkeep
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.db
 
 # Testing & Coverage
 .pytest_cache/

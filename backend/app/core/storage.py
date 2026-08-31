@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional, List, Tuple
 from app.core.models import ScanJob
+from app.core.db import db_manager
 
 # Default storage directory under project root: data/scans/
 DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data" / "scans"
@@ -24,7 +25,7 @@ def get_storage_dir(custom_path: Optional[Path] = None) -> Path:
 
 def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
     """
-    Persists a ScanJob entity as formatted JSON to disk.
+    Persists a ScanJob entity as formatted JSON to disk and indexes in relational database.
     """
     target_dir = get_storage_dir(storage_dir)
     file_path = target_dir / f"{scan_job.id}.json"
@@ -33,6 +34,13 @@ def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
     json_data = scan_job.model_dump_json(indent=2)
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(json_data)
+
+    # Sync to relational DB
+    try:
+        db_manager.save_scan_record(scan_job)
+    except Exception:
+        pass
+
 
 
 def get_scan(scan_id: str, storage_dir: Optional[Path] = None) -> Optional[ScanJob]:

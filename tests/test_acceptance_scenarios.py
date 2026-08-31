@@ -1864,3 +1864,206 @@ async def test_scenario_25_property_based_api_contract_security():
         assert len(schema_findings) >= 1
         assert schema_findings[0].check_id == "API-SCHEMA-001"
         assert schema_findings[0].severity == Severity.HIGH
+
+
+# ============================================================================
+# Scenario 26: Strict SSRF Protection & DNS Rebinding Gate
+# ============================================================================
+
+def test_scenario_26_ssrf_protection_and_dns_rebinding_gate():
+    """
+    Contract 05 (Scenario 26): Strict SSRF Protection & DNS Rebinding Gate.
+    Verifies that requests to private IP ranges, loopback, and cloud metadata are blocked.
+    """
+    from app.core.ssrf_protector import is_ip_allowed, validate_target_url
+
+    # Prohibited ranges
+    assert is_ip_allowed("127.0.0.1")[0] is False
+    assert is_ip_allowed("10.0.0.1")[0] is False
+    assert is_ip_allowed("172.16.0.1")[0] is False
+    assert is_ip_allowed("192.168.1.1")[0] is False
+    assert is_ip_allowed("169.254.169.254")[0] is False
+    assert is_ip_allowed("::1")[0] is False
+
+    # URL validation
+    assert validate_target_url("http://127.0.0.1:8000/api")[0] is False
+    assert validate_target_url("http://169.254.169.254/latest/meta-data/")[0] is False
+    assert validate_target_url("https://example.com")[0] is True
+
+
+# ============================================================================
+# Scenario 27: Zero-Trust Authentication & RBAC Matrix
+# ============================================================================
+
+def test_scenario_27_zero_trust_authentication_and_rbac_matrix():
+    """
+    Contract 05 (Scenario 27): Zero-Trust Authentication & RBAC Matrix.
+    Verifies password hashing, token generation, and role decoding.
+    """
+    from app.core.auth import (
+        UserProfile,
+        UserRole,
+        hash_password,
+        verify_password,
+        create_access_token,
+        decode_access_token,
+    )
+
+    pw = "EnterpriseSecret2026!"
+    hashed = hash_password(pw)
+    assert verify_password(pw, hashed) is True
+    assert verify_password("WrongPw", hashed) is False
+
+    user = UserProfile(id="u-100", username="tester", email="t@e.com", role=UserRole.ADMIN)
+    token = create_access_token(user)
+    payload = decode_access_token(token)
+    assert payload["sub"] == "u-100"
+    assert payload["role"] == "ADMIN"
+
+
+# ============================================================================
+# Scenario 28: Target Path Sandboxing & Workspace Containment
+# ============================================================================
+
+def test_scenario_28_target_path_sandboxing_and_workspace_containment():
+    """
+    Contract 05 (Scenario 28): Target Path Sandboxing & Workspace Containment.
+    Verifies that system files and path traversal attempts are rejected.
+    """
+    from app.core.path_sandbox import is_path_safe
+
+    assert is_path_safe("/etc/passwd")[0] is False
+    assert is_path_safe("/etc/shadow")[0] is False
+    assert is_path_safe("C:\\Windows\\System32\\config\\SAM")[0] is False
+    assert is_path_safe("../../etc/passwd")[0] is False
+
+
+# ============================================================================
+# Scenario 29: Cryptographic SHA-256 Checksum & Supply Chain
+# ============================================================================
+
+def test_scenario_29_cryptographic_sha256_checksum_and_supply_chain():
+    """
+    Contract 05 (Scenario 29): Cryptographic SHA-256 Checksum & Supply Chain.
+    Verifies binary archive integrity checks.
+    """
+    from app.installers.tool_manifest import calculate_sha256, verify_download_integrity
+
+    data = b"Clean tool archive binary 2026"
+    h = calculate_sha256(data)
+    valid, _, _ = verify_download_integrity("nuclei", data, expected_sha256=h)
+    assert valid is True
+
+    bad_valid, _, err = verify_download_integrity("nuclei", data, expected_sha256="corrupted_hash")
+    assert bad_valid is False
+    assert "mismatch" in err.lower()
+
+
+# ============================================================================
+# Scenario 30: Dual-Mode Relational Persistence & Asset Inventory
+# ============================================================================
+
+def test_scenario_30_relational_persistence_and_asset_inventory():
+    """
+    Contract 05 (Scenario 30): Dual-Mode Relational Persistence & Asset Inventory.
+    Verifies asset creation, retrieval, listing, and deletion in the relational store.
+    """
+    import tempfile
+    from app.core.db import DatabaseManager
+    from app.core.models import Asset, AssetType, AssetCriticality
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_file = Path(f.name)
+
+    db = DatabaseManager(db_path=db_file)
+    asset = Asset(
+        name="Main SaaS Web App",
+        type=AssetType.WEB_APPLICATION,
+        target_value="https://app.example.com",
+        criticality=AssetCriticality.CRITICAL,
+    )
+    db.create_asset(asset)
+    fetched = db.get_asset(asset.id)
+    assert fetched is not None
+    assert fetched.name == "Main SaaS Web App"
+    assert fetched.criticality == AssetCriticality.CRITICAL
+
+    assets, total = db.list_assets()
+    assert total == 1
+
+    db.delete_asset(asset.id)
+    assert db.get_asset(asset.id) is None
+
+    try:
+        db_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+# ============================================================================
+# Scenario 31: Cross-Engine Finding Correlation & Root-Cause Clustering
+# ============================================================================
+
+def test_scenario_31_finding_correlation_and_root_cause_clustering():
+    """
+    Contract 05 (Scenario 31): Cross-Engine Finding Correlation.
+    Verifies synthesis of matching SAST + DAST findings into a UnifiedFinding.
+    """
+    from app.core.correlator import correlator
+    from app.core.models import CorrelationType
+
+    f1 = Finding(
+        id="f1", scan_id="s1", engine="web_dast", check_id="DAST-XSS-001",
+        category="Cross-Site Scripting", title="Reflected XSS on /search",
+        severity=Severity.HIGH, cvss_score=7.5,
+        cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        cwe_id="CWE-79", owasp_category="A03:2021-Injection", nist_control="SI-10",
+        description="Reflected XSS", impact="Session hijacking", remediation="Escape output",
+        evidence=Evidence(location="https://example.com/search?q=", observed_value="<script>alert(1)</script>", expected_value="Escaped HTML"),
+        fingerprint="fp1", source_tool="nuclei",
+    )
+    f2 = Finding(
+        id="f2", scan_id="s1", engine="code_sast", check_id="SAST-XSS-001",
+        category="Cross-Site Scripting", title="Direct unescaped template variable rendering",
+        severity=Severity.HIGH, cvss_score=7.5,
+        cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        cwe_id="CWE-79", owasp_category="A03:2021-Injection", nist_control="SI-10",
+        description="Unescaped template rendering", impact="XSS", remediation="Use autoescaping",
+        evidence=Evidence(location="search.html:15", observed_value="{{ query|safe }}", expected_value="{{ query }}"),
+        fingerprint="fp2", source_tool="semgrep",
+    )
+
+    unified = correlator.correlate_findings([f1, f2], asset_criticality_factor=1.2)
+    assert len(unified) == 1
+    assert unified[0].correlation_type == CorrelationType.SAST_DAST_VERIFIED
+    assert "nuclei" in unified[0].contributing_tools
+    assert "semgrep" in unified[0].contributing_tools
+
+
+# ============================================================================
+# Scenario 32: Contextual Risk Scoring Engine & Vulnerability SLA
+# ============================================================================
+
+def test_scenario_32_contextual_risk_scoring_and_vulnerability_sla():
+    """
+    Contract 05 (Scenario 32): Contextual Risk Scoring & SLA Computation.
+    Verifies contextual risk scoring and SLA computation.
+    """
+    from app.core.models import AssetCriticality
+    from app.core.risk_engine import calculate_finding_contextual_risk, calculate_contextual_posture_grade
+    from app.core.correlator import compute_sla_info
+
+    # 1. Contextual Risk
+    risk_crit = calculate_finding_contextual_risk(9.0, AssetCriticality.CRITICAL, internet_exposed=True)
+    risk_low = calculate_finding_contextual_risk(9.0, AssetCriticality.LOW, internet_exposed=False)
+    assert risk_crit == 10.0
+    assert risk_low < 7.0
+
+    # 2. SLA Info
+    sla_crit = compute_sla_info(Severity.CRITICAL)
+    assert sla_crit.sla_days == 7
+    sla_high = compute_sla_info(Severity.HIGH)
+    assert sla_high.sla_days == 14
+    sla_med = compute_sla_info(Severity.MEDIUM)
+    assert sla_med.sla_days == 30
+

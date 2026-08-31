@@ -8,7 +8,7 @@ import asyncio
 import json
 import time
 from typing import Optional, List, Any
-from fastapi import APIRouter, HTTPException, status, Request
+from fastapi import APIRouter, HTTPException, status, Request, Depends
 from fastapi.responses import StreamingResponse
 import httpx
 
@@ -21,6 +21,8 @@ from app.core.models import (
     ToolBatchInstallRequest,
 )
 from app.installers.manager import ToolInstallationManager
+from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
+from app.core.auth import get_current_user, require_admin, require_analyst_or_admin, UserProfile, UserRole
 
 router = APIRouter()
 
@@ -33,7 +35,7 @@ router = APIRouter()
     "",
     response_model=List[ToolInstallationInfo],
     summary="List all tool installation statuses and capabilities",
-    description="Returns current installation status, version, and instructions for all 10 tools.",
+    description="Returns current installation status, version, and instructions for all tools.",
 )
 @router.get(
     "/",
@@ -60,7 +62,6 @@ async def stream_tool_events(request: Request):
     mgr = ToolInstallationManager.get_instance()
 
     async def event_generator():
-        # Yield initial heartbeat
         yield f"event: ping\ndata: {json.dumps({'timestamp': time.time()})}\n\n"
         async for payload in mgr.subscribe_events(ping_interval=10.0):
             if await request.is_disconnected():
@@ -83,15 +84,15 @@ async def stream_tool_events(request: Request):
 @router.get(
     "/{tool_name}/status",
     response_model=ToolInstallationInfo,
-    summary="Get status of a specific tool adapter",
+    summary="Get installation status for a specific tool",
 )
-async def get_single_tool_status(tool_name: str) -> ToolInstallationInfo:
+async def get_tool_status(tool_name: str) -> ToolInstallationInfo:
     mgr = ToolInstallationManager.get_instance()
     info = await mgr.get_tool_info(tool_name)
     if not info:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool adapter '{tool_name}' not recognized in platform catalog.",
+            detail=f"Tool '{tool_name}' is not recognized in the platform registry.",
         )
     return info
 
@@ -102,23 +103,21 @@ async def get_single_tool_status(tool_name: str) -> ToolInstallationInfo:
     status_code=status.HTTP_202_ACCEPTED,
     summary="Trigger in-app installation of a specific tool",
 )
-async def install_single_tool(
+async def install_tool(
     tool_name: str,
     payload: Optional[ToolInstallRequest] = None,
+    current_user: UserProfile = Depends(require_admin),
 ) -> ToolInstallResponse:
     mgr = ToolInstallationManager.get_instance()
     force = payload.force if payload else False
     try:
         return mgr.install_tool(tool_name, force=force)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        )
-    except Exception as e:
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initiate installation: {str(e)}",
+            detail=f"Installation initiation failed: {str(exc)}",
         )
 
 
@@ -144,6 +143,7 @@ async def cancel_single_tool(tool_name: str) -> dict:
 )
 async def install_all_tools(
     payload: Optional[ToolBatchInstallRequest] = None,
+    current_user: UserProfile = Depends(require_admin),
 ) -> List[ToolInstallResponse]:
     mgr = ToolInstallationManager.get_instance()
     force = payload.force if payload else False
@@ -151,28 +151,42 @@ async def install_all_tools(
 
 
 # ============================================================================
-# 2. Pentester Productivity / HTTP Repeater Workbench
+# 2. Pentester Productivity / HTTP Repeater Workbench (SSRF-Protected)
 # ============================================================================
 
 @router.post(
     "/repeater",
     response_model=RepeaterResponse,
-    summary="Execute manual HTTP request replay / repeater tool",
-    description="Allows manual crafting, replay, and differential inspection of HTTP requests directly from the dashboard.",
+    summary="Execute manual HTTP request replay / repeater tool (SSRF-Protected)",
+    description="Allows manual crafting, replay, and differential inspection of HTTP requests with strict SSRF protection.",
 )
-async def execute_repeater_request(payload: RepeaterRequest) -> RepeaterResponse:
+async def execute_repeater_request(
+    payload: RepeaterRequest,
+    current_user: UserProfile = Depends(require_analyst_or_admin),
+) -> RepeaterResponse:
     """
     Executes a raw HTTP request asynchronously and returns status, headers, body, latency, and TLS info.
+    Protected against SSRF targeting localhost, private subnets, and cloud metadata.
     """
+    # SSRF Protection Gateway Validation
+    allow_internal = (current_user.role == UserRole.ADMIN)
+    try:
+        assert_safe_url(payload.url, allow_internal=allow_internal)
+    except SSRFProtectionError as ssrf_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"SSRF Protection Gate: {str(ssrf_err)}",
+        )
+
     start_time = time.perf_counter()
     
     headers = dict(payload.headers) if payload.headers else {}
     if not any(k.lower() == "user-agent" for k in headers):
-        headers["User-Agent"] = "CyberAssess-Repeater/6.0.0"
+        headers["User-Agent"] = "CyberAssess-Repeater/9.0.0"
 
     try:
         async with httpx.AsyncClient(
-            verify=False,
+            verify=True,
             follow_redirects=payload.follow_redirects,
             timeout=payload.timeout_seconds,
         ) as client:
