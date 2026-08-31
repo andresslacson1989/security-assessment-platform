@@ -14,6 +14,7 @@ class ScanStreamManager {
 
     this.initElements();
     this.attachEventListeners();
+    this.checkAuthStatus();
     this.checkSystemHealth();
     this.detectTargetType();
     this.loadSystemCapabilities();
@@ -537,7 +538,7 @@ class ScanStreamManager {
     this.appendLog("orchestrator", "INFO", `Launching scan on target: ${targetVal}`);
 
     try {
-      const res = await fetch("/api/scans/start", {
+      const res = await this.authFetch("/api/scans/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -562,7 +563,7 @@ class ScanStreamManager {
   async handleCancelScan() {
     if (!this.currentScanId) return;
     try {
-      await fetch(`/api/scans/${this.currentScanId}/cancel`, { method: "POST" });
+      await this.authFetch(`/api/scans/${this.currentScanId}/cancel`, { method: "POST" });
       this.appendLog("orchestrator", "WARNING", "Scan cancellation requested by user.");
     } catch (e) {
       console.error(e);
@@ -831,7 +832,7 @@ class ScanStreamManager {
         timeout_seconds: 10.0,
       };
 
-      const resp = await fetch("/api/tools/repeater", {
+      const resp = await this.authFetch("/api/tools/repeater", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1105,7 +1106,7 @@ class ScanStreamManager {
   async openHistoryModal() {
     this.historyModal.style.display = "flex";
     try {
-      const res = await fetch("/api/scans/history?limit=30");
+      const res = await this.authFetch("/api/scans/history?limit=30");
       if (!res.ok) return;
       const data = await res.json();
       this.renderHistoryTable(data.scans || []);
@@ -1152,30 +1153,30 @@ class ScanStreamManager {
   async loadPastScan(scanId) {
     this.closeHistoryModal();
     try {
-      const res = await fetch(`/api/scans/${scanId}`);
+      const res = await this.authFetch(`/api/scans/${scanId}`);
       if (!res.ok) return;
       const job = await res.json();
 
       this.currentScanId = job.id;
-      this.targetInput.value = job.target.value;
-      this.targetName.value = job.target.name || "";
-      this.allFindings = job.findings || [];
-      this.discoveredEndpoints = job.discovered_endpoints || [];
-      this.discoveredSubdomains = job.discovered_subdomains || [];
+      this.updateExportLinks(this.currentScanId);
 
-      this.updateProgress(job.progress_percent || 100, job.current_stage || "Completed.");
-      this.renderScorecard(job.summary);
-      this.renderFindings();
-      this.renderDiscoveredEndpoints();
-      this.renderDiscoveredSubdomains();
-      this.updateExportLinks(job.id);
-
-      if (job.summary?.authenticated_session_active) {
-        this.updateAuthStatusBadge("ACTIVE", true);
+      // Render summary & scorecard
+      if (job.summary) {
+        this.renderScorecard(job.summary);
       }
 
-      this.resultsDashboard.style.display = "block";
-      this.progressHud.style.display = "block";
+      // Render findings
+      this.allFindings = job.findings || [];
+      this.renderFindings();
+
+      // Render discovered endpoints & subdomains
+      this.discoveredEndpoints = job.discovered_endpoints || [];
+      this.renderDiscoveredEndpoints();
+      this.discoveredSubdomains = job.discovered_subdomains || [];
+      this.renderDiscoveredSubdomains();
+
+      if (this.resultsDashboard) this.resultsDashboard.style.display = "block";
+      if (this.progressHud) this.progressHud.style.display = "block";
 
       // Render logs
       this.terminalWindow.innerHTML = "";
@@ -1190,7 +1191,7 @@ class ScanStreamManager {
   async deletePastScan(scanId) {
     if (!confirm("Are you sure you want to delete this scan record?")) return;
     try {
-      await fetch(`/api/scans/${scanId}`, { method: "DELETE" });
+      await this.authFetch(`/api/scans/${scanId}`, { method: "DELETE" });
       this.openHistoryModal();
     } catch (e) {
       console.error(e);
@@ -1199,7 +1200,7 @@ class ScanStreamManager {
 
   async loadSystemCapabilities() {
     try {
-      const res = await fetch("/api/system/capabilities");
+      const res = await this.authFetch("/api/system/capabilities");
       if (!res.ok) return;
       const data = await res.json();
       const tools = data.tools || [];
@@ -1252,7 +1253,7 @@ class ScanStreamManager {
 
   async refreshToolboxData() {
     try {
-      const res = await fetch("/api/system/tools");
+      const res = await this.authFetch("/api/system/tools");
       if (!res.ok) return;
       const tools = await res.json();
       this.renderToolboxTable(tools);
@@ -1318,7 +1319,7 @@ class ScanStreamManager {
   async handleCancelTool(toolName) {
     this.appendToolboxLog(`[CANCEL] Requesting cancellation of '${toolName}' installation...`);
     try {
-      const res = await fetch(`/api/system/tools/${toolName}/cancel`, { method: "POST" });
+      const res = await this.authFetch(`/api/system/tools/${toolName}/cancel`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         this.appendToolboxLog(`[CANCEL] ${data.message}`);
@@ -1437,7 +1438,7 @@ class ScanStreamManager {
     this.appendToolboxLog(`[INIT] Requesting in-app installation for '${toolName}' (force=${force})...`);
     this.updateToolboxStage(`Initiating ${toolName}...`, 5);
     try {
-      const res = await fetch(`/api/system/tools/${toolName}/install`, {
+      const res = await this.authFetch(`/api/system/tools/${toolName}/install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: force }),
@@ -1459,7 +1460,7 @@ class ScanStreamManager {
     this.appendToolboxLog(`[INIT] Requesting batch in-app installation for all missing user-space tools...`);
     this.updateToolboxStage("Starting batch install...", 5);
     try {
-      const res = await fetch("/api/system/tools/install-all", {
+      const res = await this.authFetch("/api/system/tools/install-all", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: false }),
@@ -1548,7 +1549,7 @@ class ScanStreamManager {
   async loadAssets() {
     if (!this.assetsTableBody) return;
     try {
-      const res = await fetch("/api/assets");
+      const res = await this.authFetch("/api/assets");
       if (!res.ok) return;
       const data = await res.json();
       const assets = data.items || [];
@@ -1586,7 +1587,7 @@ class ScanStreamManager {
     }
 
     try {
-      const res = await fetch("/api/assets", {
+      const res = await this.authFetch("/api/assets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1613,6 +1614,53 @@ class ScanStreamManager {
   // ========================================================================
   // User Authentication & Session Management
   // ========================================================================
+
+  async authFetch(url, options = {}) {
+    options.headers = options.headers || {};
+    const token = localStorage.getItem("cyberassess_token");
+    if (token) {
+      if (typeof options.headers.set === "function") {
+        options.headers.set("Authorization", `Bearer ${token}`);
+      } else {
+        options.headers["Authorization"] = `Bearer ${token}`;
+      }
+    }
+    const res = await fetch(url, options);
+    if (res.status === 401 && !url.includes("/api/auth/")) {
+      this.openAuthModal();
+    }
+    return res;
+  }
+
+  async checkAuthStatus() {
+    try {
+      const res = await fetch("/api/auth/status");
+      if (res.ok) {
+        const data = await res.json();
+        if (!data.initialized) {
+          console.warn("CyberAssess is uninitialized. First-run administrator bootstrap required.");
+        }
+      }
+      const token = localStorage.getItem("cyberassess_token");
+      if (token) {
+        const meRes = await this.authFetch("/api/auth/me");
+        if (meRes.ok) {
+          const user = await meRes.json();
+          if (this.userRoleBadge) this.userRoleBadge.innerText = user.role;
+          if (this.authCurrentUsername) this.authCurrentUsername.innerText = user.username;
+          if (this.authCurrentRole) this.authCurrentRole.innerText = user.role;
+          if (this.authStatusBadge) {
+            this.authStatusBadge.innerText = `USER: ${user.username} (${user.role})`;
+            this.authStatusBadge.className = "auth-status-badge badge-admin";
+          }
+        } else {
+          localStorage.removeItem("cyberassess_token");
+        }
+      }
+    } catch (e) {
+      console.error("Auth status check failed:", e);
+    }
+  }
 
   openAuthModal() {
     if (this.authModal) this.authModal.style.display = "flex";
@@ -1642,6 +1690,10 @@ class ScanStreamManager {
         if (this.userRoleBadge) this.userRoleBadge.innerText = data.user.role;
         if (this.authCurrentUsername) this.authCurrentUsername.innerText = data.user.username;
         if (this.authCurrentRole) this.authCurrentRole.innerText = data.user.role;
+        if (this.authStatusBadge) {
+          this.authStatusBadge.innerText = `USER: ${data.user.username} (${data.user.role})`;
+          this.authStatusBadge.className = "auth-status-badge badge-admin";
+        }
         this.closeAuthModal();
       } else {
         const err = await res.json();
@@ -1657,6 +1709,10 @@ class ScanStreamManager {
     if (this.userRoleBadge) this.userRoleBadge.innerText = "VIEWER";
     if (this.authCurrentUsername) this.authCurrentUsername.innerText = "Anonymous";
     if (this.authCurrentRole) this.authCurrentRole.innerText = "VIEWER";
+    if (this.authStatusBadge) {
+      this.authStatusBadge.innerText = "AUTH: NONE";
+      this.authStatusBadge.className = "auth-status-badge badge-none";
+    }
     this.closeAuthModal();
   }
 
@@ -1701,7 +1757,7 @@ window.auditAsset = function (val, type) {
 window.deleteAsset = async function (id) {
   if (!confirm("Are you sure you want to delete this monitored asset?")) return;
   try {
-    const res = await fetch(`/api/assets/${id}`, { method: "DELETE" });
+    const res = await (window.app ? window.app.authFetch(`/api/assets/${id}`, { method: "DELETE" }) : fetch(`/api/assets/${id}`, { method: "DELETE" }));
     if (res.ok && window.app) {
       await window.app.loadAssets();
     }

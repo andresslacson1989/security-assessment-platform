@@ -14,6 +14,9 @@ from app.core.models import (
     Severity,
     SecurityGrade,
 )
+from app.core.version import RISK_MODEL_VERSION
+
+MODEL_VERSION = RISK_MODEL_VERSION
 
 
 def get_criticality_factor(criticality: AssetCriticality) -> float:

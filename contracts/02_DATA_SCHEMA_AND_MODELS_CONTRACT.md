@@ -1,529 +1,94 @@
-# Contract 02: Core Data Schema, Pydantic Models & Scoring Algorithm
+# Contract 02: Enterprise Data Schemas, Entity Models & Multi-Tenant State Specifications
 
-**Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
+**Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
+**Document Version:** 10.0.0 (Enterprise ASPM Schema, Canonical Findings & Occurrences, Tenant Isolation, Version Authority & Audit Models)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Data Models, State Machines, Serialization & Mathematical Scoring  
+**Scope Authority:** Core Data Schemas, Relational Persistence Tables, Identity, Assets, Findings Lifecycle & Audit Records  
 
 ---
 
-## 1. Schema Design Philosophy
+## 1. Single Version Authority
 
-All models in this platform are strictly defined using **Pydantic v2** with type validation, immutability guarantees where appropriate, and deterministic serialization to JSON, OASIS SARIF v2.1.0, and HTML formats.
+All platform components, API responses, exporters, UI banners, and database migrations MUST derive their version metadata exclusively from the centralized version authority:
+
+```python
+# backend/app/core/version.py
+APP_VERSION = "10.0.0"
+API_VERSION = "v1"
+SCHEMA_VERSION = "10.0.0"
+CONTRACT_VERSION = "10.0.0"
+RULESET_VERSION = "2026.08.31"
+RISK_MODEL_VERSION = "contextual_risk_model_v2"
+```
+
+Hardcoded independent version strings in READMEs, endpoints, or UI templates are strictly prohibited.
 
 ---
 
-## 2. Enums & Classifications
+## 2. Identity, Authentication & Multi-Tenancy Models
 
-### 2.1 Target Classification (`TargetType`)
+### 2.1 Enums
+- `OperatingMode`: `PRODUCTION`, `DEVELOPMENT`, `TEST`
+- `UserRole`: `ADMIN`, `SECURITY_ANALYST`, `DEVELOPER`, `VIEWER`
+- `APIKeyScope`:
+  - `scan:create`, `scan:read`, `scan:cancel`
+  - `finding:read`, `finding:write`
+  - `asset:read`, `asset:write`
+  - `report:read`
+  - `tool:read`, `tool:install`
+  - `system:admin`
+
+### 2.2 Entity Schemas
 ```python
-from enum import Enum
-
-class TargetType(str, Enum):
-    URL = "URL"                    # Web Application or REST/GraphQL Endpoint
-    DOMAIN = "DOMAIN"              # Domain Name / FQDN (Perimeter, DNS, OSINT)
-    IP = "IP"                      # Single IPv4 or IPv6 Address
-    LOCAL_PATH = "LOCAL_PATH"      # Local Source Code Repository
-    DOCKERFILE = "DOCKERFILE"      # Dockerfile Specification
-    IAC_MANIFEST = "IAC_MANIFEST"  # Kubernetes, Compose, or Terraform Manifest
-```
-
-### 2.2 Finding Severity Rating (`Severity`)
-```python
-class Severity(str, Enum):
-    CRITICAL = "CRITICAL"  # CVSS 9.0 - 10.0: Immediate compromise / RCE / Root Secret / SQLi / Subdomain Takeover
-    HIGH = "HIGH"          # CVSS 7.0 - 8.9: Significant vulnerability / XSS / LFI / Insecure Auth / Sudo / Privileged Pod
-    MEDIUM = "MEDIUM"      # CVSS 4.0 - 6.9: Security misconfiguration / Missing CSP / SWEET32 / Weak CORS / OSINT Subdomain
-    LOW = "LOW"            # CVSS 0.1 - 3.9: Informational hygiene / Missing CAA / Unpinned dep / Server banner
-    INFO = "INFO"          # CVSS 0.0: Educational observation or positive posture note
-```
-
-### 2.3 Scan Profiles (`ScanProfile`)
-```python
-class ScanProfile(str, Enum):
-    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 21 available modern adapters
-    QUICK_AUDIT = "QUICK_AUDIT"                  # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Katana + Schemathesis
-    SAST_ONLY = "SAST_ONLY"                      # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + TruffleHog + RetireJS
-    NETWORK_TLS = "NETWORK_TLS"                  # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze + Subfinder + Httpx
-    INFRA_ONLY = "INFRA_ONLY"                    # Dockerfile + Compose + K8s + Terraform + Trivy + Checkov + Dockle + KubeBench + Prowler
-    EASM_EXPANDED = "EASM_EXPANDED"              # External Attack Surface: Subfinder + Httpx + Nmap + Katana + crt.sh
-    SUPPLY_CHAIN_SBOM = "SUPPLY_CHAIN_SBOM"      # Syft + Grype + OSV-Scanner + Trivy + Retire.js + SBOM Export
-    CLOUD_K8S_COMPLIANCE = "CLOUD_K8S_COMPLIANCE" # Prowler + Kube-bench + Checkov + Dockle (CIS Benchmarks)
-    API_CONTRACT_AUDIT = "API_CONTRACT_AUDIT"    # Schemathesis + Nuclei API + FFuF (OpenAPI/GraphQL Contract Fuzzing)
-    CUSTOM = "CUSTOM"                            # User-defined engine selection
-```
-
-### 2.4 Scan Status & State Machine (`ScanStatus`)
-```
-  [ PENDING ]
-       │ (Orchestrator picks job)
-       ▼
-  [ RUNNING ] ──────────(User Cancels)──────────► [ CANCELLED ]
-       │                                                ▲
-       ├────────────────(Fatal Crash / Timeout)──► [ FAILED ]
-       │
-       ▼ (All engines complete)
- [ COMPLETED ]
-```
-
-### 2.5 Authentication Classification (`AuthType`)
-```python
-class AuthType(str, Enum):
-    NONE = "NONE"              # Unauthenticated public scan
-    HEADER = "HEADER"          # Static Bearer token or custom header
-    COOKIE = "COOKIE"          # Direct session cookie injection
-    FORM_LOGIN = "FORM_LOGIN"  # Automated form login with credential submission & CSRF handling
-```
-
-### 2.6 Tool Execution Mode (`ToolExecutionMode`)
-```python
-class ToolExecutionMode(str, Enum):
-    ADAPTER_ACTIVE = "ADAPTER_ACTIVE"      # External CLI adapter executed as primary front-line engine
-    NATIVE_FALLBACK = "NATIVE_FALLBACK"    # External CLI binary absent; resilient native Python engine executed
-    DISABLED = "DISABLED"                  # Explicitly disabled in scan configuration
-```
-
-### 2.7 Tool Installation Method (`ToolInstallMethod`) & Status (`ToolInstallStatus`)
-```python
-class ToolInstallMethod(str, Enum):
-    PIP = "PIP"                                        # Pure Python package installed via sys.executable -m pip
-    STANDALONE_BINARY = "STANDALONE_BINARY"            # Standalone Go/compiled binary downloaded from GitHub Releases into backend/bin/
-    SYSTEM_PACKAGE_MANAGER = "SYSTEM_PACKAGE_MANAGER"  # System tool requiring OS package manager (winget/brew/apt) or elevated setup
-    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool downloaded via direct script
-    MANUAL = "MANUAL"                                  # Manual binary placement
-
-class ToolInstallStatus(str, Enum):
-    NOT_INSTALLED = "NOT_INSTALLED"
-    INSTALLING = "INSTALLING"
-    INSTALLED = "INSTALLED"
-    FAILED = "FAILED"
-    UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
-```
-
----
-
-## 3. Pydantic v2 Models & Schema Definitions
-
-### 3.1 Target Model (`Target`)
-```python
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
-import uuid
-
-class Target(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique target UUID")
-    name: str = Field(..., min_length=1, max_length=120, description="User-friendly target label")
-    type: TargetType = Field(..., description="Target classification type")
-    value: str = Field(..., min_length=1, max_length=1024, description="Raw target URI, domain, IP, or path")
-    resolved_ip: Optional[str] = Field(default=None, description="DNS-resolved IP address if applicable")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-```
-
-### 3.2 Finding Evidence Model (`Evidence`)
-```python
-class Evidence(BaseModel):
-    location: str = Field(..., description="URL endpoint, file path + line number, or port number")
-    observed_value: str = Field(..., description="What was actually observed (e.g. 'Server: Apache/2.4.41' or 'AKIA****')")
-    expected_value: str = Field(..., description="What should have been configured according to security standard")
-    raw_response_snippet: Optional[str] = Field(default=None, description="Safe excerpt of HTTP header, banner, or code snippet")
-    request_details: Optional[Dict[str, Any]] = Field(default=None, description="HTTP method, URL, parameter name, and test headers used")
-    response_details: Optional[Dict[str, Any]] = Field(default=None, description="HTTP status code and response headers")
-    line_number: Optional[int] = Field(default=None, description="Line number if finding relates to a file")
-    column_number: Optional[int] = Field(default=None, description="Column number if applicable")
-```
-
-### 3.3 Finding Model (`Finding`)
-```python
-class Finding(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
-    scan_id: str = Field(..., description="Parent scan execution UUID")
-    engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
-    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
-    check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
-    category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
-    title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")
-    severity: Severity = Field(..., description="Finding severity rating")
-    cvss_score: float = Field(..., ge=0.0, le=10.0, description="CVSS v3.1 Base Score")
-    cvss_vector: Optional[str] = Field(default=None, description="e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
-    cwe_id: Optional[str] = Field(default=None, description="Common Weakness Enumeration ID (e.g. CWE-89, CWE-79)")
-    owasp_category: Optional[str] = Field(default=None, description="OWASP Top 10 (2021) mapping (e.g. A03:2021-Injection)")
-    nist_control: Optional[str] = Field(default=None, description="NIST SP 800-53 control mapping (e.g. SC-8, IA-5, SI-10)")
-    description: str = Field(..., description="Detailed explanation of the flaw and why it occurred")
-    impact: str = Field(..., description="Potential business or technical damage if exploited")
-    remediation: str = Field(..., description="Step-by-step guidance to fix the issue")
-    remediation_code_snippet: Optional[str] = Field(default=None, description="Example configuration or patch code")
-    references: List[str] = Field(default_factory=list, description="Authoritative links (OWASP, NIST, RFC, vendor advisory)")
-    evidence: Evidence = Field(..., description="Concrete proof and observed data")
-    reproduction_curl: Optional[str] = Field(default=None, description="Exact copy-pasteable curl PoC command to reproduce the finding")
-    taint_trace: Optional[List[str]] = Field(default=None, description="AST dataflow taint trace steps from source to sink")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    fingerprint: str = Field(..., description="Deterministic SHA256 hash of (check_id + location + evidence.observed_value)")
-```
-
-### 3.4 Discovered Subdomain & Endpoint Models
-```python
-class DiscoveredSubdomain(BaseModel):
-    domain: str = Field(..., description="Fully-qualified discovered subdomain name")
-    ip_addresses: List[str] = Field(default_factory=list, description="Resolved IPv4/IPv6 addresses")
-    cname_targets: List[str] = Field(default_factory=list, description="Resolved CNAME aliases")
-    is_takeover_vulnerable: bool = Field(default=False, description="Whether CNAME points to unclaimed cloud resource")
-    service_fingerprint: Optional[str] = Field(default=None, description="Identified hosting provider or technology")
-    discovered_via: str = Field(default="crt.sh", description="Reconnaissance source (crt.sh, DNS enumeration, TLS SAN)")
-
-class DiscoveredEndpoint(BaseModel):
-    url: str = Field(..., description="Normalized discovered URL")
-    method: str = Field(default="GET", description="HTTP method")
-    depth: int = Field(default=0, ge=0, description="Crawl depth level at which endpoint was discovered")
-    status_code: Optional[int] = Field(default=None, description="Observed HTTP response status code")
-    content_type: Optional[str] = Field(default=None, description="Observed Content-Type header")
-    is_authenticated: bool = Field(default=False, description="Whether endpoint requires/received active authentication")
-    has_forms: bool = Field(default=False, description="Whether HTML forms were discovered on this page")
-```
-
-### 3.5 Hybrid Tool Adapter Configurations & Status Models
-```python
-class ToolAdapterConfig(BaseModel):
-    # Core 9 Adapters
-    enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")
-    enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
-    enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
-    enable_ffuf: bool = Field(default=True, description="Enable FFuF high-speed content discovery adapter")
-    enable_semgrep: bool = Field(default=True, description="Enable Semgrep multi-language AST SAST adapter")
-    enable_gitleaks: bool = Field(default=True, description="Enable Gitleaks git history secret scanner adapter")
-    enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")
-    enable_trivy: bool = Field(default=True, description="Enable Trivy SCA and container vulnerability adapter")
-    enable_checkov: bool = Field(default=True, description="Enable Checkov Infrastructure-as-Code policy adapter")
-
-    # Expanded 12 Enterprise Adapters (v8.0.0)
-    enable_subfinder: bool = Field(default=True, description="Enable Subfinder multi-source passive subdomain discovery adapter")
-    enable_httpx: bool = Field(default=True, description="Enable Httpx high-speed HTTP probing and tech fingerprint adapter")
-    enable_katana: bool = Field(default=True, description="Enable Katana headless Chromium SPA crawler adapter")
-    enable_syft: bool = Field(default=True, description="Enable Syft SBOM (CycloneDX / SPDX) generation adapter")
-    enable_grype: bool = Field(default=True, description="Enable Grype SBOM & container vulnerability adapter")
-    enable_osv_scanner: bool = Field(default=True, description="Enable Google OSV-Scanner dependency vulnerability adapter")
-    enable_retirejs: bool = Field(default=True, description="Enable Retire.js client-side JavaScript CVE adapter")
-    enable_trufflehog: bool = Field(default=True, description="Enable TruffleHog verified live secret detection adapter")
-    enable_prowler: bool = Field(default=True, description="Enable Prowler multi-cloud CIS benchmark posture adapter")
-    enable_kube_bench: bool = Field(default=True, description="Enable Kube-bench CIS Kubernetes benchmark adapter")
-    enable_dockle: bool = Field(default=True, description="Enable Dockle CIS Docker container hardening linter adapter")
-    enable_schemathesis: bool = Field(default=True, description="Enable Schemathesis property-based API contract fuzzer adapter")
-
-    # Custom Executable Paths
-    custom_nmap_path: Optional[str] = Field(default=None)
-    custom_sslyze_path: Optional[str] = Field(default=None)
-    custom_nuclei_path: Optional[str] = Field(default=None)
-    custom_ffuf_path: Optional[str] = Field(default=None)
-    custom_semgrep_path: Optional[str] = Field(default=None)
-    custom_gitleaks_path: Optional[str] = Field(default=None)
-    custom_bandit_path: Optional[str] = Field(default=None)
-    custom_trivy_path: Optional[str] = Field(default=None)
-    custom_checkov_path: Optional[str] = Field(default=None)
-    custom_subfinder_path: Optional[str] = Field(default=None)
-    custom_httpx_path: Optional[str] = Field(default=None)
-    custom_katana_path: Optional[str] = Field(default=None)
-    custom_syft_path: Optional[str] = Field(default=None)
-    custom_grype_path: Optional[str] = Field(default=None)
-    custom_osv_scanner_path: Optional[str] = Field(default=None)
-    custom_retirejs_path: Optional[str] = Field(default=None)
-    custom_trufflehog_path: Optional[str] = Field(default=None)
-    custom_prowler_path: Optional[str] = Field(default=None)
-    custom_kube_bench_path: Optional[str] = Field(default=None)
-    custom_dockle_path: Optional[str] = Field(default=None)
-    custom_schemathesis_path: Optional[str] = Field(default=None)
-
-class ToolStatus(BaseModel):
-    name: str = Field(..., description="Tool identifier (nmap, sslyze, nuclei, ffuf, semgrep, gitleaks, bandit, trivy, checkov, subfinder, httpx, katana, syft, grype, osv_scanner, retirejs, trufflehog, prowler, kube_bench, dockle, schemathesis)")
-    available: bool = Field(..., description="Whether binary was detected and verified on PATH/filesystem")
-    version: Optional[str] = Field(default=None, description="Detected executable version string")
-    path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
-    execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', or 'DISABLED'")
-
-class SystemCapabilities(BaseModel):
-    tools: List[ToolStatus] = Field(default_factory=list, description="Tool availability and capability status")
-    native_engines_ready: bool = Field(default=True, description="Native Python async engines ready")
-    os_platform: str = Field(default="unknown", description="Operating system platform details")
-```
-
-### 3.6 Authentication, Crawler, Fuzzing & OSINT Configurations
-```python
-class FuzzingConfig(BaseModel):
-    enabled: bool = Field(default=False, description="Enable active parameter fuzzing & benign injection testing")
-    fuzz_query_params: bool = Field(default=True, description="Fuzz URL GET query parameters")
-    fuzz_body_params: bool = Field(default=True, description="Fuzz POST/PUT form and JSON parameters")
-    fuzz_sqli: bool = Field(default=True, description="Test for Time-based and Boolean-differential SQLi")
-    fuzz_xss: bool = Field(default=True, description="Test for Reflected XSS using benign canary tokens")
-    fuzz_lfi: bool = Field(default=True, description="Test for Local File Inclusion and Path Traversal")
-    fuzz_ssti: bool = Field(default=True, description="Test for Server-Side Template Injection mathematical evaluation")
-    fuzz_redirect: bool = Field(default=True, description="Test for Open Redirect via parameter tampering")
-    delay_seconds: float = Field(default=2.0, ge=1.0, le=5.0, description="Expected delay for timing-based probes")
-
-class OsintConfig(BaseModel):
-    subdomain_enumeration: bool = Field(default=True, description="Query public Certificate Transparency logs (crt.sh)")
-    subdomain_takeover_check: bool = Field(default=True, description="Detect dangling CNAME records pointing to unclaimed services")
-    crtsh_timeout_seconds: float = Field(default=10.0, ge=3.0, le=30.0, description="Timeout for crt.sh API queries")
-
-class AuthConfig(BaseModel):
-    auth_type: AuthType = Field(default=AuthType.NONE, description="Authentication mechanism")
-    headers: Dict[str, str] = Field(default_factory=dict, description="Custom headers (e.g. Authorization: Bearer <token>)")
-    cookies: Dict[str, str] = Field(default_factory=dict, description="Session cookies (e.g. sessionid=xyz)")
-    login_url: Optional[str] = Field(default=None, description="Form login URL endpoint")
-    username_field: str = Field(default="username", description="HTML input name for username/email")
-    username: Optional[str] = Field(default=None, description="Login username or email")
-    password_field: str = Field(default="password", description="HTML input name for password")
-    password: Optional[str] = Field(default=None, description="Login password")
-    csrf_token_field: Optional[str] = Field(default=None, description="Optional custom CSRF form field name")
-    logged_in_indicator: Optional[str] = Field(default=None, description="Regex/string in response confirming active session")
-    logout_url_patterns: List[str] = Field(
-        default_factory=lambda: ["logout", "signout", "sign_out", "log_out", "exit", "destroy"],
-        description="Path patterns excluded from crawling to prevent session termination"
-    )
-
-class CrawlerConfig(BaseModel):
-    enabled: bool = Field(default=True, description="Enable multi-page link discovery crawler")
-    max_depth: int = Field(default=3, ge=1, le=5, description="Maximum crawl tree traversal depth")
-    max_pages: int = Field(default=50, ge=1, le=200, description="Maximum pages to crawl")
-    exclude_patterns: List[str] = Field(
-        default_factory=lambda: ["*logout*", "*signout*", "*delete*", "*destroy*", "*purge*"],
-        description="Path patterns excluded from crawling"
-    )
-    follow_redirects: bool = Field(default=True, description="Follow same-origin redirects")
-    parse_sitemap: bool = Field(default=True, description="Parse robots.txt and sitemap.xml for seeds")
-```
-
-### 3.7 Scan Job Summary Model (`ScanJobSummary`)
-```python
-class ScanJobSummary(BaseModel):
-    critical_count: int = Field(default=0, ge=0)
-    high_count: int = Field(default=0, ge=0)
-    medium_count: int = Field(default=0, ge=0)
-    low_count: int = Field(default=0, ge=0)
-    info_count: int = Field(default=0, ge=0)
-    total_findings: int = Field(default=0, ge=0)
-    passed_checks: int = Field(default=0, ge=0)
-    total_checks_evaluated: int = Field(default=0, ge=0)
-    pages_crawled: int = Field(default=1, ge=0, description="Total unique internal pages crawled")
-    subdomains_discovered: int = Field(default=0, ge=0, description="Total unique subdomains discovered via OSINT")
-    active_adapters: List[str] = Field(default_factory=list, description="List of external tools successfully executed")
-    authenticated_session_active: bool = Field(default=False, description="Whether authentication was verified active")
-    weighted_score: float = Field(default=100.0, ge=0.0, le=100.0, description="Calculated 0-100 security score")
-    overall_security_grade: str = Field(default="A+", description="Letter grade: A+, A, B, C, D, or F")
-    duration_seconds: float = Field(default=0.0, ge=0.0)
-    engine_breakdown: Dict[str, int] = Field(default_factory=dict, description="Finding counts per engine")
-```
-
-### 3.8 Log Entry Model (`LogEntry`)
-```python
-class LogLevel(str, Enum):
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    DEBUG = "DEBUG"
-
-class LogEntry(BaseModel):
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    level: LogLevel = Field(default=LogLevel.INFO)
-    engine: Optional[str] = Field(default=None, description="Origin engine name")
-    message: str = Field(..., description="Log message text")
-```
-
-### 3.9 Complete Scan Job Model (`ScanJob`)
-```python
-class ScanConfig(BaseModel):
-    rate_limit_rps: int = Field(default=5, ge=1, le=20)
-    timeout_seconds: int = Field(default=10, ge=2, le=60)
-    custom_headers: Dict[str, str] = Field(default_factory=dict)
-    port_list: List[int] = Field(default_factory=list)
-    include_subdomains: bool = Field(default=False)
-    crawler: CrawlerConfig = Field(default_factory=CrawlerConfig)
-    auth: AuthConfig = Field(default_factory=AuthConfig)
-    fuzzing: FuzzingConfig = Field(default_factory=FuzzingConfig)
-    osint: OsintConfig = Field(default_factory=OsintConfig)
-    adapters: ToolAdapterConfig = Field(default_factory=ToolAdapterConfig)
-
-class ScanJob(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    target: Target = Field(...)
-    profile: ScanProfile = Field(default=ScanProfile.FULL_STACK)
-    enabled_engines: List[str] = Field(default_factory=lambda: ["network", "web_dast", "code_sast", "infra_iac", "cicd_audit"])
-    config: ScanConfig = Field(default_factory=ScanConfig)
-    status: ScanStatus = Field(default=ScanStatus.PENDING)
-    progress_percent: int = Field(default=0, ge=0, le=100)
-    current_stage: str = Field(default="Initializing assessment engine...")
-    summary: ScanJobSummary = Field(default_factory=ScanJobSummary)
-    discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list)
-    discovered_subdomains: List[DiscoveredSubdomain] = Field(default_factory=list)
-    findings: List[Finding] = Field(default_factory=list)
-    logs: List[LogEntry] = Field(default_factory=list)
-    started_at: Optional[datetime] = Field(default=None)
-    completed_at: Optional[datetime] = Field(default=None)
-
-### 3.10 Tool Installation & Lifecycle Models
-```python
-class ToolInstallationInfo(BaseModel):
-    name: str = Field(..., description="Machine name of tool (e.g. 'nuclei', 'bandit', 'sslyze')")
-    display_name: str = Field(..., description="Human-readable tool title (e.g. 'Nuclei Template Scanner')")
-    category: str = Field(..., description="Security domain (Network, Web DAST, Code SAST, Infra IaC)")
-    install_method: ToolInstallMethod = Field(..., description="Installation mechanism")
-    status: ToolInstallStatus = Field(default=ToolInstallStatus.NOT_INSTALLED)
-    version: Optional[str] = Field(default=None, description="Discovered version string")
-    path: Optional[str] = Field(default=None, description="Resolved binary executable path")
-    is_elevated_required: bool = Field(default=False, description="Whether root / UAC admin elevation is required")
-    install_command_hint: str = Field(..., description="CLI command snippet for manual or system package manager installation")
-    download_url: Optional[str] = Field(default=None, description="Direct download URL or repo reference")
-    error_message: Optional[str] = Field(default=None, description="Last installation error message if failed")
-    progress_percent: int = Field(default=0, ge=0, le=100, description="Real-time installation progress percentage")
-
-class ToolInstallRequest(BaseModel):
-    tool_name: str = Field(..., description="Tool machine name to install")
-    force: bool = Field(default=False, description="Reinstall or overwrite existing binary if present")
-
-class ToolInstallResponse(BaseModel):
-    task_id: str = Field(..., description="Async installation job task UUID")
-    tool_name: str = Field(..., description="Target tool name")
-    status: ToolInstallStatus = Field(..., description="Initial installation task status")
-    message: str = Field(..., description="Informational progress or queue message")
-
-class ToolBatchInstallRequest(BaseModel):
-    tool_names: List[str] = Field(default_factory=list, description="List of tools to install (empty installs all missing user-space tools)")
-    force: bool = Field(default=False, description="Force reinstallation")
-```
-
-### 3.11 Tool Status & Capabilities Models (`ToolStatus`, `SystemCapabilities`)
-```python
-class ToolStatus(BaseModel):
-    name: str
-    available: bool = False
-    version: Optional[str] = None
-    path: Optional[str] = None
-    execution_mode: ToolExecutionMode = ToolExecutionMode.NATIVE_FALLBACK
-    install_method: ToolInstallMethod = ToolInstallMethod.MANUAL
-    is_installed: bool = False
-    installable: bool = True
-
-### 3.12 Software Bill of Materials (SBOM) & Supply Chain Models
-```python
-class SBOMExportFormat(str, Enum):
-    CYCLONEDX_JSON = "CYCLONEDX_JSON"
-    CYCLONEDX_XML = "CYCLONEDX_XML"
-    SPDX_JSON = "SPDX_JSON"
-    SPDX_TAG_VALUE = "SPDX_TAG_VALUE"
-
-class SBOMComponent(BaseModel):
-    name: str = Field(..., description="Package or component name")
-    version: str = Field(..., description="Installed package version string")
-    type: str = Field(default="library", description="Component type: library, application, container, operating-system")
-    purl: Optional[str] = Field(default=None, description="Package URL specification (e.g. pkg:npm/lodash@4.17.21)")
-    license: Optional[str] = Field(default=None, description="Declared SPDX license identifier")
-    cpe: Optional[str] = Field(default=None, description="Common Platform Enumeration string")
-    vulnerabilities_count: int = Field(default=0, description="Associated CVE/vulnerability count")
-
-class SBOMReport(BaseModel):
-    format: SBOMExportFormat = Field(default=SBOMExportFormat.CYCLONEDX_JSON)
-    spec_version: str = Field(default="1.5", description="Specification version string")
-    serial_number: str = Field(default_factory=lambda: f"urn:uuid:{uuid.uuid4()}")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    components: List[SBOMComponent] = Field(default_factory=list)
-    raw_document: Optional[str] = Field(default=None, description="Full serialized CycloneDX or SPDX document string")
-```
-
-### 3.13 CIS Benchmark & Verified Secret Models
-```python
-class CISBenchmarkResult(BaseModel):
-    benchmark_name: str = Field(..., description="CIS Benchmark (e.g. 'CIS Kubernetes Benchmark v1.8', 'CIS Docker Benchmark v1.5')")
-    section_id: str = Field(..., description="Section identifier (e.g. '1.1.1', '4.1')")
-    title: str = Field(..., description="Benchmark control recommendation title")
-    status: str = Field(..., description="'PASS', 'FAIL', 'WARN', 'INFO'")
-    remediation: str = Field(..., description="Prescriptive remediation steps")
-    scored: bool = Field(default=True, description="Whether control is scored in CIS certification")
-
-class VerifiedSecretEvidence(BaseModel):
-    secret_type: str = Field(..., description="Type of secret (e.g. 'AWS Access Key', 'Stripe API Key', 'GitHub PAT')")
-    is_live: bool = Field(..., description="Whether real-time non-destructive probe confirmed credential is active")
-    account_id: Optional[str] = Field(default=None, description="Masked account or identity returned by authorization probe")
-    permissions_summary: Optional[str] = Field(default=None, description="Observed permission scope")
-```
-
----
-
-## 4. Deterministic Grading Algorithm Contract
-
-The platform calculates overall security posture through a transparent, mathematical formula.
-
-### 4.1 Base Score Deduction Formula
-Starting with a base score of $S_0 = 100.0$:
-
-$$S_{\text{raw}} = 100.0 - \left( N_{\text{crit}} \times 35.0 + N_{\text{high}} \times 15.0 + N_{\text{med}} \times 5.0 + N_{\text{low}} \times 1.0 \right)$$
-
-$$\text{Final Score } S = \max(0.0, \min(100.0, S_{\text{raw}}))$$
-
-### 4.2 Letter Grade Assignment Table
-
-| Letter Grade | Score Range | Mandatory Hard Constraints | Security Posture Description |
-| :---: | :---: | :--- | :--- |
-| **`A+`** | $96.0 - 100.0$ | `critical == 0`, `high == 0`, `medium == 0`, `low == 0` | Exemplary posture. Zero vulnerabilities. Strict CSP, modern TLS 1.3, strict SPF/DMARC/MTA-STS, zero hardcoded secrets. |
-| **`A`** | $90.0 - 95.9$ | `critical == 0`, `high == 0`, `medium == 0`, `low <= 2` | Strong posture. No significant vulnerabilities. Only minor hygiene recommendations (e.g. server banner, missing CAA). |
-| **`B`** | $80.0 - 89.9$ | `critical == 0`, `high == 0`, `medium <= 2` | Good posture with minor gaps (e.g. missing Referrer-Policy, 1 non-sensitive cookie flag, weak DMARC policy `p=none`). |
-| **`C`** | $65.0 - 79.9$ | `critical == 0`, `high == 0` | Moderate risk. Multiple medium vulnerabilities present (missing CSP, missing HSTS, or weak CORS). |
-| **`D`** | $50.0 - 64.9$ | `critical == 0`, `high >= 1` OR $S \in [50, 64.9]$ | Poor posture. High-severity exposure detected (exposed database port, deprecated TLS 1.0, container running as root). |
-| **`F`** | $< 50.0$ | **`critical >= 1` ALWAYS FORCES AN `F` GRADE**, regardless of raw score | Critical failure. Severe vulnerability detected (hardcoded AWS root key, public `.env` leak, expired SSL cert). |
-
----
-
-## 6. Zero-Trust Authentication, RBAC & Multi-Tenancy Models
-
-```python
-class UserRole(str, Enum):
-    ADMIN = "ADMIN"                      # Full administrative control, tool installs, user provisioning, SSRF bypass
-    SECURITY_ANALYST = "SECURITY_ANALYST" # Full scanning, HTTP Repeater, vulnerability triage, report exports
-    DEVELOPER = "DEVELOPER"              # Scans on assigned assets/projects, remediation updates
-    VIEWER = "VIEWER"                    # Read-only dashboard and report viewer
-
-class User(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    username: str = Field(..., min_length=3, max_length=50)
-    email: str = Field(...)
-    hashed_password: str = Field(...)
-    role: UserRole = Field(default=UserRole.VIEWER)
-    organization_id: Optional[str] = Field(default=None)
-    is_active: bool = Field(default=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
 class Organization(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str = Field(...)
-    slug: str = Field(...)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    id: str  # e.g., "org-7a8f9c"
+    name: str
+    slug: str
+    created_at: datetime
+    is_active: bool = True
 
 class Project(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    organization_id: str = Field(...)
-    name: str = Field(...)
-    description: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    id: str  # e.g., "prj-b1c2d3"
+    organization_id: str
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
 
-class APIKey(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str = Field(...)
-    key_prefix: str = Field(...)
-    hashed_secret: str = Field(...)
-    name: str = Field(...)
-    role: UserRole = Field(default=UserRole.SECURITY_ANALYST)
-    expires_at: Optional[datetime] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+class Workspace(BaseModel):
+    id: str  # e.g., "ws-e4f5a6"
+    organization_id: str
+    project_id: str
+    name: str
+    filesystem_root: str  # Canonical resolved absolute path
+    is_sandboxed: bool = True
+    created_at: datetime
 
-class TokenPayload(BaseModel):
-    sub: str = Field(..., description="User ID")
-    username: str = Field(...)
-    role: UserRole = Field(...)
-    org_id: Optional[str] = Field(default=None)
-    exp: int = Field(...)
+class UserProfile(BaseModel):
+    id: str  # e.g., "usr-1a2b3c"
+    username: str
+    email: str
+    role: UserRole
+    organization_id: Optional[str] = None
+    is_active: bool = True
+    created_at: datetime
+    last_login_at: Optional[datetime] = None
+
+class APIKeyRecord(BaseModel):
+    key_id: str  # e.g., "ca_key_9f8e7d" (public identifier prefix)
+    key_hash: str  # PBKDF2 or SHA-256 hash of secret token
+    organization_id: Optional[str] = None
+    user_id: Optional[str] = None
+    name: str
+    scopes: List[str]
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
 ```
 
 ---
 
-## 7. Asset Management & Continuous Inventory Models
+## 3. Attack Surface & Asset Inventory Models
 
 ```python
 class AssetType(str, Enum):
@@ -533,33 +98,45 @@ class AssetType(str, Enum):
     IP_ADDRESS = "IP_ADDRESS"
     GIT_REPOSITORY = "GIT_REPOSITORY"
     CONTAINER_IMAGE = "CONTAINER_IMAGE"
-    KUBERNETES_CLUSTER = "KUBERNETES_CLUSTER"
     CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
+    IAC_TEMPLATE = "IAC_TEMPLATE"
 
 class AssetCriticality(str, Enum):
-    CRITICAL = "CRITICAL"    # Tier 1 Revenue / Core Production (Factor: 1.5x)
-    HIGH = "HIGH"            # Production Supporting / Internal Sensitive (Factor: 1.2x)
-    MEDIUM = "MEDIUM"        # Staging / UAT / Pre-production (Factor: 1.0x)
-    LOW = "LOW"              # Development / Sandbox / Ephemeral (Factor: 0.7x)
+    CRITICAL = "CRITICAL"  # 1.5x risk multiplier
+    HIGH = "HIGH"          # 1.2x risk multiplier
+    MEDIUM = "MEDIUM"      # 1.0x risk multiplier
+    LOW = "LOW"            # 0.7x risk multiplier
+
+class AssetLifecycleStatus(str, Enum):
+    DISCOVERED = "DISCOVERED"
+    MONITORED = "MONITORED"
+    DECOMMISSIONED = "DECOMMISSIONED"
+    ARCHIVED = "ARCHIVED"
 
 class Asset(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    organization_id: Optional[str] = Field(default=None)
-    project_id: Optional[str] = Field(default=None)
-    name: str = Field(..., min_length=2, max_length=120)
-    type: AssetType = Field(...)
-    target_value: str = Field(...)
-    criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
-    internet_exposed: bool = Field(default=True)
+    id: str = Field(default_factory=lambda: f"ast-{uuid.uuid4().hex[:12]}")
+    organization_id: Optional[str] = None
+    project_id: Optional[str] = None
+    name: str
+    type: AssetType
+    target_value: str
+    criticality: AssetCriticality = AssetCriticality.MEDIUM
+    internet_exposed: bool = True
+    owner: Optional[str] = None
+    lifecycle_status: AssetLifecycleStatus = AssetLifecycleStatus.MONITORED
     tags: List[str] = Field(default_factory=list)
-    owner: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_scanned_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_scanned_at: Optional[datetime] = None
+    last_verified_at: Optional[datetime] = None
+    active_findings_count: int = 0
 ```
 
 ---
 
-## 8. Vulnerability Lifecycle, Triage & SLA Tracking Models
+## 4. Canonical Finding & Finding Occurrence Models
+
+To prevent data loss and preserve temporal vulnerability lifecycles:
 
 ```python
 class FindingLifecycleStatus(str, Enum):
@@ -568,64 +145,119 @@ class FindingLifecycleStatus(str, Enum):
     IN_PROGRESS = "IN_PROGRESS"
     FIXED = "FIXED"
     VERIFIED = "VERIFIED"
-    RISK_ACCEPTED = "RISK_ACCEPTED"
     FALSE_POSITIVE = "FALSE_POSITIVE"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    REOPENED = "REOPENED"
 
-class FindingComment(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str = Field(...)
-    username: str = Field(...)
-    comment: str = Field(...)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+class CorrelationType(str, Enum):
+    SAST_DAST_VERIFIED = "SAST_DAST_VERIFIED"
+    MULTI_TOOL_CONFIRMED = "MULTI_TOOL_CONFIRMED"
+    ENDPOINT_CLUSTERED = "ENDPOINT_CLUSTERED"
+    TAINT_CONFIRMED = "TAINT_CONFIRMED"
 
 class SLAInfo(BaseModel):
-    severity: Severity = Field(...)
-    sla_days: int = Field(..., description="Allowed remediation window (Crit: 7d, High: 14d, Med: 30d, Low: 90d)")
-    due_date: datetime = Field(...)
-    is_breached: bool = Field(default=False)
-```
+    severity: Severity
+    sla_days: int
+    sla_started_at: datetime
+    sla_due_at: datetime
+    sla_breached_at: Optional[datetime] = None
+    is_breached: bool = False
 
----
+class FindingOccurrence(BaseModel):
+    id: str = Field(default_factory=lambda: f"occ-{uuid.uuid4().hex[:12]}")
+    canonical_finding_id: str
+    scan_id: str
+    asset_id: Optional[str] = None
+    source_tool: str
+    check_id: str
+    raw_evidence: Evidence
+    reproduction_curl: Optional[str] = None
+    taint_trace: Optional[List[str]] = None
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-## 9. Cross-Engine Finding Correlation & Unified Finding Models
-
-```python
-class CorrelationType(str, Enum):
-    SAST_DAST_VERIFIED = "SAST_DAST_VERIFIED"  # Confirmed SAST flaw matching live DAST endpoint behavior
-    MULTI_TOOL_CONFIRMED = "MULTI_TOOL_CONFIRMED" # Confirmed by 2+ independent tool adapters
-    ENDPOINT_CLUSTERED = "ENDPOINT_CLUSTERED"   # Multiple related CVEs/exposures on identical route
-
-class UnifiedFinding(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    asset_id: Optional[str] = Field(default=None)
-    correlation_type: Optional[CorrelationType] = Field(default=None)
-    title: str = Field(...)
-    category: str = Field(...)
-    severity: Severity = Field(...)
-    cvss_score: float = Field(..., ge=0.0, le=10.0)
-    contextual_risk_score: float = Field(default=0.0, ge=0.0, le=10.0)
-    cwe_id: Optional[str] = Field(default=None)
+class CanonicalFinding(BaseModel):
+    id: str = Field(default_factory=lambda: f"cfind-{uuid.uuid4().hex[:12]}")
+    organization_id: Optional[str] = None
+    project_id: Optional[str] = None
+    asset_id: Optional[str] = None
+    title: str
+    category: str
+    severity: Severity
+    cvss_score: float
+    cvss_vector: str
+    contextual_risk_score: float
+    cwe_id: Optional[str] = None
+    owasp_category: Optional[str] = None
+    nist_control: Optional[str] = None
+    status: FindingLifecycleStatus = FindingLifecycleStatus.OPEN
+    first_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    times_observed: int = 1
+    sla: SLAInfo
+    assigned_to: Optional[str] = None
     contributing_tools: List[str] = Field(default_factory=list)
-    raw_finding_ids: List[str] = Field(default_factory=list)
-    lifecycle_status: FindingLifecycleStatus = Field(default=FindingLifecycleStatus.OPEN)
-    first_seen: datetime = Field(default_factory=datetime.utcnow)
-    last_seen: datetime = Field(default_factory=datetime.utcnow)
-    times_observed: int = Field(default=1)
-    sla: Optional[SLAInfo] = Field(default=None)
-    assigned_to: Optional[str] = Field(default=None)
-    remediation: str = Field(...)
-    comments: List[FindingComment] = Field(default_factory=list)
+    correlation_type: Optional[CorrelationType] = None
+    description: str
+    impact: str
+    remediation: str
+    evidence_hash: str
 ```
 
 ---
 
-## 10. Contextual Risk Scoring Algorithm
+## 5. Contextual Risk Model (`contextual_risk_model_v2`)
 
-$$\text{Contextual Risk Score } R = \min\left(10.0, \text{CVSS}_{\text{base}} \times C_{\text{asset}} \times E_{\text{exposure}} \times F_{\text{confidence}}\right)$$
+Contextual risk score calculation follows policy parameters:
+$$\text{Risk} = \min\left(10.0, \text{CVSS} \times C_{\text{asset}} \times E_{\text{exposure}} \times F_{\text{confidence}}\right)$$
 
 Where:
-- **$C_{\text{asset}}$ (Asset Criticality Factor):** `CRITICAL`: 1.5, `HIGH`: 1.2, `MEDIUM`: 1.0, `LOW`: 0.7
-- **$E_{\text{exposure}}$ (Internet Exposure Factor):** Exposed: 1.0, Internal/Isolated: 0.7
-- **$F_{\text{confidence}}$ (Correlation Confidence):** Single tool: 1.0, Multi-tool confirmed: 1.15, SAST+DAST verified: 1.3
+- $C_{\text{asset}} \in \{ \text{CRITICAL}: 1.5, \text{HIGH}: 1.2, \text{MEDIUM}: 1.0, \text{LOW}: 0.7 \}$
+- $E_{\text{exposure}} \in \{ \text{Internet Exposed}: 1.0, \text{Internal/Protected}: 0.7 \}$
+- $F_{\text{confidence}} \in \{ \text{SAST+DAST Verified}: 1.3, \text{Multi-Tool Confirmed}: 1.15, \text{Single Tool / Heuristic}: 1.0 \}$
 
+---
 
+## 6. Audit Event Model
+
+```python
+class AuditAction(str, Enum):
+    LOGIN_SUCCESS = "LOGIN_SUCCESS"
+    LOGIN_FAILURE = "LOGIN_FAILURE"
+    LOGOUT = "LOGOUT"
+    BOOTSTRAP_COMPLETE = "BOOTSTRAP_COMPLETE"
+    TOKEN_REVOKED = "TOKEN_REVOKED"
+    API_KEY_CREATED = "API_KEY_CREATED"
+    API_KEY_REVOKED = "API_KEY_REVOKED"
+    USER_CREATED = "USER_CREATED"
+    USER_ROLE_CHANGED = "USER_ROLE_CHANGED"
+    ASSET_CREATED = "ASSET_CREATED"
+    ASSET_UPDATED = "ASSET_UPDATED"
+    ASSET_DELETED = "ASSET_DELETED"
+    SCAN_CREATED = "SCAN_CREATED"
+    SCAN_STARTED = "SCAN_STARTED"
+    SCAN_CANCELLED = "SCAN_CANCELLED"
+    SCAN_COMPLETED = "SCAN_COMPLETED"
+    SCAN_FAILED = "SCAN_FAILED"
+    INTERNAL_SCAN_AUTHORIZED = "INTERNAL_SCAN_AUTHORIZED"
+    TOOL_INSTALL_STARTED = "TOOL_INSTALL_STARTED"
+    TOOL_INSTALL_COMPLETED = "TOOL_INSTALL_COMPLETED"
+    TOOL_INSTALL_FAILED = "TOOL_INSTALL_FAILED"
+    FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"
+    FINDING_ASSIGNED = "FINDING_ASSIGNED"
+    FINDING_COMMENTED = "FINDING_COMMENTED"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    REPORT_GENERATED = "REPORT_GENERATED"
+
+class AuditEvent(BaseModel):
+    id: str = Field(default_factory=lambda: f"aud-{uuid.uuid4().hex[:12]}")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    actor: str  # User ID, username, or API Key ID
+    organization_id: Optional[str] = None
+    action: AuditAction
+    object_type: str  # "scan", "asset", "finding", "user", "tool", "api_key"
+    object_id: str
+    result: str  # "SUCCESS", "FAILURE", "DENIED"
+    source_ip: Optional[str] = None
+    correlation_id: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+```

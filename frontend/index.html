@@ -679,11 +679,11 @@
             <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;">Authenticate with credentials or switch local development roles.</p>
             <div class="form-group" style="margin-bottom: 10px;">
               <label>Username</label>
-              <input type="text" id="auth-username-input" class="form-control" value="admin">
+              <input type="text" id="auth-username-input" class="form-control" placeholder="Enter username...">
             </div>
             <div class="form-group" style="margin-bottom: 15px;">
               <label>Password</label>
-              <input type="password" id="auth-password-input" class="form-control" value="admin123!">
+              <input type="password" id="auth-password-input" class="form-control" placeholder="Enter password...">
             </div>
             <div style="display: flex; gap: 10px;">
               <button class="btn btn-primary" id="btn-submit-login" style="flex: 1;">Login</button>
@@ -691,7 +691,7 @@
             </div>
           </div>
           <div id="auth-profile-info" style="font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;">
-            Current User: <strong id="auth-current-username">admin</strong> | Role: <span id="auth-current-role" class="badge">ADMIN</span>
+            Current User: <strong id="auth-current-username">Anonymous</strong> | Role: <span id="auth-current-role" class="badge">VIEWER</span>
           </div>
         </div>
       </div>
@@ -699,6 +699,6 @@
 
   </div>
 
-  <script src="/static/js/app.js?v=9.0.0"></script>
+  <script src="/static/js/app.js?v=10.0.0"></script>
 </body>
 </html>

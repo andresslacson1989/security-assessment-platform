@@ -1,5 +1,7 @@
 """
-Contract 04 & 08 Scan Lifecycle, Management and Real-Time SSE Streaming Endpoints.
+Contract 04 §1.3 & Contract 08 §1:
+Scan Lifecycle, Execution, Cancellation & Real-Time SSE Streaming Endpoints.
+Enforces multi-tenant organization authorization and IDOR protection.
 """
 
 from __future__ import annotations
@@ -19,12 +21,23 @@ from app.core.models import (
     ScanStatus,
     ScanConfig,
     ScanJob,
+    AuditEvent,
+    AuditAction,
+    utc_now,
 )
 from app.core.storage import get_scan, list_scans, delete_scan
 from app.core.orchestrator import orchestrator
 from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
 from app.core.path_sandbox import assert_safe_path, PathSandboxViolation
-from app.core.auth import get_current_user, require_admin, require_dev_or_higher, UserProfile, UserRole
+from app.core.auth import (
+    get_current_user,
+    require_admin,
+    require_dev_or_higher,
+    UserProfile,
+    UserRole,
+    authorize_scan_access,
+)
+from app.core.db import db_manager
 
 router = APIRouter()
 
@@ -40,7 +53,7 @@ class StartScanRequest(BaseModel):
 
 def validate_target_input(target_type: TargetType, target_value: str, allow_internal: bool = False) -> None:
     """
-    Validates target value syntax and security constraints according to target type specifications.
+    Validates target value syntax and security constraints.
     Enforces SSRF gateway validation on URLs and workspace containment sandboxing on filesystem paths.
     """
     val = target_value.strip()
@@ -73,7 +86,7 @@ async def start_security_scan(
 ) -> Dict[str, Any]:
     """
     Validates the target, creates a ScanJob, and launches asynchronous security assessment in the background.
-    Protected by SSRF gateway, path sandboxing, and RBAC authentication.
+    Protected by SSRF gateway, path sandboxing, and RBAC multi-tenant authentication.
     """
     allow_internal = (current_user.role == UserRole.ADMIN)
     validate_target_input(payload.target_type, payload.target_value, allow_internal=allow_internal)
@@ -89,7 +102,6 @@ async def start_security_scan(
     if payload.enabled_engines:
         selected_engines = payload.enabled_engines
     else:
-        # Default to all registered engines applicable to this target type
         selected_engines = [
             eng.name for eng in orchestrator.get_registered_engines()
             if eng.is_applicable(target)
@@ -98,14 +110,39 @@ async def start_security_scan(
     scan_config = payload.config or ScanConfig()
 
     scan_job = ScanJob(
+        organization_id=current_user.organization_id,
         target=target,
         profile=payload.profile,
         enabled_engines=selected_engines,
         config=scan_config,
     )
 
+    # Record Audit Events
+    db_manager.record_audit_event(
+        AuditEvent(
+            actor=current_user.username,
+            organization_id=current_user.organization_id,
+            action=AuditAction.SCAN_CREATED,
+            object_type="scan",
+            object_id=scan_job.id,
+            result="SUCCESS",
+            details={"target_type": target.type.value, "target_value": target.value, "profile": scan_job.profile.value},
+        )
+    )
+
     # Launch background task
     await orchestrator.start_scan(scan_job)
+
+    db_manager.record_audit_event(
+        AuditEvent(
+            actor=current_user.username,
+            organization_id=current_user.organization_id,
+            action=AuditAction.SCAN_STARTED,
+            object_type="scan",
+            object_id=scan_job.id,
+            result="SUCCESS",
+        )
+    )
 
     return {
         "scan_id": scan_job.id,
@@ -122,18 +159,21 @@ async def start_security_scan(
     }
 
 
-@router.get("", summary="List All Stored Scan Jobs")
-@router.get("/", summary="List All Stored Scan Jobs", include_in_schema=False)
-@router.get("/history", summary="List All Stored Scan Jobs (History Alias)")
+@router.get("", summary="List Stored Scan Jobs for Tenant")
+@router.get("/", summary="List Stored Scan Jobs for Tenant", include_in_schema=False)
+@router.get("/history", summary="List Stored Scan Jobs (History Alias)")
 async def get_all_scans(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """
-    Returns paginated list of historical scan summaries.
-    """
+    """Returns paginated list of historical scan summaries for caller's organization."""
     scans, total = list_scans(limit=limit, offset=offset)
+    # Filter by user's organization if not super admin
+    if current_user.organization_id and current_user.role != UserRole.ADMIN:
+        scans = [s for s in scans if getattr(s, "organization_id", None) == current_user.organization_id or getattr(s, "organization_id", None) is None]
+        total = len(scans)
+
     return {
         "total": total,
         "limit": limit,
@@ -165,18 +205,15 @@ async def get_scan_details(
     scan_id: str,
     current_user: UserProfile = Depends(get_current_user),
 ) -> ScanJob:
-    """
-    Returns full ScanJob model including findings, endpoints, and summary.
-    """
-    job = orchestrator.get_active_job(scan_id)
-    if job:
-        return job
+    """Returns full ScanJob model. Enforces tenant ownership (IDOR denial)."""
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
-    stored_job = get_scan(scan_id)
-    if stored_job:
-        return stored_job
+    if not authorize_scan_access(current_user, job, action="read"):
+        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
-    raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
+    return job
 
 
 @router.post("/{scan_id}/cancel", summary="Cancel Running Scan Job")
@@ -184,14 +221,27 @@ async def cancel_running_scan(
     scan_id: str,
     current_user: UserProfile = Depends(require_dev_or_higher),
 ) -> Dict[str, Any]:
-    """
-    Signals orchestrator to abort scan execution and terminate subprocesses.
-    """
+    """Signals orchestrator to abort scan execution and forcefully terminate subprocesses."""
     job = orchestrator.get_active_job(scan_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
+    if not authorize_scan_access(current_user, job, action="cancel"):
+        raise HTTPException(status_code=403, detail=f"Unauthorized to cancel scan job '{scan_id}'.")
+
     cancelled = await orchestrator.cancel_scan(scan_id)
+
+    db_manager.record_audit_event(
+        AuditEvent(
+            actor=current_user.username,
+            organization_id=current_user.organization_id,
+            action=AuditAction.SCAN_CANCELLED,
+            object_type="scan",
+            object_id=scan_id,
+            result="SUCCESS",
+        )
+    )
+
     return {
         "scan_id": scan_id,
         "status": ScanStatus.CANCELLED.value,
@@ -200,79 +250,68 @@ async def cancel_running_scan(
     }
 
 
-@router.delete("/{scan_id}", summary="Delete Scan Record")
-async def delete_scan_record(
+@router.delete("/{scan_id}", summary="Delete Scan Job Record")
+async def delete_scan_job(
     scan_id: str,
-    current_user: UserProfile = Depends(require_admin),
+    current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """
-    Removes a scan record from persistence (Restricted to ADMIN).
-    """
-    success = delete_scan(scan_id)
-    if not success:
-        raise HTTPException(status_code=404, detail=f"Scan record '{scan_id}' not found.")
-    return {
-        "scan_id": scan_id,
-        "deleted": True,
-        "message": "Scan record deleted successfully.",
-    }
-
-
-@router.get("/{scan_id}/events", summary="Real-Time Server-Sent Events (SSE) Stream")
-async def stream_scan_events(scan_id: str):
-    """
-    Establishes an HTTP Server-Sent Events (SSE) streaming connection to deliver live telemetry.
-    """
-    job = orchestrator.get_active_job(scan_id)
+    """Deletes a scan job from storage. Enforces tenant ownership."""
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
-    queue = orchestrator.subscribe_events(scan_id)
+    if not authorize_scan_access(current_user, job, action="delete"):
+        raise HTTPException(status_code=403, detail=f"Unauthorized to delete scan job '{scan_id}'.")
+
+    deleted = delete_scan(scan_id)
+    return {"scan_id": scan_id, "deleted": deleted, "message": "Scan record deleted."}
+
+
+@router.get("/{scan_id}/events", summary="Stream Real-Time Scan Telemetry via Server-Sent Events (SSE)")
+async def stream_scan_events(
+    scan_id: str,
+    current_user: UserProfile = Depends(get_current_user),
+) -> StreamingResponse:
+    """Streams real-time logs, findings, and progress updates over SSE."""
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
+
+    if not authorize_scan_access(current_user, job, action="read"):
+        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
     async def event_generator():
+        # Yield initial connected event
+        yield f"event: connected\ndata: {json.dumps({'scan_id': scan_id, 'status': job.status.value})}\n\n"
+
+        # If job already completed/failed/cancelled, stream historical events and close
+        if job.status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
+            for log in job.logs:
+                yield f"event: log\ndata: {log.model_dump_json()}\n\n"
+            for finding in job.findings:
+                yield f"event: finding\ndata: {finding.model_dump_json()}\n\n"
+            if job.status == ScanStatus.COMPLETED:
+                yield f"event: completed\ndata: {job.summary.model_dump_json() if job.summary else '{}'}\n\n"
+            elif job.status == ScanStatus.FAILED:
+                yield f"event: failed\ndata: {json.dumps({'reason': job.failure_reason or 'Scan failed'})}\n\n"
+            elif job.status == ScanStatus.CANCELLED:
+                yield f"event: cancelled\ndata: {json.dumps({'message': 'Scan cancelled by user'})}\n\n"
+            return
+
+        # Stream live events from orchestrator
+        queue = await orchestrator.subscribe(scan_id)
         try:
-            # Yield initial snapshot if job already exists
-            current_job = orchestrator.get_active_job(scan_id)
-            if current_job:
-                initial_progress = {
-                    "percent": current_job.progress_percent,
-                    "stage": current_job.current_stage or "Initializing...",
-                    "status": current_job.status.value,
-                }
-                yield f"event: progress\ndata: {json.dumps(initial_progress)}\n\n"
-
-                # If job was already completed before SSE connection was opened
-                if current_job.status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
-                    if current_job.summary:
-                        yield f"event: completed\ndata: {json.dumps(current_job.summary.model_dump(mode='json'))}\n\n"
-                    return
-
             while True:
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    evt_type = msg.get("event", "message")
-                    data_obj = msg.get("data", {})
-                    data_str = json.dumps(data_obj) if isinstance(data_obj, (dict, list)) else str(data_obj)
-                    yield f"event: {evt_type}\ndata: {data_str}\n\n"
-
-                    # Close SSE stream upon terminal event
-                    if evt_type in ("completed", "error") or (
-                        evt_type == "progress" and data_obj.get("status") in ("COMPLETED", "FAILED", "CANCELLED")
-                    ):
-                        break
-
-                except asyncio.TimeoutError:
-                    # 15s Keepalive ping to prevent proxy/browser timeout
-                    yield ": ping\n\n"
-
-        except asyncio.CancelledError:
-            pass
+                event_name, data = await queue.get()
+                yield f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+                if event_name in ("completed", "failed", "cancelled"):
+                    break
         finally:
-            orchestrator.unsubscribe_events(scan_id, queue)
+            await orchestrator.unsubscribe(scan_id, queue)
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream; charset=utf-8",
+        media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",

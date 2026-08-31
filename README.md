@@ -1,12 +1,13 @@
 # CyberAssess - Full-Stack Automated Security Assessment & Vulnerability Management Platform
 
-[![Platform Version](https://img.shields.io/badge/version-4.1.0-06b6d4.svg)](https://github.com/andresslacson1989/security-assessment-platform)
+[![Platform Version](https://img.shields.io/badge/version-10.0.0-06b6d4.svg)](https://github.com/andresslacson1989/security-assessment-platform)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
-[![Tests](https://img.shields.io/badge/tests-102%20passed%20(100%25)-10b981.svg)](https://pytest.org/)
+[![Tests](https://img.shields.io/badge/tests-199%20passed%20(100%25)-10b981.svg)](https://pytest.org/)
+[![Standards](https://img.shields.io/badge/standards-ASVS%20v5.0.0%20%7C%20NIST%20SSDF%20v1.1%20%7C%20NIST%20800--53-purple.svg)](https://github.com/andresslacson1989/security-assessment-platform)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-CyberAssess is a production-grade, enterprise security assessment and vulnerability management platform. Point it at a URL, domain, IP address, container manifest, or local repository, and the engine automatically conducts a comprehensive battery of calculated vulnerability tests, deterministically scores security posture, and streams live telemetry to a Cyber-Security SOC Dark Theme HUD.
+CyberAssess is an enterprise-grade automated security assessment and vulnerability management platform conforming to **OWASP ASVS v5.0.0**, **NIST SP 800-218 SSDF v1.1**, and **NIST SP 800-53 Rev 5**. Point it at a URL, domain, IP address, container manifest, or local repository workspace, and the engine automatically conducts a comprehensive battery of vulnerability tests, scores posture deterministically, clusters findings with preserved SLA clocks, and streams live telemetry to an interactive SOC HUD.
 
 ---
 

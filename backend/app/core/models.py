@@ -495,6 +495,14 @@ class Evidence(BaseModel):
     column_number: Optional[int] = Field(default=None, description="Column number if applicable")
 
 
+def calculate_evidence_hash(location: str, observed_value: str) -> str:
+    """
+    Computes an immutable cryptographic SHA-256 hash of the evidence for non-repudiation.
+    """
+    raw = f"{location.strip()}:{observed_value.strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def calculate_fingerprint(check_id: str, location: str, observed_value: str) -> str:
     """
     Generates a deterministic SHA256 fingerprint for finding deduplication.
@@ -540,7 +548,17 @@ class Finding(BaseModel):
     reproduction_curl: Optional[str] = Field(default=None, description="Exact copy-pasteable curl PoC command to reproduce the finding")
     taint_trace: Optional[List[str]] = Field(default=None, description="AST dataflow taint trace steps from source to sink")
     created_at: datetime = Field(default_factory=utc_now)
-    fingerprint: str = Field(..., description="Deterministic SHA256 hash of (check_id + location + evidence.observed_value)")
+    fingerprint: str = Field(default="", description="Deterministic SHA256 hash of (check_id + location + evidence.observed_value)")
+
+    @model_validator(mode="after")
+    def compute_default_fingerprint(self) -> "Finding":
+        if not self.fingerprint and self.evidence:
+            self.fingerprint = calculate_fingerprint(
+                self.check_id,
+                self.evidence.location,
+                self.evidence.observed_value,
+            )
+        return self
 
 
 # ============================================================================
@@ -584,6 +602,9 @@ class ScanJob(BaseModel):
     Complete state representation of a scan job.
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    organization_id: Optional[str] = Field(default=None)
+    project_id: Optional[str] = Field(default=None)
+    asset_id: Optional[str] = Field(default=None)
     target: Target = Field(...)
     profile: ScanProfile = Field(default=ScanProfile.FULL_STACK)
     enabled_engines: List[str] = Field(
@@ -658,8 +679,81 @@ class RepeaterResponse(BaseModel):
 
 
 # ============================================================================
-# 7. Enterprise ASPM, RBAC, Asset Inventory & Finding Correlation Models
+# 7. Enterprise ASPM, Multi-Tenancy, Asset Inventory, Canonical Findings & Audit
 # ============================================================================
+
+from app.core.version import (
+    APP_VERSION,
+    API_VERSION,
+    SCHEMA_VERSION,
+    CONTRACT_VERSION,
+    RULESET_VERSION,
+    RISK_MODEL_VERSION,
+)
+
+
+class OperatingMode(str, Enum):
+    PRODUCTION = "PRODUCTION"
+    DEVELOPMENT = "DEVELOPMENT"
+    TEST = "TEST"
+
+
+class UserRole(str, Enum):
+    ADMIN = "ADMIN"
+    SECURITY_ANALYST = "SECURITY_ANALYST"
+    DEVELOPER = "DEVELOPER"
+    VIEWER = "VIEWER"
+
+
+class Organization(BaseModel):
+    id: str = Field(default_factory=lambda: f"org-{uuid.uuid4().hex[:8]}")
+    name: str = Field(..., min_length=2, max_length=120)
+    slug: str = Field(..., min_length=2, max_length=120)
+    created_at: datetime = Field(default_factory=utc_now)
+    is_active: bool = True
+
+
+class Project(BaseModel):
+    id: str = Field(default_factory=lambda: f"prj-{uuid.uuid4().hex[:8]}")
+    organization_id: str
+    name: str = Field(..., min_length=2, max_length=120)
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class Workspace(BaseModel):
+    id: str = Field(default_factory=lambda: f"ws-{uuid.uuid4().hex[:8]}")
+    organization_id: str
+    project_id: Optional[str] = None
+    name: str = Field(..., min_length=2, max_length=120)
+    filesystem_root: str
+    is_sandboxed: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class UserProfile(BaseModel):
+    id: str = Field(default_factory=lambda: f"usr-{uuid.uuid4().hex[:8]}")
+    username: str = Field(..., min_length=3, max_length=50)
+    email: str
+    role: UserRole = Field(default=UserRole.VIEWER)
+    organization_id: Optional[str] = None
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+    last_login_at: Optional[datetime] = None
+
+
+class APIKeyRecord(BaseModel):
+    key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")
+    key_hash: str
+    organization_id: Optional[str] = None
+    user_id: Optional[str] = None
+    name: str
+    scopes: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+
 
 class AssetType(str, Enum):
     WEB_APPLICATION = "WEB_APPLICATION"
@@ -670,6 +764,7 @@ class AssetType(str, Enum):
     CONTAINER_IMAGE = "CONTAINER_IMAGE"
     KUBERNETES_CLUSTER = "KUBERNETES_CLUSTER"
     CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
+    IAC_TEMPLATE = "IAC_TEMPLATE"
 
 
 class AssetCriticality(str, Enum):
@@ -679,8 +774,15 @@ class AssetCriticality(str, Enum):
     LOW = "LOW"              # Factor: 0.7x
 
 
+class AssetLifecycleStatus(str, Enum):
+    DISCOVERED = "DISCOVERED"
+    MONITORED = "MONITORED"
+    DECOMMISSIONED = "DECOMMISSIONED"
+    ARCHIVED = "ARCHIVED"
+
+
 class Asset(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default_factory=lambda: f"ast-{uuid.uuid4().hex[:12]}")
     organization_id: Optional[str] = Field(default=None)
     project_id: Optional[str] = Field(default=None)
     name: str = Field(..., min_length=2, max_length=120)
@@ -690,8 +792,11 @@ class Asset(BaseModel):
     internet_exposed: bool = Field(default=True)
     tags: List[str] = Field(default_factory=list)
     owner: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_scanned_at: Optional[datetime] = Field(default=None)
+    lifecycle_status: AssetLifecycleStatus = Field(default=AssetLifecycleStatus.MONITORED)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    last_scanned_at: Optional[datetime] = None
+    last_verified_at: Optional[datetime] = None
     active_findings_count: int = Field(default=0)
 
 
@@ -701,55 +806,142 @@ class FindingLifecycleStatus(str, Enum):
     IN_PROGRESS = "IN_PROGRESS"
     FIXED = "FIXED"
     VERIFIED = "VERIFIED"
-    RISK_ACCEPTED = "RISK_ACCEPTED"
     FALSE_POSITIVE = "FALSE_POSITIVE"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    REOPENED = "REOPENED"
 
 
 class FindingComment(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default_factory=lambda: f"cmt-{uuid.uuid4().hex[:12]}")
     user_id: str = Field(...)
     username: str = Field(...)
     comment: str = Field(...)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class SLAInfo(BaseModel):
     severity: Severity = Field(...)
     sla_days: int = Field(..., description="Allowed remediation window (Crit: 7d, High: 14d, Med: 30d, Low: 90d)")
-    due_date: datetime = Field(...)
+    sla_started_at: datetime = Field(default_factory=utc_now)
+    sla_due_at: datetime = Field(...)
+    due_date: Optional[datetime] = Field(default=None)  # Alias for backward compatibility
+    sla_breached_at: Optional[datetime] = Field(default=None)
     is_breached: bool = Field(default=False)
+
+    @model_validator(mode="after")
+    def populate_due_date_alias(self) -> "SLAInfo":
+        if self.sla_due_at and not self.due_date:
+            self.due_date = self.sla_due_at
+        elif self.due_date and not self.sla_due_at:
+            self.sla_due_at = self.due_date
+        return self
 
 
 class CorrelationType(str, Enum):
     SAST_DAST_VERIFIED = "SAST_DAST_VERIFIED"
     MULTI_TOOL_CONFIRMED = "MULTI_TOOL_CONFIRMED"
     ENDPOINT_CLUSTERED = "ENDPOINT_CLUSTERED"
+    TAINT_CONFIRMED = "TAINT_CONFIRMED"
 
 
-class UnifiedFinding(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+class FindingOccurrence(BaseModel):
+    id: str = Field(default_factory=lambda: f"occ-{uuid.uuid4().hex[:12]}")
+    canonical_finding_id: str
+    scan_id: str
+    asset_id: Optional[str] = None
+    source_tool: str
+    check_id: str
+    raw_evidence: Evidence
+    reproduction_curl: Optional[str] = None
+    taint_trace: Optional[List[str]] = None
+    detected_at: datetime = Field(default_factory=utc_now)
+
+
+class CanonicalFinding(BaseModel):
+    id: str = Field(default_factory=lambda: f"cfind-{uuid.uuid4().hex[:12]}")
+    organization_id: Optional[str] = Field(default=None)
+    project_id: Optional[str] = Field(default=None)
     asset_id: Optional[str] = Field(default=None)
-    correlation_type: Optional[CorrelationType] = Field(default=None)
     title: str = Field(...)
     category: str = Field(...)
     severity: Severity = Field(...)
     cvss_score: float = Field(..., ge=0.0, le=10.0)
+    cvss_vector: str = Field(default="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N")
     contextual_risk_score: float = Field(default=0.0, ge=0.0, le=10.0)
     cwe_id: Optional[str] = Field(default=None)
-    contributing_tools: List[str] = Field(default_factory=list)
-    raw_finding_ids: List[str] = Field(default_factory=list)
-    lifecycle_status: FindingLifecycleStatus = Field(default=FindingLifecycleStatus.OPEN)
-    first_seen: datetime = Field(default_factory=datetime.utcnow)
-    last_seen: datetime = Field(default_factory=datetime.utcnow)
+    owasp_category: Optional[str] = Field(default=None)
+    nist_control: Optional[str] = Field(default=None)
+    status: FindingLifecycleStatus = Field(default=FindingLifecycleStatus.OPEN)
+    lifecycle_status: FindingLifecycleStatus = Field(default=FindingLifecycleStatus.OPEN)  # Alias
+    first_seen: datetime = Field(default_factory=utc_now)
+    last_seen: datetime = Field(default_factory=utc_now)
     times_observed: int = Field(default=1)
     sla: Optional[SLAInfo] = Field(default=None)
     assigned_to: Optional[str] = Field(default=None)
-    remediation: str = Field(...)
+    contributing_tools: List[str] = Field(default_factory=list)
+    correlation_type: Optional[CorrelationType] = Field(default=None)
+    description: str = Field(default="")
+    impact: str = Field(default="")
+    remediation: str = Field(default="")
+    evidence_hash: str = Field(default="")
     comments: List[FindingComment] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def sync_lifecycle_aliases(self) -> "CanonicalFinding":
+        if self.lifecycle_status != self.status:
+            self.lifecycle_status = self.status
+        return self
+
+
+UnifiedFinding = CanonicalFinding
 
 
 class FindingTriageUpdate(BaseModel):
     status: FindingLifecycleStatus = Field(...)
     assigned_to: Optional[str] = Field(default=None)
     comment: Optional[str] = Field(default=None)
+
+
+class AuditAction(str, Enum):
+    LOGIN_SUCCESS = "LOGIN_SUCCESS"
+    LOGIN_FAILURE = "LOGIN_FAILURE"
+    LOGOUT = "LOGOUT"
+    BOOTSTRAP_COMPLETE = "BOOTSTRAP_COMPLETE"
+    TOKEN_REVOKED = "TOKEN_REVOKED"
+    API_KEY_CREATED = "API_KEY_CREATED"
+    API_KEY_REVOKED = "API_KEY_REVOKED"
+    USER_CREATED = "USER_CREATED"
+    USER_ROLE_CHANGED = "USER_ROLE_CHANGED"
+    ASSET_CREATED = "ASSET_CREATED"
+    ASSET_UPDATED = "ASSET_UPDATED"
+    ASSET_DELETED = "ASSET_DELETED"
+    SCAN_CREATED = "SCAN_CREATED"
+    SCAN_STARTED = "SCAN_STARTED"
+    SCAN_CANCELLED = "SCAN_CANCELLED"
+    SCAN_COMPLETED = "SCAN_COMPLETED"
+    SCAN_FAILED = "SCAN_FAILED"
+    INTERNAL_SCAN_AUTHORIZED = "INTERNAL_SCAN_AUTHORIZED"
+    TOOL_INSTALL_STARTED = "TOOL_INSTALL_STARTED"
+    TOOL_INSTALL_COMPLETED = "TOOL_INSTALL_COMPLETED"
+    TOOL_INSTALL_FAILED = "TOOL_INSTALL_FAILED"
+    FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"
+    FINDING_ASSIGNED = "FINDING_ASSIGNED"
+    FINDING_COMMENTED = "FINDING_COMMENTED"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    REPORT_GENERATED = "REPORT_GENERATED"
+
+
+class AuditEvent(BaseModel):
+    id: str = Field(default_factory=lambda: f"aud-{uuid.uuid4().hex[:12]}")
+    timestamp: datetime = Field(default_factory=utc_now)
+    actor: str = Field(default="system")
+    organization_id: Optional[str] = Field(default=None)
+    action: AuditAction = Field(...)
+    object_type: str = Field(...)
+    object_id: str = Field(...)
+    result: str = Field(default="SUCCESS")  # "SUCCESS", "FAILURE", "DENIED"
+    source_ip: Optional[str] = Field(default=None)
+    correlation_id: Optional[str] = Field(default=None)
+    details: Dict[str, Any] = Field(default_factory=dict)
+
 

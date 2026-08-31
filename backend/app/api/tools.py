@@ -1,6 +1,6 @@
 """
-Contract 04 §1.4, §1.5, §2.2 & Contract 08 §7.1, §9:
-Pentester Productivity, HTTP Repeater, and In-App Tool Installation Management API Router.
+Contract 04 §1.5 & Contract 08 §1:
+Pentester Workbench, HTTP Repeater, and In-App Tool Installation API Router.
 """
 
 from __future__ import annotations
@@ -19,10 +19,13 @@ from app.core.models import (
     ToolInstallRequest,
     ToolInstallResponse,
     ToolBatchInstallRequest,
+    AuditEvent,
+    AuditAction,
 )
 from app.installers.manager import ToolInstallationManager
 from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
 from app.core.auth import get_current_user, require_admin, require_analyst_or_admin, UserProfile, UserRole
+from app.core.db import db_manager
 
 router = APIRouter()
 
@@ -43,9 +46,7 @@ router = APIRouter()
     include_in_schema=False,
 )
 async def list_tools() -> List[ToolInstallationInfo]:
-    """
-    Returns installation status, detected binary path, version, and install method for all tools.
-    """
+    """Returns installation status, detected binary path, version, and install method for all tools."""
     mgr = ToolInstallationManager.get_instance()
     return await mgr.get_all_tools_info()
 
@@ -56,9 +57,7 @@ async def list_tools() -> List[ToolInstallationInfo]:
     description="Server-Sent Events (SSE) stream broadcasting install_progress, install_log, install_completed, and install_failed events.",
 )
 async def stream_tool_events(request: Request):
-    """
-    SSE stream yielding real-time tool installation progress and logs.
-    """
+    """SSE stream yielding real-time tool installation progress and logs."""
     mgr = ToolInstallationManager.get_instance()
 
     async def event_generator():
@@ -101,7 +100,7 @@ async def get_tool_status(tool_name: str) -> ToolInstallationInfo:
     "/{tool_name}/install",
     response_model=ToolInstallResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Trigger in-app installation of a specific tool",
+    summary="Trigger in-app installation of a specific tool (Admin Only)",
 )
 async def install_tool(
     tool_name: str,
@@ -110,6 +109,19 @@ async def install_tool(
 ) -> ToolInstallResponse:
     mgr = ToolInstallationManager.get_instance()
     force = payload.force if payload else False
+
+    db_manager.record_audit_event(
+        AuditEvent(
+            actor=current_user.username,
+            organization_id=current_user.organization_id,
+            action=AuditAction.TOOL_INSTALL_STARTED,
+            object_type="tool",
+            object_id=tool_name,
+            result="SUCCESS",
+            details={"force": force},
+        )
+    )
+
     try:
         return mgr.install_tool(tool_name, force=force)
     except ValueError as exc:
@@ -125,7 +137,10 @@ async def install_tool(
     "/{tool_name}/cancel",
     summary="Cancel a running in-app tool installation job",
 )
-async def cancel_single_tool(tool_name: str) -> dict:
+async def cancel_single_tool(
+    tool_name: str,
+    current_user: UserProfile = Depends(require_admin),
+) -> dict:
     mgr = ToolInstallationManager.get_instance()
     cancelled = mgr.cancel_installation(tool_name)
     return {
@@ -139,7 +154,7 @@ async def cancel_single_tool(tool_name: str) -> dict:
     "/install-all",
     response_model=List[ToolInstallResponse],
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Trigger batch in-app installation of all missing user-space tools",
+    summary="Trigger batch in-app installation of all missing user-space tools (Admin Only)",
 )
 async def install_all_tools(
     payload: Optional[ToolBatchInstallRequest] = None,
@@ -147,6 +162,19 @@ async def install_all_tools(
 ) -> List[ToolInstallResponse]:
     mgr = ToolInstallationManager.get_instance()
     force = payload.force if payload else False
+
+    db_manager.record_audit_event(
+        AuditEvent(
+            actor=current_user.username,
+            organization_id=current_user.organization_id,
+            action=AuditAction.TOOL_INSTALL_STARTED,
+            object_type="tool",
+            object_id="batch_all",
+            result="SUCCESS",
+            details={"force": force},
+        )
+    )
+
     return await mgr.install_all(force=force)
 
 
@@ -168,7 +196,6 @@ async def execute_repeater_request(
     Executes a raw HTTP request asynchronously and returns status, headers, body, latency, and TLS info.
     Protected against SSRF targeting localhost, private subnets, and cloud metadata.
     """
-    # SSRF Protection Gateway Validation
     allow_internal = (current_user.role == UserRole.ADMIN)
     try:
         assert_safe_url(payload.url, allow_internal=allow_internal)
@@ -178,11 +205,15 @@ async def execute_repeater_request(
             detail=f"SSRF Protection Gate: {str(ssrf_err)}",
         )
 
+    # Size limit on request body (max 2 MB)
+    if payload.body and len(payload.body) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Repeater request payload exceeds 2 MB limit.")
+
     start_time = time.perf_counter()
     
     headers = dict(payload.headers) if payload.headers else {}
     if not any(k.lower() == "user-agent" for k in headers):
-        headers["User-Agent"] = "CyberAssess-Repeater/9.0.0"
+        headers["User-Agent"] = "CyberAssess-Repeater/10.0.0"
 
     try:
         async with httpx.AsyncClient(
@@ -215,10 +246,15 @@ async def execute_repeater_request(
             if payload.url.lower().startswith("https://") and not tls_version:
                 tls_version = "TLSv1.3"
 
+            # Enforce response body truncation at 10 MB if huge
+            body_text = resp.text
+            if len(body_text) > 10 * 1024 * 1024:
+                body_text = body_text[:10 * 1024 * 1024] + "\n\n[... Response Truncated at 10 MB ...]"
+
             return RepeaterResponse(
                 status_code=resp.status_code,
                 headers=dict(resp.headers),
-                body=resp.text,
+                body=body_text,
                 duration_ms=duration_ms,
                 content_length=len(resp.content),
                 tls_version=tls_version,

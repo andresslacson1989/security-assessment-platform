@@ -1,16 +1,28 @@
 """
-Contract 04 & 08 FastAPI Application Server Entrypoint.
-Auto-registers all 5 assessment engines and serves REST API, SSE streaming, and frontend static assets.
+Contract 04 §1, §3 & Contract 08 §1:
+CyberAssess FastAPI Application Server Entrypoint.
+Auto-registers all 5 assessment engines, mounts REST/SSE routers, adds request correlation IDs,
+enforces security headers, and derives metadata exclusively from app.core.version.
 """
 
 from __future__ import annotations
+import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+from app.core.version import (
+    APP_NAME,
+    APP_TITLE,
+    APP_VERSION,
+    API_VERSION,
+    CONTRACT_VERSION,
+    RULESET_VERSION,
+)
 from app.core.orchestrator import orchestrator
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.engines.web_dast.engine import WebDastAssessmentEngine
@@ -21,9 +33,7 @@ from app.api import api_router
 
 
 def register_default_engines() -> None:
-    """
-    Registers all 5 core security assessment engines into the global orchestrator.
-    """
+    """Registers all 5 core security assessment engines into the global orchestrator."""
     orchestrator.register_engine(NetworkAssessmentEngine())
     orchestrator.register_engine(WebDastAssessmentEngine())
     orchestrator.register_engine(CodeSastAssessmentEngine())
@@ -31,23 +41,17 @@ def register_default_engines() -> None:
     orchestrator.register_engine(CicdAuditAssessmentEngine())
 
 
-# Eager registration ensures engines are registered even in testing and non-lifespan ASGI runners
+# Eager registration ensures engines are registered in testing and non-lifespan ASGI runners
 register_default_engines()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Application startup & shutdown lifespan hook.
-    """
+    """Application startup & shutdown lifespan hook."""
     register_default_engines()
     yield
-    # Shutdown cleanup if required
 
 
-import os
-
-# Configurable CORS origins
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
@@ -55,11 +59,31 @@ ALLOWED_ORIGINS = [
 ]
 
 app = FastAPI(
-    title="CyberAssess Security Assessment & Vulnerability Platform",
-    version="9.0.0",
-    description="Enterprise Automated Security Assessment, Vulnerability Scoring and Vulnerability Management Platform.",
+    title=APP_TITLE,
+    version=APP_VERSION,
+    description=f"Enterprise Automated Security Assessment Platform (Contract v{CONTRACT_VERSION}, Ruleset v{RULESET_VERSION}).",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def security_headers_and_correlation_middleware(request: Request, call_next):
+    """
+    Injects unique X-Correlation-ID for end-to-end request tracing and adds strict security headers.
+    """
+    correlation_id = request.headers.get("X-Correlation-ID") or f"corr-{uuid.uuid4().hex[:12]}"
+    request.state.correlation_id = correlation_id
+
+    response: Response = await call_next(request)
+
+    response.headers["X-Correlation-ID"] = correlation_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data:;"
+
+    return response
+
 
 # CORS Middleware for modern browser SPAs and external API clients
 app.add_middleware(
@@ -83,13 +107,13 @@ if frontend_dir.exists():
         index_path = frontend_dir / "index.html"
         if index_path.exists():
             return FileResponse(str(index_path))
-        return {"message": "CyberAssess Security Platform Backend Online."}
+        return {"message": f"{APP_NAME} Platform Backend Online (v{APP_VERSION})."}
 else:
     @app.get("/", include_in_schema=False)
     async def root():
         return {
-            "platform": "CyberAssess Security Assessment Platform",
-            "version": "3.0.0",
+            "platform": APP_NAME,
+            "version": APP_VERSION,
             "docs": "/docs",
             "api_health": "/api/system/health",
         }

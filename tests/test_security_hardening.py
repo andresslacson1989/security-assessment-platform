@@ -15,7 +15,6 @@ from app.core.auth import (
     verify_password,
     create_access_token,
     decode_access_token,
-    DEFAULT_ADMIN_USER,
 )
 from app.installers.tool_manifest import calculate_sha256, verify_download_integrity
 from app.core.models import (
@@ -200,8 +199,9 @@ def test_sast_dast_finding_correlation():
         source_tool="semgrep",
     )
 
-    unified = correlator.correlate_findings([dast_f, sast_f], asset_criticality_factor=1.2)
+    unified, occs = correlator.correlate_findings([dast_f, sast_f], asset_criticality_factor=1.2)
     assert len(unified) == 1
+    assert len(occs) == 2
     u = unified[0]
     assert u.correlation_type == CorrelationType.SAST_DAST_VERIFIED
     assert "[DAST + SAST Verified]" in u.title

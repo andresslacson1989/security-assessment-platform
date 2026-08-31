@@ -1,216 +1,30 @@
-# Contract 07: Frontend UI/UX Architecture, Design System & Telemetry Contract
+# Contract 07: Frontend UI/UX, Real-Time Telemetry & Enterprise Workflow Contract
 
-**Project Name:** Full-Stack Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 8.0.0 (Enterprise ASPM & EASM Suite, 22-Tool Parity, Software Supply Chain & CIS Benchmarks Architecture Specification)  
+**Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
+**Document Version:** 10.0.0 (Enterprise ASPM Dashboard, Real Auth State Synchronization, Asset Management HUD & Secure Token Handling)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Frontend Architecture, Design Tokens, HUD Layout & User Interactions  
+**Scope Authority:** Single Page Application (SPA), HUD Components, Real-Time SSE Streams & Client Security Controls  
 
 ---
 
-## 1. Design System & Cyber SOC HUD Tokens
+## 1. UI Security Principles
 
-The dashboard is structured as a **Cyber-Security Operations Center (SOC) Command HUD** with deep obsidian backgrounds, high-contrast typography, and neon status accents.
-
-### 1.1 Color Tokens & CSS Variables
-```css
-:root {
-  /* Surfaces & Backgrounds */
-  --bg-primary: #07090e;          /* Deep space black */
-  --bg-surface: #0e131f;          /* Card & panel background */
-  --bg-surface-elevated: #161d2f;   /* Interactive hover & modal background */
-  --bg-terminal: #05070a;         /* Monospace log console background */
-  
-  /* Borders & Accents */
-  --border-subtle: #1e293b;
-  --border-active: #334155;
-  --border-glow: rgba(56, 189, 248, 0.3);
-
-  /* Cyber Neon Accents */
-  --accent-cyan: #06b6d4;
-  --accent-emerald: #10b981;
-  --accent-blue: #3b82f6;
-  --accent-purple: #8b5cf6;
-
-  /* Severity Hierarchy Colors */
-  --color-critical: #ef4444;      /* Crimson Red */
-  --color-high: #f97316;          /* High Orange */
-  --color-medium: #eab308;        /* Warning Amber */
-  --color-low: #3b82f6;           /* Info Blue */
-  --color-info: #06b6d4;          /* Cyber Cyan */
-  --color-verified: #10b981;      /* Verified Secret Emerald Glow */
-}
-```
+1. **Backend Authorization as Single Source of Truth:** The UI reflects backend authorization state but is never treated as a security boundary. Denied actions from the API are gracefully caught and presented as permission notices.
+2. **No Sensitive Data in Plain LocalStorage:** Secrets, private keys, and passwords are never cached in unencrypted browser storage.
+3. **Correlation ID Visibility:** Requests and scan sessions visibly reference the active `X-Correlation-ID` for traceability with backend audit logs.
 
 ---
 
-## 2. Platform HUD Layout Structure
+## 2. Core UI Workspaces & Modals
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
-│ [⚙️ Manage 21 Security Tools]  [📦 Export SBOM: CycloneDX / SPDX]          │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-├─────────────────────────────────────────────────────────────────────────────┤
-│ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
-│    [FFUF: Active] [KATANA: Active] [SEMGREP: Active] [GITLEAKS: Active]     │
-│    [BANDIT: Active] [TRIVY: Active] [CHECKOV: Fallback]                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Adapters Primary & Active Fuzzing   │
-│ [█████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ ┌───────────────────────┐ ┌───────────────────────────────────────────────┐ │
-│ │  SECURITY SCORECARD   │ │         REAL-TIME TERMINAL STREAM             │ │
-│ │   GRADE: [ C ] (76.0) │ │ 21:45:02 [INFO] (network) Discovered 8 subdoms│ │
-│ │  Crit: 0 | High: 1    │ │ 21:45:05 [WARN] (dast) Injected XSS Canary OK │ │
-│ │  Med:  3 | Low:  4    │ │ 21:45:07 [INFO] (sast) AST Taint Traces Mapped│ │
-│ └───────────────────────┘ └───────────────────────────────────────────────┘ │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ 📡 ATTACK SURFACE & RECON: [Discovered Endpoints (14)] [OSINT Subdomains (8)]│
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ api.example.com -> AWS S3 [CNAME Takeover Vulnerable: NO]               │ │
-│ │ dev.example.com -> Unregistered Bucket [TAKEOVER DETECTED!]            │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ 🛠️ PENTESTER WORKBENCH: [Vulnerability Findings] [HTTP Repeater Tool]       │
-│ Engine Filter: [All] [Network] [DAST] [SAST] [IaC/Docker] [CI/CD]           │
-│ Tool Filter: [All] [Native Core] [Nmap] [SSLyze] [Nuclei] [FFuF] [Katana]   │
-│              [Semgrep] [Gitleaks] [Bandit] [Trivy] [Checkov]                │
-│ Severity Tabs: [All (10)] [Critical (0)] [High (1)] [Med (3)] [Low (4)]     │
-│ [🔍 Search findings...] [Export: 📄 HTML | ⚡ SARIF | 💾 JSON]              │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ 🔴 [CRIT] CVSS 9.8 - SQL Injection Detected via Timing (SLEEP 2s)       │ │
-│ │   [Source: Native Core] [Copy cURL PoC] [View Taint] [Inspect Diff]     │ │
-│ │ 🟠 [HIGH] CVSS 8.1 - Insecure CORS Origin Reflection with Credentials   │ │
-│ │   [Source: Nuclei] [Template: http/cves/cors-leak] [Copy cURL PoC]      │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Interactive Component Workflows
-
-1. **Target Launch Bar & Advanced Config Drawers:**
-   - Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`).
-   - **System Tool Capabilities Pill Bar:** Displays live detection status badges for all 21 adapters (`Nmap`, `SSLyze`, `Nuclei`, `FFuF`, `Katana`, `Schemathesis`, `Semgrep`, `Gitleaks`, `Bandit`, `Trivy`, `Checkov`, etc.) fetched from `/api/system/capabilities`.
-   - **Authentication Controls:** Radio pills for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, CSRF Field, and Logged-In Indicator).
-   - **Crawler Controls:** Depth ($1-5$), Max Pages ($10-200$), Exclude Patterns (`*logout*`, `*delete*`).
-   - **Active Fuzzing Controls:** Toggles for SQLi probes, Canary XSS tokens, Path Traversal, SSTI evaluation, and Open Redirect.
-   - **OSINT Recon Controls:** Toggles for Certificate Transparency (crt.sh) subdomain harvesting and Dangling CNAME takeover checks.
-   - **Tool Adapter Controls:** Per-tool checkboxes to enable/disable external adapters.
-
-2. **Attack Surface Reconnaissance Tables:**
-   - **Discovered Endpoints HUD:** Real-time table displaying crawled URLs, HTTP status, crawl depth, form discovery count, and auth posture.
-   - **Discovered Subdomains HUD:** Real-time table displaying subdomain names, resolved IPs, CNAME aliases, and Takeover Vulnerability status badges.
-
-3. **Interactive Findings Explorer:**
-   - Filterable by engine, tool source (`native`, `nmap`, `sslyze`, `nuclei`, `ffuf`, `katana`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`), severity, and text search.
-   - Expandable finding cards with CVSS badges, `source_tool` tags, CWE/OWASP tags, evidence diffs, and remediation code blocks.
-   - **One-Click "Copy cURL PoC":** Copies exact, standalone reproduction cURL command with test payloads and headers to clipboard.
-   - **AST Taint Trace Viewer:** Visual step-by-step ladder showing untrusted user source variable down to database/command execution sink.
-
-4. **Interactive HTTP Repeater Tab:**
-   - Manual penetration testing workbench.
-   - Method selector (GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD).
-   - URL input bar with query parameter editor.
-   - Headers and Request Body editor with syntax assistance.
-   - Live "Send Request" trigger returning response status, latency, TLS ciphersuite, response headers, and formatted body viewer.
-
-5. **Multi-Format Export Bar:** Direct download triggers for Standalone HTML, SARIF v2.1.0, and JSON.
-
-6. **Toolbox & Adapters Manager Modal (`#tool-manager-modal`) & Setup Guide Modal (`#tool-instructions-modal`):**
-   - Opened via header button `⚙️ Manage Toolbox & Adapters` or clicking missing tool badge.
-   - **Tool Matrix Table:** Lists all 21 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `OS / PKG MGR`), and individual action buttons:
-     - For automated tools (`PIP`, `STANDALONE BINARY`): `⚡ Install` / `Reinstall` / `⏹ Cancel`.
-     - For system package manager tools (`OS / PKG MGR` like `Nmap`, `Retire`): `📖 How to Install` (when missing) or `📖 Setup Guide` (when installed).
-   - **Interactive Tool Setup & Guide Modal (`#tool-instructions-modal`):**
-     - Subtitle explaining tool role and OS requirements.
-     - Option cards sorted with **Recommended First** (e.g. `winget install Insecure.Nmap`, `npm install -g retire`).
-     - One-click copy code boxes (`btn-copy-code`) for copy-pasteable PowerShell/bash commands.
-     - Cyan parameter breakdowns (`.instruction-explanation`) detailing what each flag does (`winget install`, `npm install -g`, `-h <target>`, `-T4`, etc.).
-     - Actionable step-by-step verification commands (`nmap --version`, `retire --version`).
-     - Live **"🔄 Re-check Status"** trigger re-probing backend capabilities in real-time.
-   - **Batch Installer Action:** Master `⚡ Install All Missing Tools` button triggering parallel user-space installations.
-   - **Live Installation Terminal Console:** Real-time progress bar, stage indicator, and auto-scrolling monospace terminal connected to `/api/system/tools/events`.
-
-7. **Scan History Archive:** Instant reload of past scans with timestamps, targets, grades, active adapters, and findings.
-
----
-
-## 4. SSE Stream Lifecycle Management
-
-```javascript
-class ScanStreamManager {
-  connect(scanId) {
-    if (this.eventSource) this.eventSource.close();
-    
-    this.eventSource = new EventSource(`/api/scans/${scanId}/events`);
-    
-    this.eventSource.addEventListener('tool_status', (e) => {
-      const toolData = JSON.parse(e.data);
-      this.updateToolStatusBar(toolData);
-    });
-
-    this.eventSource.addEventListener('progress', (e) => {
-      const data = JSON.parse(e.data);
-      this.updateProgressBar(data.percent, data.stage);
-    });
-
-    this.eventSource.addEventListener('log', (e) => {
-      const data = JSON.parse(e.data);
-      this.appendTerminalLog(data);
-    });
-
-    this.eventSource.addEventListener('auth_status', (e) => {
-      const data = JSON.parse(e.data);
-      this.updateAuthStatusBadge(data);
-    });
-
-    this.eventSource.addEventListener('crawl_discovered', (e) => {
-      const endpoint = JSON.parse(e.data);
-      this.addDiscoveredEndpointRow(endpoint);
-    });
-
-    this.eventSource.addEventListener('subdomain_discovered', (e) => {
-      const subdomain = JSON.parse(e.data);
-      this.addDiscoveredSubdomainRow(subdomain);
-    });
-
-    this.eventSource.addEventListener('finding', (e) => {
-      const finding = JSON.parse(e.data);
-      this.addFindingCard(finding);
-      this.recalculateSummaryScore();
-    });
-
-    this.eventSource.addEventListener('completed', (e) => {
-      const data = JSON.parse(e.data);
-      this.finalizeScanState(data);
-      this.eventSource.close();
-    });
-
-    this.eventSource.onerror = () => {
-      this.startPollingFallback(scanId);
-    };
-  }
-}
-```
-
----
-
-## 6. Zero-Trust Session, Continuous Asset Management & Vulnerability Triage UI
-
-### 6.1 Authentication Banner & User Role Indicator
-- HUD Header displays current user identity and colored role badge (`ADMIN` = Red/Purple, `SECURITY_ANALYST` = Cyan, `DEVELOPER` = Green, `VIEWER` = Gray).
-- One-click Login / Switch Role modal (`#auth-modal`) allowing seamless local token generation or enterprise JWT login.
-
-### 6.2 Asset Inventory Management Drawer (`#asset-inventory-modal`)
-- Table displaying registered web assets, repositories, and cloud accounts with criticality tiers (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), last scan date, and active finding counts.
-- One-click "Audit Asset" trigger directly populating target input and scan profile.
-
-### 6.3 Correlated Findings & Vulnerability Lifecycle HUD
-- Findings view supports toggling between **Raw Scanner Observations** and **Correlated Root-Cause Findings**.
-- Correlated finding cards display cross-engine evidence badges (e.g. `[DAST + SAST Verified: 1.3x Risk]`).
-- Triage action modal (`#finding-triage-modal`) allows updating finding lifecycle state (`Open`, `In Progress`, `Fixed`, `Risk Accepted`) with SLA countdown timers.
-
-
+1. **Authentication & Session Status:**
+   - Real-time indicator displaying authenticated user, organization context, and role badge (`ADMIN`, `SECURITY_ANALYST`, `DEVELOPER`, `VIEWER`).
+   - One-time bootstrap prompt when platform is uninitialized.
+2. **Attack Surface & Asset Inventory Modal (`#assets-modal`):**
+   - Manage registered assets with criticality tier filters, owner tagging, and direct 1-click audit launching.
+3. **Vulnerability Lifecycle & Triage HUD:**
+   - View canonical findings with SLA countdown timers, correlation tags, contributing tools, and inline status modification (`OPEN`, `IN_PROGRESS`, `FIXED`, `RISK_ACCEPTED`).
+4. **Pentester Workbench (HTTP Repeater):**
+   - Safe interactive HTTP repeater enforcing SSRF controls, size limits, and formatted request/response inspection.
+5. **Toolbox Manager:**
+   - Real-time tool capabilities fleet status (21 tools) with 1-click installation telemetry stream.

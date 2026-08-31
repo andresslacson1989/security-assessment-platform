@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.core.models import utc_now, TargetType, Target
 from app.core.storage import list_scans
 from app.core.orchestrator import orchestrator
+from app.core.version import APP_VERSION
 
 router = APIRouter()
 START_TIME = time.time()
@@ -23,7 +24,7 @@ async def get_system_health() -> Dict[str, Any]:
     uptime = time.time() - START_TIME
     return {
         "status": "HEALTHY",
-        "version": "6.0.0",
+        "version": APP_VERSION,
         "timestamp": utc_now().isoformat(),
         "uptime_seconds": round(uptime, 2),
         "storage": {

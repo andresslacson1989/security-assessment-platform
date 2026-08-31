@@ -1,7 +1,8 @@
 """
-Contract 01 §8, Contract 02 §6-§8 & Contract 08 §12:
-Universal Relational Database Persistence Engine (SQLite & PostgreSQL Dual-Mode).
-Provides ACID transaction integrity, multi-tenancy, asset inventory, and vulnerability lifecycle storage.
+Contract 01 §4, Contract 02 §2-§6, Contract 04 §1 & Contract 08 §1:
+Authoritative Relational Database Persistence Engine (SQLite & PostgreSQL Enterprise Architecture).
+Maintains ACID transactional integrity for Users, Organizations, Projects, Workspaces,
+API Keys, Assets, Scans, Canonical Findings, Occurrences, and Append-Only Audit Trails.
 """
 
 from __future__ import annotations
@@ -12,23 +13,37 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+import uuid
 
 from app.core.models import (
     Asset,
     AssetType,
     AssetCriticality,
+    AssetLifecycleStatus,
+    CanonicalFinding,
+    FindingOccurrence,
     FindingLifecycleStatus,
+    FindingComment,
     Severity,
     ScanJob,
+    UserProfile,
+    UserRole,
+    Organization,
+    Project,
+    Workspace,
+    APIKeyRecord,
+    AuditEvent,
+    AuditAction,
+    Evidence,
+    utc_now,
 )
 
-# Database file location for SQLite
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
 
 
 class DatabaseManager:
     """
-    Universal database manager handling relational tables, migrations, and ACID queries.
+    Universal database manager handling relational tables, migrations, transactions, and tenant queries.
     Uses SQLite with WAL mode by default, supporting thread-safe connection pooling.
     """
 
@@ -51,15 +66,46 @@ class DatabaseManager:
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        # Enable WAL mode for high concurrency
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
     def _init_db(self) -> None:
-        """Initializes database schema and indexes."""
+        """Initializes database schema, relational constraints, and performance indexes."""
         with self._get_connection() as conn:
+            # 1. Ensure all tables exist
             conn.executescript("""
+            -- Organizations Table
+            CREATE TABLE IF NOT EXISTS organizations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                slug TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            );
+
+            -- Projects Table
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+            );
+
+            -- Workspaces Table
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                project_id TEXT,
+                name TEXT NOT NULL,
+                filesystem_root TEXT NOT NULL,
+                is_sandboxed INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+            );
+
             -- Users Table
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -69,18 +115,25 @@ class DatabaseManager:
                 role TEXT NOT NULL DEFAULT 'VIEWER',
                 organization_id TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                last_login_at TEXT
             );
 
-            -- Organizations Table
-            CREATE TABLE IF NOT EXISTS organizations (
-                id TEXT PRIMARY KEY,
+            -- API Keys Table (Stored as Cryptographic Hashes)
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_id TEXT PRIMARY KEY,
+                key_hash TEXT UNIQUE NOT NULL,
+                organization_id TEXT,
+                user_id TEXT,
                 name TEXT NOT NULL,
-                slug TEXT UNIQUE NOT NULL,
-                created_at TEXT NOT NULL
+                scopes_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                revoked_at TEXT,
+                last_used_at TEXT
             );
 
-            -- Assets Inventory Table
+            -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
                 organization_id TEXT,
@@ -90,16 +143,22 @@ class DatabaseManager:
                 target_value TEXT NOT NULL,
                 criticality TEXT NOT NULL DEFAULT 'MEDIUM',
                 internet_exposed INTEGER NOT NULL DEFAULT 1,
-                tags_json TEXT NOT NULL DEFAULT '[]',
                 owner TEXT,
+                lifecycle_status TEXT NOT NULL DEFAULT 'MONITORED',
+                tags_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
                 last_scanned_at TEXT,
+                last_verified_at TEXT,
                 active_findings_count INTEGER NOT NULL DEFAULT 0
             );
 
             -- Scans Table
             CREATE TABLE IF NOT EXISTS scans (
                 id TEXT PRIMARY KEY,
+                organization_id TEXT,
+                project_id TEXT,
+                asset_id TEXT,
                 target_name TEXT NOT NULL,
                 target_type TEXT NOT NULL,
                 target_value TEXT NOT NULL,
@@ -111,68 +170,281 @@ class DatabaseManager:
                 total_findings INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT,
                 completed_at TEXT,
+                cancelled_at TEXT,
+                failure_reason TEXT,
+                summary_json TEXT,
                 data_json TEXT NOT NULL
             );
 
-            -- Findings Lifecycle Table
+            -- Canonical Findings Table
             CREATE TABLE IF NOT EXISTS findings (
                 id TEXT PRIMARY KEY,
-                scan_id TEXT NOT NULL,
+                organization_id TEXT,
+                project_id TEXT,
                 asset_id TEXT,
+                scan_id TEXT NOT NULL,
                 check_id TEXT NOT NULL,
                 category TEXT NOT NULL,
                 title TEXT NOT NULL,
                 severity TEXT NOT NULL,
                 cvss_score REAL NOT NULL,
+                cvss_vector TEXT,
                 contextual_risk_score REAL NOT NULL DEFAULT 0.0,
                 cwe_id TEXT,
+                owasp_category TEXT,
+                nist_control TEXT,
                 status TEXT NOT NULL DEFAULT 'OPEN',
                 first_seen TEXT NOT NULL,
                 last_seen TEXT NOT NULL,
                 times_observed INTEGER NOT NULL DEFAULT 1,
                 assigned_to TEXT,
+                contributing_tools_json TEXT NOT NULL DEFAULT '[]',
+                correlation_type TEXT,
+                description TEXT NOT NULL DEFAULT '',
+                impact TEXT NOT NULL DEFAULT '',
+                remediation TEXT NOT NULL DEFAULT '',
+                evidence_hash TEXT NOT NULL DEFAULT '',
+                sla_json TEXT,
                 fingerprint TEXT NOT NULL,
                 data_json TEXT NOT NULL
             );
 
-            -- Finding Comments Table
+            -- Finding Occurrences Table
+            CREATE TABLE IF NOT EXISTS finding_occurrences (
+                id TEXT PRIMARY KEY,
+                canonical_finding_id TEXT NOT NULL,
+                scan_id TEXT NOT NULL,
+                asset_id TEXT,
+                source_tool TEXT NOT NULL,
+                check_id TEXT NOT NULL,
+                raw_evidence_json TEXT NOT NULL,
+                reproduction_curl TEXT,
+                taint_trace_json TEXT,
+                detected_at TEXT NOT NULL,
+                FOREIGN KEY (canonical_finding_id) REFERENCES findings(id) ON DELETE CASCADE
+            );
+
+            -- Finding Collaboration Comments Table
             CREATE TABLE IF NOT EXISTS finding_comments (
                 id TEXT PRIMARY KEY,
                 finding_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 username TEXT NOT NULL,
                 comment TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
             );
 
-            -- Indexes for fast querying & deduplication
+            -- Immutable Append-Only Audit Trail Table
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                organization_id TEXT,
+                action TEXT NOT NULL,
+                object_type TEXT NOT NULL,
+                object_id TEXT NOT NULL,
+                result TEXT NOT NULL,
+                source_ip TEXT,
+                correlation_id TEXT,
+                details_json TEXT NOT NULL DEFAULT '{}'
+            );
+
+            -- Performance and Multi-Tenant Query Indexes
+            CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+            CREATE INDEX IF NOT EXISTS idx_assets_org ON assets(organization_id);
+            CREATE INDEX IF NOT EXISTS idx_scans_org_time ON scans(organization_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_findings_org_status ON findings(organization_id, status);
             CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
-            CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);
-            CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
-            CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
-            CREATE INDEX IF NOT EXISTS idx_scans_started_at ON scans(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_occurrences_canonical ON finding_occurrences(canonical_finding_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit_events(organization_id, timestamp DESC);
             """)
 
-            # Seed default admin if missing
+    # ========================================================================
+    # 1. System Bootstrap & Authentication Operations
+    # ========================================================================
+
+    def is_initialized(self) -> bool:
+        """Returns True if the system already contains at least one administrator user."""
+        with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE username = 'admin'")
-            if not cur.fetchone():
-                from app.core.auth import DEFAULT_ADMIN_USER, hash_password
-                conn.execute(
-                    "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
-                    (
-                        DEFAULT_ADMIN_USER.id,
-                        DEFAULT_ADMIN_USER.username,
-                        DEFAULT_ADMIN_USER.email,
-                        hash_password("admin123!"),
-                        DEFAULT_ADMIN_USER.role.value,
-                        DEFAULT_ADMIN_USER.organization_id,
-                        datetime.now(timezone.utc).isoformat(),
-                    ),
-                )
+            cur.execute("SELECT COUNT(*) as cnt FROM users WHERE role = 'ADMIN'")
+            row = cur.fetchone()
+            return bool(row and row["cnt"] > 0)
+
+    def bootstrap_system(
+        self,
+        admin_username: str,
+        admin_email: str,
+        hashed_password: str,
+        org_name: str = "Default Organization",
+    ) -> Tuple[UserProfile, Organization]:
+        """
+        Executes one-time first-run setup.
+        Creates initial Organization and Administrator account.
+        Raises ValueError if already initialized.
+        """
+        if self.is_initialized():
+            raise ValueError("System has already been initialized with an administrator.")
+
+        org_id = f"org-{uuid.uuid4().hex[:8]}"
+        user_id = f"usr-{uuid.uuid4().hex[:8]}"
+        now_str = utc_now().isoformat()
+
+        with self._get_connection() as conn:
+            # 1. Create Default Organization
+            conn.execute(
+                "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
+                (org_id, org_name, "default", now_str),
+            )
+
+            # 2. Create Administrator User
+            conn.execute(
+                "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, ?, 'ADMIN', ?, 1, ?)",
+                (user_id, admin_username, admin_email, hashed_password, org_id, now_str),
+            )
+
+            # 3. Record Audit Event
+            conn.execute(
+                "INSERT INTO audit_events (id, timestamp, actor, organization_id, action, object_type, object_id, result, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"aud-{uuid.uuid4().hex[:12]}",
+                    now_str,
+                    admin_username,
+                    org_id,
+                    AuditAction.BOOTSTRAP_COMPLETE.value,
+                    "system",
+                    user_id,
+                    "SUCCESS",
+                    json.dumps({"initial_admin": admin_username, "org_name": org_name}),
+                ),
+            )
+
+        user = UserProfile(
+            id=user_id,
+            username=admin_username,
+            email=admin_email,
+            role=UserRole.ADMIN,
+            organization_id=org_id,
+            created_at=utc_now(),
+        )
+        org = Organization(id=org_id, name=org_name, slug="default", created_at=utc_now())
+        return user, org
+
+    def verify_api_key_hash(self, key_hash: str) -> Tuple[Optional[APIKeyRecord], Optional[UserProfile]]:
+        """Verifies an incoming API Key hash against the database and returns the bound UserProfile."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM api_keys WHERE key_hash = ? AND (revoked_at IS NULL)", (key_hash,))
+            row = cur.fetchone()
+            if not row:
+                return None, None
+
+            # Check expiration
+            if row["expires_at"]:
+                exp_dt = datetime.fromisoformat(row["expires_at"])
+                if utc_now() > exp_dt:
+                    return None, None
+
+            key_record = APIKeyRecord(
+                key_id=row["key_id"],
+                key_hash=row["key_hash"],
+                organization_id=row["organization_id"],
+                user_id=row["user_id"],
+                name=row["name"],
+                scopes=json.loads(row["scopes_json"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
+                revoked_at=datetime.fromisoformat(row["revoked_at"]) if row["revoked_at"] else None,
+                last_used_at=datetime.fromisoformat(row["last_used_at"]) if row["last_used_at"] else None,
+            )
+
+            # Update last_used_at
+            conn.execute("UPDATE api_keys SET last_used_at = ? WHERE key_id = ?", (utc_now().isoformat(), row["key_id"]))
+
+            # Synthesize or lookup caller user profile
+            user_profile = UserProfile(
+                id=row["user_id"] or f"usr-key-{row['key_id']}",
+                username=f"apikey-{row['name']}",
+                email=f"apikey-{row['name']}@cyberassess.local",
+                role=UserRole.SECURITY_ANALYST,
+                organization_id=row["organization_id"],
+            )
+            return key_record, user_profile
 
     # ========================================================================
-    # Asset Management Operations
+    # 2. Immutable Audit Logging
+    # ========================================================================
+
+    def record_audit_event(self, event: AuditEvent) -> None:
+        """Appends an immutable security audit event to the relational audit log."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events (
+                    id, timestamp, actor, organization_id, action, object_type,
+                    object_id, result, source_ip, correlation_id, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.id,
+                    event.timestamp.isoformat() if event.timestamp else utc_now().isoformat(),
+                    event.actor,
+                    event.organization_id,
+                    event.action.value if hasattr(event.action, "value") else str(event.action),
+                    event.object_type,
+                    event.object_id,
+                    event.result,
+                    event.source_ip,
+                    event.correlation_id,
+                    json.dumps(event.details),
+                ),
+            )
+
+    def list_audit_events(
+        self,
+        organization_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[AuditEvent], int]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            query = "SELECT * FROM audit_events WHERE 1=1"
+            params: List[Any] = []
+            if organization_id:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+
+            cur.execute(query.replace("SELECT *", "SELECT COUNT(*) as total", 1), params)
+            total = cur.fetchone()["total"]
+
+            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            events = [
+                AuditEvent(
+                    id=r["id"],
+                    timestamp=datetime.fromisoformat(r["timestamp"]),
+                    actor=r["actor"],
+                    organization_id=r["organization_id"],
+                    action=AuditAction(r["action"]),
+                    object_type=r["object_type"],
+                    object_id=r["object_id"],
+                    result=r["result"],
+                    source_ip=r["source_ip"],
+                    correlation_id=r["correlation_id"],
+                    details=json.loads(r["details_json"]),
+                )
+                for r in rows
+            ]
+            return events, total
+
+    # ========================================================================
+    # 3. Asset Management Operations
     # ========================================================================
 
     def create_asset(self, asset: Asset) -> Asset:
@@ -181,9 +453,9 @@ class DatabaseManager:
                 """
                 INSERT OR REPLACE INTO assets (
                     id, organization_id, project_id, name, type, target_value,
-                    criticality, internet_exposed, tags_json, owner, created_at,
-                    last_scanned_at, active_findings_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    criticality, internet_exposed, owner, lifecycle_status, tags_json,
+                    created_at, updated_at, last_scanned_at, last_verified_at, active_findings_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asset.id,
@@ -194,137 +466,150 @@ class DatabaseManager:
                     asset.target_value,
                     asset.criticality.value if hasattr(asset.criticality, "value") else str(asset.criticality),
                     1 if asset.internet_exposed else 0,
-                    json.dumps(asset.tags),
                     asset.owner,
-                    asset.created_at.isoformat() if asset.created_at else datetime.now(timezone.utc).isoformat(),
+                    asset.lifecycle_status.value if hasattr(asset.lifecycle_status, "value") else str(asset.lifecycle_status),
+                    json.dumps(asset.tags),
+                    asset.created_at.isoformat() if asset.created_at else utc_now().isoformat(),
+                    asset.updated_at.isoformat() if asset.updated_at else utc_now().isoformat(),
                     asset.last_scanned_at.isoformat() if asset.last_scanned_at else None,
+                    asset.last_verified_at.isoformat() if asset.last_verified_at else None,
                     asset.active_findings_count,
                 ),
             )
         return asset
 
-    def list_assets(self, limit: int = 50, offset: int = 0) -> Tuple[List[Asset], int]:
+    def get_asset(self, asset_id: str, organization_id: Optional[str] = None) -> Optional[Asset]:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) as total FROM assets")
+            if organization_id:
+                cur.execute("SELECT * FROM assets WHERE id = ? AND organization_id = ?", (asset_id, organization_id))
+            else:
+                cur.execute("SELECT * FROM assets WHERE id = ?", (asset_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_asset(row)
+
+    def list_assets(
+        self,
+        organization_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[Asset], int]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            query = "SELECT * FROM assets WHERE 1=1"
+            params: List[Any] = []
+            if organization_id:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+
+            cur.execute(query.replace("SELECT *", "SELECT COUNT(*) as total", 1), params)
             total = cur.fetchone()["total"]
 
-            cur.execute("SELECT * FROM assets ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset))
+            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cur.execute(query, params)
             rows = cur.fetchall()
-            assets = []
-            for r in rows:
-                assets.append(
-                    Asset(
-                        id=r["id"],
-                        organization_id=r["organization_id"],
-                        project_id=r["project_id"],
-                        name=r["name"],
-                        type=AssetType(r["type"]),
-                        target_value=r["target_value"],
-                        criticality=AssetCriticality(r["criticality"]),
-                        internet_exposed=bool(r["internet_exposed"]),
-                        tags=json.loads(r["tags_json"]),
-                        owner=r["owner"],
-                        created_at=datetime.fromisoformat(r["created_at"]) if r["created_at"] else datetime.now(timezone.utc),
-                        last_scanned_at=datetime.fromisoformat(r["last_scanned_at"]) if r["last_scanned_at"] else None,
-                        active_findings_count=r["active_findings_count"],
-                    )
-                )
-            return assets, total
+            return [self._row_to_asset(r) for r in rows], total
 
-    def get_asset(self, asset_id: str) -> Optional[Asset]:
+    def delete_asset(self, asset_id: str, organization_id: Optional[str] = None) -> bool:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM assets WHERE id = ?", (asset_id,))
-            r = cur.fetchone()
-            if not r:
-                return None
-            return Asset(
-                id=r["id"],
-                organization_id=r["organization_id"],
-                project_id=r["project_id"],
-                name=r["name"],
-                type=AssetType(r["type"]),
-                target_value=r["target_value"],
-                criticality=AssetCriticality(r["criticality"]),
-                internet_exposed=bool(r["internet_exposed"]),
-                tags=json.loads(r["tags_json"]),
-                owner=r["owner"],
-                created_at=datetime.fromisoformat(r["created_at"]) if r["created_at"] else datetime.now(timezone.utc),
-                last_scanned_at=datetime.fromisoformat(r["last_scanned_at"]) if r["last_scanned_at"] else None,
-                active_findings_count=r["active_findings_count"],
-            )
-
-    def delete_asset(self, asset_id: str) -> bool:
-        with self._get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+            if organization_id:
+                cur.execute("DELETE FROM assets WHERE id = ? AND organization_id = ?", (asset_id, organization_id))
+            else:
+                cur.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
             return cur.rowcount > 0
 
+    def _row_to_asset(self, row: sqlite3.Row) -> Asset:
+        return Asset(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            project_id=row["project_id"],
+            name=row["name"],
+            type=AssetType(row["type"]),
+            target_value=row["target_value"],
+            criticality=AssetCriticality(row["criticality"]),
+            internet_exposed=bool(row["internet_exposed"]),
+            owner=row["owner"],
+            lifecycle_status=AssetLifecycleStatus(row["lifecycle_status"]) if "lifecycle_status" in row.keys() else AssetLifecycleStatus.MONITORED,
+            tags=json.loads(row["tags_json"]) if row["tags_json"] else [],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]) if "updated_at" in row.keys() and row["updated_at"] else datetime.fromisoformat(row["created_at"]),
+            last_scanned_at=datetime.fromisoformat(row["last_scanned_at"]) if row["last_scanned_at"] else None,
+            active_findings_count=row["active_findings_count"],
+        )
+
     # ========================================================================
-    # Scan & Finding Operations
+    # 4. Scan Persistence Operations
     # ========================================================================
 
     def save_scan_record(self, scan_job: ScanJob) -> None:
-        """Persists scan entity and indexes findings into relational tables."""
-        raw_json = scan_job.model_dump_json(indent=2)
+        """Atomically persists or updates a ScanJob entity and related canonical findings."""
         with self._get_connection() as conn:
-            grade = scan_job.summary.overall_security_grade if scan_job.summary else None
-            score = scan_job.summary.weighted_score if scan_job.summary else None
-            total_findings = len(scan_job.findings)
+            target = scan_job.target
+            summary = scan_job.summary
+            data_json = scan_job.model_dump_json()
 
             conn.execute(
                 """
                 INSERT OR REPLACE INTO scans (
-                    id, target_name, target_type, target_value, profile,
-                    status, progress_percent, grade, score, total_findings,
-                    started_at, completed_at, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, organization_id, project_id, target_name, target_type, target_value,
+                    profile, status, progress_percent, grade, score, total_findings,
+                    started_at, completed_at, summary_json, data_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scan_job.id,
-                    scan_job.target.name,
-                    scan_job.target.type.value if hasattr(scan_job.target.type, "value") else str(scan_job.target.type),
-                    scan_job.target.value,
+                    getattr(scan_job, "organization_id", None),
+                    getattr(scan_job, "project_id", None),
+                    target.name,
+                    target.type.value if hasattr(target.type, "value") else str(target.type),
+                    target.value,
                     scan_job.profile.value if hasattr(scan_job.profile, "value") else str(scan_job.profile),
                     scan_job.status.value if hasattr(scan_job.status, "value") else str(scan_job.status),
                     scan_job.progress_percent,
-                    grade,
-                    score,
-                    total_findings,
+                    summary.overall_security_grade if summary else None,
+                    summary.weighted_score if summary else 0.0,
+                    summary.total_findings if summary else len(scan_job.findings),
                     scan_job.started_at.isoformat() if scan_job.started_at else None,
                     scan_job.completed_at.isoformat() if scan_job.completed_at else None,
-                    raw_json,
+                    summary.model_dump_json() if summary else None,
+                    data_json,
                 ),
             )
 
-            # Index findings
-            for f in scan_job.findings:
-                fp = f.fingerprint or f"{f.check_id}|{f.title}"
-                f_json = f.model_dump_json()
+            # Persist individual findings
+            for finding in scan_job.findings:
+                now_str = utc_now().isoformat()
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO findings (
-                        id, scan_id, asset_id, check_id, category, title, severity,
+                    INSERT INTO findings (
+                        id, scan_id, check_id, category, title, severity,
                         cvss_score, contextual_risk_score, cwe_id, status, first_seen,
-                        last_seen, times_observed, assigned_to, fingerprint, data_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 1, NULL, ?, ?)
+                        last_seen, times_observed, fingerprint, data_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 1, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        last_seen = excluded.last_seen,
+                        times_observed = times_observed + 1,
+                        data_json = excluded.data_json
                     """,
                     (
-                        f.id,
-                        scan_job.id,
-                        None,
-                        f.check_id,
-                        f.category,
-                        f.title,
-                        f.severity.value if hasattr(f.severity, "value") else str(f.severity),
-                        f.cvss_score,
-                        getattr(f, "contextual_risk_score", 0.0),
-                        f.cwe_id,
-                        f.created_at.isoformat() if f.created_at else datetime.now(timezone.utc).isoformat(),
-                        datetime.now(timezone.utc).isoformat(),
-                        fp,
-                        f_json,
+                        finding.id,
+                        finding.scan_id,
+                        finding.check_id,
+                        finding.category,
+                        finding.title,
+                        finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity),
+                        finding.cvss_score,
+                        finding.cvss_score,
+                        finding.cwe_id,
+                        now_str,
+                        now_str,
+                        finding.fingerprint,
+                        finding.model_dump_json(),
                     ),
                 )
 

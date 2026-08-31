@@ -6,7 +6,7 @@ Zero CDN dependencies, fully embedded dark-theme Cyber SOC dashboard styling.
 from __future__ import annotations
 import html
 from typing import Optional
-from app.core.models import ScanJob, Severity
+from app.core.models import ScanJob, Severity, mask_secret
 
 
 def export_scan_to_html(scan_job: ScanJob) -> str:
@@ -43,8 +43,14 @@ def export_scan_to_html(scan_job: ScanJob) -> str:
         }
         fg_col, bg_col = sev_colors.get(f.severity, ("#94a3b8", "#1e293b"))
 
+        cat = str(f.category or "").lower()
+        chk = str(f.check_id or "").lower()
+        raw_obs = f.evidence.observed_value
+        if "secret" in cat or "secret" in chk or "key" in cat:
+            raw_obs = mask_secret(raw_obs)
+
         ev_loc = html.escape(f.evidence.location)
-        ev_obs = html.escape(f.evidence.observed_value)
+        ev_obs = html.escape(raw_obs)
         ev_exp = html.escape(f.evidence.expected_value or "Secure default")
         remed_desc = html.escape(f.remediation)
         desc = html.escape(f.description)

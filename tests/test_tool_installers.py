@@ -19,12 +19,22 @@ from app.core.models import (
     ToolInstallMethod,
     ToolInstallStatus,
     ToolInstallationInfo,
+    UserProfile,
+    UserRole,
 )
+from app.core.auth import create_access_token
 from app.installers.base_installer import BaseToolInstaller, SecurityError
 from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
 from app.installers.system_installer import SystemToolHelper
 from app.installers.manager import ToolInstallationManager
+
+
+@pytest.fixture
+def auth_headers():
+    user = UserProfile(id="usr-adm-01", username="admin", email="admin@sec.local", role=UserRole.ADMIN)
+    token = create_access_token(user)
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -242,7 +252,7 @@ async def test_system_tool_helper_instructions():
         assert any("Nmap 7.94" in l for l in logs)
 
 
-def test_tool_management_api_endpoints(client, manager):
+def test_tool_management_api_endpoints(client, manager, auth_headers):
     """Tests tool REST endpoints: list, install single, batch install, get status."""
     # 1. GET /api/system/tools
     resp = client.get("/api/system/tools")
@@ -263,7 +273,7 @@ def test_tool_management_api_endpoints(client, manager):
 
     # 4. POST /api/system/tools/bandit/install
     with patch.object(manager._installers["bandit"], "install", new=AsyncMock(return_value=True)):
-        resp = client.post("/api/system/tools/bandit/install", json={"force": False})
+        resp = client.post("/api/system/tools/bandit/install", json={"force": False}, headers=auth_headers)
         assert resp.status_code == 202
         data = resp.json()
         assert data["tool_name"] == "bandit"
@@ -272,13 +282,13 @@ def test_tool_management_api_endpoints(client, manager):
 
     # 5. POST /api/system/tools/install-all
     with patch.object(manager, "_installers", {k: MagicMock(display_name=k, install=AsyncMock(return_value=True), get_info=AsyncMock(return_value=MagicMock(status=ToolInstallStatus.NOT_INSTALLED, path=None, version=None))) for k in manager._installers}):
-        resp = client.post("/api/system/tools/install-all", json={"force": False})
+        resp = client.post("/api/system/tools/install-all", json={"force": False}, headers=auth_headers)
         assert resp.status_code == 202
         batch = resp.json()
         assert isinstance(batch, list)
 
     # 6. POST /api/system/tools/bandit/cancel
-    resp = client.post("/api/system/tools/bandit/cancel")
+    resp = client.post("/api/system/tools/bandit/cancel", headers=auth_headers)
     assert resp.status_code == 200
     assert "tool_name" in resp.json()
 

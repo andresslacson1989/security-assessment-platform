@@ -808,7 +808,12 @@ async def test_scenario_14_interactive_http_repeater():
     """
     from httpx import AsyncClient, ASGITransport
     from app.main import app
-    from app.core.models import RepeaterRequest, Finding, Evidence, Severity
+    from app.core.models import RepeaterRequest, Finding, Evidence, Severity, UserProfile, UserRole
+    from app.core.auth import create_access_token
+
+    auth_user = UserProfile(id="usr-rep-01", username="analyst", email="analyst@sec.local", role=UserRole.SECURITY_ANALYST)
+    auth_token = create_access_token(auth_user)
+    auth_headers = {"Authorization": f"Bearer {auth_token}"}
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -833,7 +838,7 @@ async def test_scenario_14_interactive_http_repeater():
                 "timeout_seconds": 5.0,
             }
 
-            resp = await client.post("/api/tools/repeater", json=payload)
+            resp = await client.post("/api/tools/repeater", json=payload, headers=auth_headers)
             assert resp.status_code == 200
             data = resp.json()
             assert data["status_code"] == 200
@@ -851,7 +856,8 @@ async def test_scenario_14_interactive_http_repeater():
 
             resp = await client.post(
                 "/api/tools/repeater",
-                json={"url": "https://slow.example.com", "method": "GET", "timeout_seconds": 1.0}
+                json={"url": "https://slow.example.com", "method": "GET", "timeout_seconds": 1.0},
+                headers=auth_headers,
             )
             assert resp.status_code == 504
             assert "timed out" in resp.json()["detail"]
@@ -864,7 +870,8 @@ async def test_scenario_14_interactive_http_repeater():
 
             resp = await client.post(
                 "/api/tools/repeater",
-                json={"url": "https://unreachable.example.com", "method": "GET"}
+                json={"url": "https://unreachable.example.com", "method": "GET"},
+                headers=auth_headers,
             )
             assert resp.status_code == 502
             assert "Failed to connect" in resp.json()["detail"]
@@ -2033,8 +2040,9 @@ def test_scenario_31_finding_correlation_and_root_cause_clustering():
         fingerprint="fp2", source_tool="semgrep",
     )
 
-    unified = correlator.correlate_findings([f1, f2], asset_criticality_factor=1.2)
+    unified, occs = correlator.correlate_findings([f1, f2], asset_criticality_factor=1.2)
     assert len(unified) == 1
+    assert len(occs) == 2
     assert unified[0].correlation_type == CorrelationType.SAST_DAST_VERIFIED
     assert "nuclei" in unified[0].contributing_tools
     assert "semgrep" in unified[0].contributing_tools
