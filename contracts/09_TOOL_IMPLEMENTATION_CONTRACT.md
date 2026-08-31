@@ -1,7 +1,7 @@
 # Contract 09: Authoritative Enterprise Security Tool Implementation Contract & Execution Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.2.0 (Authoritative 21-Tool Fleet Implementation Specifications, Normative Target Binding & Strict Supply-Chain Governance)  
+**Document Version:** 14.3.0 (Authoritative 21-Tool Fleet Implementation Specifications, Normative Destination Binding, Strict Provenance Governance & Multi-Tier Execution State Architecture)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Authority:** Platform Core Architecture, Tool Adapter Layer, Process Supervisor & Verification Pipeline  
 **Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for all 21 supported external security tools.  
@@ -17,15 +17,17 @@ This authoritative contract governs the integration, execution, sandboxing, pars
 
 No security tool may execute within the CyberAssess ecosystem unless it strictly satisfies the 41-point specification, normative schemas, and foundational invariants defined in this contract.
 
-### 1.1 The Seven Fundamental Tool Execution Invariants
+### 1.1 The Ten Fundamental Tool Execution Invariants
 
-1. **The Target Validation & True Destination Binding Invariant (Contract 01 §3, Contract 08 §2):**
+1. **The Target Validation & Normative Target Binding Invariant (Contract 01 §3, Contract 08 §2):**
    No tool adapter may ever receive raw, unvalidated user input strings. Network-capable tools receive ONLY an authoritative, immutable `ValidatedTarget`.
    - **Normative `ValidatedTarget` Schema:**
      ```python
      class ValidatedTarget(BaseModel):
          model_config = ConfigDict(frozen=True, extra="forbid")
-         target_id: str                 # Cryptographic SHA-256 digest: sha256(canonical_value + ":" + selected_destination)
+         target_id: str                 # Cryptographic resource identity: sha256(canonical_value + ":" + selected_destination)
+         authorization_decision_id: str # Cryptographic authorization token: sha256(org_id + ":" + project_id + ":" + asset_id + ":" + target_id + ":" + policy_version)
+         integrity_seal: str            # Cryptographic signature/HMAC from Target Security Gateway
          organization_id: str           # Tenant isolation boundary (UUID)
          project_id: str                # Project isolation boundary (UUID)
          asset_id: str                  # Asset identity in inventory (UUID)
@@ -38,20 +40,26 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
          port: Optional[int] = None     # Target port (e.g. 443, 80, 22)
          scheme: Optional[str] = None   # Protocol scheme (http, https, tcp, udp)
          validation_timestamp: datetime # ISO-8601 UTC validation timestamp
-         policy_version: str            # Target Security Gateway policy version (e.g. "14.2.0")
+         policy_version: str            # Target Security Gateway policy version (e.g. "14.3.0")
      ```
    - **Operational Immutability Definition:** `ValidatedTarget` is a frozen data structure (`frozen=True`). Once constructed and cryptographically sealed by the Target Security Gateway (`assert_safe_target()`), no attribute may be modified. Any target mutation, hostname change, or redirect resolution strictly requires instantiating a NEW `ValidatedTarget` instance through the gateway.
-   - **Connection-Level Destination Binding Requirement:** Pre-resolving DNS is necessary but insufficient to defeat Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Adapters and HTTP clients MUST enforce connection-level destination binding by opening the transport socket directly to `selected_destination` (the pre-resolved IP) while passing `canonical_value` (the original hostname) in the HTTP `Host` header and TLS Server Name Indication (SNI), or by utilizing a pinned in-memory DNS resolver that completely prohibits out-of-band resolution.
+   - **Tool-Specific Destination Binding Invariant:** Pre-resolving DNS is necessary but insufficient to defeat Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Adapters MUST enforce connection-level destination binding using tool-native mechanisms:
+     - **Nmap:** Targets `ValidatedTarget.selected_destination` (IP) with `--script-args http.host=<canonical_value>`.
+     - **httpx:** Invoked with `httpx -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value>`.
+     - **Nuclei:** Invoked with `nuclei -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value>`.
+     - **Katana:** Invoked with `katana -u http://<selected_destination> -H "Host: <canonical_value>"`.
+     - **FFuF:** Invoked with `ffuf -u http://<selected_destination>/FUZZ -H "Host: <canonical_value>"`.
+     - **Schemathesis:** Uses a custom Python HTTP transport adapter binding direct socket connections to `selected_destination` with overridden `Host` headers.
+     - **SSLyze:** Connects directly to `<selected_destination>:<port>` with `--server_name=<canonical_value>` for SNI.
 
 2. **The Workspace Confinement Invariant (Contract 01 §3, Contract 08 §3):**
    Filesystem and source analysis tools must execute strictly within the server-derived authorized workspace root. Symlink traversal escapes, sensitive system directories (`/etc`, `/root`, `C:\Windows`, `.ssh`, `.aws`), and arbitrary host paths fail closed.
 
-3. **The Four-Tier Supply Chain & Provenance Invariant (Contract 03 §2, Contract 08 §4):**
-   Every tool artifact must be evaluated against four distinct, non-conflated supply-chain dimensions:
-   - **Tier 1 (Version Verification):** Runtime verification of executable version string matching the exact approved pinned manifest (`PINNED_TOOL_MANIFEST`).
-   - **Tier 2 (Artifact Integrity Verification):** Cryptographic SHA-256 digest calculation of downloaded release archives/binaries verified against `PINNED_TOOL_MANIFEST` before quarantine promotion.
-   - **Tier 3 (Artifact Provenance / Attestation):** Cryptographic publisher identity validation (e.g. GitHub SLSA provenance, Cosign/Sigstore signatures, PyPI PEP 740 verifiable attestations, or GPG release signatures).
-   - **Tier 4 (Installation & Resolution Governance):** Strict 5-tier binary resolution path prohibiting unvetted PATH execution.
+3. **The Supply-Chain Trust Boundary Invariant (Contract 03 §2, Contract 08 §4):**
+   Every tool artifact must declare its exact supply-chain trust mode:
+   - **`DIRECT_ARTIFACT_MODE` (GitHub Release Standalone Binaries):** Must match exact approved release tag AND verify against canonical SHA-256 archive digest in `PINNED_TOOL_MANIFEST` before quarantine promotion.
+   - **`PACKAGE_MANAGER_MODE` (System Binaries & Pip Wheels):** Trust delegated to verified OS package manager (WinGet / apt / brew) or pip locked hashes in `requirements.txt`. Explicitly classified as `[UNVERIFIED (Package Manager Delegated)]` for raw artifact hashes, relying on package manager transport and repository trust.
+   - **Exact Version Enforcement:** The adapter MUST enforce `actual_version == approved_version` during runtime probe. Any version discrepancy triggers `INVALID_VERSION` and blocks tool execution.
 
 4. **The Process Supervision & Non-Destructive Invariant (Contract 03 §3, Contract 05 §2):**
    All subprocess executions are governed exclusively through `ProcessSupervisor` with isolated process groups, strict execution timeouts (default 60s), 10MB output buffers, and recursive process tree termination on cancellation or timeout. Destructive exploits and data dumps are prohibited in automated modes.
@@ -59,12 +67,21 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
 5. **The Deterministic Output & Parser Invariant (Contract 06 §1, Contract 06 §2):**
    Tool output is untrusted input. Every adapter must validate schema integrity and transform raw observations into canonical `Finding` objects mapped to explicit CWE, OWASP Top 10, ASVS 5.0, and NIST SP 800-53 controls with cryptographic SHA-256 evidence digests (`evidence_hash`).
 
-6. **The Explicit Coverage Degradation & Fallback Semantics Invariant (Contract 05 §1):**
-   A tool failure, missing binary, timeout, or cancellation MUST NEVER be interpreted as "no vulnerabilities found," nor may a native fallback be falsely claimed as providing 100% equivalent coverage to a specialized external tool.
-   - When an external tool fails or is unavailable, the platform activates the native engine to maintain **Partial Baseline Coverage**.
-   - The orchestrator MUST record `coverage_status = COVERAGE_DEGRADED` and document the exact **Coverage Loss** (e.g. "Nuclei DAST template coverage unavailable; native heuristic rules evaluated only").
+6. **The Explicit Coverage Degradation & Fallback Preservation Invariant (Contract 05 §1):**
+   A tool failure, missing binary, timeout, or cancellation MUST NEVER be erased or hidden by fallback execution.
+   - The failure event (`tool_failed`) is permanently recorded in scan telemetry and database logs.
+   - The assessment status transitions to `coverage_status = COVERAGE_DEGRADED`.
+   - The native engine executes to provide **Partial Baseline Coverage**.
+   - Findings generated by the native fallback are tagged with `source_tool: "native"`, `is_fallback: true`, and `primary_tool_failed: "<tool_id>"`.
+   - The scan summary explicitly documents the **Coverage Loss**.
 
-7. **The Multi-Dimensional Security Classification Invariant:**
+7. **The Three-Tier Authorization Invariant for Intrusive Operations:**
+   No tool may execute `ACTIVE_INTRUSIVE` or `STATE_CHANGING` operations (such as active fuzzing, intrusive NSE scripts, or POST/DELETE mutation testing) unless three independent gates pass:
+   1. `TOOL_CAPABILITY`: Tool adapter supports the requested probe.
+   2. `PROFILE_AUTHORIZATION`: Scan profile allows intrusive actions (e.g. `FULL_STACK`, `API_FOCUSED`).
+   3. `TENANT_SCOPE_AUTHORIZATION`: Tenant asset ownership explicitly grants active intrusive assessment permissions (`active_probing_granted == True`).
+
+8. **The Multi-Dimensional Security Classification Invariant:**
    Every tool execution must declare its exact operational security classes:
    - `PASSIVE`: Zero network traffic sent to target (e.g., Subfinder, Syft).
    - `ACTIVE_READ_ONLY`: Non-state-changing network requests (e.g., SSLyze, httpx, Katana).
@@ -75,17 +92,30 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
    - `CODE_ANALYSIS`: Reads local repository files (e.g., Semgrep, Bandit, Gitleaks).
    - `SUPPLY_CHAIN`: Analyzes third-party packages/SBOMs (e.g., Trivy, Grype, OSV-Scanner, Retire.js).
 
+9. **The Dual Execution State Architecture:**
+   Tool execution cleanly separates:
+   - **`Upstream Process Exit Code`:** Raw integer returned by the OS process (`0`, `1`, `2`, `-9`, etc.).
+   - **`CyberAssess Normalized Execution State`:** Normalized assessment state (`COMPLETED_WITH_FINDINGS`, `COMPLETED_NO_FINDINGS`, `PARTIAL_RESULTS_WITH_WARNING`, `TOOL_EXECUTION_FAILED`, `EXECUTION_TIMED_OUT`, `EXECUTION_CANCELLED`, `EXECUTION_BLOCKED`).
+
+10. **The Explicit Capability Taxonomy Invariant:**
+    All tool capabilities must be explicitly classified into one of:
+    - `SUPPORTED`: Implemented, tested, and verified in CyberAssess adapter.
+    - `LIMITED`: Partially implemented with explicit boundary constraints.
+    - `DEFERRED`: Planned for future roadmap milestones (e.g. E12).
+    - `NOT_SUPPORTED`: Excluded by design or safety policy.
+    - `UNVERIFIED`: Upstream feature claim pending empirical verification.
+
 ---
 
 ## 2. Rate Limiting, Timing & Concurrency Architecture
 
 To prevent ambiguity, tool execution distinguishes between five distinct operational boundaries:
 
-1. **Tool Timing Profile (e.g., Nmap `-T4`):** Internal engine parameters controlling probe delays, packet timeouts, and retransmission backoffs. This does NOT constitute an application-level rate limit.
-2. **Platform Request Rate (e.g., `rate_limit_rps: 5`):** Platform-enforced ceiling restricting the maximum number of network requests dispatched per second.
-3. **Assessment Rate Budget:** Total network throughput allocated to a single scan job across all concurrent engines.
-4. **Organization Rate Budget:** Global throughput limit across all active assessments within a tenant organization.
-5. **Network Safety Ceiling:** Maximum concurrent connections (e.g. max 10 sockets) opened against any single destination IP/port.
+1. **Tool Timing Profile (e.g., Nmap `-T4`):** `[UPSTREAM_VERIFIED]` Internal engine parameters controlling probe delays, packet timeouts, and retransmission backoffs. This does NOT constitute an application-level rate limit.
+2. **Platform Request Rate (e.g., `rate_limit_rps: 5`):** `[DESIGN_DECISION]` Platform-enforced ceiling restricting the maximum number of network requests dispatched per second.
+3. **Assessment Rate Budget:** `[DESIGN_DECISION]` Total network throughput allocated to a single scan job across all concurrent engines.
+4. **Organization Rate Budget:** `[DESIGN_DECISION]` Global throughput limit across all active assessments within a tenant organization.
+5. **Network Safety Ceiling:** `[DESIGN_DECISION]` Maximum concurrent connections (e.g. max 10 sockets) opened against any single destination IP/port.
 
 ---
 
@@ -101,15 +131,15 @@ ToolDefinition
   ├── 4. Security Classification (PASSIVE | ACTIVE_READ_ONLY | ACTIVE_INTRUSIVE | etc.)
   ├── 5. Supported CyberAssess Profiles
   ├── 6. Supported Target Types
-  ├── 7. Upstream Version Policy (Exact Pinned Tag)
-  ├── 8. Artifact / Installation Method
+  ├── 7. Upstream Version Policy (Exact Pinned Tag & Version Enforcement)
+  ├── 8. Artifact / Installation Method & Supply-Chain Trust Mode
   ├── 9. Supply-Chain Integrity & Provenance (SHA-256 / Attestation)
   ├── 10. Required Permissions & Privileges
   ├── 11. Credential Requirements & Injection Method
   ├── 12. Workspace Requirements & Confinement
-  ├── 13. Network Requirements & Destination Binding
-  ├── 14. Safety Policy & Bounded Probing
-  ├── 15. Rate Limit vs Timing Profile
+  ├── 13. Network Requirements & Destination Binding Mechanism
+  ├── 14. Safety Policy & Scope-Specific Script Policy
+  ├── 15. Rate Limit vs Timing Profile (Platform Rate vs Engine Timing)
   ├── 16. Concurrency Policy
   ├── 17. Timeout Policy
   ├── 18. Resource Limits
@@ -119,7 +149,7 @@ ToolDefinition
   ├── 22. Input Schema
   ├── 23. Output Format
   ├── 24. Output Schema & Error Handling (Missing fields, malformed data)
-  ├── 25. Exit Code Semantics
+  ├── 25. Exit Code Semantics (Upstream Exit Code vs CyberAssess Execution State)
   ├── 26. Failure Semantics & Coverage Impact
   ├── 27. Fallback Coverage Level & Coverage Loss
   ├── 28. Cancellation Protocol
@@ -163,8 +193,8 @@ ToolDefinition
 - **Overlap Strategy:** Complemented by `sslyze` (for deep TLS ciphers) and `httpx` (for web service probing).
 
 ### 4. Security Classification
-- `[UPSTREAM_VERIFIED]` `ACTIVE_INTRUSIVE` when `-sC` (default scripts) is enabled.
-- `[CYBERASSESS_REQUIRED]` Classified as `ACTIVE_SERVICE_DISCOVERY` for standard `-sV` port sweeps; classified as `ACTIVE_INTRUSIVE` when executing NSE default scripts (`-sC`). Requires explicit active scan profile authorization.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_INTRUSIVE` when `-sC` or custom scripts are executed; `ACTIVE_READ_ONLY` when running `-sV` version probe only.
+- `[CYBERASSESS_REQUIRED]` Classified as `ACTIVE_SERVICE_DISCOVERY` for standard `-sV` port sweeps; classified as `ACTIVE_INTRUSIVE` when executing NSE default scripts. Requires explicit 3-tier authorization before execution.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`: `[CYBERASSESS_REQUIRED]` ALLOWED (Full port sweep)
@@ -181,15 +211,16 @@ ToolDefinition
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Pinned to Nmap `7.95` (Exact Release).
+- **Version Enforcement:** `[CYBERASSESS_REQUIRED]` Runtime probe checks `actual_version == "Nmap 7.95"`. Discrepancies fail closed with `INVALID_VERSION`.
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `nmap --version` -> Regex `Nmap version\s+([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- **Method:** `[REPOSITORY_VERIFIED]` Preinstalled system binary (WinGet / apt / yum / brew) or managed binary in `backend/bin/nmap.exe`.
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (System binary installed via WinGet / apt / yum / brew) or managed binary in `backend/bin/nmap.exe`.
 - **Resolver Path:** Tier 1: `config.adapters.nmap_path`, Tier 2: `backend/bin/nmap.exe`, Tier 4: `shutil.which("nmap")`, Tier 5: Windows `C:\Program Files (x86)\Nmap\nmap.exe`.
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` `nmap --version` runtime probe.
-- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]` Standalone release archive hash verified against `PINNED_TOOL_MANIFEST` (`windows_amd64: [UNVERIFIED (System Installer Dependency)]`; `linux_amd64: [UNVERIFIED (OS Package)]`).
+- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` delegates binary verification to the OS package manager trust boundary. Raw release archive digest is `[UNVERIFIED (Package Manager Delegated)]`.
 - **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` Insecure.Org GPG signing key (`43D0F654`).
 - **Resolution Source:** `[CYBERASSESS_REQUIRED]` Authenticated system package manager or verified local binary directory.
 
@@ -202,26 +233,31 @@ ToolDefinition
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE` (Network operations only; no filesystem artifacts stored outside temporary stdout pipe).
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Direct TCP/UDP egress to target host ports. Connection-level destination binding forces Nmap to connect directly to `ValidatedTarget.selected_destination` (the pre-resolved IP) to eliminate DNS rebinding risks. Egress to private/loopback subnets is blocked unless explicit `scan:internal` scope is verified.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` The adapter invokes Nmap targeting `ValidatedTarget.selected_destination` (the pre-resolved IP address). When testing HTTP/TLS services via scripts, the adapter injects `--script-args http.host=<canonical_value>`, ensuring all socket connections target the verified IP while preserving hostname contexts. Egress to private/loopback subnets is blocked unless explicit `scan:internal` scope is verified.
 
-### 14. Safety Policy & Bounded Probing
-- **Approved NSE Script Allowlist:** `[CYBERASSESS_REQUIRED]` In automated scans, script execution is restricted to the explicit allowlist: `banner`, `ssl-cert`, `http-title`, `ssh2-enum-algos`, `dns-nsec-enum`.
+### 14. Safety Policy & Scope-Specific Script Policy
+- **Approved Script Allowlist:** `[CYBERASSESS_REQUIRED]` In automated scans, script execution is strictly restricted to the explicit allowlist:
+  - `banner`: Permitted on all target types (`IP`, `DOMAIN`, `URL`).
+  - `ssl-cert`: Permitted on all target types with TLS services.
+  - `http-title`: Permitted on all target types with HTTP/HTTPS services.
+  - `ssh2-enum-algos`: Permitted on all target types with SSH services.
+  - `dns-nsec-enum`: `[CYBERASSESS_REQUIRED]` Permitted ONLY on `DOMAIN` target types with explicit DNS zone assessment authorization; strictly FORBIDDEN on raw `IP` targets.
 - **Forbidden Script Categories:** Exploitative or intrusive script categories (`exploit`, `dos`, `fuzzer`, `intrusive`, `brute`) are strictly FORBIDDEN.
 
 ### 15. Rate Limit vs Timing Profile
 - **Tool Timing Profile:** `[UPSTREAM_VERIFIED]` `-T4` (Aggressive timing template: 500ms max RTT timeout, 10ms initial probe delay, 1.25s max scan delay).
-- **Platform Request Rate:** `[CYBERASSESS_REQUIRED]` Capped by platform rate governor (`rate_limit_rps: 5` default).
-- **Network Safety Ceiling:** Max 100 concurrent port probe sockets per destination IP.
+- **Platform Request Rate:** `[DESIGN_DECISION]` Capped by platform rate governor (`rate_limit_rps: 5` default).
+- **Network Safety Ceiling:** `[DESIGN_DECISION]` Max 100 concurrent port probe sockets per destination IP.
 
 ### 16. Concurrency Policy
 - `[REPOSITORY_VERIFIED]` Single subprocess instance per scan job; internal probe parallelism managed by Nmap engine.
 
 ### 17. Timeout Policy
-- Startup timeout: 5.0s. Execution timeout: 60.0s (or `min(60.0, config.timeout_seconds * 6)`).
+- `[DESIGN_DECISION]` Startup timeout: 5.0s. Execution timeout: 60.0s (or `min(60.0, config.timeout_seconds * 6)`).
 
 ### 18. Resource Limits
-- Max stdout buffer: 10 MB. Max memory: 256 MB.
+- `[DESIGN_DECISION]` Max stdout buffer: 10 MB. Max memory: 256 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -234,7 +270,7 @@ Stderr: Captures runtime diagnostics and errors
 ```
 
 ### 20. Allowed Arguments
-- `-sV`, `-sC`, `--version-light`, `-T4`, `-oX -`, `-p <port_list>`, `<validated_target_ip>`.
+- `-sV`, `-sC`, `--version-light`, `-T4`, `-oX -`, `-p <port_list>`, `<validated_target_ip>`, `--script-args http.host=<canonical_value>`.
 
 ### 21. Forbidden Arguments
 - `--script exploit`, `--script dos`, `--script fuzzer`, `--script intrusive`, `--interactive`, `--privileged`, `--system-commands`, `-oN <path>`, `-iL <path>`.
@@ -252,16 +288,22 @@ Stderr: Captures runtime diagnostics and errors
 - **Unexpected Structures:** Unknown XML tags are safely ignored without throwing unhandled exceptions.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT` (Scan completed successfully).
-- `1`: `FATAL_ERROR` (Invalid command arguments or unrecognized options).
-- `2` / `Non-zero`: `FATAL_ERROR` (Permission denied, network route unreachable, or process terminated).
+- **Upstream Exit Codes:**
+  - `0`: Process completed normally.
+  - `1`: Invalid command-line arguments.
+  - `2` / `Non-zero`: Fatal execution error, permission failure, or network route unreachable.
+- **CyberAssess Normalized Execution States:**
+  - If exit code is `0` and parseable ports found -> `COMPLETED_WITH_FINDINGS`
+  - If exit code is `0` and no open ports found -> `COMPLETED_NO_FINDINGS`
+  - If exit code is non-zero but partial XML parsed -> `PARTIAL_RESULTS_WITH_WARNING`
+  - If exit code is non-zero and no XML parsed -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
-- `[CYBERASSESS_REQUIRED]` Missing binary, non-zero exit, or timeout triggers `COVERAGE_DEGRADED` status. The failure is logged and the orchestrator seamlessly activates the native port checker.
+- `[CYBERASSESS_REQUIRED]` Missing binary, non-zero fatal exit, or timeout triggers `COVERAGE_DEGRADED` status. The failed tool event (`tool_failed`) is permanently recorded, and the orchestrator seamlessly activates the native port checker.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python `asyncio` TCP socket port checker & banner grabber.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native fallback tests configured top ports and extracts plain text banners, but lacks Nmap's comprehensive OS fingerprinting database, complex protocol probes (e.g. SMB, RPC, RDP negotiation), and NSE script execution.
 
 ### 28. Cancellation Protocol
@@ -315,6 +357,12 @@ Stderr: Captures runtime diagnostics and errors
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestNmapAdapter` passing.
+- **Capability Taxonomy:**
+  - Port Scanning: `SUPPORTED`
+  - Banner Grabbing: `SUPPORTED`
+  - Approved NSE Scripts: `SUPPORTED`
+  - OS Fingerprinting (Raw Sockets): `NOT_SUPPORTED` (Requires root privileges)
+  - Intrusive Exploit Scripts: `NOT_SUPPORTED` (Safety policy violation)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nmap_adapter.py`).
 
 ---
@@ -355,10 +403,11 @@ Stderr: Captures runtime diagnostics and errors
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` SSLyze `5.2.0` (Exact PyPI Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "sslyze 5.2.0"`.
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `sslyze --version` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- **Method:** `[REPOSITORY_VERIFIED]` Python package installed via `pip_installer.py` in isolated venv.
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py` in isolated venv).
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` Checked via `importlib.metadata.version("sslyze")`.
@@ -375,36 +424,36 @@ Stderr: Captures runtime diagnostics and errors
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Outbound TLS connections on target ports (443, 8443, custom TLS ports). Pinned to `ValidatedTarget.selected_destination`.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked targeting `<selected_destination>:<port>` with `--server_name=<canonical_value>` (SNI), ensuring the socket connects directly to the pre-resolved IP.
 
 ### 14. Safety Policy & Bounded Probing
 - Safe, non-destructive TLS handshakes only.
 
 ### 15. Rate Limit vs Timing Profile
 - **Tool Timing Profile:** Internal handshake timeout (5s per probe).
-- **Platform Request Rate:** Bounded to 5 concurrent handshake probes per host.
-- **Network Safety Ceiling:** Max 5 simultaneous TLS sockets.
+- **Platform Request Rate:** `[DESIGN_DECISION]` Bounded to 5 concurrent handshake probes per host.
+- **Network Safety Ceiling:** `[DESIGN_DECISION]` Max 5 simultaneous TLS sockets.
 
 ### 16. Concurrency Policy
 - Managed via internal thread pool; capped at 1 subprocess/thread per scan job.
 
 ### 17. Timeout Policy
-- Startup timeout: 5.0s. Execution timeout: 45.0s.
+- `[DESIGN_DECISION]` Startup timeout: 5.0s. Execution timeout: 45.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB.
 
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_python_path> -m sslyze
-Command Line: sslyze --json_out=- <target_host>:<target_port>
+Command Line: sslyze --json_out=- <target_host>:<target_port> --server_name=<canonical_hostname>
 Stdout: Captures JSON results stream
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `--json_out=-`, `<target_host>:<target_port>`, `--certinfo`, `--sslv2`, `--sslv3`, `--tlsv1`, `--tlsv1_1`, `--tlsv1_2`, `--tlsv1_3`.
+- `--json_out=-`, `<target_host>:<target_port>`, `--server_name=<name>`, `--certinfo`, `--sslv2`, `--sslv3`, `--tlsv1`, `--tlsv1_1`, `--tlsv1_2`, `--tlsv1_3`.
 
 ### 21. Forbidden Arguments
 - Arbitrary file write flags (`--json_out=<path>`).
@@ -417,19 +466,22 @@ Stderr: Diagnostic logs
 
 ### 24. Output Schema & Error Handling
 - **Valid Schema:** `server_scan_results[].scan_result` JSON object.
-- **Missing Fields:** If a protocol section (e.g. `ssl_2_0_cipher_suites`) is absent, it is marked as `UNSUPPORTED`.
+- **Missing Fields:** If a protocol section is absent, it is marked as `UNSUPPORTED`.
 - **Malformed JSON:** Emits `PARSER_ERROR` and triggers native TLS fallback.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Connection refused, TLS timeout, or handshake rejection).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Connection refused or TLS error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with valid findings -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with clean TLS profile -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
-- Non-zero exit or failure triggers `COVERAGE_DEGRADED` status. Activates native TLS fallback.
+- Failure sets `COVERAGE_DEGRADED` and permanently logs `tool_failed` event before activating native TLS fallback.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python `ssl.SSLContext` protocol sweeper.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native fallback tests TLS 1.0/1.1/1.2/1.3 and basic cert expiry, but lacks SSLyze's granular cipher suite enumeration (e.g. CBC, export, 3DES ciphers) and deep certificate chain validation.
 
 ### 28. Cancellation Protocol
@@ -477,6 +529,11 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSslyzeAdapter` passing.
+- **Capability Taxonomy:**
+  - Protocol Sweeping (SSLv2–TLS 1.3): `SUPPORTED`
+  - Cipher Suite Enumeration: `SUPPORTED`
+  - Certificate Chain Trust: `SUPPORTED`
+  - Early Data (0-RTT) Probing: `DEFERRED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/sslyze_adapter.py`).
 
 ---
@@ -517,10 +574,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Subfinder `v2.6.5` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "subfinder v2.6.5"`.
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `subfinder -version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary downloaded via `github_release_installer.py`.
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` Runtime probe.
@@ -539,8 +597,8 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
-- Outbound HTTPS access to public passive API endpoints (e.g. crt.sh, hacker-target). Zero direct traffic sent to target domain.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** Outbound HTTPS access to public passive API endpoints. Zero direct traffic sent to target domain.
 
 ### 14. Safety Policy & Bounded Probing
 - 100% passive; zero active network interaction with target servers.
@@ -552,10 +610,10 @@ Stderr: Diagnostic logs
 - Single process per scan job.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -583,15 +641,18 @@ Stderr: Diagnostic logs
 - **Malformed Lines:** Unparseable lines are skipped and recorded in `PARSER_WARNING` logs.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (API connectivity failure or DNS network error).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Fatal error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with subdomains discovered -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with no subdomains discovered -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Certificate Transparency log queries.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native `crt.sh` client.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native client queries `crt.sh` exclusively; lacks Subfinder's 30+ multi-source passive aggregators.
 
 ### 28. Cancellation Protocol
@@ -635,6 +696,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSubfinderAdapter` passing.
+- **Capability Taxonomy:**
+  - Passive CT Log Enumeration: `SUPPORTED`
+  - Multi-Source Aggregator API Queries: `SUPPORTED`
+  - Active DNS Brute-Forcing: `NOT_SUPPORTED` (Passive scope constraint)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/subfinder_adapter.py`).
 
 ---
@@ -669,10 +734,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` httpx `v1.6.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "httpx v1.6.0"`.
 - **Version Detection:** `httpx -version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `4a129d20c57c44db8fca539e0839f8f2b3ec48ee5f8e65fa1a4e9b9809930f76`
@@ -688,40 +754,40 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Direct outbound HTTP/HTTPS connections to target hosts pinned to `ValidatedTarget.selected_destination`.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked targeting `http://<selected_destination>` with `-H "Host: <canonical_value>"` and `-sni <canonical_value>`, pinning outbound socket connections directly to the pre-resolved IP.
 
 ### 14. Safety Policy & Bounded Probing
 - Enforces SSRF target validation; denies private CIDR sweeps.
 
 ### 15. Rate Limit vs Timing Profile
-- Bounded to 20 requests/sec. Max 10 concurrent connections.
+- `[DESIGN_DECISION]` Bounded to 20 requests/sec. Max 10 concurrent connections.
 
 ### 16. Concurrency Policy
 - Capped at `-threads 10`.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB.
 
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_httpx_path>
-Command Line: httpx -u <target_url> -silent -json -title -tech-detect -status-code
+Command Line: httpx -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value> -silent -json -title -tech-detect -status-code
 Stdout: Captures JSON Lines stream
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `-u <url>`, `-silent`, `-json`, `-title`, `-tech-detect`, `-status-code`, `-threads <int>`, `-timeout <int>`.
+- `-u <url>`, `-H <header>`, `-sni <sni>`, `-silent`, `-json`, `-title`, `-tech-detect`, `-status-code`, `-threads <int>`, `-timeout <int>`.
 
 ### 21. Forbidden Arguments
 - Arbitrary file execution, raw unsanitized request files.
 
 ### 22. Input Schema
-- Validated target URL or list of hostnames.
+- Validated target URL derived from `ValidatedTarget`.
 
 ### 23. Output Format
 - JSON Lines stream.
@@ -732,15 +798,18 @@ Stderr: Diagnostic logs
 - **Malformed Lines:** Unparseable lines skipped with warning logs.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Host unreachable or network connection failure).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Network failure).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with live web services -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with no HTTP responses -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Python HTTP probe.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python `httpx` async library.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native probe captures status codes and basic headers, but lacks ProjectDiscovery's comprehensive Wappalyzer-based tech detection ruleset.
 
 ### 28. Cancellation Protocol
@@ -784,6 +853,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestHttpxAdapter` passing.
+- **Capability Taxonomy:**
+  - HTTP Probe & Status: `SUPPORTED`
+  - Technology Fingerprinting: `SUPPORTED`
+  - Raw Request Fuzzing: `NOT_SUPPORTED` (Handled by FFuF)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/httpx_adapter.py`).
 
 ---
@@ -818,10 +891,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Nuclei `v3.2.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "nuclei v3.2.0"`.
 - **Version Detection:** `nuclei -version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `64d0a3ec74f63cbb2f97f740a6b98686fba7fa01f5c6adbc81c81ef4554b5ec9`
@@ -837,34 +911,34 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Outbound HTTP/HTTPS access pinned to `ValidatedTarget.selected_destination`.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked with `nuclei -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value>`, forcing direct IP connection.
 
 ### 14. Safety Policy & Bounded Probing
 - Strict template classification: only non-destructive tags (`cve`, `misconfig`, `exposure`) are enabled. Destructive exploit or DoS templates are forbidden.
 
 ### 15. Rate Limit vs Timing Profile
-- Bounded to 10 requests/sec (`-rate-limit 10`).
+- `[DESIGN_DECISION]` Bounded to 10 requests/sec (`-rate-limit 10`).
 
 ### 16. Concurrency Policy
 - Capped at `-c 5`.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 90.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 90.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_nuclei_path>
-Command Line: nuclei -u <target_url> -j -silent -tags cve,misconfig -severity low,medium,high,critical
+Command Line: nuclei -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value> -j -silent -tags cve,misconfig -severity low,medium,high,critical
 Stdout: Captures JSON Lines stream
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `-u <url>`, `-j`, `-silent`, `-tags <tags>`, `-severity <severities>`, `-H <header>`, `-timeout <sec>`, `-rate-limit <rps>`.
+- `-u <url>`, `-j`, `-silent`, `-tags <tags>`, `-severity <severities>`, `-H <header>`, `-sni <sni>`, `-timeout <sec>`, `-rate-limit <rps>`.
 
 ### 21. Forbidden Arguments
 - `-update-templates` (uncontrolled network pull in production), `-t <untrusted_local_path>`.
@@ -881,15 +955,18 @@ Stderr: Diagnostic logs
 - **Malformed Lines:** Skipped with `PARSER_WARNING` log.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Template compilation error, network failure, or invalid target).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Template error or network failure).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with vulnerability findings -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with no vulnerabilities -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native DAST heuristic checks.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python DAST rules (`headers_cookies`, `cors_analyzer`, `parameter_fuzzer`).
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native DAST tests core headers, CORS, basic SQLi/XSS reflection, and exposed endpoints, but CANNOT reproduce Nuclei's 5,000+ specialized CVE templates.
 
 ### 28. Cancellation Protocol
@@ -937,6 +1014,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestNucleiAdapter` passing.
+- **Capability Taxonomy:**
+  - Curated CVE Scanning: `SUPPORTED`
+  - Misconfiguration Detection: `SUPPORTED`
+  - Custom Remote Templates: `DEFERRED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nuclei_adapter.py`).
 
 ---
@@ -971,10 +1052,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` FFuF `v2.1.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "ffuf v2.1.0"`.
 - **Version Detection:** `ffuf -V` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `c62b66236b281bf77bb0b57e7eb3b7235a8bc33b28b58a1ee2e94625b597c5e2`
@@ -989,34 +1071,34 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Temporary wordlist files created in sandboxed temp directory.
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Outbound HTTP/HTTPS requests pinned to `ValidatedTarget.selected_destination`.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked with `ffuf -u http://<selected_destination>/FUZZ -H "Host: <canonical_value>"`, pinning fuzzing requests directly to the pre-resolved IP.
 
 ### 14. Safety Policy & Bounded Probing
 - Restrictive wordlists; exclusion patterns for logout and destructive actions (`*logout*`, `*delete*`, `*purge*`).
 
 ### 15. Rate Limit vs Timing Profile
-- Bounded to `-rate 10` requests/sec. Max 5 concurrent worker threads.
+- `[DESIGN_DECISION]` Bounded to `-rate 10` requests/sec. Max 5 concurrent worker threads.
 
 ### 16. Concurrency Policy
 - Capped at `-t 5` threads.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_ffuf_path>
-Command Line: ffuf -u <target_url>/FUZZ -w <wordlist_path> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10 -s
+Command Line: ffuf -u http://<selected_destination>/FUZZ -H "Host: <canonical_value>" -w <wordlist_path> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10 -s
 Stdout: Captures JSON output
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `-u <url>`, `-w <path>`, `-mc <codes>`, `-ms <size>`, `-fs <size>`, `-o -`, `-of json`, `-t <threads>`, `-rate <rps>`, `-s`.
+- `-u <url>`, `-H <header>`, `-w <path>`, `-mc <codes>`, `-ms <size>`, `-fs <size>`, `-o -`, `-of json`, `-t <threads>`, `-rate <rps>`, `-s`.
 
 ### 21. Forbidden Arguments
 - Non-standard HTTP methods (`-X DELETE`), arbitrary file writes.
@@ -1033,15 +1115,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native fuzzer.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Wordlist unreadable or network failure).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Wordlist error or connectivity loss).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with discovered routes -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with no discovered routes -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native parameter fuzzer.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python BFS crawler and parameter fuzzer.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native fuzzer tests standard top 50 common parameters; lacks FFuF's raw throughput and dynamic calibration.
 
 ### 28. Cancellation Protocol
@@ -1086,6 +1171,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestFfufAdapter` passing.
+- **Capability Taxonomy:**
+  - Route / Directory Fuzzing: `SUPPORTED`
+  - Query Parameter Fuzzing: `SUPPORTED`
+  - Destructive Method Fuzzing (DELETE/PUT): `NOT_SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/ffuf_adapter.py`).
 
 ---
@@ -1120,10 +1209,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Katana `v1.0.5` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "katana v1.0.5"`.
 - **Version Detection:** `katana -version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `806a6b574a44b94f1c713beeafe9be2bb53a5c6ca8858e999905f15d9715bf85`
@@ -1138,40 +1228,40 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Outbound HTTP/HTTPS access strictly scoped to target domain and pinned to `ValidatedTarget.selected_destination`.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked with `katana -u http://<selected_destination> -H "Host: <canonical_value>"`, strictly binding crawling requests to the pre-resolved IP.
 
 ### 14. Safety Policy & Bounded Probing
 - Depth capped at `-d 3`, maximum crawl limit enforced, out-of-scope domain traversal blocked.
 
 ### 15. Rate Limit vs Timing Profile
-- Bounded to 10 requests/sec. Max 5 concurrent crawler workers.
+- `[DESIGN_DECISION]` Bounded to 10 requests/sec. Max 5 concurrent crawler workers.
 
 ### 16. Concurrency Policy
 - Capped at `-c 5`.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 90.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 90.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB.
 
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_katana_path>
-Command Line: katana -u <target_url> -silent -json -d 3 -jc
+Command Line: katana -u http://<selected_destination> -H "Host: <canonical_value>" -silent -json -d 3 -jc
 Stdout: Captures JSON Lines stream
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `-u <url>`, `-silent`, `-json`, `-d <depth>`, `-jc`, `-c <concurrency>`, `-ct <timeout>`.
+- `-u <url>`, `-H <header>`, `-silent`, `-json`, `-d <depth>`, `-jc`, `-c <concurrency>`, `-ct <timeout>`.
 
 ### 21. Forbidden Arguments
 - Unrestricted crawling without depth caps.
 
 ### 22. Input Schema
-- Validated target URL string.
+- Validated target URL string derived from `ValidatedTarget`.
 
 ### 23. Output Format
 - JSON Lines stream.
@@ -1182,15 +1272,18 @@ Stderr: Diagnostic logs
 - **Malformed Lines:** Skipped safely.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Browser crash or connectivity loss).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Browser crash or connectivity error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with crawled endpoints -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with no new links -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Python crawler.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python BFS HTML crawler.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native crawler parses static HTML `<a>` and `<form>` tags, but cannot execute dynamic client-side JavaScript or extract routes from compiled SPA bundles.
 
 ### 28. Cancellation Protocol
@@ -1234,6 +1327,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestKatanaAdapter` passing.
+- **Capability Taxonomy:**
+  - Standard DOM Crawling: `SUPPORTED`
+  - JavaScript Endpoint Extraction: `SUPPORTED`
+  - Headless Browser Rendering: `LIMITED` (Requires system Chromium)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/katana_adapter.py`).
 
 ---
@@ -1268,10 +1365,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Schemathesis `3.20.0` (Exact PyPI Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "schemathesis 3.20.0"`.
 - **Version Detection:** `schemathesis --version` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Installed via pip (`pip_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py` in isolated venv).
 
 ### 9. Supply-Chain Integrity & Provenance
 - PyPI package hashes in `requirements.txt` with PEP 740 verifiable provenance.
@@ -1285,23 +1383,23 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
-- `[CYBERASSESS_REQUIRED]` Direct outbound HTTP/HTTPS connections pinned to `ValidatedTarget.selected_destination`.
+### 13. Network Requirements & Destination Binding Mechanism
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked with custom Python transport adapter binding direct socket connections to `ValidatedTarget.selected_destination` while passing original `Host` headers.
 
 ### 14. Safety Policy & Bounded Probing
 - Read-only operations prioritized; state-changing endpoints strictly bounded.
 
 ### 15. Rate Limit vs Timing Profile
-- Bounded to 10 requests/sec.
+- `[DESIGN_DECISION]` Bounded to 10 requests/sec.
 
 ### 16. Concurrency Policy
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -1328,16 +1426,18 @@ Stderr: Diagnostic logs
 - **Malformed Data:** Emits `PARSER_ERROR` and falls back to API inspector.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (All schema tests passed).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Schema violations or HTTP 500 errors found).
-- `Non-zero`: `FATAL_ERROR` (Schema load failure or network error).
+- **Upstream Exit Codes:** `0` (Tests passed), `1` (Schema violations/crashes found), `Non-zero` (Fatal error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Exit `1` -> `COMPLETED_WITH_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native API Inspector.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python API Inspector.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native inspector checks basic OpenAPI route reachability and auth headers, but lacks Schemathesis's Hypothesis-driven mathematical property generation and crash fuzzing.
 
 ### 28. Cancellation Protocol
@@ -1382,6 +1482,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSchemathesisAdapter` passing.
+- **Capability Taxonomy:**
+  - OpenAPI Schema Fuzzing: `SUPPORTED`
+  - GraphQL Schema Fuzzing: `DEFERRED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/schemathesis_adapter.py`).
 
 ---
@@ -1416,10 +1519,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Semgrep `1.65.0` (Exact PyPI Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "1.65.0"`.
 - **Version Detection:** `semgrep --version` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Installed via pip (`pip_installer.py`) in virtual environment.
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py` in virtual environment).
 
 ### 9. Supply-Chain Integrity & Provenance
 - PyPI package verification in `requirements.txt` with cryptographic digest locking.
@@ -1433,7 +1537,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail (`Path.resolve().startswith(workspace_root)`).
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline execution (uses local ruleset or cached rules).
 
 ### 14. Safety Policy & Bounded Probing
@@ -1446,10 +1550,10 @@ Stderr: Diagnostic logs
 - Multi-core CPU parallel analysis managed by Semgrep engine.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s (or `config.timeout_seconds * 6`).
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s (or `config.timeout_seconds * 6`).
 
 ### 18. Resource Limits
-- Max memory: 1024 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 1024 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -1477,16 +1581,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and activates native AST taint analyzer.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (Clean scan).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Code issues found).
-- `Non-zero`: `FATAL_ERROR` (Syntax error or out of memory).
+- **Upstream Exit Codes:** `0` (Clean scan), `1` (Findings present), `Non-zero` (Syntax error/fatal).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Exit `1` -> `COMPLETED_WITH_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native AST taint analyzer.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python AST taint analyzer.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native taint analyzer parses Python AST nodes only; lacks Semgrep's polyglot support for JS, Go, Java, PHP, and Ruby.
 
 ### 28. Cancellation Protocol
@@ -1535,6 +1641,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSemgrepAdapter` passing.
+- **Capability Taxonomy:**
+  - Polyglot AST Matching: `SUPPORTED`
+  - Cross-File Deep Taint: `DEFERRED` (Requires Semgrep Pro engine)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/semgrep_adapter.py`).
 
 ---
@@ -1569,10 +1678,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Bandit `1.7.8` (Exact PyPI Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "1.7.8"`.
 - **Version Detection:** `bandit --version` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Installed via pip (`pip_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - PyPI package verification in `requirements.txt`.
@@ -1586,7 +1696,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline static analysis.
 
 ### 14. Safety Policy & Bounded Probing
@@ -1599,10 +1709,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -1629,16 +1739,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native AST visitor.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (No issues).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Issues found).
-- `Non-zero`: `FATAL_ERROR` (Parse error).
+- **Upstream Exit Codes:** `0` (No issues), `1` (Issues found), `Non-zero` (Parse error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Exit `1` -> `COMPLETED_WITH_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Python AST visitor.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python AST visitor.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native AST visitor covers basic `eval` and `subprocess` checks; lacks Bandit's extensive 70+ Python security rule catalog.
 
 ### 28. Cancellation Protocol
@@ -1687,6 +1799,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestBanditAdapter` passing.
+- **Capability Taxonomy:**
+  - Python AST Security Linting: `SUPPORTED`
+  - Cross-File Taint Tracking: `NOT_SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/bandit_adapter.py`).
 
 ---
@@ -1721,10 +1836,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Gitleaks `v8.18.2` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "gitleaks v8.18.2"`.
 - **Version Detection:** `gitleaks version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `22ffef9b8d28131378393c0bc506c4293f773b06ee258be0a597793d54839cf9`
@@ -1739,7 +1855,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline local scanning.
 
 ### 14. Safety Policy & Bounded Probing
@@ -1752,10 +1868,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance per scan job.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -1783,16 +1899,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native secret scanner.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (No secrets).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Secrets found).
-- `Non-zero`: `FATAL_ERROR` (Repository corruption or path error).
+- **Upstream Exit Codes:** `0` (No secrets found), `1` (Secrets detected), `Non-zero` (Repository error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Exit `1` -> `COMPLETED_WITH_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native secret scanner.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Shannon entropy & regex secret scanner.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native scanner detects high-entropy strings and common API keys in current files, but does not traverse deep Git commit history.
 
 ### 28. Cancellation Protocol
@@ -1837,6 +1955,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestGitleaksAdapter` passing.
+- **Capability Taxonomy:**
+  - Filesystem Secret Detection: `SUPPORTED`
+  - Git Commit History Traversal: `SUPPORTED`
+  - Secret Live Verification: `NOT_SUPPORTED` (Delegated to TruffleHog)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/gitleaks_adapter.py`).
 
 ---
@@ -1871,10 +1993,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` TruffleHog `v3.63.0` (Exact Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "trufflehog v3.63.0"`.
 - **Version Detection:** `trufflehog --version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - Verified in `PINNED_TOOL_MANIFEST`.
@@ -1888,7 +2011,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Outbound HTTPS access only if live secret verification is explicitly enabled in tenant policy.
 
 ### 14. Safety Policy & Bounded Probing
@@ -1901,10 +2024,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -1931,15 +2054,18 @@ Stderr: Diagnostic logs
 - **Malformed Lines:** Skipped safely.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Execution error).
+- **Upstream Exit Codes:** `0` (No secrets), `Non-zero` (Secrets found or execution error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Findings parsed -> `COMPLETED_WITH_FINDINGS`
+  - Unhandled error -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and relies on Gitleaks unverified findings.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native regex scanner & Gitleaks.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native scanner detects patterns but cannot verify if credentials are live and authenticated against external cloud APIs.
 
 ### 28. Cancellation Protocol
@@ -1984,6 +2110,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestTruffleHogAdapter` passing.
+- **Capability Taxonomy:**
+  - Filesystem Secret Detection: `SUPPORTED`
+  - Live Secret Verification: `SUPPORTED`
+  - S3 / Git Remote Crawling: `DEFERRED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trufflehog_adapter.py`).
 
 ---
@@ -2018,10 +2148,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Retire.js `4.4.3` (Exact Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "4.4.3"`.
 - **Version Detection:** `retire --version` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone CLI / npm package (`system_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via npm / system installer).
 
 ### 9. Supply-Chain Integrity & Provenance
 - Verified in `PINNED_TOOL_MANIFEST`.
@@ -2035,7 +2166,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Offline scanning using bundled vulnerability database.
 
 ### 14. Safety Policy & Bounded Probing
@@ -2048,10 +2179,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2078,16 +2209,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native SCA.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (No vulnerabilities).
-- `1` / `13`: `SUCCESS_FINDINGS_PRESENT` (Vulnerabilities found).
-- `Non-zero`: `FATAL_ERROR` (Parse error).
+- **Upstream Exit Codes:** `0` (No issues), `1` / `13` (Issues found), `Non-zero` (Parse error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Findings parsed -> `COMPLETED_WITH_FINDINGS`
+  - Fatal error -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native dependency auditor.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native auditor checks `package.json` lockfiles; cannot fingerprint raw unversioned vendor JS files embedded in HTML/JS assets.
 
 ### 28. Cancellation Protocol
@@ -2133,6 +2266,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestRetireJSAdapter` passing.
+- **Capability Taxonomy:**
+  - JavaScript File Scanning: `SUPPORTED`
+  - Node Modules Scanning: `SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/retirejs_adapter.py`).
 
 ---
@@ -2167,10 +2303,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Trivy `v0.50.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "0.50.0"`.
 - **Version Detection:** `trivy --version` -> Regex `Version:\s*([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `7ef999da89cc79aa9369d714cb9fdf3c32ef093a1f8d48e35a111a43a059f3d9`
@@ -2185,7 +2322,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Offline mode supported (`--offline-scan`) using pre-downloaded vulnerability DB.
 
 ### 14. Safety Policy & Bounded Probing
@@ -2198,10 +2335,10 @@ Stderr: Diagnostic logs
 - Multi-core CPU parallel analysis.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 1024 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 1024 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2228,15 +2365,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native lockfile auditor.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Database unreadable or target missing).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Database unreadable or target missing).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with vulnerabilities found -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with no vulnerabilities -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native lockfile auditor.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native lockfile dependency auditor.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native auditor parses Python and Node lockfiles against a local cache; lacks Trivy's comprehensive multi-ecosystem vulnerability database and OS package scanning.
 
 ### 28. Cancellation Protocol
@@ -2283,6 +2423,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestTrivyAdapter` passing.
+- **Capability Taxonomy:**
+  - Filesystem Lockfile SCA: `SUPPORTED`
+  - Container Image Vulnerability: `SUPPORTED`
+  - Kubernetes Live Cluster Scan: `DEFERRED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trivy_adapter.py`).
 
 ---
@@ -2317,10 +2461,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Grype `v0.74.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "0.74.0"`.
 - **Version Detection:** `grype version` -> Regex `version:\s*([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `82ff190a6e60b135bb0a3952ba5c3d4f1ea38ba662884a20b666a0eb0bb9b7c8`
@@ -2335,7 +2480,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Offline mode supported.
 
 ### 14. Safety Policy & Bounded Probing
@@ -2348,10 +2493,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2378,15 +2523,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native SCA.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Parse error or invalid SBOM input).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Parse error or invalid SBOM input).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with vulnerability matches -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with clean SBOM -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and relies on Trivy and native SCA.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native auditor lacks Anchore's proprietary vulnerability matching algorithms and vulnerability database.
 
 ### 28. Cancellation Protocol
@@ -2433,6 +2581,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestGrypeAdapter` passing.
+- **Capability Taxonomy:**
+  - SBOM Vulnerability Matching: `SUPPORTED`
+  - Container Image Vulnerability: `SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/grype_adapter.py`).
 
 ---
@@ -2467,10 +2618,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Syft `v1.0.1` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "1.0.1"`.
 - **Version Detection:** `syft version` -> Regex `version:\s*([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `426be0eb2a297e6be9ea83664746f34586db30188aa1d3824ee18c15668db8c0`
@@ -2485,7 +2637,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline SBOM generation.
 
 ### 14. Safety Policy & Bounded Probing
@@ -2498,10 +2650,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2528,15 +2680,17 @@ Stderr: Diagnostic logs
 - **Malformed Output:** Emits `PARSER_ERROR` and falls back to native CycloneDX exporter.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (SBOM generated).
-- `Non-zero`: `FATAL_ERROR` (Cataloging error).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Cataloging error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS` (Artifact generated)
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native CycloneDX exporter.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python CycloneDX exporter.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native exporter catalogs top-level lockfile entries; lacks Syft's deep binary scanning and license extraction.
 
 ### 28. Cancellation Protocol
@@ -2580,6 +2734,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSyftAdapter` passing.
+- **Capability Taxonomy:**
+  - CycloneDX 1.5 JSON Generation: `SUPPORTED`
+  - SPDX 2.3 JSON Generation: `SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/syft_adapter.py`).
 
 ---
@@ -2614,10 +2771,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` OSV-Scanner `v1.7.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "v1.7.0"`.
 - **Version Detection:** `osv-scanner --version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `9812e987c1cb50faeeeb14c330f878f0d8a7c2b6ca8858e999905f15d9715bf8`
@@ -2632,7 +2790,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Outbound HTTPS access to `api.osv.dev` (or local offline lockfile matching).
 
 ### 14. Safety Policy & Bounded Probing
@@ -2645,10 +2803,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2675,16 +2833,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native SCA.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (No vulnerabilities).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Vulnerabilities found).
-- `Non-zero`: `FATAL_ERROR` (Parse failure).
+- **Upstream Exit Codes:** `0` (No vulnerabilities), `1` (Vulnerabilities found), `Non-zero` (Parse failure).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Exit `1` -> `COMPLETED_WITH_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native dependency auditor.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native auditor checks basic CVE listings; lacks Google OSV's precise commit-level hash matching.
 
 ### 28. Cancellation Protocol
@@ -2731,6 +2891,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestOSVScannerAdapter` passing.
+- **Capability Taxonomy:**
+  - Lockfile OSV Intelligence: `SUPPORTED`
+  - Git Commit Hash Vulnerability Matching: `SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/osv_scanner_adapter.py`).
 
 ---
@@ -2765,10 +2928,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Checkov `3.2.0` (Exact PyPI Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "3.2.0"`.
 - **Version Detection:** `checkov --version` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Installed via pip (`pip_installer.py`) in isolated venv.
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py` in isolated venv).
 
 ### 9. Supply-Chain Integrity & Provenance
 - PyPI package verification in `requirements.txt` with PEP 740 attestations.
@@ -2782,7 +2946,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline static inspection.
 
 ### 14. Safety Policy & Bounded Probing
@@ -2795,10 +2959,10 @@ Stderr: Diagnostic logs
 - Multi-core CPU parallel parsing.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 1024 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 1024 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2825,16 +2989,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native IaC linters.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (All policies passed).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Failed policies detected).
-- `Non-zero`: `FATAL_ERROR` (Parse error).
+- **Upstream Exit Codes:** `0` (All policies passed), `1` (Failed policies detected), `Non-zero` (Parse error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Exit `1` -> `COMPLETED_WITH_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native IaC engine.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Dockerfile, Kubernetes, and Terraform AST linters.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native linters cover root Docker containers and public S3 buckets; lack Checkov's 1,000+ multi-cloud CIS benchmark policy packs.
 
 ### 28. Cancellation Protocol
@@ -2881,6 +3047,10 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestCheckovAdapter` passing.
+- **Capability Taxonomy:**
+  - Terraform / CloudFormation AST: `SUPPORTED`
+  - Kubernetes / Dockerfile Linter: `SUPPORTED`
+  - Framework Plan Analysis: `DEFERRED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/checkov_adapter.py`).
 
 ---
@@ -2915,10 +3085,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Prowler `4.1.0` (Exact PyPI Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "4.1.0"`.
 - **Version Detection:** `prowler -v` -> Regex `([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Installed via pip (`pip_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - PyPI package verification in `requirements.txt`.
@@ -2932,7 +3103,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Outbound HTTPS access to cloud provider management APIs (AWS, Azure, GCP).
 
 ### 14. Safety Policy & Bounded Probing
@@ -2945,10 +3116,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 120.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 120.0s.
 
 ### 18. Resource Limits
-- Max memory: 1024 MB. Max stdout: 10 MB.
+- `[DESIGN_DECISION]` Max memory: 1024 MB. Max stdout: 10 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -2975,15 +3146,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native posture checks.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Authentication failure or API error).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Auth error or API failure).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with compliance findings -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with 100% compliance -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native posture checks.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Terraform and Cloud posture checks.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native engine audits static manifests; lacks live multi-cloud API queries across live AWS/Azure accounts.
 
 ### 28. Cancellation Protocol
@@ -3030,6 +3204,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestProwlerAdapter` passing.
+- **Capability Taxonomy:**
+  - AWS CIS Benchmarks: `SUPPORTED`
+  - Azure / GCP CIS Benchmarks: `LIMITED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/prowler_adapter.py`).
 
 ---
@@ -3064,10 +3241,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Kube-Bench `v0.7.0` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "v0.7.0"`.
 - **Version Detection:** `kube-bench version` -> Regex `v?([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - Verified in `PINNED_TOOL_MANIFEST`.
@@ -3081,7 +3259,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - Offline in manifest mode; local cluster API access in in-cluster mode.
 
 ### 14. Safety Policy & Bounded Probing
@@ -3094,10 +3272,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 256 MB.
+- `[DESIGN_DECISION]` Max memory: 256 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -3124,15 +3302,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native manifest auditor.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
-- `Non-zero`: `FATAL_ERROR` (Missing cluster config or execution failure).
+- **Upstream Exit Codes:** `0` (Success), `Non-zero` (Error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` with CIS failures -> `COMPLETED_WITH_FINDINGS`
+  - Exit `0` with 100% pass -> `COMPLETED_NO_FINDINGS`
+  - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native K8s manifest auditor.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Kubernetes YAML manifest auditor.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native auditor analyzes static Pod/Deployment manifests; lacks CIS benchmark checks for master node services (apiserver, etcd, kubelet).
 
 ### 28. Cancellation Protocol
@@ -3178,6 +3359,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestKubeBenchAdapter` passing.
+- **Capability Taxonomy:**
+  - Manifest Mode CIS Audit: `SUPPORTED`
+  - In-Cluster Master/Node Audit: `LIMITED` (Requires node filesystem access)
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/kubebench_adapter.py`).
 
 ---
@@ -3212,10 +3396,11 @@ Stderr: Diagnostic logs
 
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Dockle `v0.4.14` (Exact GitHub Release).
+- **Version Enforcement:** Runtime probe checks `actual_version == "0.4.14"`.
 - **Version Detection:** `dockle -v` -> Regex `version:\s*([0-9\.]+)`
 
-### 8. Artifact / Installation Method
-- Standalone GitHub release binary (`github_release_installer.py`).
+### 8. Artifact / Installation Method & Supply-Chain Trust Mode
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - `windows_amd64`: `fca8987ec89da3b764b8bb26c3674681467ea309db8935c1ba9c0a373b9e4a8b`
@@ -3230,7 +3415,7 @@ Stderr: Diagnostic logs
 ### 12. Workspace Requirements & Confinement
 - Server-derived authorized workspace jail.
 
-### 13. Network Requirements & Destination Binding
+### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline local image inspection.
 
 ### 14. Safety Policy & Bounded Probing
@@ -3243,10 +3428,10 @@ Stderr: Diagnostic logs
 - Single subprocess instance.
 
 ### 17. Timeout Policy
-- Startup: 5.0s. Execution: 60.0s.
+- `[DESIGN_DECISION]` Startup: 5.0s. Execution: 60.0s.
 
 ### 18. Resource Limits
-- Max memory: 512 MB.
+- `[DESIGN_DECISION]` Max memory: 512 MB.
 
 ### 19. Invocation Contract
 ```text
@@ -3273,16 +3458,18 @@ Stderr: Diagnostic logs
 - **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native Dockerfile linter.
 
 ### 25. Exit Code Semantics
-- `0`: `SUCCESS_NO_FINDINGS` (No fatal issues).
-- `1`: `SUCCESS_FINDINGS_PRESENT` (Issues found).
-- `Non-zero`: `FATAL_ERROR` (Daemon unreachable or image missing).
+- **Upstream Exit Codes:** `0` (No fatal issues), `1` (Issues found), `Non-zero` (Daemon/image error).
+- **CyberAssess Normalized Execution States:**
+  - Exit `0` -> `COMPLETED_NO_FINDINGS`
+  - Findings parsed -> `COMPLETED_WITH_FINDINGS`
+  - Fatal error -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Dockerfile linter.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Dockerfile security linter.
-- **Coverage Level:** Partial Baseline Coverage.
+- **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
 - **Coverage Loss:** Native linter inspects `Dockerfile` syntax; cannot inspect compiled multi-layer binary image tarballs.
 
 ### 28. Cancellation Protocol
@@ -3329,6 +3516,9 @@ Stderr: Diagnostic logs
 
 ### 41. Required Tests & Verification Status
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestDockleAdapter` passing.
+- **Capability Taxonomy:**
+  - CIS Docker Image Hardening: `SUPPORTED`
+  - Dockerfile Static Linting: `SUPPORTED`
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/dockle_adapter.py`).
 
 ---
@@ -3337,38 +3527,38 @@ Stderr: Diagnostic logs
 
 ## 1. Tool-to-Contract Traceability Matrix
 
-| Tool ID | Display Name | Security Class | Role | Primary Check IDs | Test Suite Reference | Upstream Project |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
-| `TOOL-SSLYZE` | SSLyze | `ACTIVE_READ_ONLY` | `PRIMARY` | `NET-TLS-001/2/3` | `tests/test_adapters.py::TestSslyzeAdapter` | Nabla C0d3 |
-| `TOOL-SUBFINDER` | Subfinder | `PASSIVE` | `PRIMARY` | `NET-OSINT-001` | `tests/test_adapters.py::TestSubfinderAdapter` | ProjectDiscovery |
-| `TOOL-HTTPX` | httpx | `ACTIVE_READ_ONLY` | `VALIDATION` | `NET-HTTP-001` | `tests/test_adapters.py::TestHttpxAdapter` | ProjectDiscovery |
-| `TOOL-NUCLEI` | Nuclei | `ACTIVE_INTRUSIVE` | `PRIMARY` | `DAST-INJ-001`, `DAST-EXP-001` | `tests/test_adapters.py::TestNucleiAdapter` | ProjectDiscovery |
-| `TOOL-FFUF` | FFuF | `ACTIVE_INTRUSIVE` | `SPECIALIZED` | `DAST-EXP-001`, `DAST-PARAM-001` | `tests/test_adapters.py::TestFfufAdapter` | FFuF |
-| `TOOL-KATANA` | Katana | `ACTIVE_READ_ONLY` | `PRIMARY` | `DAST-CRAWL-001` | `tests/test_adapters.py::TestKatanaAdapter` | ProjectDiscovery |
-| `TOOL-SCHEMATHESIS` | Schemathesis | `STATE_CHANGING` | `SPECIALIZED` | `DAST-API-003` | `tests/test_adapters.py::TestSchemathesisAdapter` | Schemathesis |
-| `TOOL-SEMGREP` | Semgrep | `CODE_ANALYSIS` | `PRIMARY` | `SAST-INJ-001`, `SAST-CMD-001` | `tests/test_adapters.py::TestSemgrepAdapter` | Semgrep Inc. |
-| `TOOL-BANDIT` | Bandit | `CODE_ANALYSIS` | `SPECIALIZED` | `SAST-CMD-001`, `SAST-CRYP-001` | `tests/test_adapters.py::TestBanditAdapter` | PyCQA |
-| `TOOL-GITLEAKS` | Gitleaks | `CREDENTIAL_AWARE` | `PRIMARY` | `SAST-SEC-001` | `tests/test_adapters.py::TestGitleaksAdapter` | Gitleaks |
-| `TOOL-TRUFFLEHOG` | TruffleHog | `CREDENTIAL_AWARE` | `VALIDATION` | `SAST-SEC-001` | `tests/test_adapters.py::TestTruffleHogAdapter` | Truffle Security |
-| `TOOL-RETIREJS` | Retire.js | `SUPPLY_CHAIN` | `SPECIALIZED` | `SAST-DEP-001` | `tests/test_adapters.py::TestRetireJSAdapter` | Retire.js |
-| `TOOL-TRIVY` | Trivy | `SUPPLY_CHAIN` | `PRIMARY` | `SAST-DEP-001`, `IAC-DOCKER-001` | `tests/test_adapters.py::TestTrivyAdapter` | Aqua Security |
-| `TOOL-GRYPE` | Grype | `SUPPLY_CHAIN` | `VALIDATION` | `SAST-DEP-001` | `tests/test_adapters.py::TestGrypeAdapter` | Anchore |
-| `TOOL-SYFT` | Syft | `SUPPLY_CHAIN` | `PRIMARY` | `SAST-SBOM-001` | `tests/test_adapters.py::TestSyftAdapter` | Anchore |
-| `TOOL-OSV-SCANNER` | OSV-Scanner | `SUPPLY_CHAIN` | `SPECIALIZED` | `SAST-DEP-001` | `tests/test_adapters.py::TestOSVScannerAdapter` | Google |
-| `TOOL-CHECKOV` | Checkov | `CODE_ANALYSIS` | `PRIMARY` | `IAC-TF-001/2`, `IAC-DOCKER-001` | `tests/test_adapters.py::TestCheckovAdapter` | Prisma Cloud |
-| `TOOL-PROWLER` | Prowler | `CREDENTIAL_AWARE` | `PRIMARY` | `IAC-CLOUD-001` | `tests/test_adapters.py::TestProwlerAdapter` | Prowler |
-| `TOOL-KUBE-BENCH` | Kube-Bench | `PRIVILEGED` | `SPECIALIZED` | `IAC-K8S-002` | `tests/test_adapters.py::TestKubeBenchAdapter` | Aqua Security |
-| `TOOL-DOCKLE` | Dockle | `SUPPLY_CHAIN` | `SPECIALIZED` | `IAC-DOCKER-001/2` | `tests/test_adapters.py::TestDockleAdapter` | GoodWithTech |
+| Tool ID | Display Name | Security Class | Trust Mode | Role | Primary Check IDs | Test Suite Reference | Upstream Project |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
+| `TOOL-SSLYZE` | SSLyze | `ACTIVE_READ_ONLY` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `NET-TLS-001/2/3` | `tests/test_adapters.py::TestSslyzeAdapter` | Nabla C0d3 |
+| `TOOL-SUBFINDER` | Subfinder | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `NET-OSINT-001` | `tests/test_adapters.py::TestSubfinderAdapter` | ProjectDiscovery |
+| `TOOL-HTTPX` | httpx | `ACTIVE_READ_ONLY` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `NET-HTTP-001` | `tests/test_adapters.py::TestHttpxAdapter` | ProjectDiscovery |
+| `TOOL-NUCLEI` | Nuclei | `ACTIVE_INTRUSIVE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `DAST-INJ-001`, `DAST-EXP-001` | `tests/test_adapters.py::TestNucleiAdapter` | ProjectDiscovery |
+| `TOOL-FFUF` | FFuF | `ACTIVE_INTRUSIVE` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `DAST-EXP-001`, `DAST-PARAM-001` | `tests/test_adapters.py::TestFfufAdapter` | FFuF |
+| `TOOL-KATANA` | Katana | `ACTIVE_READ_ONLY` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `DAST-CRAWL-001` | `tests/test_adapters.py::TestKatanaAdapter` | ProjectDiscovery |
+| `TOOL-SCHEMATHESIS` | Schemathesis | `STATE_CHANGING` | `PACKAGE_MANAGER_MODE` | `SPECIALIZED` | `DAST-API-003` | `tests/test_adapters.py::TestSchemathesisAdapter` | Schemathesis |
+| `TOOL-SEMGREP` | Semgrep | `CODE_ANALYSIS` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `SAST-INJ-001`, `SAST-CMD-001` | `tests/test_adapters.py::TestSemgrepAdapter` | Semgrep Inc. |
+| `TOOL-BANDIT` | Bandit | `CODE_ANALYSIS` | `PACKAGE_MANAGER_MODE` | `SPECIALIZED` | `SAST-CMD-001`, `SAST-CRYP-001` | `tests/test_adapters.py::TestBanditAdapter` | PyCQA |
+| `TOOL-GITLEAKS` | Gitleaks | `CREDENTIAL_AWARE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `SAST-SEC-001` | `tests/test_adapters.py::TestGitleaksAdapter` | Gitleaks |
+| `TOOL-TRUFFLEHOG` | TruffleHog | `CREDENTIAL_AWARE` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `SAST-SEC-001` | `tests/test_adapters.py::TestTruffleHogAdapter` | Truffle Security |
+| `TOOL-RETIREJS` | Retire.js | `SUPPLY_CHAIN` | `PACKAGE_MANAGER_MODE` | `SPECIALIZED` | `SAST-DEP-001` | `tests/test_adapters.py::TestRetireJSAdapter` | Retire.js |
+| `TOOL-TRIVY` | Trivy | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `SAST-DEP-001`, `IAC-DOCKER-001` | `tests/test_adapters.py::TestTrivyAdapter` | Aqua Security |
+| `TOOL-GRYPE` | Grype | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `SAST-DEP-001` | `tests/test_adapters.py::TestGrypeAdapter` | Anchore |
+| `TOOL-SYFT` | Syft | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `SAST-SBOM-001` | `tests/test_adapters.py::TestSyftAdapter` | Anchore |
+| `TOOL-OSV-SCANNER` | OSV-Scanner | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `SAST-DEP-001` | `tests/test_adapters.py::TestOSVScannerAdapter` | Google |
+| `TOOL-CHECKOV` | Checkov | `CODE_ANALYSIS` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `IAC-TF-001/2`, `IAC-DOCKER-001` | `tests/test_adapters.py::TestCheckovAdapter` | Prisma Cloud |
+| `TOOL-PROWLER` | Prowler | `CREDENTIAL_AWARE` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `IAC-CLOUD-001` | `tests/test_adapters.py::TestProwlerAdapter` | Prowler |
+| `TOOL-KUBE-BENCH` | Kube-Bench | `PRIVILEGED` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-K8S-002` | `tests/test_adapters.py::TestKubeBenchAdapter` | Aqua Security |
+| `TOOL-DOCKLE` | Dockle | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-DOCKER-001/2` | `tests/test_adapters.py::TestDockleAdapter` | GoodWithTech |
 
 ---
 
 ## 2. Mandatory Test Coverage Invariant
 
 Every tool adapter MUST have unit and integration test coverage in `tests/test_adapters.py` proving:
-1. Deterministic version extraction from `--version` command.
+1. Deterministic version extraction matching exact approved version string.
 2. Standard output parsing (JSON / XML / Line Stream).
 3. Finding normalization to canonical check IDs, CWE, and NIST controls.
 4. Mandatory multi-stage secret masking.
-5. Explicit `COVERAGE_DEGRADED` telemetry emission upon tool failure or timeout.
+5. Explicit `COVERAGE_DEGRADED` telemetry emission and permanent failure event recording.
 6. Execution of native fallback engines with partial baseline coverage guarantees.
