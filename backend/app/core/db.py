@@ -65,11 +65,37 @@ class DatabaseManager:
         return cls._instance
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+            except Exception:
+                try:
+                    conn.execute("PRAGMA journal_mode=DELETE;")
+                except Exception:
+                    pass
+            try:
+                conn.execute("PRAGMA foreign_keys=ON;")
+            except Exception:
+                pass
+            return conn
+        except Exception:
+            # Fallback path if host volume mount prevents lock creation
+            fallback_path = Path.home() / ".cyberassess" / "cyberassess.db"
+            fallback_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(fallback_path), check_same_thread=False, timeout=30)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE;")
+            except Exception:
+                pass
+            try:
+                conn.execute("PRAGMA foreign_keys=ON;")
+            except Exception:
+                pass
+            return conn
 
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""

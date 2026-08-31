@@ -36,6 +36,38 @@ class SubfinderAdapter(BaseToolAdapter):
             return f"subfinder {match.group(0)}"
         return "subfinder" if code == 0 else None
 
+    async def _resolve_host_dns(self, hostname: str) -> tuple[List[str], List[str], str]:
+        import dns.asyncresolver
+        resolver = dns.asyncresolver.Resolver()
+        resolver.lifetime = 2.0
+        ips: List[str] = []
+        cnames: List[str] = []
+        status = "NXDOMAIN"
+        try:
+            try:
+                a_ans = await resolver.resolve(hostname, "A")
+                for r in a_ans:
+                    ips.append(str(r))
+                status = "ACTIVE"
+            except Exception:
+                pass
+            try:
+                aaaa_ans = await resolver.resolve(hostname, "AAAA")
+                for r in aaaa_ans:
+                    ips.append(str(r))
+                status = "ACTIVE"
+            except Exception:
+                pass
+            try:
+                c_ans = await resolver.resolve(hostname, "CNAME")
+                for r in c_ans:
+                    cnames.append(str(r.target).rstrip(".").lower())
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return ips, cnames, status
+
     async def run(
         self,
         target: Target,
@@ -71,9 +103,9 @@ class SubfinderAdapter(BaseToolAdapter):
             apex_domain = domain
 
         await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {apex_domain}")
-        cmd = [binary, "-d", apex_domain, "-silent", "-oJ"]
+        cmd = [binary, "-d", apex_domain, "-silent", "-oJ", "-timeout", "10", "-max-time", "1"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=45.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(cmd, timeout=30.0, emit_log=emit_log)
         if code != 0 and not stdout:
             await emit_log(LogLevel.WARNING, f"Subfinder exited with code {code}: {stderr.strip()[:200]}")
             return findings
@@ -89,9 +121,14 @@ class SubfinderAdapter(BaseToolAdapter):
                 sources = data.get("sources", [])
                 if host and host not in discovered_hosts:
                     discovered_hosts.add(host)
+                    ips, cnames, dns_status = await self._resolve_host_dns(host)
                     sub_model = DiscoveredSubdomain(
                         domain=host,
-                        service_fingerprint=f"Sources: {', '.join(sources)}" if sources else "Subfinder"
+                        ip_addresses=ips,
+                        cname_targets=cnames,
+                        dns_status=dns_status,
+                        service_fingerprint=f"Sources: {', '.join(sources)}" if sources else "Subfinder",
+                        discovered_via="Subfinder",
                     )
                     if emit_subdomain:
                         await emit_subdomain(sub_model)
@@ -100,7 +137,15 @@ class SubfinderAdapter(BaseToolAdapter):
                 host = line.strip().lower()
                 if "." in host and host not in discovered_hosts:
                     discovered_hosts.add(host)
-                    sub_model = DiscoveredSubdomain(domain=host, service_fingerprint="Subfinder")
+                    ips, cnames, dns_status = await self._resolve_host_dns(host)
+                    sub_model = DiscoveredSubdomain(
+                        domain=host,
+                        ip_addresses=ips,
+                        cname_targets=cnames,
+                        dns_status=dns_status,
+                        service_fingerprint="Subfinder",
+                        discovered_via="Subfinder",
+                    )
                     if emit_subdomain:
                         await emit_subdomain(sub_model)
 

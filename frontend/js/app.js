@@ -177,6 +177,7 @@ class ScanStreamManager {
     this.telemetryLogSearch = document.getElementById("telemetry-log-search");
     this.telemetryFilterTool = document.getElementById("telemetry-filter-tool");
     this.telemetryFilterLevel = document.getElementById("telemetry-filter-level");
+    this.telemetryEndpointsContainer = document.getElementById("telemetry-endpoints-container");
     this.telemetryEndpointsTbody = document.getElementById("telemetry-endpoints-tbody");
     this.telemetryMatrixTbody = document.getElementById("telemetry-matrix-tbody");
     this.telemetrySubdomainsTbody = document.getElementById("telemetry-subdomains-tbody");
@@ -184,6 +185,8 @@ class ScanStreamManager {
     this.telemetryToolsCount = document.getElementById("telemetry-tools-count");
     this.telemetryScanMeta = document.getElementById("telemetry-scan-meta");
     this.telemetryEndpointSearch = document.getElementById("telemetry-endpoint-search");
+    this.telemetryEndpointFilterStatus = document.getElementById("telemetry-endpoint-filter-status");
+    this.telemetryEndpointStats = document.getElementById("telemetry-endpoint-stats");
     this.btnCopyTelemetryLogs = document.getElementById("btn-copy-telemetry-logs");
     this.btnExportTelemetryJson = document.getElementById("btn-export-telemetry-json");
     this.currentTelemetryData = null;
@@ -420,6 +423,9 @@ class ScanStreamManager {
     }
     if (this.telemetryEndpointSearch) {
       this.telemetryEndpointSearch.addEventListener("input", () => this.renderTelemetryEndpoints());
+    }
+    if (this.telemetryEndpointFilterStatus) {
+      this.telemetryEndpointFilterStatus.addEventListener("change", () => this.renderTelemetryEndpoints());
     }
     if (this.btnCopyTelemetryLogs) {
       this.btnCopyTelemetryLogs.addEventListener("click", () => this.copyTelemetryLogs());
@@ -1971,51 +1977,197 @@ class ScanStreamManager {
   }
 
   renderTelemetryEndpoints() {
-    if (!this.telemetryEndpointsTbody || !this.currentTelemetryData) return;
+    const container = document.getElementById("telemetry-endpoints-container") || this.telemetryEndpointsTbody;
+    if (!container || !this.currentTelemetryData) return;
 
     const searchTerm = this.telemetryEndpointSearch ? this.telemetryEndpointSearch.value.trim().toLowerCase() : "";
+    const filterState = this.telemetryEndpointFilterStatus ? this.telemetryEndpointFilterStatus.value : "ALL";
     let endpoints = this.currentTelemetryData.discovered_endpoints || [];
 
+    // Filter by search
     if (searchTerm) {
       endpoints = endpoints.filter((ep) => 
         (ep.url && ep.url.toLowerCase().includes(searchTerm)) ||
         (ep.method && ep.method.toLowerCase().includes(searchTerm)) ||
         (ep.status_code && String(ep.status_code).includes(searchTerm)) ||
-        (ep.content_type && ep.content_type.toLowerCase().includes(searchTerm))
+        (ep.content_type && ep.content_type.toLowerCase().includes(searchTerm)) ||
+        (ep.tools_executed && ep.tools_executed.some(t => t.toLowerCase().includes(searchTerm))) ||
+        (ep.tests_performed && ep.tests_performed.some(tp => tp.test_name.toLowerCase().includes(searchTerm) || tp.details.toLowerCase().includes(searchTerm)))
       );
     }
 
+    // Filter by status dropdown
+    if (filterState === "VULN") {
+      endpoints = endpoints.filter((ep) => (ep.finding_ids && ep.finding_ids.length > 0) || (ep.tests_performed && ep.tests_performed.some(t => t.status === "VULNERABLE")));
+    } else if (filterState === "SAFE") {
+      endpoints = endpoints.filter((ep) => (!ep.finding_ids || ep.finding_ids.length === 0) && (!ep.tests_performed || !ep.tests_performed.some(t => t.status === "VULNERABLE")));
+    } else if (filterState === "FORMS") {
+      endpoints = endpoints.filter((ep) => ep.has_forms || ep.discovered_forms > 0);
+    } else if (filterState === "AUTH") {
+      endpoints = endpoints.filter((ep) => ep.is_authenticated);
+    }
+
+    if (this.telemetryEndpointStats) {
+      this.telemetryEndpointStats.innerText = `Showing ${endpoints.length} of ${(this.currentTelemetryData.discovered_endpoints || []).length} links`;
+    }
+
     if (endpoints.length === 0) {
-      this.telemetryEndpointsTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 25px;">No crawled links or attack surface endpoints recorded for this scan.</td></tr>`;
+      container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 35px; background: rgba(255,255,255,0.01); border-radius: 6px; border: 1px dashed var(--border-subtle);">No tested links match the selected filter criteria.</div>`;
       return;
     }
 
-    this.telemetryEndpointsTbody.innerHTML = endpoints.map((ep) => {
+    // Correlate with all findings for rich cards
+    const allFindingsMap = new Map();
+    (this.allFindings || []).forEach(f => allFindingsMap.set(f.id, f));
+
+    container.innerHTML = endpoints.map((ep, idx) => {
       const sc = ep.status_code || 200;
       let scClass = "status-2xx";
       if (sc >= 300 && sc < 400) scClass = "status-3xx";
       else if (sc >= 400 && sc < 500) scClass = "status-4xx";
       else if (sc >= 500) scClass = "status-5xx";
 
-      const method = ep.method || "GET";
-      const formsCount = ep.discovered_forms !== undefined ? ep.discovered_forms : (ep.has_forms ? "Yes" : 0);
-      const isAuth = ep.is_authenticated ? "🔒 Yes" : "No";
+      const method = (ep.method || "GET").toUpperCase();
+      const isAuth = ep.is_authenticated;
+      const tests = ep.tests_performed || [];
+      const tools = ep.tools_executed || ["native_dast", "katana", "parameter_fuzzer"];
+      const vulnTests = tests.filter(t => t.status === "VULNERABLE");
+
+      // Correlate findings
+      const linkedFindings = (ep.finding_ids || []).map(id => allFindingsMap.get(id)).filter(Boolean);
+
+      const statusBadge = linkedFindings.length > 0 || vulnTests.length > 0
+        ? `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; font-weight: 700;">⚠️ ${linkedFindings.length || vulnTests.length} Finding(s)</span>`
+        : `<span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; font-weight: 700;">✅ Clean (All Safe)</span>`;
+
+      // Tools badges
+      const toolChips = tools.map(t => `<span class="badge badge-info" style="font-size: 10px; padding: 2px 6px; text-transform: uppercase;">${this.escapeHtml(t)}</span>`).join(" ");
+
+      // Tests Table Rows
+      const testRows = tests.map(t => {
+        const isVuln = t.status === "VULNERABLE";
+        const tStatusBadge = isVuln
+          ? `<span class="badge badge-danger" style="font-weight: 700;">FAIL / VULNERABLE</span>`
+          : `<span class="badge badge-success" style="font-weight: 700;">PASS / SAFE</span>`;
+        return `
+          <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+            <td style="font-weight: 600; color: #fff;">${this.escapeHtml(t.test_name)}</td>
+            <td><code>${this.escapeHtml(t.category || "Web Security")}</code></td>
+            <td><span class="badge badge-ghost" style="font-size: 11px;">${this.escapeHtml(t.tool)}</span></td>
+            <td>${tStatusBadge}</td>
+            <td style="font-size: 12px; color: var(--text-muted);">${this.escapeHtml(t.details || "-")}</td>
+          </tr>
+        `;
+      }).join("");
+
+      // Findings rows if any
+      const findingsListHtml = linkedFindings.length > 0 ? `
+        <div style="margin-top: 18px; margin-bottom: 16px;">
+          <h5 style="color: #f87171; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+            🚨 Vulnerabilities Detected on this Link (${linkedFindings.length})
+          </h5>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            ${linkedFindings.map(f => `
+              <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.3); border-left: 4px solid var(--color-critical); padding: 10px 14px; border-radius: 4px; font-size: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                  <strong style="color: #fff; font-size: 13px;">${this.escapeHtml(f.title)}</strong>
+                  <div style="display: flex; gap: 6px; align-items: center;">
+                    ${f.cwe_id ? `<span class="badge badge-ghost" style="font-size: 10px;">${this.escapeHtml(f.cwe_id)}</span>` : ''}
+                    <span class="badge badge-danger" style="font-weight: 700;">${this.escapeHtml(f.severity)} (${f.cvss_score || 'CVSS N/A'})</span>
+                  </div>
+                </div>
+                <div style="color: #cbd5e1; font-size: 12px; line-height: 1.5; margin-bottom: 6px;">${this.escapeHtml(f.description || '')}</div>
+                ${f.remediation ? `<div style="color: var(--accent-cyan); font-size: 11px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.1);"><strong>💡 Remediation:</strong> ${this.escapeHtml(f.remediation)}</div>` : ''}
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      ` : "";
+
+      const cardId = `ep-card-${idx}`;
 
       return `
-        <tr>
-          <td><code>${ep.depth || 0}</code></td>
-          <td><span class="badge badge-info">${method}</span></td>
-          <td style="word-break: break-all; max-width: 380px;"><strong>${this.escapeHtml(ep.url)}</strong></td>
-          <td><span class="link-status-badge ${scClass}">${sc}</span></td>
-          <td><code>${this.escapeHtml(ep.content_type || "text/html")}</code></td>
-          <td>${formsCount}</td>
-          <td>${isAuth}</td>
-          <td>
-            <button class="btn btn-xs btn-primary" onclick="window.app.sendLinkToRepeater('${encodeURIComponent(ep.url)}', '${method}')">⚡ Repeater</button>
-          </td>
-        </tr>
+        <div class="endpoint-dossier-card" style="background: #0d1520; border: 1px solid var(--border-subtle); border-radius: 6px; overflow: visible; transition: border-color 0.2s; margin-bottom: 12px;">
+          <!-- Card Header (Click to Expand) -->
+          <div style="padding: 12px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; cursor: pointer; user-select: none;" onclick="window.app.toggleEndpointDossier('${cardId}')">
+            <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 300px;">
+              <span id="${cardId}-icon" style="font-size: 12px; color: var(--accent-cyan); width: 14px;">▶</span>
+              <span class="badge ${method === 'POST' ? 'badge-warning' : (method === 'DELETE' ? 'badge-danger' : 'badge-info')}" style="font-weight: 700; font-size: 11px;">${method}</span>
+              <span style="font-family: monospace; font-size: 13px; font-weight: 600; color: #fff; word-break: break-all;">${this.escapeHtml(ep.url)}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="link-status-badge ${scClass}">${sc}</span>
+              ${isAuth ? `<span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid #3b82f6;">🔒 Auth</span>` : `<span class="badge badge-ghost" style="color: var(--text-muted);">🔓 Public</span>`}
+              ${ep.has_forms || ep.discovered_forms > 0 ? `<span class="badge badge-warning" style="font-size: 11px;">📝 ${ep.discovered_forms || 1} Form(s)</span>` : ''}
+              <span class="badge badge-ghost" style="font-size: 11px;">🧪 ${tests.length} Tests</span>
+              ${statusBadge}
+            </div>
+          </div>
+
+          <!-- Card Body (Expandable Dossier) -->
+          <div id="${cardId}-body" style="display: none; padding: 16px 18px; background: rgba(0,0,0,0.3); border-top: 1px solid var(--border-subtle);">
+            
+            <!-- Tools Executed Section -->
+            <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">🛠️ Tools Run on this Link:</span>
+              <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                ${toolChips}
+              </div>
+            </div>
+
+            <!-- Security Tests Evaluated Section -->
+            <div style="margin-bottom: 14px;">
+              <h5 style="color: var(--accent-cyan); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">🧪 Security Checks & Vulnerability Tests Evaluated (${tests.length})</h5>
+              <div class="history-table-container" style="background: #080d14; border-radius: 4px; max-height: none; overflow-x: auto;">
+                <table class="data-table monospace-table" style="font-size: 12px;">
+                  <thead>
+                    <tr>
+                      <th style="width: 220px;">Security Check / Probe</th>
+                      <th style="width: 140px;">Category</th>
+                      <th style="width: 120px;">Tool / Source</th>
+                      <th style="width: 150px;">Evaluation Outcome</th>
+                      <th>Observed Findings & Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${testRows}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Correlated Findings Section -->
+            ${findingsListHtml}
+
+            <!-- Action Bar -->
+            <div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;">
+              <div style="font-size: 11px; color: var(--text-muted);">
+                Content-Type: <code>${this.escapeHtml(ep.content_type || 'text/html')}</code> | Crawl Depth: <code>${ep.depth || 0}</code>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn btn-xs btn-outline" onclick="navigator.clipboard.writeText('${this.escapeHtml(ep.url)}')">📋 Copy URL</button>
+                <button class="btn btn-xs btn-primary" onclick="window.app.sendLinkToRepeater('${encodeURIComponent(ep.url)}', '${method}')">⚡ Send to HTTP Repeater</button>
+              </div>
+            </div>
+
+          </div>
+        </div>
       `;
     }).join("");
+  }
+
+  toggleEndpointDossier(cardId) {
+    const body = document.getElementById(`${cardId}-body`);
+    const icon = document.getElementById(`${cardId}-icon`);
+    if (!body) return;
+    const isHidden = body.style.display === "none";
+    body.style.display = isHidden ? "block" : "none";
+    if (icon) icon.innerText = isHidden ? "▼" : "▶";
+    if (isHidden) {
+      setTimeout(() => {
+        body.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 50);
+    }
   }
 
   renderTelemetryMatrix() {
@@ -2097,18 +2249,27 @@ class ScanStreamManager {
     }
 
     this.telemetrySubdomainsTbody.innerHTML = subdomains.map((sub) => {
-      const ips = (sub.ip_addresses || []).join(", ") || "None";
-      const cnames = (sub.cname_targets || []).join(", ") || "None";
-      const takeover = sub.is_takeover_vulnerable ? `<span class="badge badge-danger">⚠️ Vulnerable</span>` : `<span class="badge badge-success">Safe</span>`;
+      const ips = (sub.ip_addresses && sub.ip_addresses.length > 0)
+        ? sub.ip_addresses.map(ip => `<span class="badge badge-info" style="font-family: monospace; font-size: 11px; margin-right: 4px;">${this.escapeHtml(ip)}</span>`).join("")
+        : `<span class="badge badge-ghost" style="color: var(--text-muted); font-size: 11px;">Inactive / Unresolved</span>`;
+
+      const cnames = (sub.cname_targets && sub.cname_targets.length > 0)
+        ? sub.cname_targets.map(c => `<code>${this.escapeHtml(c)}</code>`).join(", ")
+        : `<span style="color: var(--text-muted);">-</span>`;
+
+      const takeover = sub.is_takeover_vulnerable 
+        ? `<span class="badge badge-danger">⚠️ Vulnerable</span>` 
+        : `<span class="badge badge-success">Safe</span>`;
+
       const source = sub.discovered_via || "OSINT / Passive DNS";
 
       return `
         <tr>
-          <td><strong>${this.escapeHtml(sub.domain)}</strong></td>
-          <td><code>${this.escapeHtml(ips)}</code></td>
-          <td><code>${this.escapeHtml(cnames)}</code></td>
+          <td><strong style="color: #fff; font-family: monospace;">${this.escapeHtml(sub.domain)}</strong></td>
+          <td>${ips}</td>
+          <td>${cnames}</td>
           <td>${takeover}</td>
-          <td>${this.escapeHtml(source)}</td>
+          <td><span class="badge badge-ghost" style="font-size: 11px;">${this.escapeHtml(source)}</span></td>
         </tr>
       `;
     }).join("");

@@ -22,6 +22,8 @@ from app.core.models import (
     DiscoveredEndpoint,
     UserProfile,
     UserRole,
+    Finding,
+    Evidence,
     calculate_fingerprint,
 )
 from app.core.auth import create_access_token
@@ -328,5 +330,82 @@ async def test_asset_creation_all_supported_types(auth_headers):
             assert data["name"] == name
             assert data["type"] == a_type
             assert data["target_value"] == target_val
+
+
+@pytest.mark.asyncio
+async def test_per_link_assessment_dossier_structure(auth_headers):
+    """
+    Verifies that the /telemetry endpoint enriches discovered endpoints with:
+    1. Executed tools per link.
+    2. Performed security test records (SQLi, XSS, Headers, CORS, CSRF).
+    3. Finding ID correlations for that specific URL.
+    """
+    target = Target(name="Dossier App", type=TargetType.URL, value="https://dossier-test.local")
+    job = ScanJob(
+        target=target,
+        profile=ScanProfile.FULL_STACK,
+        status=ScanStatus.COMPLETED,
+        progress_percent=100,
+        discovered_endpoints=[
+            DiscoveredEndpoint(
+                url="https://dossier-test.local/admin/settings",
+                method="GET",
+                depth=1,
+                status_code=200,
+                content_type="text/html",
+                is_authenticated=True,
+                has_forms=True,
+                discovered_forms=2,
+            )
+        ],
+        findings=[
+            Finding(
+                scan_id="scan-dossier-1",
+                engine="web_dast",
+                source_tool="native_dast",
+                check_id="DAST-HDR-001",
+                category="Configuration",
+                title="Missing Content Security Policy (CSP)",
+                severity=Severity.MEDIUM,
+                cvss_score=5.3,
+                description="No CSP header found",
+                impact="XSS vulnerability",
+                remediation="Configure CSP header",
+                evidence=Evidence(location="https://dossier-test.local/admin/settings", observed_value="No CSP", expected_value="CSP present")
+            )
+        ]
+    )
+    save_scan(job)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.get(f"/api/scans/{job.id}/telemetry", headers=auth_headers)
+        assert res.status_code == 200
+        data = res.json()
+        endpoints = data["discovered_endpoints"]
+        assert len(endpoints) == 1
+        ep = endpoints[0]
+        assert ep["url"] == "https://dossier-test.local/admin/settings"
+        assert len(ep["finding_ids"]) == 1
+        assert len(ep["tools_executed"]) >= 3
+        assert len(ep["tests_performed"]) >= 4
+        # Verify test records contain test name, category, tool, and status
+        test_names = [t["test_name"] for t in ep["tests_performed"]]
+        assert any("Security Headers" in name for name in test_names)
+        assert any("CORS" in name for name in test_names)
+        assert any("Injection" in name for name in test_names)
+
+
+@pytest.mark.asyncio
+async def test_subdomain_dns_ip_resolution():
+    """
+    Verifies that the Subfinder adapter and subdomain_recon resolve DNS A/AAAA records
+    and populate ip_addresses and dns_status.
+    """
+    from app.adapters.subfinder_adapter import SubfinderAdapter
+    adapter = SubfinderAdapter()
+    ips, cnames, status = await adapter._resolve_host_dns("dns.google")
+    assert len(ips) > 0
+    assert status == "ACTIVE"
+
 
 

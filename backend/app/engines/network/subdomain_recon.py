@@ -95,6 +95,13 @@ async def resolve_subdomain_details(
     except Exception:
         pass
 
+    try:
+        aaaa_answers = await resolver.resolve(subdomain, "AAAA")
+        for rdata in aaaa_answers:
+            ip_addresses.append(str(rdata))
+    except Exception:
+        pass
+
     return DiscoveredSubdomain(
         domain=subdomain,
         ip_addresses=ip_addresses,
@@ -102,6 +109,7 @@ async def resolve_subdomain_details(
         is_takeover_vulnerable=is_takeover_vulnerable,
         service_fingerprint=service_fingerprint,
         discovered_via="crt.sh",
+        dns_status="ACTIVE" if ip_addresses else "NXDOMAIN",
     )
 
 
