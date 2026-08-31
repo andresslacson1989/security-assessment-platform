@@ -309,7 +309,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
         await emit_progress(10, f"Fetching release metadata for {self.display_name} ({rel_label})...")
 
         headers = {
-            "User-Agent": "CyberAssess-Platform/10.0.0",
+            "User-Agent": "CyberAssess-Platform/11.0.0",
             "Accept": "application/vnd.github.v3+json",
         }
 

@@ -170,11 +170,21 @@ def validate_target_domain(domain: str, allow_internal: bool = False) -> Tuple[b
 def validate_target_ip(ip_str: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
     """
     Validates an IP target input against SSRF and private network boundaries.
+    Correctly handles IPv4, standard IPv6, and bracketed host:port notation.
     """
     if not ip_str or not isinstance(ip_str, str):
         return False, "Target IP cannot be empty."
     
-    clean_ip = ip_str.strip().split(":")[0]
+    clean_ip = ip_str.strip()
+    if clean_ip.startswith("["):
+        if "]" in clean_ip:
+            clean_ip = clean_ip[1:clean_ip.index("]")]
+        else:
+            clean_ip = clean_ip.strip("[]")
+    elif clean_ip.count(":") == 1:
+        # IPv4 with port e.g. 192.168.1.1:80
+        clean_ip = clean_ip.split(":")[0]
+
     if allow_internal:
         try:
             ipaddress.ip_address(clean_ip)

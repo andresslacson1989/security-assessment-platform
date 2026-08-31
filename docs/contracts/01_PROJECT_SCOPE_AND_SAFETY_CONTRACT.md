@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Enterprise Security Architecture
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 10.0.0 (Enterprise Security Architecture, Control/Execution Plane Separation, Zero-Trust Invariants, Multi-Tenancy & ASVS Baseline)  
+**Document Version:** 11.0.0 (Security Invariant Closure, Trust-Boundary Enforcement, Authoritative State & Independent Assurance)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards, Zero-Trust Security Controls, Multi-Tenant Governance & Operational Boundaries  
 
@@ -13,8 +13,8 @@ The **CyberAssess Security Assessment & Vulnerability Management Platform** is a
 
 CyberAssess is logically separated into:
 1. **Control Plane:** FastAPI web application providing identity, authentication, multi-tenant Role-Based Access Control (RBAC), asset inventory, canonical finding lifecycle, contextual risk evaluation, audit logging, and scan scheduling. The control plane is NOT a privileged execution environment.
-2. **Execution Plane:** Isolated worker execution environment running containerized or sandboxed workers (DAST, SAST, Infra/Cloud) with strict workspace confinement, egress network controls, resource limits, and real-time process lifecycle governance.
-3. **Evidence & Persistence Layer:** Authoritative relational database (PostgreSQL for enterprise, SQLite WAL for single-node standalone) and encrypted object storage for reproducible, cryptographically hashed evidence artifacts.
+2. **Execution Plane:** Isolated worker execution environment running containerized or sandboxed workers (DAST, SAST, Infra/Cloud) with strict workspace confinement, egress network controls, resource limits, and real-time process lifecycle governance via `ProcessSupervisor`.
+3. **Evidence & Persistence Layer:** Authoritative relational database (PostgreSQL for enterprise, SQLite WAL for single-node standalone) and encrypted object storage for reproducible, cryptographically hashed evidence artifacts. JSON storage is strictly for exports/backups and never serves as runtime persistence authority.
 
 The platform orchestrates a fleet of **21 authoritative security tool adapters** backed by native fallback engines across five security domains:
 - **Network Perimeter & EASM:** `nmap`, `sslyze`, `subfinder`, `httpx`
@@ -31,30 +31,33 @@ CyberAssess is engineered in conformance with the following international securi
 
 ### 2.1 Application Security
 - **OWASP ASVS 5.0.0 (Application Security Verification Standard):** Version-qualified controls (`v5.0.0-V1` through `v5.0.0-V14`) covering architecture, authentication, session management, access control, input validation, cryptography, error handling, data protection, communications, and malicious code search.
-- **OWASP SSRF Prevention Guidance:** Strict pre-resolution, CIDR denylisting, DNS-rebinding prevention, and hop-by-hop redirect verification.
-- **OWASP Authentication and Password Storage Guidance:** Elimination of default credentials, minimum password lengths, and PBKDF2/Argon2id hashing.
+- **OWASP SSRF Prevention Guidance:** Strict pre-resolution, CIDR denylisting, DNS-rebinding prevention, connection-level destination binding, and hop-by-hop redirect verification.
+- **OWASP Authentication and Password Storage Guidance:** Elimination of default credentials, minimum password lengths, PBKDF2/Argon2id hashing, and authoritative token/key revocation state.
 
 ### 2.2 Secure Software Development
 - **NIST SP 800-218 (Secure Software Development Framework - SSDF v1.1):** Protect Software (PW), Produce Well-Secured Software (PW), Respond to Vulnerabilities (RV).
 - **NIST SP 800-53 Rev. 5 / 5.2.0:** Access Control (AC), Identification and Authentication (IA), Audit and Accountability (AU), System and Communications Protection (SC), System and Information Integrity (SI).
 
 ### 2.3 Cryptography & Token Standards
-- **RFC 8725 (JWT Best Current Practices):** Explicit algorithm allowlist (`HS256`, `RS256`), algorithm confusion denial (`alg=none` forbidden), cryptographic key separation, expiration enforcement, subject/issuer/audience validation.
+- **RFC 8725 (JWT Best Current Practices):** Library-backed verification (PyJWT), explicit algorithm allowlist (`HS256`, `RS256`), algorithm confusion denial (`alg=none` forbidden), cryptographic key separation, expiration enforcement, and strict claim validation (`iss`, `aud`, `sub`, `exp`, `iat`, `nbf`). Production startup fails closed if signing keys are unconfigured.
 
 ### 2.4 Software Supply Chain
-- **SLSA (Supply-chain Levels for Software Artifacts) & CycloneDX:** Pinned release tags, cryptographically verified SHA-256 binaries, quarantine pipelines, and standardized CycloneDX 1.5 / SPDX 2.3 SBOM generation.
+- **SLSA (Supply-chain Levels for Software Artifacts) & CycloneDX:** Pinned release tags (`/releases/tags/{version}`), cryptographically verified SHA-256 binaries, quarantine pipelines, atomic promotion, and standardized CycloneDX 1.5 SBOM generation.
 
 ---
 
 ## 3. Global Security Invariants
 
-The platform enforces five non-negotiable security invariants across all subsystems:
+The platform enforces eight non-negotiable security invariants across all subsystems:
 
-1. **Zero Trust (ASVS v5.0.0-V1.4.1):** No request, internal component, or client parameter is trusted implicitly. Every request must present valid authentication and authorization credentials.
-2. **Least Privilege (NIST SP 800-53 AC-6):** Every user, service key, worker process, container, filesystem path, and network socket operates strictly with the minimum permissions required.
-3. **Fail Closed (ASVS v5.0.0-V1.1.2):** Any security exception, missing authentication context, unresolved target, ambiguous tenant ownership, unverified tool artifact, or malformed token results in immediate denial.
-4. **No Silent Security Degradation:** The platform shall never silently downgrade authenticated sessions to anonymous, sandboxed execution to unrestricted, database persistence to memory-only, or verified hashes to unverified bypasses.
-5. **Authoritative Multi-Layer Enforcement:** Security boundaries are enforced authoritatively in the service and data access layers, never exclusively in routing or UI components.
+1. **Identity Invariant (ASVS v5.0.0-V1.4.1):** A request is authorized ONLY when authenticated, identity is active (`is_active=True`), credential is valid and not revoked (`revoked_at is None`), required permission/scope is present, tenant ownership is valid, and resource state permits operation.
+2. **Tenant Invariant (NIST SP 800-53 AC-3):** Every tenant-owned object MUST have a non-null `organization_id`. `organization_id IS NULL` is prohibited from conferring global or default access. Explicit principal classification separates `SYSTEM_PRINCIPAL` from `TENANT_PRINCIPAL`.
+3. **Target Invariant (ASVS v5.0.0-V5.1.1):** Every scan target must pass through the authoritative target security gateway (`assert_safe_target()`) covering `URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`. Fail-closed DNS resolution, connection-level IP binding, and hop-by-hop redirect validation are strictly enforced.
+4. **Workspace Invariant (ASVS v5.0.0-V5.3.4):** Local scan paths must be strictly confined to server-derived authorized workspace roots (`resolved_path ∈ authorized_workspace_root`). Clients cannot supply arbitrary roots; symlink traversal escapes are rejected; missing workspace configurations fail closed.
+5. **Supply-Chain Invariant (NIST SP 800-218 PW.4):** A binary is trusted only when exact release, exact asset, platform, architecture, and trusted SHA-256 digest match. Tool installation uses quarantine extraction and atomic promotion; unpinned or digest-less tools fail closed.
+6. **Persistence Invariant (ASVS v5.0.0-V1.1.2):** Exactly one authoritative relational database source of truth. JSON files are strictly export/backup artifacts and never resurrect deleted or alternate database records. Database failures are never swallowed.
+7. **Execution Invariant (NIST SP 800-53 SC-2):** A scan cancellation or timeout strictly terminates the entire process tree (orchestrator task, child subprocesses, and grandchild binaries) via `ProcessSupervisor`. Concurrency is strictly bounded.
+8. **Evidence & Audit Invariant (NIST SP 800-53 AU-9):** Security evidence is sanitized at data boundaries, hashed, and attributable. Audit logs are tamper-evident using cryptographically chained SHA-256 hashes (`event_hash = SHA256(canonical_payload + previous_event_hash)`). SLA clocks never reset on redetections.
 
 ---
 

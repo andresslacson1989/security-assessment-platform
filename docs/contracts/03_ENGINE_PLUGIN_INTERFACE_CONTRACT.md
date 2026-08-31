@@ -1,7 +1,7 @@
 # Contract 03: Engine Plugin Interface, Execution Governance & Tool Supply Chain Contract
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 10.0.0 (Execution Plane Governance, Pinned Supply Chain, Quarantine Pipeline, Process Tree Termination & Sandbox Isolation)  
+**Document Version:** 11.0.0 (Execution Plane Governance, Pinned Supply Chain, Quarantine Pipeline, ProcessSupervisor Tree Termination & Sandbox Isolation)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Interfaces, Tool Adapters, Binary Supply Chain Verification, Quarantine Lifecycle & Worker Sandbox Controls  
 
@@ -35,15 +35,19 @@ class BaseEngine(ABC):
 
 All external tools downloaded by the platform MUST follow an unyielding cryptographic verification pipeline. Unpinned or unverifiable tools are strictly prohibited in production.
 
-### 2.1 Manifest Requirements
+### 2.1 Manifest Requirements & Registry Parity
 Every tool manifest entry MUST define:
 - `tool_name`: Canonical identifier (e.g., `nuclei`, `trivy`, `semgrep`).
 - `version`: Exact pinned semver release (e.g., `v3.2.0`).
-- `release_tag`: Exact immutable GitHub release tag.
+- `release_tag`: Exact immutable GitHub release tag (`/releases/tags/{version}`).
 - `platform`: `windows`, `linux`, `darwin`.
 - `architecture`: `amd64`, `arm64`.
 - `asset_name`: Exact archive filename.
 - `sha256`: Authentic 64-character lowercase hexadecimal cryptographic SHA-256 checksum.
+
+**Registry Parity Invariant:**
+$$\text{Tool Registry} \equiv \text{Installer Registry} \equiv \text{Integrity Manifest} \equiv \text{Supported 21 Tools}$$
+Any disparity in supported tool registries fails CI and startup integrity gates.
 
 ### 2.2 Quarantine & Atomic Promotion Lifecycle
 Binary installation must follow this strict 8-step lifecycle:
@@ -64,11 +68,18 @@ Binary installation must follow this strict 8-step lifecycle:
 
 ---
 
-## 3. Worker Execution Sandboxing & Process Governance
+## 3. Worker Execution Sandboxing & Central Process Supervisor
 
-1. **Subprocess Confinement:** Tool subprocesses execute with lowest feasible privileges, non-interactive streams, and sandboxed temporary directories.
-2. **Process Tree Cancellation:** Cancellation or timeout triggers forceful process tree termination:
-   - On Windows: `taskkill /F /T /PID <pid>` or `TerminateProcess`.
+External tool subprocesses must be executed and governed exclusively through the central `ProcessSupervisor`:
+
+1. **`ProcessSupervisor` Responsibilities:**
+   - Spawns child processes in isolated process groups (`creationflags=CREATE_NEW_PROCESS_GROUP` on Windows, `start_new_session=True` on POSIX).
+   - Tracks active process trees (parent, children, grandchildren).
+   - Enforces execution timeouts (`60.0s` default per tool).
+   - Enforces maximum output buffers (10 MB) to prevent buffer exhaustion.
+   - On cancellation or timeout: recursively terminates the entire process tree without leaving orphaned zombie processes.
+2. **Process Tree Cancellation Protocol:**
+   - On Windows: `taskkill /F /T /PID <pid>` or Win32 Job Object tree termination.
    - On POSIX: Process group termination (`os.killpg(os.getpgid(proc.pid), signal.SIGKILL)`).
-3. **Execution Timeouts:** Every external adapter execution has an enforced non-blocking timeout (`60.0s` default).
-4. **Output Quotas:** Subprocess standard output and error streams are capped to prevent memory exhaustion (maximum 10 MB buffer per execution).
+3. **Workspace Confinement:** All tool file operations must execute strictly within the server-derived workspace directory.
+```

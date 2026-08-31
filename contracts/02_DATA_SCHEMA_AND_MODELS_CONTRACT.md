@@ -1,7 +1,7 @@
 # Contract 02: Enterprise Data Schemas, Entity Models & Multi-Tenant State Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 10.0.0 (Enterprise ASPM Schema, Canonical Findings & Occurrences, Tenant Isolation, Version Authority & Audit Models)  
+**Document Version:** 11.0.0 (Enterprise ASPM Schema, Canonical Findings & Occurrences, Tenant Isolation, Version Authority & Tamper-Evident Audit Models)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Core Data Schemas, Relational Persistence Tables, Identity, Assets, Findings Lifecycle & Audit Records  
 
@@ -13,10 +13,10 @@ All platform components, API responses, exporters, UI banners, and database migr
 
 ```python
 # backend/app/core/version.py
-APP_VERSION = "10.0.0"
+APP_VERSION = "11.0.0"
 API_VERSION = "v1"
-SCHEMA_VERSION = "10.0.0"
-CONTRACT_VERSION = "10.0.0"
+SCHEMA_VERSION = "11.0.0"
+CONTRACT_VERSION = "11.0.0"
 RULESET_VERSION = "2026.08.31"
 RISK_MODEL_VERSION = "contextual_risk_model_v2"
 ```
@@ -29,11 +29,12 @@ Hardcoded independent version strings in READMEs, endpoints, or UI templates are
 
 ### 2.1 Enums
 - `OperatingMode`: `PRODUCTION`, `DEVELOPMENT`, `TEST`
+- `PrincipalType`: `SYSTEM_PRINCIPAL`, `TENANT_PRINCIPAL`
 - `UserRole`: `ADMIN`, `SECURITY_ANALYST`, `DEVELOPER`, `VIEWER`
 - `APIKeyScope`:
-  - `scan:create`, `scan:read`, `scan:cancel`
-  - `finding:read`, `finding:write`
-  - `asset:read`, `asset:write`
+  - `scan:create`, `scan:read`, `scan:cancel`, `scan:repeater`, `scan:internal`
+  - `finding:read`, `finding:write`, `finding:triage`, `finding:risk_accept`
+  - `asset:read`, `asset:write`, `asset:delete`
   - `report:read`
   - `tool:read`, `tool:install`
   - `system:admin`
@@ -68,18 +69,21 @@ class UserProfile(BaseModel):
     username: str
     email: str
     role: UserRole
-    organization_id: Optional[str] = None
+    principal_type: PrincipalType = PrincipalType.TENANT_PRINCIPAL
+    organization_id: str = "org-default"
+    scopes: List[str] = Field(default_factory=lambda: ["*"])
     is_active: bool = True
     created_at: datetime
     last_login_at: Optional[datetime] = None
 
 class APIKeyRecord(BaseModel):
     key_id: str  # e.g., "ca_key_9f8e7d" (public identifier prefix)
-    key_hash: str  # PBKDF2 or SHA-256 hash of secret token
-    organization_id: Optional[str] = None
+    key_hash: str  # SHA-256 hash of secret token
+    organization_id: str
     user_id: Optional[str] = None
     name: str
     scopes: List[str]
+    status: str = "ACTIVE"  # "ACTIVE" or "REVOKED"
     created_at: datetime
     expires_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
@@ -115,7 +119,7 @@ class AssetLifecycleStatus(str, Enum):
 
 class Asset(BaseModel):
     id: str = Field(default_factory=lambda: f"ast-{uuid.uuid4().hex[:12]}")
-    organization_id: Optional[str] = None
+    organization_id: str = "org-default"
     project_id: Optional[str] = None
     name: str
     type: AssetType
@@ -165,6 +169,7 @@ class SLAInfo(BaseModel):
 
 class FindingOccurrence(BaseModel):
     id: str = Field(default_factory=lambda: f"occ-{uuid.uuid4().hex[:12]}")
+    organization_id: str = "org-default"
     canonical_finding_id: str
     scan_id: str
     asset_id: Optional[str] = None
@@ -177,7 +182,7 @@ class FindingOccurrence(BaseModel):
 
 class CanonicalFinding(BaseModel):
     id: str = Field(default_factory=lambda: f"cfind-{uuid.uuid4().hex[:12]}")
-    organization_id: Optional[str] = None
+    organization_id: str = "org-default"
     project_id: Optional[str] = None
     asset_id: Optional[str] = None
     title: str
@@ -217,7 +222,7 @@ Where:
 
 ---
 
-## 6. Audit Event Model
+## 6. Tamper-Evident Audit Event Model
 
 ```python
 class AuditAction(str, Enum):
@@ -252,7 +257,7 @@ class AuditEvent(BaseModel):
     id: str = Field(default_factory=lambda: f"aud-{uuid.uuid4().hex[:12]}")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     actor: str  # User ID, username, or API Key ID
-    organization_id: Optional[str] = None
+    organization_id: str = "org-default"
     action: AuditAction
     object_type: str  # "scan", "asset", "finding", "user", "tool", "api_key"
     object_id: str
@@ -260,4 +265,6 @@ class AuditEvent(BaseModel):
     source_ip: Optional[str] = None
     correlation_id: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
+    previous_event_hash: Optional[str] = None
+    event_hash: Optional[str] = None  # SHA256(canonical_event_json + previous_event_hash)
 ```

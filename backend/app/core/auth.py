@@ -15,12 +15,14 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
+import jwt
 from fastapi import Header, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 
 from app.core.models import (
     UserProfile,
     UserRole,
+    PrincipalType,
     OperatingMode,
     Asset,
     ScanJob,
@@ -46,7 +48,7 @@ else:
     JWT_SECRET = _raw_secret.strip()
 
 JWT_ALGORITHM = "HS256"
-ALLOWED_JWT_ALGORITHMS = ["HS256"]
+ALLOWED_JWT_ALGORITHMS = ["HS256", "RS256"]
 JWT_ISSUER = "CyberAssess-Control-Plane"
 JWT_AUDIENCE = "CyberAssess-Platform"
 JWT_EXPIRATION_SECONDS = int(os.getenv("JWT_EXPIRATION_SECONDS", "86400"))  # 24 hours
@@ -57,6 +59,7 @@ ANONYMOUS_DEV_USER = UserProfile(
     username="dev-viewer",
     email="dev@cyberassess.local",
     role=UserRole.VIEWER,
+    principal_type=PrincipalType.TENANT_PRINCIPAL,
     organization_id="org-default",
     scopes=["scan:read", "asset:read", "finding:read", "report:read"],
 )
@@ -117,17 +120,8 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 # ============================================================================
-# 2. RFC 8725 Compliant JWT Generation & Validation
+# 2. RFC 8725 Compliant JWT Generation & Validation (PyJWT)
 # ============================================================================
-
-def _base64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
-def _base64url_decode(data_str: str) -> bytes:
-    padding = "=" * ((4 - len(data_str) % 4) % 4)
-    return base64.urlsafe_b64decode((data_str + padding).encode("ascii"))
-
 
 def create_access_token(
     user: UserProfile,
@@ -135,9 +129,8 @@ def create_access_token(
     scopes: Optional[List[str]] = None,
 ) -> str:
     """
-    Generates a signed HS256 JWT access token conforming to RFC 8725.
+    Generates a signed HS256 JWT access token conforming to RFC 8725 using mature PyJWT.
     """
-    header = {"alg": JWT_ALGORITHM, "typ": "JWT"}
     now = int(time.time())
     payload = {
         "iss": JWT_ISSUER,
@@ -145,7 +138,8 @@ def create_access_token(
         "sub": user.id,
         "username": user.username,
         "email": user.email,
-        "role": user.role.value,
+        "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+        "principal_type": user.principal_type.value if hasattr(user.principal_type, "value") else str(user.principal_type),
         "org_id": user.organization_id,
         "scopes": scopes or user.scopes or ["*"],
         "iat": now,
@@ -153,21 +147,21 @@ def create_access_token(
         "exp": now + expires_in,
         "jti": secrets.token_hex(16),
     }
-
-    h_json = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    p_json = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-
-    unsigned_token = f"{_base64url_encode(h_json)}.{_base64url_encode(p_json)}"
-    signature = hmac.new(JWT_SECRET.encode("utf-8"), unsigned_token.encode("utf-8"), hashlib.sha256).digest()
-    
-    return f"{unsigned_token}.{_base64url_encode(signature)}"
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM, headers={"typ": "JWT"})
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:
     """
-    Validates and decodes an HS256 JWT token under strict RFC 8725 requirements.
+    Validates and decodes an HS256 JWT token under strict RFC 8725 requirements using PyJWT.
     Rejects algorithm confusion (alg=none), unauthorized algorithms, missing claims, and revoked tokens.
     """
+    if not token or not isinstance(token, str):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token format.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if token in REVOKED_TOKENS_REGISTRY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -175,84 +169,111 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    parts = token.split(".")
-    if len(parts) != 3:
+    # 1. Unverified Header Inspection: strictly forbid alg=none and unapproved algorithms
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token format.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 1. Parse and validate Header
-    try:
-        header_bytes = _base64url_decode(parts[0])
-        header = json.loads(header_bytes.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed token header.")
-
-    alg = header.get("alg")
-    if not alg or alg not in ALLOWED_JWT_ALGORITHMS or alg.lower() == "none":
+    alg = unverified_header.get("alg")
+    if not alg or alg not in ALLOWED_JWT_ALGORITHMS or str(alg).lower() == "none":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Unsupported or forbidden token algorithm '{alg}'.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 2. Cryptographic Signature Verification
-    unsigned_token = f"{parts[0]}.{parts[1]}"
-    expected_sig = hmac.new(JWT_SECRET.encode("utf-8"), unsigned_token.encode("utf-8"), hashlib.sha256).digest()
-
+    # 2. Strict PyJWT Verification
     try:
-        actual_sig = _base64url_decode(parts[2])
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed token signature.")
-
-    if not hmac.compare_digest(actual_sig, expected_sig):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token signature verification failed.")
-
-    # 3. Payload Claims Validation
-    try:
-        payload_bytes = _base64url_decode(parts[1])
-        payload = json.loads(payload_bytes.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed token payload.")
-
-    # Mandatory RFC 8725 Claims Check
-    for required_claim in ("iss", "aud", "sub", "exp", "iat"):
-        if required_claim not in payload:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Mandatory claim '{required_claim}' missing from token payload.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    now = time.time()
-    exp = payload.get("exp", 0)
-    if now > exp:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=ALLOWED_JWT_ALGORITHMS,
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options={"require": ["iss", "aud", "sub", "exp", "iat", "nbf"]},
+        )
+    except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except jwt.ImmatureSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is not yet valid.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidIssuerError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token issuer.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidAudienceError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token audience.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidAlgorithmError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Unsupported or forbidden token algorithm: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.MissingRequiredClaimError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Mandatory claim missing: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token signature verification failed: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token validation failed: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    nbf = payload.get("nbf", 0)
-    if now < nbf:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is not yet valid.")
-
-    iss = payload.get("iss")
-    if iss != JWT_ISSUER:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token issuer.")
-
-    aud = payload.get("aud")
-    if aud != JWT_AUDIENCE:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token audience.")
+    # 3. Authoritative DB Token Revocation Check
+    jti = payload.get("jti")
+    if jti:
+        from app.core.db import db_manager
+        if db_manager.is_token_revoked(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     return payload
 
 
 def revoke_token(token: str) -> None:
-    """Adds a token to the active revocation blacklist."""
+    """Adds a token to the active revocation registry and authoritative database."""
     REVOKED_TOKENS_REGISTRY.add(token)
+    try:
+        payload = jwt.decode(token, options={"verify_signature": False})
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if jti:
+            from app.core.db import db_manager
+            exp_str = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat() if exp else None
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            db_manager.revoke_token(jti, token_hash=token_hash, expires_at=exp_str)
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -264,12 +285,10 @@ def authorize_asset_access(user: UserProfile, asset: Asset, action: str = "read"
     Enforces multi-tenant ownership boundaries and role permissions on Asset resources.
     Prevents IDOR across organizations.
     """
-    if user.role == UserRole.ADMIN and user.organization_id is None:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
         return True  # System super-admin
-    if asset.organization_id and user.organization_id and asset.organization_id != user.organization_id:
+    if not asset.organization_id or asset.organization_id != user.organization_id:
         return False  # Deny cross-tenant access
-    if not asset.organization_id and user.organization_id and user.role != UserRole.ADMIN:
-        return False
     if action == "write" and user.role not in (UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER):
         return False
     if action == "delete" and user.role != UserRole.ADMIN:
@@ -281,11 +300,9 @@ def authorize_scan_access(user: UserProfile, scan: ScanJob, action: str = "read"
     """
     Enforces multi-tenant ownership boundaries on ScanJob resources.
     """
-    if user.role == UserRole.ADMIN and user.organization_id is None:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
         return True
-    if scan.organization_id and user.organization_id and scan.organization_id != user.organization_id:
-        return False
-    if not scan.organization_id and user.organization_id and user.role != UserRole.ADMIN:
+    if not scan.organization_id or scan.organization_id != user.organization_id:
         return False
     if action in ("control", "cancel", "delete") and user.role not in (UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER):
         return False
@@ -296,11 +313,9 @@ def authorize_finding_access(user: UserProfile, finding: CanonicalFinding, actio
     """
     Enforces multi-tenant ownership boundaries on CanonicalFinding resources.
     """
-    if user.role == UserRole.ADMIN and user.organization_id is None:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
         return True
-    if finding.organization_id and user.organization_id and finding.organization_id != user.organization_id:
-        return False
-    if not finding.organization_id and user.organization_id and user.role != UserRole.ADMIN:
+    if not finding.organization_id or finding.organization_id != user.organization_id:
         return False
     if action == "triage" and user.role not in (UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER):
         return False
@@ -310,9 +325,12 @@ def authorize_finding_access(user: UserProfile, finding: CanonicalFinding, actio
 def authorize_internal_target(user: UserProfile, target_value: str) -> bool:
     """
     Checks if a user is explicitly authorized to scan internal/private network addresses.
-    Restricted to ADMIN or verified approved internal targets.
+    Restricted to ADMIN or caller with explicit 'scan:internal' scope.
     """
-    return user.role == UserRole.ADMIN
+    if user.role == UserRole.ADMIN:
+        return True
+    scopes = user.scopes or []
+    return "*" in scopes or "scan:internal" in scopes
 
 
 # ============================================================================
@@ -336,11 +354,23 @@ async def get_current_user(
         if key_hash in API_KEYS_CACHE:
             cached_user, cached_scopes, cached_time = API_KEYS_CACHE[key_hash]
             if now_ts - cached_time < 300:
+                if not cached_user.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User account is deactivated.",
+                        headers={"WWW-Authenticate": "ApiKey"},
+                    )
                 return cached_user
 
         from app.core.db import db_manager
         key_record, user_profile = db_manager.verify_api_key_hash(key_hash)
         if key_record and user_profile:
+            if not user_profile.is_active or key_record.status != "ACTIVE" or key_record.revoked_at is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid, expired, or revoked API key.",
+                    headers={"WWW-Authenticate": "ApiKey"},
+                )
             user_profile.scopes = key_record.scopes
             API_KEYS_CACHE[key_hash] = (user_profile, key_record.scopes, now_ts)
             return user_profile
@@ -355,14 +385,20 @@ async def get_current_user(
         parts = authorization.strip().split(" ")
         if len(parts) == 2 and parts[0].lower() == "bearer":
             payload = decode_access_token(parts[1])
-            return UserProfile(
+            p_type_val = payload.get("principal_type", "TENANT_PRINCIPAL")
+            p_type = PrincipalType(p_type_val) if p_type_val in [p.value for p in PrincipalType] else PrincipalType.TENANT_PRINCIPAL
+            
+            user = UserProfile(
                 id=payload.get("sub", "anon"),
                 username=payload.get("username", "user"),
                 email=payload.get("email", "user@local"),
                 role=UserRole(payload.get("role", "VIEWER")),
-                organization_id=payload.get("org_id"),
+                principal_type=p_type,
+                organization_id=payload.get("org_id", "org-default"),
                 scopes=payload.get("scopes", ["*"]),
+                is_active=True,
             )
+            return user
 
     # 3. Explicit Development Mode Bypass (Restricted to VIEWER role)
     if OPERATING_MODE == OperatingMode.DEVELOPMENT:
@@ -382,6 +418,13 @@ def require_permission(required_scope: Optional[str] = None, allowed_roles: Opti
     RBAC & Scope-based dependency factory enforcing both role level and API key scope.
     """
     async def _permission_guard(user: UserProfile = Depends(get_current_user)) -> UserProfile:
+        # 0. Active check
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is deactivated.",
+            )
+
         # 1. Role validation
         if allowed_roles and user.role != UserRole.ADMIN:
             if user.role not in allowed_roles:
@@ -413,3 +456,4 @@ def require_scope(required_scope: str):
 require_admin = require_permission(allowed_roles=[UserRole.ADMIN])
 require_analyst_or_admin = require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST])
 require_dev_or_higher = require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])
+

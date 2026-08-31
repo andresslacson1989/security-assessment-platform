@@ -221,42 +221,20 @@ async def safe_execute_subprocess(
 ) -> Tuple[int, str, str]:
     """
     Loop-agnostic safe subprocess execution helper.
-    Uses asyncio.to_thread with subprocess.run to ensure zero NotImplementedError
-    on Windows SelectorEventLoop and thread-safe bounded timeout execution.
+    Delegates to central ProcessSupervisor to track subprocesses and guarantee
+    clean process tree termination on timeout or cancellation.
     """
     if not cmd:
         return -1, "", "Empty command provided"
 
-    def _run() -> Tuple[int, str, str]:
-        try:
-            res = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=cwd,
-                env=env,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="replace",
-            )
-            stderr = res.stderr or ""
-            if "<3>WSL" in stderr:
-                cleaned_lines = [line for line in stderr.splitlines() if not line.startswith("<3>WSL")]
-                stderr = "\n".join(cleaned_lines)
-            return res.returncode, res.stdout or "", stderr
-        except subprocess.TimeoutExpired:
-            return -1, "", f"Execution timed out after {timeout} seconds"
-        except FileNotFoundError as e:
-            return 127, "", f"Executable not found: {e}"
-        except PermissionError as e:
-            return 126, "", f"Permission denied: {e}"
-        except Exception as e:
-            return -1, "", str(e)
-
-    try:
-        return await asyncio.to_thread(_run)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        return -1, "", str(e)
+    from app.core.process_supervisor import process_supervisor
+    code, stdout, stderr = await process_supervisor.execute(
+        cmd=cmd,
+        timeout=timeout,
+        cwd=cwd,
+        env=env,
+    )
+    if "<3>WSL" in stderr:
+        cleaned_lines = [line for line in stderr.splitlines() if not line.startswith("<3>WSL")]
+        stderr = "\n".join(cleaned_lines)
+    return code, stdout, stderr

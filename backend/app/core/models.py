@@ -602,7 +602,7 @@ class ScanJob(BaseModel):
     Complete state representation of a scan job.
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    organization_id: Optional[str] = Field(default=None)
+    organization_id: str = Field(default="org-default")
     project_id: Optional[str] = Field(default=None)
     asset_id: Optional[str] = Field(default=None)
     target: Target = Field(...)
@@ -698,6 +698,11 @@ class OperatingMode(str, Enum):
     TEST = "TEST"
 
 
+class PrincipalType(str, Enum):
+    SYSTEM_PRINCIPAL = "SYSTEM_PRINCIPAL"
+    TENANT_PRINCIPAL = "TENANT_PRINCIPAL"
+
+
 class UserRole(str, Enum):
     ADMIN = "ADMIN"
     SECURITY_ANALYST = "SECURITY_ANALYST"
@@ -736,7 +741,8 @@ class UserProfile(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     email: str
     role: UserRole = Field(default=UserRole.VIEWER)
-    organization_id: Optional[str] = None
+    principal_type: PrincipalType = Field(default=PrincipalType.TENANT_PRINCIPAL)
+    organization_id: str = Field(default="org-default")
     scopes: List[str] = Field(default_factory=lambda: ["*"])
     is_active: bool = True
     created_at: datetime = Field(default_factory=utc_now)
@@ -746,10 +752,11 @@ class UserProfile(BaseModel):
 class APIKeyRecord(BaseModel):
     key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")
     key_hash: str
-    organization_id: Optional[str] = None
+    organization_id: str = Field(default="org-default")
     user_id: Optional[str] = None
     name: str
     scopes: List[str] = Field(default_factory=list)
+    status: str = Field(default="ACTIVE")
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
@@ -784,7 +791,7 @@ class AssetLifecycleStatus(str, Enum):
 
 class Asset(BaseModel):
     id: str = Field(default_factory=lambda: f"ast-{uuid.uuid4().hex[:12]}")
-    organization_id: Optional[str] = Field(default=None)
+    organization_id: str = Field(default="org-default")
     project_id: Optional[str] = Field(default=None)
     name: str = Field(..., min_length=2, max_length=120)
     type: AssetType = Field(...)
@@ -847,6 +854,7 @@ class CorrelationType(str, Enum):
 
 class FindingOccurrence(BaseModel):
     id: str = Field(default_factory=lambda: f"occ-{uuid.uuid4().hex[:12]}")
+    organization_id: str = Field(default="org-default")
     canonical_finding_id: str
     scan_id: str
     asset_id: Optional[str] = None
@@ -860,7 +868,7 @@ class FindingOccurrence(BaseModel):
 
 class CanonicalFinding(BaseModel):
     id: str = Field(default_factory=lambda: f"cfind-{uuid.uuid4().hex[:12]}")
-    organization_id: Optional[str] = Field(default=None)
+    organization_id: str = Field(default="org-default")
     project_id: Optional[str] = Field(default=None)
     asset_id: Optional[str] = Field(default=None)
     title: str = Field(...)
@@ -936,7 +944,7 @@ class AuditEvent(BaseModel):
     id: str = Field(default_factory=lambda: f"aud-{uuid.uuid4().hex[:12]}")
     timestamp: datetime = Field(default_factory=utc_now)
     actor: str = Field(default="system")
-    organization_id: Optional[str] = Field(default=None)
+    organization_id: str = Field(default="org-default")
     action: AuditAction = Field(...)
     object_type: str = Field(...)
     object_id: str = Field(...)
@@ -944,5 +952,7 @@ class AuditEvent(BaseModel):
     source_ip: Optional[str] = Field(default=None)
     correlation_id: Optional[str] = Field(default=None)
     details: Dict[str, Any] = Field(default_factory=dict)
+    previous_event_hash: Optional[str] = Field(default=None)
+    event_hash: Optional[str] = Field(default=None)
 
 

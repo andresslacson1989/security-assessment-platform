@@ -6,6 +6,7 @@ API Keys, Assets, Scans, Canonical Findings, Occurrences, and Append-Only Audit 
 """
 
 from __future__ import annotations
+import hashlib
 import json
 import os
 import sqlite3
@@ -113,7 +114,7 @@ class DatabaseManager:
                 email TEXT NOT NULL,
                 hashed_password TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'VIEWER',
-                organization_id TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 last_login_at TEXT
@@ -123,20 +124,29 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS api_keys (
                 key_id TEXT PRIMARY KEY,
                 key_hash TEXT UNIQUE NOT NULL,
-                organization_id TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 user_id TEXT,
                 name TEXT NOT NULL,
                 scopes_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 revoked_at TEXT,
                 last_used_at TEXT
             );
 
+            -- Revoked JWT Tokens Table
+            CREATE TABLE IF NOT EXISTS revoked_tokens (
+                jti TEXT PRIMARY KEY,
+                token_hash TEXT,
+                revoked_at TEXT NOT NULL,
+                expires_at TEXT
+            );
+
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
-                organization_id TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 project_id TEXT,
                 name TEXT NOT NULL,
                 type TEXT NOT NULL,
@@ -156,7 +166,7 @@ class DatabaseManager:
             -- Scans Table
             CREATE TABLE IF NOT EXISTS scans (
                 id TEXT PRIMARY KEY,
-                organization_id TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 project_id TEXT,
                 asset_id TEXT,
                 target_name TEXT NOT NULL,
@@ -179,7 +189,7 @@ class DatabaseManager:
             -- Canonical Findings Table
             CREATE TABLE IF NOT EXISTS findings (
                 id TEXT PRIMARY KEY,
-                organization_id TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 project_id TEXT,
                 asset_id TEXT,
                 scan_id TEXT NOT NULL,
@@ -212,6 +222,7 @@ class DatabaseManager:
             -- Finding Occurrences Table
             CREATE TABLE IF NOT EXISTS finding_occurrences (
                 id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 canonical_finding_id TEXT NOT NULL,
                 scan_id TEXT NOT NULL,
                 asset_id TEXT,
@@ -235,19 +246,21 @@ class DatabaseManager:
                 FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
             );
 
-            -- Immutable Append-Only Audit Trail Table
+            -- Immutable Append-Only Audit Trail Table with Chained Hashes
             CREATE TABLE IF NOT EXISTS audit_events (
                 id TEXT PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 actor TEXT NOT NULL,
-                organization_id TEXT,
+                organization_id TEXT NOT NULL DEFAULT 'org-default',
                 action TEXT NOT NULL,
                 object_type TEXT NOT NULL,
                 object_id TEXT NOT NULL,
                 result TEXT NOT NULL,
                 source_ip TEXT,
                 correlation_id TEXT,
-                details_json TEXT NOT NULL DEFAULT '{}'
+                details_json TEXT NOT NULL DEFAULT '{}',
+                previous_event_hash TEXT,
+                event_hash TEXT
             );
 
             -- Performance and Multi-Tenant Query Indexes
@@ -260,6 +273,20 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_occurrences_canonical ON finding_occurrences(canonical_finding_id);
             CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit_events(organization_id, timestamp DESC);
             """)
+
+            # 2. Automated Non-Destructive Column Migrations for Existing Tables
+            migrations = [
+                "ALTER TABLE audit_events ADD COLUMN previous_event_hash TEXT;",
+                "ALTER TABLE audit_events ADD COLUMN event_hash TEXT;",
+                "ALTER TABLE api_keys ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';",
+                "ALTER TABLE users ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'TENANT_PRINCIPAL';",
+                "ALTER TABLE finding_occurrences ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'org-default';",
+            ]
+            for mig in migrations:
+                try:
+                    conn.execute(mig)
+                except Exception:
+                    pass
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
@@ -336,7 +363,7 @@ class DatabaseManager:
         """Verifies an incoming API Key hash against the database and returns the bound UserProfile."""
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM api_keys WHERE key_hash = ? AND (revoked_at IS NULL)", (key_hash,))
+            cur.execute("SELECT * FROM api_keys WHERE key_hash = ? AND (revoked_at IS NULL) AND (status = 'ACTIVE')", (key_hash,))
             row = cur.fetchone()
             if not row:
                 return None, None
@@ -354,6 +381,7 @@ class DatabaseManager:
                 user_id=row["user_id"],
                 name=row["name"],
                 scopes=json.loads(row["scopes_json"]),
+                status=row["status"] if "status" in row.keys() else "ACTIVE",
                 created_at=datetime.fromisoformat(row["created_at"]),
                 expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
                 revoked_at=datetime.fromisoformat(row["revoked_at"]) if row["revoked_at"] else None,
@@ -373,32 +401,74 @@ class DatabaseManager:
             )
             return key_record, user_profile
 
+    def revoke_api_key(self, key_id: str, organization_id: Optional[str] = None) -> bool:
+        """Revokes an API Key and updates its status to REVOKED."""
+        with self._get_connection() as conn:
+            query = "UPDATE api_keys SET revoked_at = ?, status = 'REVOKED' WHERE key_id = ?"
+            params = [utc_now().isoformat(), key_id]
+            if organization_id:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+            cur = conn.execute(query, params)
+            return cur.rowcount > 0
+
+    def revoke_token(self, jti: str, token_hash: Optional[str] = None, expires_at: Optional[str] = None) -> None:
+        """Revokes a JWT token by jti identifier."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO revoked_tokens (jti, token_hash, revoked_at, expires_at) VALUES (?, ?, ?, ?)",
+                (jti, token_hash, utc_now().isoformat(), expires_at),
+            )
+
+    def is_token_revoked(self, jti: str) -> bool:
+        """Checks if a JWT token has been revoked in the database."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,))
+            return bool(cur.fetchone())
+
     # ========================================================================
-    # 2. Immutable Audit Logging
+    # 2. Immutable Audit Logging with Cryptographic Chained Hashes
     # ========================================================================
 
     def record_audit_event(self, event: AuditEvent) -> None:
-        """Appends an immutable security audit event to the relational audit log."""
+        """Appends an immutable security audit event to the relational audit log with chained cryptographic hash."""
         with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT event_hash FROM audit_events ORDER BY rowid DESC LIMIT 1")
+            last_row = cur.fetchone()
+            prev_hash = last_row["event_hash"] if (last_row and last_row["event_hash"]) else None
+            
+            ts_str = event.timestamp.isoformat() if event.timestamp else utc_now().isoformat()
+            act_str = event.action.value if hasattr(event.action, "value") else str(event.action)
+            details_str = json.dumps(event.details, sort_keys=True)
+            canonical_payload = f"{event.id}|{ts_str}|{event.actor}|{event.organization_id}|{act_str}|{event.object_type}|{event.object_id}|{event.result}|{details_str}|{prev_hash or ''}"
+            event_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+            event.previous_event_hash = prev_hash
+            event.event_hash = event_hash
+
             conn.execute(
                 """
                 INSERT INTO audit_events (
                     id, timestamp, actor, organization_id, action, object_type,
-                    object_id, result, source_ip, correlation_id, details_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    object_id, result, source_ip, correlation_id, details_json,
+                    previous_event_hash, event_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
-                    event.timestamp.isoformat() if event.timestamp else utc_now().isoformat(),
+                    ts_str,
                     event.actor,
                     event.organization_id,
-                    event.action.value if hasattr(event.action, "value") else str(event.action),
+                    act_str,
                     event.object_type,
                     event.object_id,
                     event.result,
                     event.source_ip,
                     event.correlation_id,
-                    json.dumps(event.details),
+                    details_str,
+                    prev_hash,
+                    event_hash,
                 ),
             )
 
@@ -438,6 +508,8 @@ class DatabaseManager:
                     source_ip=r["source_ip"],
                     correlation_id=r["correlation_id"],
                     details=json.loads(r["details_json"]),
+                    previous_event_hash=r["previous_event_hash"] if "previous_event_hash" in r.keys() else None,
+                    event_hash=r["event_hash"] if "event_hash" in r.keys() else None,
                 )
                 for r in rows
             ]

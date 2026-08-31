@@ -72,6 +72,7 @@ class FindingCorrelator:
         if not findings:
             return [], []
 
+        org_id = organization_id or "org-default"
         canonical_findings: List[CanonicalFinding] = []
         occurrences: List[FindingOccurrence] = []
         visited_ids = set()
@@ -106,7 +107,7 @@ class FindingCorrelator:
                 orig_start = existing_by_fp[ev_hash].sla.sla_started_at if ev_hash in existing_by_fp and existing_by_fp[ev_hash].sla else utc_now()
 
                 canonical = CanonicalFinding(
-                    organization_id=organization_id,
+                    organization_id=org_id,
                     project_id=project_id,
                     asset_id=asset_id,
                     correlation_type=CorrelationType.SAST_DAST_VERIFIED,
@@ -134,6 +135,7 @@ class FindingCorrelator:
 
                 # Append occurrences
                 occurrences.append(FindingOccurrence(
+                    organization_id=org_id,
                     canonical_finding_id=canonical.id,
                     scan_id=df.scan_id,
                     asset_id=asset_id,
@@ -143,6 +145,7 @@ class FindingCorrelator:
                     reproduction_curl=df.reproduction_curl,
                 ))
                 occurrences.append(FindingOccurrence(
+                    organization_id=org_id,
                     canonical_finding_id=canonical.id,
                     scan_id=matched_sast.scan_id,
                     asset_id=asset_id,
@@ -175,7 +178,7 @@ class FindingCorrelator:
             orig_start = existing_by_fp[ev_hash].sla.sla_started_at if ev_hash in existing_by_fp and existing_by_fp[ev_hash].sla else utc_now()
 
             canonical = CanonicalFinding(
-                organization_id=organization_id,
+                organization_id=org_id,
                 project_id=project_id,
                 asset_id=asset_id,
                 correlation_type=corr_type,
