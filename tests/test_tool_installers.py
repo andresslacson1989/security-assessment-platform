@@ -39,15 +39,15 @@ def manager():
 
 @pytest.mark.asyncio
 async def test_manager_get_all_tools_info(manager):
-    """Verifies that all 22 tools are registered with valid installation metadata."""
+    """Verifies that all 21 tools are registered with valid installation metadata."""
     tools = await manager.get_all_tools_info()
-    assert len(tools) == 22
+    assert len(tools) == 21
     names = {t.name for t in tools}
     expected_names = {
         "sslyze", "bandit", "semgrep", "checkov", "prowler", "schemathesis",
         "nuclei", "ffuf", "gitleaks", "trivy", "subfinder", "httpx", "katana",
         "syft", "grype", "osv-scanner", "trufflehog", "dockle", "kube-bench",
-        "nmap", "nikto", "retire"
+        "nmap", "retire"
     }
     assert names == expected_names
 
@@ -75,7 +75,6 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["kube-bench"].install_method == ToolInstallMethod.STANDALONE_BINARY
 
     assert tool_map["nmap"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
-    assert tool_map["nikto"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
     assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
 
 
@@ -249,7 +248,7 @@ def test_tool_management_api_endpoints(client, manager):
     resp = client.get("/api/system/tools")
     assert resp.status_code == 200
     tools = resp.json()
-    assert len(tools) == 22
+    assert len(tools) == 21
 
     # 2. GET /api/system/tools/nuclei/status
     resp = client.get("/api/system/tools/nuclei/status")

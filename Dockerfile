@@ -164,7 +164,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g retire \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-compiled standalone binaries from builder stage
+# Create application directories
+WORKDIR /app
+RUN mkdir -p /app/data/scans /app/backend /app/frontend
+
+# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, Prowler, Schemathesis, FastAPI, etc.)
+COPY backend/requirements.txt /app/backend/
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 -r /app/backend/requirements.txt && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 bandit sslyze semgrep checkov prowler schemathesis
+
+# Copy pre-compiled standalone Go binaries AFTER pip so pip packages cannot overwrite CLI tools (e.g. ProjectDiscovery httpx)
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
 COPY --from=builder /tmp/bin/ffuf /usr/local/bin/ffuf
 COPY --from=builder /tmp/bin/gitleaks /usr/local/bin/gitleaks
@@ -179,15 +189,8 @@ COPY --from=builder /tmp/bin/trufflehog /usr/local/bin/trufflehog
 COPY --from=builder /tmp/bin/dockle /usr/local/bin/dockle
 COPY --from=builder /tmp/bin/kube-bench /usr/local/bin/kube-bench
 
-# Create application directories
-WORKDIR /app
-RUN mkdir -p /app/data/scans /app/backend /app/frontend
-
-# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, Prowler, Schemathesis, FastAPI, etc.)
-COPY backend/requirements.txt /app/backend/
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir --timeout 1000 --retries 10 -r /app/backend/requirements.txt && \
-    pip install --no-cache-dir --timeout 1000 --retries 10 bandit sslyze semgrep checkov prowler schemathesis
+# Pre-bake Nuclei community vulnerability templates into container image
+RUN nuclei -update-templates || true
 
 # Copy backend application, frontend HUD assets, and root runner
 COPY backend/ /app/backend/

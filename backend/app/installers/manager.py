@@ -56,9 +56,8 @@ class ToolInstallationManager:
             "dockle": GithubReleaseInstaller("dockle"),
             "kube-bench": GithubReleaseInstaller("kube-bench"),
 
-            # System / driver helpers & package manager tools (3 tools)
+            # System / driver helpers & package manager tools (2 tools)
             "nmap": SystemToolHelper("nmap"),
-            "nikto": SystemToolHelper("nikto"),
             "retire": SystemToolHelper("retire"),
         }
         self._active_tasks: Dict[str, asyncio.Task] = {}

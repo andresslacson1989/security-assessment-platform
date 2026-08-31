@@ -23,9 +23,9 @@ When pointed to a target (Web URL, Domain Name, Host IP Address, Source Code Rep
 5. **Infrastructure-as-Code, Container Hardening, Cloud Posture (CSPM) & CIS Benchmarks** (`infra_iac`):
    - Static IaC template scanning, container image CIS Docker linter, official CIS Kubernetes Benchmark auditing, and multi-cloud security assessment (AWS, Azure, GCP).
 
-The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture** spanning a fleet of **22 authoritative security tools** backed by native proprietary engines:
+The platform operates on an **"Adapters First-in-Line" Enterprise Hybrid Architecture** spanning a fleet of **21 authoritative modern security tools** backed by native proprietary engines:
 - **EASM & Recon Fleet:** `nmap`, `sslyze`, `subfinder`, `httpx`
-- **Web DAST & Crawling Fleet:** `nuclei`, `ffuf`, `nikto`, `katana`
+- **Web DAST & Crawling Fleet:** `nuclei`, `ffuf`, `katana`
 - **SAST & Secret Fleet:** `semgrep`, `bandit`, `gitleaks`, `trufflehog`, `retire`
 - **Supply Chain & SCA Fleet:** `trivy`, `syft`, `grype`, `osv-scanner`
 - **Cloud, K8s & API Posture Fleet:** `checkov`, `prowler`, `kube-bench`, `dockle`, `schemathesis`
@@ -188,8 +188,8 @@ To combine zero-dependency portability with enterprise-grade penetration testing
 
 ### 4.1 Zero-Failure Fallback Guarantee & Priority Model
 1. **Host Discovery & Priority Resolution:** The orchestrator automatically probes system `PATH`, local managed binaries directory (`backend/bin/`), and configured custom paths at startup and scan initialization. When an adapter is active, it runs first to establish baseline findings.
-2. **Transparent Native Fallback:** If an external binary (`nmap`, `sslyze`, `nuclei`, `ffuf`, `nikto`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`) is not installed or errors during execution, the platform automatically and seamlessly falls back to its built-in pure Python engines. The scan NEVER crashes due to missing external binaries.
-3. **Execution Mode Reporting:** Every finding records its `source_tool` (`"native"`, `"nmap"`, `"sslyze"`, `"nuclei"`, `"ffuf"`, `"nikto"`, `"semgrep"`, `"gitleaks"`, `"bandit"`, `"trivy"`, `"checkov"`) for audit transparency.
+2. **Transparent Native Fallback:** If an external binary (`nmap`, `sslyze`, `nuclei`, `ffuf`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`) is not installed or errors during execution, the platform automatically and seamlessly falls back to its built-in pure Python engines. The scan NEVER crashes due to missing external binaries.
+3. **Execution Mode Reporting:** Every finding records its `source_tool` (`"native"`, `"nmap"`, `"sslyze"`, `"nuclei"`, `"ffuf"`, `"semgrep"`, `"gitleaks"`, `"bandit"`, `"trivy"`, `"checkov"`) for audit transparency.
 
 ### 4.2 Safe Non-Destructive Subprocess Execution Flags
 External tools MUST be invoked with strictly bounded, non-destructive arguments:
@@ -204,9 +204,6 @@ External tools MUST be invoked with strictly bounded, non-destructive arguments:
 - **FFuF (`FfufAdapter`):**
   - Command: `ffuf -u <target_url>/FUZZ -w <wordlist> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10`
   - Prohibitions: Max rate capped at 10 RPS to preserve target stability.
-- **Nikto (`NiktoAdapter`):**
-  - Command: `nikto -h <target_url> -Format json -output - -Tuning 1,2,3,4,8,9,a,b,c`
-  - Prohibitions: No invasive DoS or brute-forcing modules.
 - **Semgrep (`SemgrepAdapter`):**
   - Command: `semgrep scan --config auto --json <target_dir>`
 - **Gitleaks (`GitleaksAdapter`):**

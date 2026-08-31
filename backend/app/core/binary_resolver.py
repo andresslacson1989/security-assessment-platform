@@ -167,10 +167,12 @@ def resolve_tool_binary(
 
     # Tier 2: In-App Managed Binaries directory ('backend/bin/<tool_name>[.exe|.bat|.cmd|.pl]')
     bin_dir = local_bin_dir or get_default_bin_dir()
-    exts = [".exe", ".bat", ".cmd", ".pl", ""] if sys.platform == "win32" else ["", ".pl", ".sh", ".exe"]
+    exts = [".exe", ".bat", ".cmd", ".pl", ""] if sys.platform == "win32" else ["", ".sh", ".pl"]
     for ext in exts:
         candidate = os.path.join(bin_dir, f"{tool_name}{ext}")
         if os.path.isfile(candidate):
+            if sys.platform != "win32" and not os.access(candidate, os.X_OK):
+                continue
             return os.path.abspath(candidate)
 
     # Tier 3: Python environment Scripts / bin directory (for pip-installed tools)
@@ -238,7 +240,11 @@ async def safe_execute_subprocess(
                 encoding="utf-8",
                 errors="replace",
             )
-            return res.returncode, res.stdout or "", res.stderr or ""
+            stderr = res.stderr or ""
+            if "<3>WSL" in stderr:
+                cleaned_lines = [line for line in stderr.splitlines() if not line.startswith("<3>WSL")]
+                stderr = "\n".join(cleaned_lines)
+            return res.returncode, res.stdout or "", stderr
         except subprocess.TimeoutExpired:
             return -1, "", f"Execution timed out after {timeout} seconds"
         except FileNotFoundError as e:

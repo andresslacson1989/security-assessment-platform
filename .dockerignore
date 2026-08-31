@@ -22,6 +22,8 @@ env/
 data/scans/*
 tests/
 contracts/
+backend/bin/
+bin/
 
 # IDE & Editor metadata
 .idea/

@@ -867,28 +867,25 @@ class TestCapabilitiesAndRegistry:
         registry = get_adapter_registry()
         expected_tools = {
             "nmap", "sslyze", "subfinder", "httpx",
-            "nuclei", "ffuf", "nikto", "katana", "schemathesis",
+            "nuclei", "ffuf", "katana", "schemathesis",
             "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
             "trivy", "syft", "grype", "osv-scanner",
             "checkov", "prowler", "kube-bench", "dockle",
         }
         assert set(registry.keys()) == expected_tools
-        assert len(registry) == 22
+        assert len(registry) == 21
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_fallback(self):
-        # All tools missing -> NATIVE_FALLBACK for all 22 tools
+        # All tools missing -> NATIVE_FALLBACK for all 21 tools
         with patch.object(BaseToolAdapter, "resolve_binary_path", return_value=None):
             with patch.object(BaseToolAdapter, "is_available", return_value=False):
                 caps = await discover_system_capabilities()
-                assert len(caps.tools) == 22
+                assert len(caps.tools) == 21
                 assert caps.native_engines_ready is True
                 for t in caps.tools:
                     assert t.available is False
-                    if t.name == "nikto":
-                        assert t.execution_mode in (ToolExecutionMode.DISABLED, ToolExecutionMode.NATIVE_FALLBACK)
-                    else:
-                        assert t.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+                    assert t.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_active(self):
@@ -907,7 +904,7 @@ class TestCapabilitiesAndRegistry:
 
         all_tools = [
             "nmap", "sslyze", "subfinder", "httpx",
-            "nuclei", "ffuf", "nikto", "katana", "schemathesis",
+            "nuclei", "ffuf", "katana", "schemathesis",
             "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
             "trivy", "syft", "grype", "osv-scanner",
             "checkov", "prowler", "kube-bench", "dockle",

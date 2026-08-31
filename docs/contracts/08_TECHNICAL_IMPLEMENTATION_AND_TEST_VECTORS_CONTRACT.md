@@ -293,16 +293,16 @@ async def audit_dns_hygiene(domain: str) -> List[Finding]:
   - Parses JSON results object `results[]`, extracting `input.FUZZ`, `status`, `length`, `words`, and `redirectlocation`.
   - Creates `DiscoveredEndpoint` models and `Finding` objects (`DAST-EXP-xxx`) with `source_tool="ffuf"`.
 
-### 8.5 Nikto Subprocess & JSON Parsing (`nikto_adapter.py`)
-- **Invocation:**
+### 8.5 Httpx Subprocess Validation & WSL Stderr Sanitization (`httpx_adapter.py` & `binary_resolver.py`)
+- **Invocation & Validation:**
   ```python
-  cmd = [nikto_path, "-h", target_url, "-Format", "json", "-output", "-", "-Tuning", "1,2,3,4,8,9,a,b,c"]
-  process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-  stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+  cmd = [httpx_path, "-u", target_url, "-json", "-silent", "-title", "-tech-detect", "-status-code", "-follow-redirects"]
+  code, stdout, stderr = await self.execute_command(cmd, timeout=45.0)
   ```
-- **Parsing Mechanics:**
-  - Parses JSON vulnerability array `vulnerabilities[]`, extracting OSVDB IDs, HTTP method, URI, and description.
-  - Normalizes into `Finding` with `source_tool="nikto"`.
+- **Execution & Sanitization Mechanics:**
+  - `HttpxAdapter.get_version` enforces ProjectDiscovery signature verification, rejecting any collided Python `pip` entrypoint scripts.
+  - `safe_execute_subprocess` strips out cosmetic WSL2 kernel interop debug messages (`<3>WSL ...`) from stderr.
+  - Parses streaming JSON lines into `DiscoveredEndpoint` and `EASM-EXPOSURE-001` findings with `source_tool="httpx"`.
 
 ### 8.6 Semgrep Subprocess & AST Rule Output Parsing (`semgrep_adapter.py`)
 - **Invocation:**
@@ -543,36 +543,33 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=8000
 
-# Install runtime system packages: Nmap, Perl with CPAN XML::Writer, Git, Curl, procps
+# Install runtime system packages: Nmap, Git, Curl, Node.js (for Retire.js), procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
-    perl \
-    libxml-writer-perl \
-    libnet-ssleay-perl \
+    nodejs \
+    npm \
     git \
     curl \
     ca-certificates \
     procps \
+    && npm install -g retire \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Nikto via official upstream GitHub repo
-RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
-    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
-    chmod +x /opt/nikto/program/nikto.pl
-
-# Copy pre-compiled standalone binaries from builder stage
-COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
-COPY --from=builder /tmp/bin/ffuf /usr/local/bin/ffuf
-COPY --from=builder /tmp/bin/gitleaks /usr/local/bin/gitleaks
-COPY --from=builder /tmp/bin/trivy /usr/local/bin/trivy
 
 # Create application directories
 WORKDIR /app
 RUN mkdir -p /app/data/scans /app/backend /app/frontend
 
-# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, FastAPI, etc.)
+# Install Python requirements
 COPY backend/requirements.txt /app/backend/
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r /app/backend/requirements.txt && \
+    pip install --no-cache-dir bandit sslyze semgrep checkov prowler schemathesis
+
+# Copy pre-compiled standalone Go binaries AFTER pip to prevent collision
+COPY --from=builder /tmp/bin/* /usr/local/bin/
+
+# Pre-bake Nuclei community templates into image
+RUN nuclei -update-templates || true
 
 # Copy backend application, frontend HUD assets, and root runner
 COPY backend/ /app/backend/

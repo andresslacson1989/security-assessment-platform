@@ -71,7 +71,7 @@ __all__ = [
 
 def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
     """
-    Returns an initialized registry of all 22 available tool adapter instances.
+    Returns an initialized registry of all 21 available modern tool adapter instances.
     """
     return {
         "nmap": NmapAdapter(),
@@ -80,7 +80,6 @@ def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
         "httpx": HttpxAdapter(),
         "nuclei": NucleiAdapter(),
         "ffuf": FfufAdapter(),
-        "nikto": NiktoAdapter(),
         "katana": KatanaAdapter(),
         "schemathesis": SchemathesisAdapter(),
         "semgrep": SemgrepAdapter(),
@@ -103,7 +102,7 @@ async def discover_system_capabilities(
     config: Optional[ToolAdapterConfig] = None,
 ) -> SystemCapabilities:
     """
-    Discovers installed CLI tools on the host system across all 22 adapters,
+    Discovers installed CLI tools on the host system across all 21 adapters,
     inspects their versions and paths, and returns the structured SystemCapabilities model.
     """
     cfg = config or ToolAdapterConfig()
@@ -118,7 +117,6 @@ async def discover_system_capabilities(
         "httpx": (cfg.enable_httpx, cfg.httpx_path or cfg.custom_httpx_path),
         "nuclei": (cfg.enable_nuclei, cfg.nuclei_path or cfg.custom_nuclei_path),
         "ffuf": (cfg.enable_ffuf, cfg.ffuf_path or cfg.custom_ffuf_path),
-        "nikto": (cfg.enable_nikto, cfg.nikto_path or cfg.custom_nikto_path),
         "katana": (cfg.enable_katana, cfg.katana_path or cfg.custom_katana_path),
         "schemathesis": (cfg.enable_schemathesis, cfg.schemathesis_path or cfg.custom_schemathesis_path),
         "semgrep": (cfg.enable_semgrep, cfg.semgrep_path or cfg.custom_semgrep_path),
@@ -158,7 +156,6 @@ async def discover_system_capabilities(
         "dockle": ToolInstallMethod.STANDALONE_BINARY,
         "kube-bench": ToolInstallMethod.STANDALONE_BINARY,
         "nmap": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
-        "nikto": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
         "retire": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
     }
 
