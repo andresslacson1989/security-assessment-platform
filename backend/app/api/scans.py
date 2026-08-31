@@ -414,6 +414,18 @@ async def stream_scan_events(
         # Stream live events from orchestrator
         queue = orchestrator.subscribe_events(scan_id)
         try:
+            # Yield initial snapshot of active scan progress & logs recorded before handshake
+            if job.progress_percent > 0 or job.current_stage:
+                yield f"event: progress\ndata: {json.dumps({'percent': job.progress_percent, 'stage': job.current_stage, 'status': job.status.value})}\n\n"
+            for log in list(job.logs):
+                yield f"event: log\ndata: {log.model_dump_json()}\n\n"
+            for finding in list(job.findings):
+                yield f"event: finding\ndata: {finding.model_dump_json()}\n\n"
+            for ep in list(job.discovered_endpoints):
+                yield f"event: crawl_discovered\ndata: {ep.model_dump_json()}\n\n"
+            for sub in list(job.discovered_subdomains):
+                yield f"event: subdomain_discovered\ndata: {sub.model_dump_json()}\n\n"
+
             while True:
                 msg = await queue.get()
                 if isinstance(msg, dict):

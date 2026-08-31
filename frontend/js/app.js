@@ -674,9 +674,11 @@ class ScanStreamManager {
 
     this.eventSource.addEventListener("finding", (e) => {
       const finding = JSON.parse(e.data);
-      this.allFindings.push(finding);
-      this.renderFindings();
-      this.updateLiveSummaryCounts();
+      if (!this.allFindings.some((f) => (f.id && f.id === finding.id) || (f.fingerprint && f.fingerprint === finding.fingerprint))) {
+        this.allFindings.push(finding);
+        this.renderFindings();
+        this.updateLiveSummaryCounts();
+      }
     });
 
     this.eventSource.addEventListener("auth_status", (e) => {
