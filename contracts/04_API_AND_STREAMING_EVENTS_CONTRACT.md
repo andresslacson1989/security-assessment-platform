@@ -1,7 +1,7 @@
 # Contract 04: Control Plane REST API, SSE Streaming & Multi-Tenant Authorization Specification
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 11.0.0 (Control Plane REST/SSE APIs, One-Time Bootstrap, Library-Backed RFC 8725 JWT, DB-Authoritative IDOR Prevention & Multi-Layer Authorization)  
+**Document Version:** 12.0.0 (Control Plane REST/SSE APIs, One-Time Bootstrap, Library-Backed RFC 8725 JWT, DB-Authoritative IDOR Prevention & Multi-Layer Authorization)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST Endpoints, Streaming SSE Protocol, Multi-Tenant Authorization, Middleware & API Security Headers  
 

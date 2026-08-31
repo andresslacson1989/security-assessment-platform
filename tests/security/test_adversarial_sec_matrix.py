@@ -339,8 +339,8 @@ def test_sec_022_evidence_secret_masking():
 
 
 def test_sec_023_audit_log_integrity(setup_test_db):
-    """SEC-023: Security actions emit immutable audit events."""
-    event = AuditEvent(
+    """SEC-023: Security actions emit immutable audit events with verifiable SHA-256 hash chains."""
+    event1 = AuditEvent(
         actor="admin",
         organization_id="org-test",
         action=AuditAction.SCAN_CREATED,
@@ -349,12 +349,32 @@ def test_sec_023_audit_log_integrity(setup_test_db):
         result="SUCCESS",
         details={"profile": "FULL_STACK"},
     )
-    setup_test_db.record_audit_event(event)
+    setup_test_db.record_audit_event(event1)
 
-    events, total = setup_test_db.list_audit_events("org-test")
-    assert total == 1
-    assert events[0].action == AuditAction.SCAN_CREATED
-    assert events[0].object_id == "scan-001"
+    event2 = AuditEvent(
+        actor="admin",
+        organization_id="org-test",
+        action=AuditAction.TOOL_INSTALL_COMPLETED,
+        object_type="tool",
+        object_id="nuclei",
+        result="SUCCESS",
+        details={"version": "v3.3.0"},
+    )
+    setup_test_db.record_audit_event(event2)
+
+    # 1. Verify authentic hash chain passes
+    is_valid, bad_id = setup_test_db.verify_audit_log_integrity("org-test")
+    assert is_valid is True
+    assert bad_id is None
+
+    # 2. Adversarial tampering: modify an audit payload directly in the database
+    with setup_test_db._get_connection() as conn:
+        conn.execute("UPDATE audit_events SET result = 'TAMPERED' WHERE id = ?", (event1.id,))
+
+    # 3. Verification must immediately detect the broken hash chain
+    is_tampered, tampered_id = setup_test_db.verify_audit_log_integrity("org-test")
+    assert is_tampered is False
+    assert tampered_id == event1.id
 
 
 def test_sec_024_risk_acceptance_visibility():

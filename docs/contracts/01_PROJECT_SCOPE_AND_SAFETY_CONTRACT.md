@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Enterprise Security Architecture
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 11.0.0 (Security Invariant Closure, Trust-Boundary Enforcement, Authoritative State & Independent Assurance)  
+**Document Version:** 12.0.0 (Security Boundary Proof, Runtime Enforcement & Enterprise Assurance)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards, Zero-Trust Security Controls, Multi-Tenant Governance & Operational Boundaries  
 

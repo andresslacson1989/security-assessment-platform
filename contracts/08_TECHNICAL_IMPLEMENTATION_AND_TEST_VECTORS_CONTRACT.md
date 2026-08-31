@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Authorization Service, Supply Chain & Test Vectors
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 11.0.0 (Enterprise Technical Implementation, Multi-Layer Authorization Service, SSRF Rebinding Defense, Workspace Jail & Adversarial Vectors)  
+**Document Version:** 12.0.0 (Enterprise Technical Implementation, Multi-Layer Authorization Service, SSRF Rebinding Defense, Workspace Jail & Adversarial Vectors)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Technical Implementations, Authorization Invariants, Hardened Gateways, Supply Chain Hashes & Test Vectors  
 

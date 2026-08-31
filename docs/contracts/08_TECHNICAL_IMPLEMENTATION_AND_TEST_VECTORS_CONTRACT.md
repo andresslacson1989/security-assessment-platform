@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Authorization Service, Supply Chain & Test Vectors
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 11.0.0 (Enterprise Technical Implementation, Multi-Layer Authorization Service, SSRF Rebinding Defense, Workspace Jail & Adversarial Vectors)  
+**Document Version:** 12.0.0 (Enterprise Technical Implementation, Multi-Layer Authorization Service, SSRF Rebinding Defense, Workspace Jail & Adversarial Vectors)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Technical Implementations, Authorization Invariants, Hardened Gateways, Supply Chain Hashes & Test Vectors  
 
@@ -94,3 +94,4 @@ If an archive checksum does not match, the installer MUST abort immediately, del
 | Tamper-Evident Audit Logs | Contract 02 §6, Contract 04 §1 | `app/core/db.py`, `app/api/auth.py` | `tests/security/test_audit_integrity.py` |
 | Canonical Findings & SLA | Contract 02 §4, Contract 05 §2 | `app/core/correlator.py`, `app/core/db.py` | `tests/security/test_finding_lifecycle.py` |
 | Evidence Masking & Health | Contract 01 §3, Contract 04 §3 | `app/core/sanitizer.py`, `app/api/export.py` | `tests/security/test_evidence_integrity.py` |
+

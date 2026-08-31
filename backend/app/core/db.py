@@ -515,6 +515,52 @@ class DatabaseManager:
             ]
             return events, total
 
+    def verify_audit_log_integrity(self, organization_id: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """
+        Cryptographically verifies the immutable SHA-256 hash chain of the audit log.
+        Returns (True, None) if the hash chain is completely intact, or (False, broken_event_id)
+        if any record was modified, reordered, deleted, or tampered with.
+        """
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            query = "SELECT * FROM audit_events"
+            params: List[Any] = []
+            if organization_id:
+                query += " WHERE organization_id = ?"
+                params.append(organization_id)
+            query += " ORDER BY rowid ASC"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            prev_hash: Optional[str] = None
+            for row in rows:
+                row_id = row["id"]
+                ts_str = row["timestamp"]
+                actor = row["actor"]
+                org_id = row["organization_id"]
+                action = row["action"]
+                obj_type = row["object_type"]
+                obj_id = row["object_id"]
+                result = row["result"]
+                details_json = row["details_json"]
+                stored_prev = row["previous_event_hash"]
+                stored_hash = row["event_hash"]
+
+                # Verify previous event hash pointer
+                if stored_prev != prev_hash:
+                    return False, row_id
+
+                # Recompute canonical payload and SHA-256 hash
+                canonical_payload = f"{row_id}|{ts_str}|{actor}|{org_id}|{action}|{obj_type}|{obj_id}|{result}|{details_json}|{prev_hash or ''}"
+                expected_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+
+                if stored_hash != expected_hash:
+                    return False, row_id
+
+                prev_hash = stored_hash
+
+            return True, None
+
     # ========================================================================
     # 3. Asset Management Operations
     # ========================================================================

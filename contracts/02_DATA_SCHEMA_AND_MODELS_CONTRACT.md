@@ -1,7 +1,7 @@
 # Contract 02: Enterprise Data Schemas, Entity Models & Multi-Tenant State Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 11.0.0 (Enterprise ASPM Schema, Canonical Findings & Occurrences, Tenant Isolation, Version Authority & Tamper-Evident Audit Models)  
+**Document Version:** 12.0.0 (Enterprise ASPM Schema, Canonical Findings & Occurrences, Tenant Isolation, Version Authority & Tamper-Evident Audit Models)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Core Data Schemas, Relational Persistence Tables, Identity, Assets, Findings Lifecycle & Audit Records  
 
@@ -13,10 +13,10 @@ All platform components, API responses, exporters, UI banners, and database migr
 
 ```python
 # backend/app/core/version.py
-APP_VERSION = "11.0.0"
+APP_VERSION = "12.0.0"
 API_VERSION = "v1"
-SCHEMA_VERSION = "11.0.0"
-CONTRACT_VERSION = "11.0.0"
+SCHEMA_VERSION = "12.0.0"
+CONTRACT_VERSION = "12.0.0"
 RULESET_VERSION = "2026.08.31"
 RISK_MODEL_VERSION = "contextual_risk_model_v2"
 ```

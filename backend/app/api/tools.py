@@ -206,8 +206,8 @@ async def execute_http_repeater(
     start_time = time.perf_counter()
     
     headers = dict(payload.headers) if payload.headers else {}
-    if not any(k.lower() == "user-agent" for k in headers):
-        headers["User-Agent"] = "CyberAssess-Repeater/10.0.0"
+    if "user-agent" not in {k.lower() for k in headers.keys()}:
+        headers["User-Agent"] = "CyberAssess-Repeater/12.0.0"
 
     async def on_redirect_response(response: httpx.Response):
         """Hop-by-hop redirect SSRF validator."""
