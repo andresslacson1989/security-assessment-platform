@@ -133,28 +133,38 @@ def calculate_sha256(data: bytes) -> str:
 def verify_download_integrity(
     tool_name: str,
     data: bytes,
-    expected_sha256: Optional[str] = None
+    expected_sha256: Optional[str] = None,
+    platform_key: Optional[str] = None,
 ) -> Tuple[bool, str, Optional[str]]:
     """
     Verifies the cryptographic integrity of a downloaded tool release archive.
     Returns (is_valid, actual_sha256, error_message).
-    Never permits silent bypass on mismatched or invalid digests.
+    Never permits silent bypass on omitted, missing, or mismatched digests.
     """
     actual_hash = calculate_sha256(data)
+    manifest_entry = PINNED_TOOL_MANIFEST.get(tool_name)
+    if not manifest_entry:
+        return False, actual_hash, f"Tool '{tool_name}' is not registered in the authoritative pinned manifest."
 
-    if not expected_sha256:
-        # Check if tool is in pinned manifest
-        manifest_entry = PINNED_TOOL_MANIFEST.get(tool_name)
-        if not manifest_entry:
-            return False, actual_hash, f"Tool '{tool_name}' is not in authoritative pinned manifest."
-        # If no platform-specific hash is pinned in development, return calculated hash
-        return True, actual_hash, None
+    expected = expected_sha256
+    if not expected and platform_key:
+        checksums = manifest_entry.get("sha256_checksums", {})
+        expected = checksums.get(platform_key)
 
-    if expected_sha256.lower() != actual_hash:
+    if not expected:
+        # Look up if any matching checksum exists in manifest
+        checksums = manifest_entry.get("sha256_checksums", {})
+        if len(checksums) == 1:
+            expected = next(iter(checksums.values()))
+
+    if not expected:
+        return False, actual_hash, f"No authoritative SHA-256 digest is registered for tool '{tool_name}'. Installation rejected."
+
+    if expected.strip().lower() != actual_hash:
         return (
             False,
             actual_hash,
-            f"Cryptographic SHA-256 checksum mismatch for '{tool_name}'! Expected '{expected_sha256}', computed '{actual_hash}'."
+            f"Cryptographic SHA-256 checksum mismatch for '{tool_name}'! Expected '{expected.strip().lower()}', computed '{actual_hash}'."
         )
 
     return True, actual_hash, None

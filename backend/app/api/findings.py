@@ -20,7 +20,7 @@ from app.core.models import (
     AuditAction,
     utc_now,
 )
-from app.core.auth import get_current_user, require_dev_or_higher, UserProfile
+from app.core.auth import get_current_user, require_dev_or_higher, require_permission, UserProfile, UserRole
 from app.core.db import db_manager
 
 router = APIRouter()
@@ -40,7 +40,7 @@ async def list_findings(
     asset_id: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="finding:read")),
 ) -> Dict[str, Any]:
     """
     Returns filtered canonical finding records scoped strictly to caller's organization.
@@ -50,9 +50,10 @@ async def list_findings(
         query = "SELECT * FROM findings WHERE 1=1"
         params: List[Any] = []
 
-        if current_user.organization_id and current_user.role != "ADMIN":
-            query += " AND (organization_id = ? OR organization_id IS NULL)"
-            params.append(current_user.organization_id)
+        if current_user.role != UserRole.ADMIN or current_user.organization_id:
+            if current_user.organization_id:
+                query += " AND organization_id = ?"
+                params.append(current_user.organization_id)
         if severity:
             query += " AND severity = ?"
             params.append(severity.value)
@@ -100,9 +101,9 @@ async def list_findings(
 @router.get("/{finding_id}", summary="Get Canonical Finding Details")
 async def get_finding_detail(
     finding_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="finding:read")),
 ) -> Dict[str, Any]:
-    """Retrieves full finding details. Enforces tenant ownership (IDOR denial)."""
+    """Retrieves full finding details. Enforces strict tenant ownership (IDOR denial)."""
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
@@ -111,8 +112,9 @@ async def get_finding_detail(
             raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
 
         # Multi-tenant IDOR check
-        if row["organization_id"] and current_user.organization_id and row["organization_id"] != current_user.organization_id:
-            raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
+        if current_user.role != UserRole.ADMIN or current_user.organization_id:
+            if row["organization_id"] != current_user.organization_id:
+                raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
 
         f_data = json.loads(row["data_json"])
         f_data["lifecycle_status"] = row["status"]
@@ -126,7 +128,7 @@ async def get_finding_detail(
 async def update_finding_status(
     finding_id: str,
     payload: FindingTriageUpdate,
-    current_user: UserProfile = Depends(require_dev_or_higher),
+    current_user: UserProfile = Depends(require_permission(required_scope="finding:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
     """
     Updates the lifecycle triage status of a vulnerability finding (OPEN, IN_PROGRESS, FIXED, RISK_ACCEPTED).

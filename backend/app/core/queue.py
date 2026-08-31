@@ -42,8 +42,10 @@ class ScanQueueManager:
     async def execute_bounded(
         self,
         scan_id: str,
-        task_fn: Callable[[], Awaitable[Any]],
+        task_fn: Callable[..., Awaitable[Any]],
+        *args,
         timeout_seconds: float = GLOBAL_SCAN_TIMEOUT_SECONDS,
+        **kwargs,
     ) -> Any:
         """
         Executes a scan job task within the concurrency semaphore and execution timeout boundary.
@@ -51,7 +53,7 @@ class ScanQueueManager:
         async with self._semaphore:
             self._active_count += 1
             try:
-                return await asyncio.wait_for(task_fn(), timeout=timeout_seconds)
+                return await asyncio.wait_for(task_fn(*args, **kwargs), timeout=timeout_seconds)
             finally:
                 self._active_count = max(0, self._active_count - 1)
 

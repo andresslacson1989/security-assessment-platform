@@ -14,7 +14,9 @@ from app.core.auth import (
     get_current_user,
     require_dev_or_higher,
     require_admin,
+    require_permission,
     UserProfile,
+    UserRole,
     authorize_asset_access,
 )
 from app.core.db import db_manager
@@ -46,7 +48,7 @@ class UpdateAssetRequest(BaseModel):
 async def list_assets(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="asset:read")),
 ) -> Dict[str, Any]:
     """Lists assets belonging strictly to the caller's organization."""
     org_id = current_user.organization_id if current_user.role != "ADMIN" or current_user.organization_id else None
@@ -63,9 +65,20 @@ async def list_assets(
 @router.post("/", status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def create_asset(
     payload: CreateAssetRequest,
-    current_user: UserProfile = Depends(require_dev_or_higher),
+    current_user: UserProfile = Depends(require_permission(required_scope="asset:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Asset:
     """Registers a new monitored asset within the caller's organization."""
+    from app.core.ssrf_protector import assert_safe_target, SSRFProtectionError
+    from app.core.path_sandbox import PathSandboxViolation
+    allow_internal = (current_user.role == UserRole.ADMIN)
+    try:
+        assert_safe_target(payload.type.value, payload.target_value.strip(), allow_internal=allow_internal)
+    except (SSRFProtectionError, PathSandboxViolation) as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Asset target rejected by security policy: {str(err)}"
+        )
+
     asset = Asset(
         organization_id=current_user.organization_id,
         name=payload.name.strip(),
@@ -97,7 +110,7 @@ async def create_asset(
 @router.get("/{asset_id}", summary="Get Asset Details & Posture Status")
 async def get_asset(
     asset_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="asset:read")),
 ) -> Asset:
     """Retrieves asset details. Enforces strict tenant ownership (IDOR denial)."""
     asset = db_manager.get_asset(asset_id)
@@ -110,7 +123,7 @@ async def get_asset(
 async def update_asset(
     asset_id: str,
     payload: UpdateAssetRequest,
-    current_user: UserProfile = Depends(require_dev_or_higher),
+    current_user: UserProfile = Depends(require_permission(required_scope="asset:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Asset:
     """Updates asset metadata. Enforces tenant ownership."""
     asset = db_manager.get_asset(asset_id)
@@ -149,7 +162,7 @@ async def update_asset(
 @router.delete("/{asset_id}", summary="Delete Monitored Asset")
 async def delete_asset(
     asset_id: str,
-    current_user: UserProfile = Depends(require_admin),
+    current_user: UserProfile = Depends(require_permission(required_scope="asset:delete", allowed_roles=[UserRole.ADMIN])),
 ) -> Dict[str, Any]:
     """Deletes an asset from the inventory. Enforces tenant ownership."""
     asset = db_manager.get_asset(asset_id)

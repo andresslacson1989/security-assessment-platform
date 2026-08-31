@@ -849,7 +849,8 @@ async def test_scenario_14_interactive_http_repeater():
             assert data["tls_version"] == "TLSv1.3"
 
         # Verify timeout error handling
-        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
+             patch("app.api.tools.assert_safe_url"):
             mock_client = AsyncMock()
             mock_client.request.side_effect = httpx.TimeoutException("Connection timed out")
             mock_client_cls.return_value.__aenter__.return_value = mock_client
@@ -863,7 +864,8 @@ async def test_scenario_14_interactive_http_repeater():
             assert "timed out" in resp.json()["detail"]
 
         # Verify network/connection error handling
-        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
+             patch("app.api.tools.assert_safe_url"):
             mock_client = AsyncMock()
             mock_client.request.side_effect = httpx.ConnectError("Connection refused")
             mock_client_cls.return_value.__aenter__.return_value = mock_client
@@ -1399,6 +1401,7 @@ async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path):
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch("app.installers.tool_manifest.verify_download_integrity", return_value=(True, "fake_sha256_hash", None)), \
          patch.object(gh_inst, "get_bin_dir", return_value=str(fake_bin_dir)), \
          patch.object(gh_inst, "get_version", AsyncMock(return_value="nuclei v3.2.0")):
         res = await gh_inst.install(lambda m: asyncio.sleep(0), lambda p, s: asyncio.sleep(0))

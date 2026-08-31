@@ -116,7 +116,7 @@ def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, O
 
     if not allow_internal:
         # Check forbidden hostnames
-        if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.endswith(".internal"):
+        if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
             return False, f"Target hostname '{hostname}' is a reserved internal/metadata name."
 
         # Check direct IP literals
@@ -132,8 +132,8 @@ def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, O
         # Resolve hostname and check all IPs
         resolved_ips = resolve_hostname_ips(hostname_lower)
         if not resolved_ips:
-            # If hostname cannot be resolved, let request proceed to network engine (which will handle NXDOMAIN gracefully)
-            return True, None
+            # Contract 01 / 08 Invariant: Unresolved target MUST fail closed.
+            return False, f"Target hostname '{hostname}' failed DNS resolution or does not exist."
 
         for ip in resolved_ips:
             allowed, reason = is_ip_allowed(ip)
@@ -143,6 +143,73 @@ def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, O
     return True, None
 
 
+def validate_target_domain(domain: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
+    """
+    Validates a DOMAIN target input against SSRF and internal address restrictions.
+    """
+    if not domain or not isinstance(domain, str):
+        return False, "Target domain cannot be empty."
+    
+    clean_domain = domain.strip().lower().split(":")[0]
+    if not allow_internal:
+        if clean_domain in BLOCKED_HOSTNAMES or clean_domain.endswith(".internal") or clean_domain.endswith(".local"):
+            return False, f"Target domain '{domain}' is a reserved internal/metadata name."
+        
+        resolved_ips = resolve_hostname_ips(clean_domain)
+        if not resolved_ips:
+            return False, f"Target domain '{clean_domain}' failed DNS resolution."
+        
+        for ip in resolved_ips:
+            allowed, reason = is_ip_allowed(ip)
+            if not allowed:
+                return False, f"Domain resolved to blocked address '{ip}': {reason}"
+                
+    return True, None
+
+
+def validate_target_ip(ip_str: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
+    """
+    Validates an IP target input against SSRF and private network boundaries.
+    """
+    if not ip_str or not isinstance(ip_str, str):
+        return False, "Target IP cannot be empty."
+    
+    clean_ip = ip_str.strip().split(":")[0]
+    if allow_internal:
+        try:
+            ipaddress.ip_address(clean_ip)
+            return True, None
+        except ValueError:
+            return False, f"Invalid IP address format: '{clean_ip}'"
+            
+    return is_ip_allowed(clean_ip)
+
+
+def validate_target_security(
+    target_type: str,
+    target_value: str,
+    allow_internal: bool = False,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Authoritative single-pipeline security validation for all target types:
+    URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST.
+    Ensures zero bypass routes around the security gateway.
+    """
+    t_type = target_type.value if hasattr(target_type, "value") else str(target_type).upper()
+    
+    if t_type == "URL":
+        return validate_target_url(target_value, allow_internal=allow_internal)
+    elif t_type == "DOMAIN":
+        return validate_target_domain(target_value, allow_internal=allow_internal)
+    elif t_type == "IP":
+        return validate_target_ip(target_value, allow_internal=allow_internal)
+    elif t_type in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"):
+        from app.core.path_sandbox import validate_path_sandbox
+        return validate_path_sandbox(target_value)
+    else:
+        return False, f"Unsupported target type: '{target_type}'"
+
+
 def assert_safe_url(url: str, allow_internal: bool = False) -> None:
     """
     Convenience function that raises SSRFProtectionError if the URL fails validation.
@@ -150,3 +217,12 @@ def assert_safe_url(url: str, allow_internal: bool = False) -> None:
     allowed, reason = validate_target_url(url, allow_internal=allow_internal)
     if not allowed:
         raise SSRFProtectionError(reason or "SSRF validation failed.")
+
+
+def assert_safe_target(target_type: str, target_value: str, allow_internal: bool = False) -> None:
+    """
+    Authoritatively asserts safety of any target type, raising SSRFProtectionError or PathTraversalError on failure.
+    """
+    allowed, reason = validate_target_security(target_type, target_value, allow_internal=allow_internal)
+    if not allowed:
+        raise SSRFProtectionError(reason or "Target validation failed security policy.")

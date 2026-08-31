@@ -300,20 +300,26 @@ class GithubReleaseInstaller(BaseToolInstaller):
         bin_name = self._cfg["binary_name"]
         local_bin_dir = self.get_bin_dir()
 
-        await emit_log(f"Querying GitHub release metadata for {repo}...")
-        await emit_progress(10, f"Fetching latest release metadata for {self.display_name}...")
+        from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, verify_download_integrity
+        manifest_entry = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
+        pinned_tag = manifest_entry.get("pinned_version")
+        
+        rel_label = pinned_tag or "pinned release"
+        await emit_log(f"Querying GitHub release metadata for {repo} ({rel_label})...")
+        await emit_progress(10, f"Fetching release metadata for {self.display_name} ({rel_label})...")
 
         headers = {
-            "User-Agent": "CyberAssess-Platform/6.0.0",
+            "User-Agent": "CyberAssess-Platform/10.0.0",
             "Accept": "application/vnd.github.v3+json",
         }
 
         download_url = None
         asset_filename = None
+        rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{pinned_tag}" if pinned_tag else f"https://api.github.com/repos/{repo}/releases/latest"
 
         try:
             async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
-                resp = await client.get(f"https://api.github.com/repos/{repo}/releases/latest")
+                resp = await client.get(rel_url)
                 if resp.status_code == 200:
                     data = resp.json()
                     assets = data.get("assets", [])
@@ -354,10 +360,17 @@ class GithubReleaseInstaller(BaseToolInstaller):
 
                 # Cryptographic SHA-256 Checksum Verification
                 await emit_progress(68, "Verifying cryptographic SHA-256 checksum integrity...")
-                from app.installers.tool_manifest import verify_download_integrity
+                sys_plat = platform.system().lower()
+                mach = platform.machine().lower()
+                os_prefix = "windows" if "win" in sys_plat else ("darwin" if "darwin" in sys_plat else "linux")
+                arch_suffix = "arm64" if ("arm64" in mach or "aarch64" in mach) else "amd64"
+                platform_key = f"{os_prefix}_{arch_suffix}"
+
                 with open(archive_path, "rb") as f:
                     archive_bytes = f.read()
-                is_valid, computed_hash, hash_err = verify_download_integrity(self.tool_name, archive_bytes)
+                is_valid, computed_hash, hash_err = verify_download_integrity(
+                    self.tool_name, archive_bytes, platform_key=platform_key
+                )
                 if not is_valid:
                     raise SecurityError(f"SHA-256 integrity check failed: {hash_err}")
                 await emit_log(f"Verified archive SHA-256: {computed_hash[:16]}...")

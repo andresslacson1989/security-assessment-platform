@@ -70,13 +70,16 @@ class ScanOrchestrator:
 
     async def start_scan(self, scan_job: ScanJob) -> asyncio.Task:
         """
-        Queues and launches background execution for a new scan job.
+        Queues and launches background execution for a new scan job governed by ScanQueueManager.
         """
         async with self._lock:
             self._active_jobs[scan_job.id] = scan_job
             save_scan(scan_job)
 
-        task = asyncio.create_task(self._execute_scan(scan_job.id))
+        from app.core.queue import queue_manager
+        task = asyncio.create_task(
+            queue_manager.execute_bounded(scan_job.id, self._execute_scan, scan_job.id)
+        )
         self._tasks[scan_job.id] = task
         return task
 

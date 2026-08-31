@@ -737,6 +737,7 @@ class UserProfile(BaseModel):
     email: str
     role: UserRole = Field(default=UserRole.VIEWER)
     organization_id: Optional[str] = None
+    scopes: List[str] = Field(default_factory=lambda: ["*"])
     is_active: bool = True
     created_at: datetime = Field(default_factory=utc_now)
     last_login_at: Optional[datetime] = None
@@ -866,7 +867,7 @@ class CanonicalFinding(BaseModel):
     category: str = Field(...)
     severity: Severity = Field(...)
     cvss_score: float = Field(..., ge=0.0, le=10.0)
-    cvss_vector: str = Field(default="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N")
+    cvss_vector: Optional[str] = Field(default="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N")
     contextual_risk_score: float = Field(default=0.0, ge=0.0, le=10.0)
     cwe_id: Optional[str] = Field(default=None)
     owasp_category: Optional[str] = Field(default=None)

@@ -37,7 +37,14 @@ OPERATING_MODE = OperatingMode.PRODUCTION if OPERATING_MODE_STR == "PRODUCTION" 
     OperatingMode.DEVELOPMENT if OPERATING_MODE_STR == "DEVELOPMENT" else OperatingMode.TEST
 )
 
-JWT_SECRET = os.getenv("JWT_SECRET", "cyberassess-enterprise-secret-key-32b-min")
+_raw_secret = os.getenv("JWT_SECRET")
+if not _raw_secret or _raw_secret.strip() in ("", "cyberassess-enterprise-secret-key-32b-min", "secret", "changeme", "default"):
+    # Generate an ephemeral, cryptographically secure 256-bit secret on boot
+    # Guarantees ZERO static predictable production default credentials
+    JWT_SECRET = secrets.token_hex(32)
+else:
+    JWT_SECRET = _raw_secret.strip()
+
 JWT_ALGORITHM = "HS256"
 ALLOWED_JWT_ALGORITHMS = ["HS256"]
 JWT_ISSUER = "CyberAssess-Control-Plane"
@@ -51,13 +58,14 @@ ANONYMOUS_DEV_USER = UserProfile(
     email="dev@cyberassess.local",
     role=UserRole.VIEWER,
     organization_id="org-default",
+    scopes=["scan:read", "asset:read", "finding:read", "report:read"],
 )
 
 # Active In-Memory Token Revocation Registry
 REVOKED_TOKENS_REGISTRY: set = set()
 
-# Programmatic API Key In-Memory Cache (hashed token -> (UserProfile, List[str]))
-API_KEYS_CACHE: Dict[str, Tuple[UserProfile, List[str]]] = {}
+# Programmatic API Key In-Memory Cache (hashed token -> (UserProfile, List[str], float))
+API_KEYS_CACHE: Dict[str, Tuple[UserProfile, List[str], float]] = {}
 
 
 # ============================================================================
@@ -139,7 +147,7 @@ def create_access_token(
         "email": user.email,
         "role": user.role.value,
         "org_id": user.organization_id,
-        "scopes": scopes or ["*"],
+        "scopes": scopes or user.scopes or ["*"],
         "iat": now,
         "nbf": now,
         "exp": now + expires_in,
@@ -158,7 +166,7 @@ def create_access_token(
 def decode_access_token(token: str) -> Dict[str, Any]:
     """
     Validates and decodes an HS256 JWT token under strict RFC 8725 requirements.
-    Rejects algorithm confusion (alg=none), unauthorized algorithms, and revoked tokens.
+    Rejects algorithm confusion (alg=none), unauthorized algorithms, missing claims, and revoked tokens.
     """
     if token in REVOKED_TOKENS_REGISTRY:
         raise HTTPException(
@@ -209,6 +217,15 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed token payload.")
 
+    # Mandatory RFC 8725 Claims Check
+    for required_claim in ("iss", "aud", "sub", "exp", "iat"):
+        if required_claim not in payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Mandatory claim '{required_claim}' missing from token payload.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     now = time.time()
     exp = payload.get("exp", 0)
     if now > exp:
@@ -223,11 +240,11 @@ def decode_access_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is not yet valid.")
 
     iss = payload.get("iss")
-    if iss and iss != JWT_ISSUER:
+    if iss != JWT_ISSUER:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token issuer.")
 
     aud = payload.get("aud")
-    if aud and aud != JWT_AUDIENCE:
+    if aud != JWT_AUDIENCE:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token audience.")
 
     return payload
@@ -251,6 +268,8 @@ def authorize_asset_access(user: UserProfile, asset: Asset, action: str = "read"
         return True  # System super-admin
     if asset.organization_id and user.organization_id and asset.organization_id != user.organization_id:
         return False  # Deny cross-tenant access
+    if not asset.organization_id and user.organization_id and user.role != UserRole.ADMIN:
+        return False
     if action == "write" and user.role not in (UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER):
         return False
     if action == "delete" and user.role != UserRole.ADMIN:
@@ -266,6 +285,8 @@ def authorize_scan_access(user: UserProfile, scan: ScanJob, action: str = "read"
         return True
     if scan.organization_id and user.organization_id and scan.organization_id != user.organization_id:
         return False
+    if not scan.organization_id and user.organization_id and user.role != UserRole.ADMIN:
+        return False
     if action in ("control", "cancel", "delete") and user.role not in (UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER):
         return False
     return True
@@ -278,6 +299,8 @@ def authorize_finding_access(user: UserProfile, finding: CanonicalFinding, actio
     if user.role == UserRole.ADMIN and user.organization_id is None:
         return True
     if finding.organization_id and user.organization_id and finding.organization_id != user.organization_id:
+        return False
+    if not finding.organization_id and user.organization_id and user.role != UserRole.ADMIN:
         return False
     if action == "triage" and user.role not in (UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER):
         return False
@@ -307,14 +330,19 @@ async def get_current_user(
     # 1. API Key Authentication (Hashed Token Lookup)
     if x_api_key:
         key_hash = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
+        now_ts = time.time()
+        
+        # Bounded cache check (5-minute TTL)
         if key_hash in API_KEYS_CACHE:
-            user, _ = API_KEYS_CACHE[key_hash]
-            return user
+            cached_user, cached_scopes, cached_time = API_KEYS_CACHE[key_hash]
+            if now_ts - cached_time < 300:
+                return cached_user
 
         from app.core.db import db_manager
         key_record, user_profile = db_manager.verify_api_key_hash(key_hash)
         if key_record and user_profile:
-            API_KEYS_CACHE[key_hash] = (user_profile, key_record.scopes)
+            user_profile.scopes = key_record.scopes
+            API_KEYS_CACHE[key_hash] = (user_profile, key_record.scopes, now_ts)
             return user_profile
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -333,6 +361,7 @@ async def get_current_user(
                 email=payload.get("email", "user@local"),
                 role=UserRole(payload.get("role", "VIEWER")),
                 organization_id=payload.get("org_id"),
+                scopes=payload.get("scopes", ["*"]),
             )
 
     # 3. Explicit Development Mode Bypass (Restricted to VIEWER role)
@@ -348,22 +377,39 @@ async def get_current_user(
     )
 
 
-def require_role(allowed_roles: List[UserRole]):
+def require_permission(required_scope: Optional[str] = None, allowed_roles: Optional[List[UserRole]] = None):
     """
-    RBAC dependency factory enforcing minimum role level.
+    RBAC & Scope-based dependency factory enforcing both role level and API key scope.
     """
-    async def _role_guard(user: UserProfile = Depends(get_current_user)) -> UserProfile:
-        if user.role == UserRole.ADMIN:
-            return user
-        if user.role not in allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access forbidden: User role '{user.role.value}' does not possess required privileges ({[r.value for r in allowed_roles]}).",
-            )
+    async def _permission_guard(user: UserProfile = Depends(get_current_user)) -> UserProfile:
+        # 1. Role validation
+        if allowed_roles and user.role != UserRole.ADMIN:
+            if user.role not in allowed_roles:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access forbidden: User role '{user.role.value}' does not possess required privileges ({[r.value for r in allowed_roles]}).",
+                )
+        
+        # 2. Scope validation (for API keys or restricted tokens)
+        if required_scope:
+            user_scopes = user.scopes or []
+            if "*" not in user_scopes and required_scope not in user_scopes:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access forbidden: Credentials lack required scope '{required_scope}'.",
+                )
         return user
-    return _role_guard
+    return _permission_guard
 
 
-require_admin = require_role([UserRole.ADMIN])
-require_analyst_or_admin = require_role([UserRole.ADMIN, UserRole.SECURITY_ANALYST])
-require_dev_or_higher = require_role([UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])
+def require_role(allowed_roles: List[UserRole]):
+    return require_permission(allowed_roles=allowed_roles)
+
+
+def require_scope(required_scope: str):
+    return require_permission(required_scope=required_scope)
+
+
+require_admin = require_permission(allowed_roles=[UserRole.ADMIN])
+require_analyst_or_admin = require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST])
+require_dev_or_higher = require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])

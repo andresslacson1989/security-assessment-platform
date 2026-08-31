@@ -543,28 +543,35 @@ class DatabaseManager:
         )
 
     # ========================================================================
-    # 4. Scan Persistence Operations
+    # 4. Scan & Finding Persistence Operations
     # ========================================================================
 
     def save_scan_record(self, scan_job: ScanJob) -> None:
-        """Atomically persists or updates a ScanJob entity and related canonical findings."""
+        """
+        Atomically persists or updates a ScanJob entity, correlates raw findings into
+        CanonicalFinding entities with SLA tracking, and stores all FindingOccurrence records.
+        """
         with self._get_connection() as conn:
             target = scan_job.target
             summary = scan_job.summary
             data_json = scan_job.model_dump_json()
+            org_id = getattr(scan_job, "organization_id", None) or "org-default"
+            proj_id = getattr(scan_job, "project_id", None)
+            asset_id = getattr(scan_job, "asset_id", None)
 
             conn.execute(
                 """
                 INSERT OR REPLACE INTO scans (
-                    id, organization_id, project_id, target_name, target_type, target_value,
+                    id, organization_id, project_id, asset_id, target_name, target_type, target_value,
                     profile, status, progress_percent, grade, score, total_findings,
                     started_at, completed_at, summary_json, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scan_job.id,
-                    getattr(scan_job, "organization_id", None),
-                    getattr(scan_job, "project_id", None),
+                    org_id,
+                    proj_id,
+                    asset_id,
                     target.name,
                     target.type.value if hasattr(target.type, "value") else str(target.type),
                     target.value,
@@ -581,37 +588,158 @@ class DatabaseManager:
                 ),
             )
 
-            # Persist individual findings
-            for finding in scan_job.findings:
+            # Correlate findings into canonical clusters and occurrences
+            from app.core.correlator import FindingCorrelator
+            correlator = FindingCorrelator()
+            canonical_findings, occurrences = correlator.correlate_findings(
+                findings=scan_job.findings,
+                asset_id=asset_id,
+                organization_id=org_id,
+                project_id=proj_id,
+            )
+
+            # Persist canonical findings
+            for cf in canonical_findings:
                 now_str = utc_now().isoformat()
+                first_seen_str = cf.first_seen.isoformat() if cf.first_seen else now_str
+                last_seen_str = cf.last_seen.isoformat() if cf.last_seen else now_str
+                sla_json = cf.sla.model_dump_json() if cf.sla else None
+                tools_json = json.dumps(cf.contributing_tools or [getattr(cf, "source_tool", "native")])
+                corr_type = cf.correlation_type.value if hasattr(cf.correlation_type, "value") else (str(cf.correlation_type) if cf.correlation_type else None)
+                
+                # Resolve check_id from occurrences or default
+                matching_check_id = next((o.check_id for o in occurrences if o.canonical_finding_id == cf.id), cf.cwe_id or "SEC-CHECK-001")
+
                 conn.execute(
                     """
                     INSERT INTO findings (
-                        id, scan_id, check_id, category, title, severity,
-                        cvss_score, contextual_risk_score, cwe_id, status, first_seen,
-                        last_seen, times_observed, fingerprint, data_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 1, ?, ?)
+                        id, organization_id, project_id, asset_id, scan_id, check_id, category, title, severity,
+                        cvss_score, cvss_vector, contextual_risk_score, cwe_id, owasp_category, nist_control,
+                        status, first_seen, last_seen, times_observed, assigned_to, contributing_tools_json,
+                        correlation_type, description, impact, remediation, evidence_hash, sla_json, fingerprint, data_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         last_seen = excluded.last_seen,
                         times_observed = times_observed + 1,
+                        contextual_risk_score = excluded.contextual_risk_score,
+                        contributing_tools_json = excluded.contributing_tools_json,
                         data_json = excluded.data_json
                     """,
                     (
-                        finding.id,
-                        finding.scan_id,
-                        finding.check_id,
-                        finding.category,
-                        finding.title,
-                        finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity),
-                        finding.cvss_score,
-                        finding.cvss_score,
-                        finding.cwe_id,
-                        now_str,
-                        now_str,
-                        finding.fingerprint,
-                        finding.model_dump_json(),
+                        cf.id,
+                        org_id,
+                        proj_id,
+                        asset_id,
+                        scan_job.id,
+                        matching_check_id,
+                        cf.category,
+                        cf.title,
+                        cf.severity.value if hasattr(cf.severity, "value") else str(cf.severity),
+                        cf.cvss_score,
+                        cf.cvss_vector or "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+                        cf.contextual_risk_score,
+                        cf.cwe_id,
+                        cf.owasp_category,
+                        cf.nist_control,
+                        cf.status.value if hasattr(cf.status, "value") else str(cf.status),
+                        first_seen_str,
+                        last_seen_str,
+                        cf.times_observed,
+                        cf.assigned_to,
+                        tools_json,
+                        corr_type,
+                        cf.description or "",
+                        cf.impact or "",
+                        cf.remediation or "",
+                        cf.evidence_hash or "",
+                        sla_json,
+                        cf.evidence_hash or cf.id,
+                        cf.model_dump_json(),
                     ),
                 )
+
+            # Persist individual finding occurrences
+            for occ in occurrences:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO finding_occurrences (
+                        id, canonical_finding_id, scan_id, asset_id, source_tool, check_id,
+                        raw_evidence_json, reproduction_curl, taint_trace_json, detected_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        occ.id,
+                        occ.canonical_finding_id,
+                        occ.scan_id,
+                        occ.asset_id or asset_id,
+                        occ.source_tool,
+                        occ.check_id,
+                        occ.raw_evidence.model_dump_json() if hasattr(occ.raw_evidence, "model_dump_json") else json.dumps(occ.raw_evidence),
+                        occ.reproduction_curl,
+                        json.dumps(occ.taint_trace or []),
+                        occ.detected_at.isoformat() if occ.detected_at else utc_now().isoformat(),
+                    ),
+                )
+
+    def get_scan_record(self, scan_id: str, organization_id: Optional[str] = None) -> Optional[ScanJob]:
+        """Retrieves a ScanJob entity directly from relational persistence."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            if organization_id:
+                cur.execute("SELECT data_json FROM scans WHERE id = ? AND organization_id = ?", (scan_id, organization_id))
+            else:
+                cur.execute("SELECT data_json FROM scans WHERE id = ?", (scan_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            try:
+                data = json.loads(row["data_json"])
+                return ScanJob.model_validate(data)
+            except Exception:
+                return None
+
+    def list_scans_records(
+        self,
+        organization_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> Tuple[List[ScanJob], int]:
+        """Returns paginated scan jobs scoped to the caller's organization."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            if organization_id:
+                cur.execute("SELECT COUNT(*) FROM scans WHERE organization_id = ?", (organization_id,))
+                total = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT data_json FROM scans WHERE organization_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    (organization_id, limit, offset),
+                )
+            else:
+                cur.execute("SELECT COUNT(*) FROM scans")
+                total = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                )
+            rows = cur.fetchall()
+            scans: List[ScanJob] = []
+            for r in rows:
+                try:
+                    data = json.loads(r["data_json"])
+                    scans.append(ScanJob.model_validate(data))
+                except Exception:
+                    continue
+            return scans, total
+
+    def delete_scan_record(self, scan_id: str, organization_id: Optional[str] = None) -> bool:
+        """Deletes a scan job and cascades removal of child finding records."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            if organization_id:
+                cur.execute("DELETE FROM scans WHERE id = ? AND organization_id = ?", (scan_id, organization_id))
+            else:
+                cur.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+            return cur.rowcount > 0
 
 
 db_manager = DatabaseManager.get_instance()

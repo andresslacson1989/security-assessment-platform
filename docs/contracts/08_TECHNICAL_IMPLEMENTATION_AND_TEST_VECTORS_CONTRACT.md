@@ -65,7 +65,7 @@ All official binary artifacts in `tool_manifest.py` MUST specify authentic SHA-2
 - `trivy`: `v0.50.0` -> `sha256` verified
 - `gitleaks`: `v8.18.2` -> `sha256` verified
 - `ffuf`: `v2.1.0` -> `sha256` verified
-- `katana`: `v1.1.0` -> `sha256` verified
+- `katana`: `v1.0.5` -> `sha256` verified
 - `subfinder`: `v2.6.5` -> `sha256` verified
 - `httpx`: `v1.6.0` -> `sha256` verified
 - `syft`: `v1.0.1` -> `sha256` verified

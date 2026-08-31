@@ -24,7 +24,7 @@ from app.core.models import (
 )
 from app.installers.manager import ToolInstallationManager
 from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
-from app.core.auth import get_current_user, require_admin, require_analyst_or_admin, UserProfile, UserRole
+from app.core.auth import get_current_user, require_admin, require_analyst_or_admin, require_permission, UserProfile, UserRole
 from app.core.db import db_manager
 
 router = APIRouter()
@@ -105,10 +105,11 @@ async def get_tool_status(tool_name: str) -> ToolInstallationInfo:
 async def install_tool(
     tool_name: str,
     payload: Optional[ToolInstallRequest] = None,
-    current_user: UserProfile = Depends(require_admin),
+    current_user: UserProfile = Depends(require_permission(required_scope="tool:install", allowed_roles=[UserRole.ADMIN])),
 ) -> ToolInstallResponse:
     mgr = ToolInstallationManager.get_instance()
     force = payload.force if payload else False
+    res = mgr.install_tool(tool_name, force=force)
 
     db_manager.record_audit_event(
         AuditEvent(
@@ -117,37 +118,11 @@ async def install_tool(
             action=AuditAction.TOOL_INSTALL_STARTED,
             object_type="tool",
             object_id=tool_name,
-            result="SUCCESS",
-            details={"force": force},
+            result="QUEUED",
+            details={"task_id": res.task_id, "force": force},
         )
     )
-
-    try:
-        return mgr.install_tool(tool_name, force=force)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Installation initiation failed: {str(exc)}",
-        )
-
-
-@router.post(
-    "/{tool_name}/cancel",
-    summary="Cancel a running in-app tool installation job",
-)
-async def cancel_single_tool(
-    tool_name: str,
-    current_user: UserProfile = Depends(require_admin),
-) -> dict:
-    mgr = ToolInstallationManager.get_instance()
-    cancelled = mgr.cancel_installation(tool_name)
-    return {
-        "tool_name": tool_name,
-        "cancelled": cancelled,
-        "message": "Cancellation signal dispatched." if cancelled else "No active installation task found to cancel.",
-    }
+    return res
 
 
 @router.post(
@@ -158,43 +133,62 @@ async def cancel_single_tool(
 )
 async def install_all_tools(
     payload: Optional[ToolBatchInstallRequest] = None,
-    current_user: UserProfile = Depends(require_admin),
+    current_user: UserProfile = Depends(require_permission(required_scope="tool:install", allowed_roles=[UserRole.ADMIN])),
 ) -> List[ToolInstallResponse]:
     mgr = ToolInstallationManager.get_instance()
     force = payload.force if payload else False
 
-    db_manager.record_audit_event(
-        AuditEvent(
-            actor=current_user.username,
-            organization_id=current_user.organization_id,
-            action=AuditAction.TOOL_INSTALL_STARTED,
-            object_type="tool",
-            object_id="batch_all",
-            result="SUCCESS",
-            details={"force": force},
+    responses = await mgr.install_all(force=force)
+    for res in responses:
+        db_manager.record_audit_event(
+            AuditEvent(
+                actor=current_user.username,
+                organization_id=current_user.organization_id,
+                action=AuditAction.TOOL_INSTALL_STARTED,
+                object_type="tool",
+                object_id=res.tool_name,
+                result="QUEUED",
+                details={"task_id": res.task_id, "batch": True},
+            )
         )
-    )
+    return responses
 
-    return await mgr.install_all(force=force)
+
+@router.post(
+    "/{tool_name}/cancel",
+    summary="Cancel active in-app tool installation job",
+)
+async def cancel_install(
+    tool_name: str,
+    current_user: UserProfile = Depends(require_permission(required_scope="tool:install", allowed_roles=[UserRole.ADMIN])),
+) -> dict:
+    mgr = ToolInstallationManager.get_instance()
+    cancelled = mgr.cancel_installation(tool_name)
+    return {
+        "tool_name": tool_name,
+        "cancelled": cancelled,
+        "status": "CANCELLED" if cancelled else "NOT_FOUND",
+        "message": f"Installation of '{tool_name}' cancelled." if cancelled else "No active installation task found to cancel.",
+    }
 
 
 # ============================================================================
-# 2. Pentester Productivity / HTTP Repeater Workbench (SSRF-Protected)
+# 2. Pentester Workbench & Interactive HTTP Repeater (Contract 04 §1.5)
 # ============================================================================
 
 @router.post(
     "/repeater",
     response_model=RepeaterResponse,
-    summary="Execute manual HTTP request replay / repeater tool (SSRF-Protected)",
-    description="Allows manual crafting, replay, and differential inspection of HTTP requests with strict SSRF protection.",
+    summary="Send custom HTTP request via Workbench Repeater",
+    description="Dispatches a custom crafted HTTP request with strict hop-by-hop SSRF validation and size bounds.",
 )
-async def execute_repeater_request(
+async def execute_http_repeater(
     payload: RepeaterRequest,
-    current_user: UserProfile = Depends(require_analyst_or_admin),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:repeater", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST])),
 ) -> RepeaterResponse:
     """
-    Executes a raw HTTP request asynchronously and returns status, headers, body, latency, and TLS info.
-    Protected against SSRF targeting localhost, private subnets, and cloud metadata.
+    Sends an arbitrary HTTP request from the server, guarded by SSRF gateway,
+    per-hop redirect re-validation, response size bounds, and role/scope authorization.
     """
     allow_internal = (current_user.role == UserRole.ADMIN)
     try:
@@ -215,11 +209,20 @@ async def execute_repeater_request(
     if not any(k.lower() == "user-agent" for k in headers):
         headers["User-Agent"] = "CyberAssess-Repeater/10.0.0"
 
+    async def on_redirect_response(response: httpx.Response):
+        """Hop-by-hop redirect SSRF validator."""
+        if response.is_redirect:
+            redirect_target = response.headers.get("location")
+            if redirect_target:
+                target_url = str(response.url.join(redirect_target))
+                assert_safe_url(target_url, allow_internal=allow_internal)
+
     try:
         async with httpx.AsyncClient(
             verify=True,
             follow_redirects=payload.follow_redirects,
             timeout=payload.timeout_seconds,
+            event_hooks={"response": [on_redirect_response]} if payload.follow_redirects else None,
         ) as client:
             resp = await client.request(
                 method=payload.method.upper(),
@@ -261,6 +264,11 @@ async def execute_repeater_request(
                 cipher=cipher,
             )
 
+    except SSRFProtectionError as ssrf_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"SSRF Protection Gate (Redirect Target Blocked): {str(ssrf_err)}",
+        )
     except httpx.TimeoutException:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,

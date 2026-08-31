@@ -222,13 +222,14 @@ async def test_github_release_installer_success():
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                with patch.object(installer, "get_version", new=AsyncMock(return_value="nuclei v3.2.0")):
-                    res = await installer.install(log_cb, prog_cb, force=False)
-                    assert res is True
-                    assert progress_records[-1][0] == 100
-                    # Verify file placed in fake_bin_dir
-                    assert os.path.exists(os.path.join(fake_bin_dir, "nuclei.exe"))
+            with patch("httpx.AsyncClient", return_value=mock_client), \
+                 patch("app.installers.tool_manifest.verify_download_integrity", return_value=(True, "fake_hash", None)), \
+                 patch.object(installer, "get_version", new=AsyncMock(return_value="nuclei v3.2.0")):
+                res = await installer.install(log_cb, prog_cb, force=False)
+                assert res is True
+                assert progress_records[-1][0] == 100
+                # Verify file placed in fake_bin_dir
+                assert os.path.exists(os.path.join(fake_bin_dir, "nuclei.exe"))
 
 
 @pytest.mark.asyncio

@@ -192,10 +192,17 @@ def test_sec_008_ssrf_cloud_metadata_blocked():
         assert_safe_url("http://metadata.google.internal/computeMetadata/v1/")
 
 
-def test_sec_009_ssrf_dns_rebinding_pre_resolution():
+def test_sec_009_ssrf_dns_rebinding_pre_resolution(monkeypatch):
     """SEC-009: Hostnames resolving to private/loopback IPs must be blocked during pre-resolution."""
     with pytest.raises(SSRFProtectionError):
         assert_safe_url("http://localhost.localdomain/secret")
+
+    # Simulate dynamic DNS rebinding resolution returning a private subnet IP
+    from app.core import ssrf_protector
+    monkeypatch.setattr(ssrf_protector, "resolve_hostname_ips", lambda host: ["10.0.0.5"])
+    with pytest.raises(SSRFProtectionError) as exc_info:
+        assert_safe_url("http://rebound-attack.example.com/exploit")
+    assert "blocked" in str(exc_info.value).lower()
 
 
 # ============================================================================
@@ -313,7 +320,7 @@ def test_sec_018_unpinned_tool_rejection():
     payload = b"RANDOM_UNKNOWN_TOOL"
     is_valid, computed, err = verify_download_integrity("untrusted_custom_tool", payload)
     assert is_valid is False
-    assert "not in authoritative" in err.lower()
+    assert "not registered in the authoritative" in err.lower()
 
 
 # ============================================================================
@@ -534,20 +541,45 @@ def test_sec_028_report_secret_leakage_sanitization():
 
 
 def test_sec_029_database_transaction_integrity(setup_test_db):
-    """SEC-029: Scan and finding database operations execute within transactional boundaries."""
+    """SEC-029: Scan, canonical finding, and occurrence operations execute within transactional boundaries."""
+    finding = Finding(
+        id="f-tx-01",
+        scan_id="tx-scan-01",
+        engine="web_dast",
+        check_id="DAST-HDR-001",
+        category="Security Headers",
+        title="Missing CSP",
+        severity=Severity.MEDIUM,
+        cvss_score=5.3,
+        description="Missing CSP",
+        impact="XSS risk",
+        remediation="Add CSP header",
+        evidence=Evidence(location="/", observed_value="none", expected_value="default-src 'self'"),
+    )
     scan = ScanJob(
         id="tx-scan-01",
+        organization_id="org-tx",
         target=Target(name="TX Target", type=TargetType.URL, value="https://example.com"),
         profile=ScanProfile.QUICK,
+        findings=[finding],
     )
     setup_test_db.save_scan_record(scan)
 
     with setup_test_db._get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, status FROM scans WHERE id = 'tx-scan-01'")
-        row = cur.fetchone()
-        assert row is not None
-        assert row["id"] == "tx-scan-01"
+        cur.execute("SELECT id, status, organization_id FROM scans WHERE id = 'tx-scan-01'")
+        scan_row = cur.fetchone()
+        assert scan_row is not None
+        assert scan_row["organization_id"] == "org-tx"
+
+        cur.execute("SELECT id, scan_id, organization_id FROM findings WHERE scan_id = 'tx-scan-01'")
+        finding_rows = cur.fetchall()
+        assert len(finding_rows) >= 1
+        assert finding_rows[0]["organization_id"] == "org-tx"
+
+        cur.execute("SELECT id, scan_id FROM finding_occurrences WHERE scan_id = 'tx-scan-01'")
+        occ_rows = cur.fetchall()
+        assert len(occ_rows) >= 1
 
 
 def test_sec_030_development_mode_privilege_isolation():

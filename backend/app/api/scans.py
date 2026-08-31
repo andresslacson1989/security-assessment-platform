@@ -33,6 +33,7 @@ from app.core.auth import (
     get_current_user,
     require_admin,
     require_dev_or_higher,
+    require_permission,
     UserProfile,
     UserRole,
     authorize_scan_access,
@@ -47,42 +48,41 @@ class StartScanRequest(BaseModel):
     target_value: str = Field(..., description="Target URI, domain, IP, or filesystem path")
     target_name: Optional[str] = Field(None, description="Friendly display label for the target")
     profile: ScanProfile = Field(default=ScanProfile.FULL_STACK, description="Scanning depth and profile")
+    asset_id: Optional[str] = Field(None, description="Monitored asset UUID")
+    project_id: Optional[str] = Field(None, description="Project boundary UUID")
     enabled_engines: Optional[List[str]] = Field(None, description="Explicit list of engine names to run")
     config: Optional[ScanConfig] = Field(default_factory=ScanConfig, description="Execution parameters")
 
 
 def validate_target_input(target_type: TargetType, target_value: str, allow_internal: bool = False) -> None:
     """
-    Validates target value syntax and security constraints.
-    Enforces SSRF gateway validation on URLs and workspace containment sandboxing on filesystem paths.
+    Validates target value syntax and security constraints for ALL target types:
+    URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST.
+    Ensures zero bypass routes around the security gateway.
     """
     val = target_value.strip()
     if not val:
         raise HTTPException(status_code=400, detail="Target value cannot be empty.")
 
-    if target_type == TargetType.URL:
-        try:
-            assert_safe_url(val, allow_internal=allow_internal)
-        except SSRFProtectionError as err:
-            raise HTTPException(
-                status_code=400,
-                detail=f"SSRF Protection Gate: {str(err)}"
-            )
-
-    elif target_type in (TargetType.LOCAL_PATH, TargetType.DOCKERFILE, TargetType.IAC_MANIFEST):
-        try:
-            assert_safe_path(val)
-        except PathSandboxViolation as err:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Path Sandbox Violation: {str(err)}"
-            )
+    try:
+        from app.core.ssrf_protector import assert_safe_target
+        assert_safe_target(target_type.value, val, allow_internal=allow_internal)
+    except SSRFProtectionError as err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"SSRF Protection Gate: {str(err)}"
+        )
+    except PathSandboxViolation as err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path Sandbox Violation: {str(err)}"
+        )
 
 
 @router.post("/start", status_code=status.HTTP_201_CREATED, summary="Start Automated Security Scan")
 async def start_security_scan(
     payload: StartScanRequest,
-    current_user: UserProfile = Depends(require_dev_or_higher),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:create", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
     """
     Validates the target, creates a ScanJob, and launches asynchronous security assessment in the background.

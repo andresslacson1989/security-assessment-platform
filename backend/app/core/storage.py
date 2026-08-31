@@ -25,34 +25,40 @@ def get_storage_dir(custom_path: Optional[Path] = None) -> Path:
 
 def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
     """
-    Persists a ScanJob entity as formatted JSON to disk and indexes in relational database.
+    Authoritatively persists ScanJob and correlated findings to relational database,
+    and caches a formatted JSON snapshot to disk for export convenience.
     """
-    target_dir = get_storage_dir(storage_dir)
-    file_path = target_dir / f"{scan_job.id}.json"
-    
-    # Dump Pydantic model to JSON string with indentation
-    json_data = scan_job.model_dump_json(indent=2)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(json_data)
+    # 1. Authoritative persistence in Relational Database
+    db_manager.save_scan_record(scan_job)
 
-    # Sync to relational DB
+    # 2. Cache JSON artifact to disk
     try:
-        db_manager.save_scan_record(scan_job)
-    except Exception:
+        target_dir = get_storage_dir(storage_dir)
+        file_path = target_dir / f"{scan_job.id}.json"
+        json_data = scan_job.model_dump_json(indent=2)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(json_data)
+    except OSError:
         pass
-
 
 
 def get_scan(scan_id: str, storage_dir: Optional[Path] = None) -> Optional[ScanJob]:
     """
-    Retrieves and parses a ScanJob JSON record from disk by UUID.
+    Retrieves a ScanJob entity directly from authoritative database persistence,
+    falling back to cached JSON file if necessary.
     """
+    # 1. Check authoritative relational DB if no custom storage_dir requested
+    if storage_dir is None:
+        job = db_manager.get_scan_record(scan_id)
+        if job:
+            return job
+
+    # 2. Fallback to cached JSON file
     target_dir = get_storage_dir(storage_dir)
     file_path = target_dir / f"{scan_id}.json"
-    
     if not file_path.exists() or not file_path.is_file():
         return None
-    
+
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -69,39 +75,40 @@ def list_scans(
     """
     Returns a paginated list of all stored ScanJobs sorted by creation/start time descending.
     """
+    if storage_dir is None:
+        scans, total = db_manager.list_scans_records(limit=limit, offset=offset)
+        if scans or total > 0:
+            return scans, total
+
+    # Fallback / explicit custom directory scan
     target_dir = get_storage_dir(storage_dir)
     scan_files = list(target_dir.glob("*.json"))
-    
-    scans: List[ScanJob] = []
+    disk_scans: List[ScanJob] = []
     for file_path in scan_files:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             job = ScanJob.model_validate(data)
-            scans.append(job)
+            disk_scans.append(job)
         except Exception:
             continue
 
-    # Sort descending by started_at or target created_at
-    scans.sort(
+    disk_scans.sort(
         key=lambda s: s.started_at or s.target.created_at,
         reverse=True
     )
-    
-    total_count = len(scans)
-    paginated_scans = scans[offset : offset + limit]
-    return paginated_scans, total_count
+    return disk_scans[offset : offset + limit], len(disk_scans)
 
 
 def delete_scan(scan_id: str, storage_dir: Optional[Path] = None) -> bool:
     """
-    Deletes the JSON record for the specified scan ID.
-    Returns True if deleted, False if file did not exist.
+    Deletes the scan record from authoritative database and removes cached JSON file.
     """
+    db_deleted = db_manager.delete_scan_record(scan_id)
     target_dir = get_storage_dir(storage_dir)
     file_path = target_dir / f"{scan_id}.json"
-    
+    file_deleted = False
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
-        return True
-    return False
+        file_deleted = True
+    return db_deleted or file_deleted

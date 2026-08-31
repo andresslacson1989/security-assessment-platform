@@ -108,17 +108,23 @@ def is_path_safe(path_str: str, allowed_roots: Optional[List[Path]] = None) -> T
             return False, f"Target path '{raw_val}' attempts to access sensitive user directory '{sensitive_sub}'."
 
     # If explicit allowed_roots are configured, ensure resolved path is contained within one of them
-    if allowed_roots:
+    if allowed_roots is not None:
         resolved_allowed = [r.resolve() for r in allowed_roots if r.exists()]
-        if resolved_allowed:
-            is_contained = any(
-                resolved == root or root in resolved.parents
-                for root in resolved_allowed
-            )
-            if not is_contained:
-                return False, f"Target path '{raw_val}' is outside permitted workspace roots."
+        if not resolved_allowed:
+            return False, "Configured workspace roots do not exist on the filesystem."
+        is_contained = any(
+            resolved == root or root in resolved.parents
+            for root in resolved_allowed
+        )
+        if not is_contained:
+            return False, f"Target path '{raw_val}' is outside permitted workspace roots."
 
     return True, None
+
+
+def validate_path_sandbox(path_str: str, allowed_roots: Optional[List[Path]] = None) -> Tuple[bool, Optional[str]]:
+    """Alias for is_path_safe conforming to standard gateway interfaces."""
+    return is_path_safe(path_str, allowed_roots=allowed_roots)
 
 
 def assert_safe_path(path_str: str, allowed_roots: Optional[List[Path]] = None) -> Path:
