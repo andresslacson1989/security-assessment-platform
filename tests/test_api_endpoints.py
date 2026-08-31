@@ -179,6 +179,48 @@ async def test_sse_streaming_endpoint(auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_live_scan_sse_streaming(auth_headers):
+    from app.core.orchestrator import orchestrator
+    from app.core.models import LogLevel
+    scan_id = "test-live-sse-stream"
+    job = ScanJob(
+        id=scan_id,
+        target=Target(name="Live SSE", type=TargetType.URL, value="https://live.test"),
+        status=ScanStatus.RUNNING,
+    )
+    orchestrator._active_jobs[scan_id] = job
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # Start SSE stream in background
+        async def read_stream():
+            received = []
+            async with ac.stream("GET", f"/api/scans/{scan_id}/events", headers=auth_headers) as resp:
+                assert resp.status_code == 200
+                async for line in resp.aiter_lines():
+                    if line:
+                        received.append(line)
+                    if "event: completed" in line or "event: cancelled" in line:
+                        break
+            return received
+
+        stream_task = asyncio.create_task(read_stream())
+        await asyncio.sleep(0.05)
+
+        # Broadcast live progress, log, and cancelled
+        await orchestrator.emit_progress(scan_id, 25, "Running network scanner...")
+        await orchestrator.emit_log(scan_id, LogLevel.INFO, "network", "Port 80 is open")
+        await orchestrator.emit_cancelled(scan_id, "Scan cancelled by user.")
+
+        lines = await asyncio.wait_for(stream_task, timeout=5.0)
+        assert any("event: progress" in l for l in lines)
+        assert any("Running network scanner" in l for l in lines)
+        assert any("event: log" in l for l in lines)
+        assert any("Port 80 is open" in l for l in lines)
+        assert any("event: cancelled" in l for l in lines)
+
+
+
+@pytest.mark.asyncio
 async def test_telemetry_endpoint_structure_and_filters(auth_headers):
     from app.core.models import LogEntry, LogLevel, Finding, Evidence, DiscoveredEndpoint, DiscoveredSubdomain
     target = Target(name="Telemetry Target", type=TargetType.URL, value="https://telemetry-test.local")

@@ -412,15 +412,24 @@ async def stream_scan_events(
             return
 
         # Stream live events from orchestrator
-        queue = await orchestrator.subscribe(scan_id)
+        queue = orchestrator.subscribe_events(scan_id)
         try:
             while True:
-                event_name, data = await queue.get()
-                yield f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+                msg = await queue.get()
+                if isinstance(msg, dict):
+                    event_name = msg.get("event", "message")
+                    data = msg.get("data", {})
+                elif isinstance(msg, (tuple, list)) and len(msg) >= 2:
+                    event_name, data = msg[0], msg[1]
+                else:
+                    event_name, data = "message", msg
+
+                data_str = data if isinstance(data, str) else json.dumps(data)
+                yield f"event: {event_name}\ndata: {data_str}\n\n"
                 if event_name in ("completed", "failed", "cancelled"):
                     break
         finally:
-            await orchestrator.unsubscribe(scan_id, queue)
+            orchestrator.unsubscribe_events(scan_id, queue)
 
     return StreamingResponse(
         event_generator(),
