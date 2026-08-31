@@ -1,7 +1,7 @@
 # Contract 03: Engine Plugin Interface, Execution Governance & Tool Supply Chain Contract
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 12.0.0 (Execution Plane Governance, Pinned Supply Chain, Quarantine Pipeline, ProcessSupervisor Tree Termination & Sandbox Isolation)  
+**Document Version:** 13.0.0 (Execution Plane Governance, Pinned Supply Chain, Quarantine Pipeline, ProcessSupervisor Tree Termination & Sandbox Isolation)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Engine Interfaces, Tool Adapters, Binary Supply Chain Verification, Quarantine Lifecycle & Worker Sandbox Controls  
 

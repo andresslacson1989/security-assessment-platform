@@ -53,6 +53,28 @@ JWT_ISSUER = "CyberAssess-Control-Plane"
 JWT_AUDIENCE = "CyberAssess-Platform"
 JWT_EXPIRATION_SECONDS = int(os.getenv("JWT_EXPIRATION_SECONDS", "86400"))  # 24 hours
 
+# JWT Key Rotation Store (kid -> signing/verification key)
+ACTIVE_KEY_ID = os.getenv("JWT_ACTIVE_KEY_ID", "k-primary")
+JWT_KEY_ROTATION_STORE: Dict[str, str] = {ACTIVE_KEY_ID: JWT_SECRET}
+
+
+def rotate_signing_key(new_kid: str, new_secret: str) -> None:
+    """
+    Contract 01 §3 & Contract 08 §1: Rotates active JWT signing key.
+    Allows seamless token transition by preserving previous verification keys.
+    """
+    global ACTIVE_KEY_ID
+    JWT_KEY_ROTATION_STORE[new_kid] = new_secret
+    ACTIVE_KEY_ID = new_kid
+
+
+def retire_signing_key(old_kid: str) -> None:
+    """
+    Contract 01 §3: Retires old verification key from the active set.
+    """
+    if old_kid in JWT_KEY_ROTATION_STORE and len(JWT_KEY_ROTATION_STORE) > 1:
+        JWT_KEY_ROTATION_STORE.pop(old_kid, None)
+
 # Development mode fallback user (Restricted to VIEWER; NEVER ADMIN)
 ANONYMOUS_DEV_USER = UserProfile(
     id="usr-dev-anon",
@@ -147,7 +169,13 @@ def create_access_token(
         "exp": now + expires_in,
         "jti": secrets.token_hex(16),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM, headers={"typ": "JWT"})
+    signing_key = JWT_KEY_ROTATION_STORE.get(ACTIVE_KEY_ID, JWT_SECRET)
+    return jwt.encode(
+        payload,
+        signing_key,
+        algorithm=JWT_ALGORITHM,
+        headers={"typ": "JWT", "kid": ACTIVE_KEY_ID},
+    )
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:
@@ -187,11 +215,14 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    kid = unverified_header.get("kid", ACTIVE_KEY_ID)
+    verification_key = JWT_KEY_ROTATION_STORE.get(kid, JWT_SECRET)
+
     # 2. Strict PyJWT Verification
     try:
         payload = jwt.decode(
             token,
-            JWT_SECRET,
+            verification_key,
             algorithms=ALLOWED_JWT_ALGORITHMS,
             audience=JWT_AUDIENCE,
             issuer=JWT_ISSUER,

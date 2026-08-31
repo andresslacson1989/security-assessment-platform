@@ -236,3 +236,54 @@ def assert_safe_target(target_type: str, target_value: str, allow_internal: bool
     allowed, reason = validate_target_security(target_type, target_value, allow_internal=allow_internal)
     if not allowed:
         raise SSRFProtectionError(reason or "Target validation failed security policy.")
+
+
+def create_validated_target(
+    raw_target: Any,
+    organization_id: str = "org-default",
+    project_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    allow_internal: bool = False,
+) -> Any:
+    """
+    Contract 01 §5.1, Contract 02 §3 & Contract 08 §12.1:
+    Authoritative single-pipeline validation gate producing an immutable ValidatedTarget object.
+    Fails closed if the target violates SSRF, DNS, or workspace confinement policies.
+    """
+    from app.core.models import ValidatedTarget, TargetType, utc_now
+    
+    t_val = raw_target.value if hasattr(raw_target, "value") else str(raw_target)
+    t_type = raw_target.type if hasattr(raw_target, "type") else TargetType.URL
+    t_type_str = t_type.value if hasattr(t_type, "value") else str(t_type)
+    
+    assert_safe_target(t_type_str, t_val, allow_internal=allow_internal)
+    
+    resolved_dest = None
+    if t_type_str == "URL":
+        parsed = urllib.parse.urlparse(t_val.strip())
+        if parsed.hostname:
+            ips = resolve_hostname_ips(parsed.hostname.strip("[]"))
+            resolved_dest = ips[0] if ips else None
+    elif t_type_str == "DOMAIN":
+        ips = resolve_hostname_ips(t_val.strip())
+        resolved_dest = ips[0] if ips else None
+    elif t_type_str == "IP":
+        resolved_dest = t_val.strip()
+    elif t_type_str in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"):
+        import os
+        resolved_dest = os.path.abspath(t_val.strip())
+
+    return ValidatedTarget(
+        id=getattr(raw_target, "id", None) or None,
+        target_type=t_type,
+        normalized_value=t_val.strip(),
+        organization_id=organization_id,
+        project_id=project_id,
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        resolved_destination=resolved_dest,
+        authorization_context={"allow_internal": allow_internal, "validated_by": "assert_safe_target"},
+        validation_timestamp=utc_now(),
+        policy_version="13.0.0",
+    )

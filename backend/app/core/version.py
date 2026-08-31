@@ -5,10 +5,10 @@ All platform components, API responses, exporters, and UI templates MUST derive 
 
 APP_NAME = "CyberAssess"
 APP_TITLE = "CyberAssess Security Assessment & Vulnerability Management Platform"
-APP_VERSION = "12.0.0"
+APP_VERSION = "13.0.0"
 API_VERSION = "v1"
-SCHEMA_VERSION = "12.0.0"
-CONTRACT_VERSION = "12.0.0"
+SCHEMA_VERSION = "13.0.0"
+CONTRACT_VERSION = "13.0.0"
 RULESET_VERSION = "2026.08.31"
 RISK_MODEL_VERSION = "contextual_risk_model_v2"
 STANDARDS_BASELINE = {

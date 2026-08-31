@@ -77,6 +77,45 @@ class ScanStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class EngineExecutionStatus(str, Enum):
+    """
+    Contract 03 §3 & Contract 05: Explicit execution status for individual security engines/scanners.
+    Guarantees failed/skipped tools are not silently reported as 'No issues'.
+    """
+    PASS = "PASS"                  # Engine executed completely with zero findings
+    FINDINGS = "FINDINGS"          # Engine executed completely with valid findings detected
+    PARTIAL = "PARTIAL"            # Engine partially executed with non-fatal warnings
+    FAILED = "FAILED"              # Engine encountered an unrecoverable failure
+    BLOCKED = "BLOCKED"            # Engine was blocked by safety policy or missing authorization
+    CANCELLED = "CANCELLED"        # Engine was terminated due to scan cancellation
+    TIMED_OUT = "TIMED_OUT"        # Engine was terminated due to execution timeout
+
+
+class FindingVerificationStatus(str, Enum):
+    """
+    Contract 02 §4 & Contract 05: Four-stage vulnerability verification lifecycle.
+    """
+    DETECTED = "DETECTED"          # Initial automated scanner detection
+    VALIDATED = "VALIDATED"        # Cross-engine or multi-check confirmation
+    REMEDIATED = "REMEDIATED"      # Marked as fixed by engineering
+    VERIFIED = "VERIFIED"          # Confirmed fixed by authoritative retest
+
+
+class AssessmentCoverage(BaseModel):
+    """
+    Contract 01 §5 & Contract 04: Explicit assessment coverage tracking.
+    Distinguishes 'No issue detected' from 'Not assessed'.
+    """
+    engines_requested: List[str] = Field(default_factory=list, description="Engines requested by scan profile")
+    engines_executed: List[str] = Field(default_factory=list, description="Engines successfully executed")
+    engines_failed: List[str] = Field(default_factory=list, description="Engines that failed execution")
+    engines_skipped: List[str] = Field(default_factory=list, description="Engines skipped due to scope/policy")
+    tools_unavailable: List[str] = Field(default_factory=list, description="Tools missing from system")
+    targets_inaccessible: List[str] = Field(default_factory=list, description="Target endpoints that were unreachable")
+    coverage_limitations: List[str] = Field(default_factory=list, description="Explicit notes on assessment coverage gaps")
+    is_fully_assessed: bool = Field(default=True, description="Whether all requested engines completed successfully")
+
+
 class SecurityGrade(str, Enum):
     """
     Deterministic letter grade classification based on scoring deductions.
@@ -481,6 +520,25 @@ class Target(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ValidatedTarget(BaseModel):
+    """
+    Contract 01 §5.1, Contract 02 §3 & Contract 08 §12.1:
+    Authoritative Validated Target Object.
+    Only validated target representations are authorized to reach the execution plane.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Validated target UUID")
+    target_type: TargetType = Field(..., description="Target classification type")
+    normalized_value: str = Field(..., description="Canonical normalized target URI, FQDN, IP, or path")
+    organization_id: str = Field(default="org-default", description="Authoritative owning organization ID")
+    project_id: Optional[str] = Field(default=None, description="Optional project context ID")
+    asset_id: Optional[str] = Field(default=None, description="Optional linked asset ID")
+    workspace_id: Optional[str] = Field(default=None, description="Optional authorized workspace ID")
+    resolved_destination: Optional[str] = Field(default=None, description="Connection-bound IPv4/IPv6 destination or canonical filesystem root")
+    authorization_context: Dict[str, Any] = Field(default_factory=dict, description="Audit authorization metadata")
+    validation_timestamp: datetime = Field(default_factory=utc_now, description="Timestamp of validation gate passage")
+    policy_version: str = Field(default="13.0.0", description="SSRF and boundary policy version applied")
+
+
 class Evidence(BaseModel):
     """
     Evidence and proof collected during an assessment check.
@@ -585,6 +643,7 @@ class ScanJobSummary(BaseModel):
     overall_security_grade: str = Field(default="A+", description="Letter grade: A+, A, B, C, D, or F")
     duration_seconds: float = Field(default=0.0, ge=0.0)
     engine_breakdown: Dict[str, int] = Field(default_factory=dict, description="Finding counts per engine")
+    coverage: AssessmentCoverage = Field(default_factory=AssessmentCoverage, description="Assessment engine execution coverage")
 
 
 class LogEntry(BaseModel):

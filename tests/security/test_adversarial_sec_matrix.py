@@ -38,6 +38,8 @@ from app.core.auth import (
     create_access_token,
     decode_access_token,
     revoke_token,
+    rotate_signing_key,
+    retire_signing_key,
     authorize_asset_access,
     authorize_scan_access,
     authorize_finding_access,
@@ -262,13 +264,19 @@ def test_sec_013_api_key_revocation(setup_test_db):
 
 
 def test_sec_014_jwt_algorithm_confusion_rejection():
-    """SEC-014: Tokens with alg=none or tampered signatures are rejected."""
+    """SEC-014: Tokens with alg=none or tampered signatures are rejected, key rotation is supported."""
     user = UserProfile(id="usr-1", username="testuser", email="test@local", role=UserRole.VIEWER)
     token = create_access_token(user)
 
     # Decode valid token
     decoded = decode_access_token(token)
     assert decoded["sub"] == "usr-1"
+
+    # Test key rotation: tokens signed with previous active keys remain valid while new keys take effect
+    rotate_signing_key("k-rotated-v13", "secret-rotated-256bit-key-here!!")
+    new_token = create_access_token(user)
+    assert decode_access_token(new_token)["sub"] == "usr-1"
+    assert decode_access_token(token)["sub"] == "usr-1"
 
     # Attempt alg=none attack
     parts = token.split(".")

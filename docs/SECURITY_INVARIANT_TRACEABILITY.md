@@ -1,7 +1,7 @@
-# CyberAssess v12 — Security Boundary Proof, Runtime Enforcement & Enterprise Assurance Traceability Matrix
+# CyberAssess v13 — Enterprise Assessment Methodology, Tool Assurance & Production Readiness Traceability Matrix
 
 ## Document Purpose & Authority
-This authoritative traceability matrix provides formal cross-verification between the **CyberAssess v12 Security Invariant Specifications**, the authoritative contract clauses, the concrete production implementations, and the dedicated adversarial regression test suite (tests/security/).
+This authoritative traceability matrix provides formal cross-verification between the **CyberAssess v13 Security Invariant Specifications**, the authoritative contract clauses, the concrete production implementations, and the dedicated adversarial regression test suite (tests/security/).
 
 In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production Path Proof*), passing helper unit tests alone do not constitute evidence of compliance. Each security control is validated against its actual production execution path under adversarial conditions.
 
