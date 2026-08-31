@@ -1,10 +1,10 @@
 # Contract 09: Authoritative Enterprise Security Tool Implementation Contract & Execution Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.1.0 (Rigorous 21-Tool Fleet Execution Governance, Supply-Chain Provenance, Target Immutability & Coverage Semantics)  
+**Document Version:** 14.2.0 (Authoritative 21-Tool Fleet Implementation Specifications, Normative Target Binding & Strict Supply-Chain Governance)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Authority:** Platform Core Architecture, Tool Adapter Layer, Process Supervisor & Verification Pipeline  
-**Scope:** Canonical implementation specifications, execution boundaries, failure semantics, output schemas, rate/timing governance, and security classifications for all 21 supported external security tools.  
+**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for all 21 supported external security tools.  
 **Dependencies:** Contract 01 (Scope & Safety), Contract 02 (Data Schemas), Contract 03 (Engine & Plugin Interface), Contract 04 (API & Streaming), Contract 05 (Deliverables & Acceptance), Contract 06 (Check Catalog & CWE Mapping), Contract 07 (Frontend UI/UX), Contract 08 (Technical Implementation & Test Vectors).
 
 ---
@@ -15,21 +15,40 @@
 
 This authoritative contract governs the integration, execution, sandboxing, parsing, normalization, and supply-chain governance of every external security tool in CyberAssess.
 
-No security tool may execute within the CyberAssess ecosystem unless it strictly satisfies the 41-point specification and foundational invariants defined in this contract.
+No security tool may execute within the CyberAssess ecosystem unless it strictly satisfies the 41-point specification, normative schemas, and foundational invariants defined in this contract.
 
 ### 1.1 The Seven Fundamental Tool Execution Invariants
 
 1. **The Target Validation & True Destination Binding Invariant (Contract 01 §3, Contract 08 §2):**
    No tool adapter may ever receive raw, unvalidated user input strings. Network-capable tools receive ONLY an authoritative, immutable `ValidatedTarget`.
-   - **Operational Immutability Definition:** A `ValidatedTarget` is an immutable, frozen data structure (`ConfigDict(frozen=True)`) containing the canonicalized target string, pre-resolved IPv4/IPv6 address, target type, port, scheme, and a cryptographic `target_id = sha256(canonical_value + resolved_ip)`. Once constructed by the Target Security Gateway, no field may be mutated. If a target redirects or changes, a new `ValidatedTarget` must be instantiated through the gateway.
-   - **Connection-Level Destination Binding Requirement:** Pre-resolving DNS is necessary but insufficient to defeat Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Adapters and HTTP clients MUST enforce connection-level destination binding by pinning the transport socket directly to the pre-resolved `target_ip` while supplying the original hostname in the HTTP `Host` header / TLS SNI, or by utilizing a pinned in-memory DNS resolver that prohibits out-of-band re-resolution.
+   - **Normative `ValidatedTarget` Schema:**
+     ```python
+     class ValidatedTarget(BaseModel):
+         model_config = ConfigDict(frozen=True, extra="forbid")
+         target_id: str                 # Cryptographic SHA-256 digest: sha256(canonical_value + ":" + selected_destination)
+         organization_id: str           # Tenant isolation boundary (UUID)
+         project_id: str                # Project isolation boundary (UUID)
+         asset_id: str                  # Asset identity in inventory (UUID)
+         target_type: TargetType        # URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST
+         raw_value: str                 # Original user-supplied input string
+         canonical_value: str           # Normalized string (e.g. lowercase FQDN, normalized URL)
+         authorized_scope: List[str]    # Authorized CIDRs / root domain wildcards
+         resolved_addresses: List[str]  # All resolved IPv4/IPv6 addresses from pre-resolution
+         selected_destination: str      # Specific pinned IP address selected for connection
+         port: Optional[int] = None     # Target port (e.g. 443, 80, 22)
+         scheme: Optional[str] = None   # Protocol scheme (http, https, tcp, udp)
+         validation_timestamp: datetime # ISO-8601 UTC validation timestamp
+         policy_version: str            # Target Security Gateway policy version (e.g. "14.2.0")
+     ```
+   - **Operational Immutability Definition:** `ValidatedTarget` is a frozen data structure (`frozen=True`). Once constructed and cryptographically sealed by the Target Security Gateway (`assert_safe_target()`), no attribute may be modified. Any target mutation, hostname change, or redirect resolution strictly requires instantiating a NEW `ValidatedTarget` instance through the gateway.
+   - **Connection-Level Destination Binding Requirement:** Pre-resolving DNS is necessary but insufficient to defeat Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Adapters and HTTP clients MUST enforce connection-level destination binding by opening the transport socket directly to `selected_destination` (the pre-resolved IP) while passing `canonical_value` (the original hostname) in the HTTP `Host` header and TLS Server Name Indication (SNI), or by utilizing a pinned in-memory DNS resolver that completely prohibits out-of-band resolution.
 
 2. **The Workspace Confinement Invariant (Contract 01 §3, Contract 08 §3):**
    Filesystem and source analysis tools must execute strictly within the server-derived authorized workspace root. Symlink traversal escapes, sensitive system directories (`/etc`, `/root`, `C:\Windows`, `.ssh`, `.aws`), and arbitrary host paths fail closed.
 
 3. **The Four-Tier Supply Chain & Provenance Invariant (Contract 03 §2, Contract 08 §4):**
    Every tool artifact must be evaluated against four distinct, non-conflated supply-chain dimensions:
-   - **Tier 1 (Version Verification):** Runtime verification of executable version string matching the approved pinned manifest.
+   - **Tier 1 (Version Verification):** Runtime verification of executable version string matching the exact approved pinned manifest (`PINNED_TOOL_MANIFEST`).
    - **Tier 2 (Artifact Integrity Verification):** Cryptographic SHA-256 digest calculation of downloaded release archives/binaries verified against `PINNED_TOOL_MANIFEST` before quarantine promotion.
    - **Tier 3 (Artifact Provenance / Attestation):** Cryptographic publisher identity validation (e.g. GitHub SLSA provenance, Cosign/Sigstore signatures, PyPI PEP 740 verifiable attestations, or GPG release signatures).
    - **Tier 4 (Installation & Resolution Governance):** Strict 5-tier binary resolution path prohibiting unvetted PATH execution.
@@ -41,9 +60,9 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
    Tool output is untrusted input. Every adapter must validate schema integrity and transform raw observations into canonical `Finding` objects mapped to explicit CWE, OWASP Top 10, ASVS 5.0, and NIST SP 800-53 controls with cryptographic SHA-256 evidence digests (`evidence_hash`).
 
 6. **The Explicit Coverage Degradation & Fallback Semantics Invariant (Contract 05 §1):**
-   A tool failure, missing binary, timeout, or cancellation MUST NEVER be interpreted as "no vulnerabilities found," nor may a native fallback be falsely claimed as providing 100% equivalent coverage to a specialized tool.
-   - When a tool fails or is unavailable, the platform invokes the native engine to maintain **Partial Baseline Coverage**.
-   - The orchestrator MUST record `coverage_status = COVERAGE_DEGRADED` and document the exact **Coverage Limitations** (e.g. "Nuclei DAST template coverage unavailable; native heuristic rules evaluated only").
+   A tool failure, missing binary, timeout, or cancellation MUST NEVER be interpreted as "no vulnerabilities found," nor may a native fallback be falsely claimed as providing 100% equivalent coverage to a specialized external tool.
+   - When an external tool fails or is unavailable, the platform activates the native engine to maintain **Partial Baseline Coverage**.
+   - The orchestrator MUST record `coverage_status = COVERAGE_DEGRADED` and document the exact **Coverage Loss** (e.g. "Nuclei DAST template coverage unavailable; native heuristic rules evaluated only").
 
 7. **The Multi-Dimensional Security Classification Invariant:**
    Every tool execution must declare its exact operational security classes:
@@ -72,7 +91,7 @@ To prevent ambiguity, tool execution distinguishes between five distinct operati
 
 ## 3. Generic Tool Contract Schema (41-Point Specification Model)
 
-Every supported tool integration is defined across 41 standardized fields with explicit operational classifications (`[CURRENT IMPLEMENTATION]`, `[REQUIRED TARGET STATE]`, `[UPSTREAM VERIFIED FACT]`, `[CYBERASSESS POLICY]`, `[UNVERIFIED]`):
+Every supported tool integration is defined across 41 standardized fields with explicit operational classifications (`[REPOSITORY_VERIFIED]`, `[UPSTREAM_VERIFIED]`, `[CYBERASSESS_REQUIRED]`, `[DESIGN_DECISION]`, `[UNVERIFIED]`):
 
 ```text
 ToolDefinition
@@ -99,10 +118,10 @@ ToolDefinition
   ├── 21. Forbidden Arguments
   ├── 22. Input Schema
   ├── 23. Output Format
-  ├── 24. Output Schema
+  ├── 24. Output Schema & Error Handling (Missing fields, malformed data)
   ├── 25. Exit Code Semantics
   ├── 26. Failure Semantics & Coverage Impact
-  ├── 27. Fallback Coverage Level & Limitations
+  ├── 27. Fallback Coverage Level & Coverage Loss
   ├── 28. Cancellation Protocol
   ├── 29. Cleanup Policy
   ├── 30. Parser Specification
@@ -131,7 +150,7 @@ ToolDefinition
 - **Upstream Project:** Insecure.Org (https://nmap.org)
 - **Security Domain:** Network Perimeter & EASM
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nmap_adapter.py`) & `VERIFIED FROM AUTHORITATIVE UPSTREAM DOCUMENTATION` (Nmap Reference Guide)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/nmap_adapter.py`) & `[UPSTREAM_VERIFIED]` (Nmap Reference Guide)
 
 ### 2. Security Purpose
 - **Problem Solved:** Discovers open TCP/UDP network ports, fingerprints listening services and versions, detects legacy operating systems, and identifies exposed administrative/database services on perimeter assets.
@@ -144,38 +163,38 @@ ToolDefinition
 - **Overlap Strategy:** Complemented by `sslyze` (for deep TLS ciphers) and `httpx` (for web service probing).
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `ACTIVE_INTRUSIVE` when `-sC` (default scripts) is enabled.
-- `[CYBERASSESS POLICY]` Classified as `ACTIVE_SERVICE_DISCOVERY` for standard `-sV` port sweeps; classified as `ACTIVE_INTRUSIVE` when executing NSE default scripts (`-sC`). Requires explicit active scan authorization.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_INTRUSIVE` when `-sC` (default scripts) is enabled.
+- `[CYBERASSESS_REQUIRED]` Classified as `ACTIVE_SERVICE_DISCOVERY` for standard `-sV` port sweeps; classified as `ACTIVE_INTRUSIVE` when executing NSE default scripts (`-sC`). Requires explicit active scan profile authorization.
 
 ### 5. Supported CyberAssess Profiles
-- `FULL_STACK`: `[CYBERASSESS POLICY]` ALLOWED (Full port sweep)
-- `QUICK`: `[CYBERASSESS POLICY]` ALLOWED (Top 100 ports)
-- `NETWORK_ONLY`: `[CYBERASSESS POLICY]` ALLOWED (Primary engine)
-- `DAST_ONLY`: `[CYBERASSESS POLICY]` DENIED (Web application focus only)
-- `SAST_ONLY`: `[CYBERASSESS POLICY]` DENIED (Filesystem code focus only)
+- `FULL_STACK`: `[CYBERASSESS_REQUIRED]` ALLOWED (Full port sweep)
+- `QUICK`: `[CYBERASSESS_REQUIRED]` ALLOWED (Top 100 ports)
+- `NETWORK_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED (Primary engine)
+- `DAST_ONLY`: `[CYBERASSESS_REQUIRED]` DENIED (Web application focus only)
+- `SAST_ONLY`: `[CYBERASSESS_REQUIRED]` DENIED (Filesystem code focus only)
 
 ### 6. Supported Target Types
-- `IP`: `[CURRENT IMPLEMENTATION]` Supported (IPv4, IPv6)
-- `DOMAIN`: `[CURRENT IMPLEMENTATION]` Supported (Resolved via Target Security Gateway)
-- `URL`: `[CURRENT IMPLEMENTATION]` Supported (Hostname extracted prior to invocation)
-- `LOCAL_PATH`: `[CYBERASSESS POLICY]` PROHIBITED
+- `IP`: `[REPOSITORY_VERIFIED]` Supported (IPv4, IPv6)
+- `DOMAIN`: `[REPOSITORY_VERIFIED]` Supported (Resolved via Target Security Gateway)
+- `URL`: `[REPOSITORY_VERIFIED]` Supported (Hostname extracted prior to invocation)
+- `LOCAL_PATH`: `[CYBERASSESS_REQUIRED]` PROHIBITED
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Pinned to Nmap `7.95` (Exact Release).
-- **Version Detection:** `[CURRENT IMPLEMENTATION]` `nmap --version` -> Regex `Nmap version\s+([0-9\.]+)`
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Pinned to Nmap `7.95` (Exact Release).
+- **Version Detection:** `[REPOSITORY_VERIFIED]` `nmap --version` -> Regex `Nmap version\s+([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
-- **Method:** `[CURRENT IMPLEMENTATION]` Preinstalled system binary (WinGet / apt / yum / brew) or managed binary in `backend/bin/nmap.exe`.
+- **Method:** `[REPOSITORY_VERIFIED]` Preinstalled system binary (WinGet / apt / yum / brew) or managed binary in `backend/bin/nmap.exe`.
 - **Resolver Path:** Tier 1: `config.adapters.nmap_path`, Tier 2: `backend/bin/nmap.exe`, Tier 4: `shutil.which("nmap")`, Tier 5: Windows `C:\Program Files (x86)\Nmap\nmap.exe`.
 
 ### 9. Supply-Chain Integrity & Provenance
-- **Version Verification:** `[CURRENT IMPLEMENTATION]` `nmap --version` runtime probe.
-- **Artifact Integrity (SHA-256):** `[REQUIRED TARGET STATE]` Standalone release archive hash verified against `PINNED_TOOL_MANIFEST` (`windows_amd64: UNVERIFIED (System Installer Dependency); linux_amd64: UNVERIFIED (OS Package)`).
-- **Provenance / Attestation:** `[REQUIRED TARGET STATE]` Insecure.Org GPG signing key (`43D0F654`).
-- **Resolution Source:** `[CYBERASSESS POLICY]` Authenticated system package manager or verified local binary directory.
+- **Version Verification:** `[REPOSITORY_VERIFIED]` `nmap --version` runtime probe.
+- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]` Standalone release archive hash verified against `PINNED_TOOL_MANIFEST` (`windows_amd64: [UNVERIFIED (System Installer Dependency)]`; `linux_amd64: [UNVERIFIED (OS Package)]`).
+- **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` Insecure.Org GPG signing key (`43D0F654`).
+- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Authenticated system package manager or verified local binary directory.
 
 ### 10. Required Permissions & Privileges
-- `[UPSTREAM VERIFIED FACT]` Unprivileged TCP connect scanning (`-sT` mode via standard user socket). Root/Administrator raw socket privileges (`-sS` SYN stealth) are strictly PROHIBITED in automated background scans to prevent privilege escalation risks.
+- `[UPSTREAM_VERIFIED]` Unprivileged TCP connect scanning (`-sT` mode via standard user socket). Root/Administrator raw socket privileges (`-sS` SYN stealth) are strictly PROHIBITED in automated background scans to prevent privilege escalation risks.
 
 ### 11. Credential Requirements & Injection Method
 - `NOT APPLICABLE` (Unauthenticated network probing).
@@ -184,19 +203,19 @@ ToolDefinition
 - `NOT APPLICABLE` (Network operations only; no filesystem artifacts stored outside temporary stdout pipe).
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Direct TCP/UDP egress to target host ports. Connection-level destination binding forces Nmap to connect directly to the pre-resolved `target_ip` to eliminate DNS rebinding risks. Egress to private/loopback subnets is blocked unless explicit `scan:internal` scope is verified.
+- `[CYBERASSESS_REQUIRED]` Direct TCP/UDP egress to target host ports. Connection-level destination binding forces Nmap to connect directly to `ValidatedTarget.selected_destination` (the pre-resolved IP) to eliminate DNS rebinding risks. Egress to private/loopback subnets is blocked unless explicit `scan:internal` scope is verified.
 
 ### 14. Safety Policy & Bounded Probing
-- **NSE Script Policy:** `[UPSTREAM VERIFIED FACT]` Nmap's `-sC` runs the `default` script category. While many are safe, some default scripts are intrusive.
-- **CyberAssess Policy:** `[REQUIRED TARGET STATE]` In automated scans, `-sC` is restricted to safe, non-destructive scripts (`banner`, `ssl-cert`, `http-title`). Exploitative script categories (`exploit`, `dos`, `fuzzer`, `intrusive`) are strictly FORBIDDEN.
+- **Approved NSE Script Allowlist:** `[CYBERASSESS_REQUIRED]` In automated scans, script execution is restricted to the explicit allowlist: `banner`, `ssl-cert`, `http-title`, `ssh2-enum-algos`, `dns-nsec-enum`.
+- **Forbidden Script Categories:** Exploitative or intrusive script categories (`exploit`, `dos`, `fuzzer`, `intrusive`, `brute`) are strictly FORBIDDEN.
 
 ### 15. Rate Limit vs Timing Profile
-- **Tool Timing Profile:** `[UPSTREAM VERIFIED FACT]` `-T4` (Aggressive timing template: 500ms max RTT timeout, 10ms initial probe delay, 1.25s max scan delay).
-- **Platform Request Rate:** `[CYBERASSESS POLICY]` Capped by platform rate governor (`rate_limit_rps: 5` default).
+- **Tool Timing Profile:** `[UPSTREAM_VERIFIED]` `-T4` (Aggressive timing template: 500ms max RTT timeout, 10ms initial probe delay, 1.25s max scan delay).
+- **Platform Request Rate:** `[CYBERASSESS_REQUIRED]` Capped by platform rate governor (`rate_limit_rps: 5` default).
 - **Network Safety Ceiling:** Max 100 concurrent port probe sockets per destination IP.
 
 ### 16. Concurrency Policy
-- `[CURRENT IMPLEMENTATION]` Single subprocess instance per scan job; internal probe parallelism managed by Nmap engine.
+- `[REPOSITORY_VERIFIED]` Single subprocess instance per scan job; internal probe parallelism managed by Nmap engine.
 
 ### 17. Timeout Policy
 - Startup timeout: 5.0s. Execution timeout: 60.0s (or `min(60.0, config.timeout_seconds * 6)`).
@@ -221,25 +240,29 @@ Stderr: Captures runtime diagnostics and errors
 - `--script exploit`, `--script dos`, `--script fuzzer`, `--script intrusive`, `--interactive`, `--privileged`, `--system-commands`, `-oN <path>`, `-iL <path>`.
 
 ### 22. Input Schema
-- Validated target IP or hostname string extracted via `ValidatedTarget.target_ip`.
+- Validated target IP string extracted via `ValidatedTarget.selected_destination`.
 
 ### 23. Output Format
 - Standard Nmap XML (`-oX -`) emitted to stdout.
 
-### 24. Output Schema
-- Validated XML containing root `<nmaprun>` and child `<host><ports><port>` elements.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** Root `<nmaprun>` containing child `<host><ports><port>` elements.
+- **Missing Fields:** If `<service>` tag is omitted, service defaults to `"unknown"`. If `<state>` is missing, port is skipped.
+- **Malformed XML:** If `xml.etree.ElementTree.ParseError` occurs, the adapter logs `PARSER_ERROR`, discards partial bytes, and activates native fallback.
+- **Unexpected Structures:** Unknown XML tags are safely ignored without throwing unhandled exceptions.
 
 ### 25. Exit Code Semantics
-- `0`: Successful scan execution.
-- `Non-zero`: Tool execution failure, invalid arguments, or network route unreachable.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT` (Scan completed successfully).
+- `1`: `FATAL_ERROR` (Invalid command arguments or unrecognized options).
+- `2` / `Non-zero`: `FATAL_ERROR` (Permission denied, network route unreachable, or process terminated).
 
 ### 26. Failure Semantics & Coverage Impact
-- `[CYBERASSESS POLICY]` Missing binary, non-zero exit, or timeout triggers `COVERAGE_DEGRADED` status. The failure is logged and the orchestrator seamlessly activates the native port checker.
+- `[CYBERASSESS_REQUIRED]` Missing binary, non-zero exit, or timeout triggers `COVERAGE_DEGRADED` status. The failure is logged and the orchestrator seamlessly activates the native port checker.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python `asyncio` TCP socket port checker & banner grabber.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native fallback tests configured top ports and extracts plain text banners, but lacks Nmap's comprehensive OS fingerprinting database, complex protocol probes (e.g. SMB, RPC, RDP negotiation), and NSE script execution.
+- **Coverage Loss:** Native fallback tests configured top ports and extracts plain text banners, but lacks Nmap's comprehensive OS fingerprinting database, complex protocol probes (e.g. SMB, RPC, RDP negotiation), and NSE script execution.
 
 ### 28. Cancellation Protocol
 - Managed by `ProcessSupervisor`. Sends `SIGTERM` / `taskkill /F /T /PID <pid>` to terminate the entire process tree recursively.
@@ -248,7 +271,7 @@ Stderr: Captures runtime diagnostics and errors
 - No persistent output files written to disk (`-oX -` uses memory stream). Temporary process descriptors closed upon exit.
 
 ### 30. Parser Specification
-- **Engine:** `[CURRENT IMPLEMENTATION]` Python `xml.etree.ElementTree`.
+- **Engine:** `[REPOSITORY_VERIFIED]` Python `xml.etree.ElementTree`.
 - **Extraction:** Iterates `.findall(".//ports/port")`, extracts `portid`, `protocol`, `state`, `service.name`, `service.product`, `service.version`, `script.output`.
 
 ### 31. Finding Normalization
@@ -270,13 +293,13 @@ Stderr: Captures runtime diagnostics and errors
 ### 34. Evidence Mapping & Cryptographic Hashing
 - `observed_value`: Port number, protocol, service product, version string.
 - `script_output`: Formatted text of script responses (`ssl-cert`, `http-title`).
-- `evidence_hash`: SHA-256 digest of `f"{target_ip}:{port}:{service_name}:{version}"`.
+- `evidence_hash`: SHA-256 digest of `f"{selected_destination}:{port}:{service_name}:{version}"`.
 
 ### 35. Secret Handling & Masking
 - Sanitizes banner strings for any embedded credentials or private tokens before persistence.
 
 ### 36. Correlation Strategy
-- Correlates with native `port_checker` and `banner_grabber` findings using `(target_ip, port, protocol)` tuple.
+- Correlates with native `port_checker` and `banner_grabber` findings using `(selected_destination, port, protocol)` tuple.
 
 ### 37. Validation Role
 - `PRIMARY` network discovery authority.
@@ -291,7 +314,7 @@ Stderr: Captures runtime diagnostics and errors
 - Core foundational tool; not scheduled for deprecation.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestNmapAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestNmapAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nmap_adapter.py`).
 
 ---
@@ -304,7 +327,7 @@ Stderr: Captures runtime diagnostics and errors
 - **Upstream Project:** Nabla C0d3 (https://github.com/nabla-c0d3/sslyze)
 - **Security Domain:** Network Perimeter & TLS
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/sslyze_adapter.py`) & `VERIFIED FROM AUTHORITATIVE UPSTREAM DOCUMENTATION`
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/sslyze_adapter.py`) & `[UPSTREAM_VERIFIED]`
 
 ### 2. Security Purpose
 - **Problem Solved:** Fast and comprehensive TLS/SSL configuration analysis to identify broken protocols, deprecated ciphers, and certificate validation flaws.
@@ -316,32 +339,32 @@ Stderr: Captures runtime diagnostics and errors
 - **Classification:** `PRIMARY` TLS security analysis engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `ACTIVE_READ_ONLY`. Initiates standard non-destructive TLS handshakes.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_READ_ONLY`. Initiates standard non-destructive TLS handshakes.
 
 ### 5. Supported CyberAssess Profiles
-- `FULL_STACK`: `[CYBERASSESS POLICY]` ALLOWED
-- `NETWORK_ONLY`: `[CYBERASSESS POLICY]` ALLOWED
-- `DAST_ONLY`: `[CYBERASSESS POLICY]` ALLOWED
-- `QUICK`: `[CYBERASSESS POLICY]` ALLOWED
-- `SAST_ONLY`: `[CYBERASSESS POLICY]` DENIED
+- `FULL_STACK`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `NETWORK_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `DAST_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `QUICK`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `SAST_ONLY`: `[CYBERASSESS_REQUIRED]` DENIED
 
 ### 6. Supported Target Types
-- `URL`: `[CURRENT IMPLEMENTATION]` Supported (Hostname & port extracted)
-- `DOMAIN`: `[CURRENT IMPLEMENTATION]` Supported
-- `IP`: `[CURRENT IMPLEMENTATION]` Supported
+- `URL`: `[REPOSITORY_VERIFIED]` Supported (Hostname & port extracted)
+- `DOMAIN`: `[REPOSITORY_VERIFIED]` Supported
+- `IP`: `[REPOSITORY_VERIFIED]` Supported
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` SSLyze `5.2.0` (Exact PyPI Release).
-- **Version Detection:** `[CURRENT IMPLEMENTATION]` `sslyze --version` -> Regex `([0-9\.]+)`
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` SSLyze `5.2.0` (Exact PyPI Release).
+- **Version Detection:** `[REPOSITORY_VERIFIED]` `sslyze --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
-- **Method:** `[CURRENT IMPLEMENTATION]` Python package installed via `pip_installer.py` in isolated venv.
+- **Method:** `[REPOSITORY_VERIFIED]` Python package installed via `pip_installer.py` in isolated venv.
 
 ### 9. Supply-Chain Integrity & Provenance
-- **Version Verification:** `[CURRENT IMPLEMENTATION]` Checked via `importlib.metadata.version("sslyze")`.
-- **Artifact Integrity (SHA-256):** `[REQUIRED TARGET STATE]` Exact wheel SHA-256 digest pinned in `backend/requirements.txt`.
-- **Provenance / Attestation:** `[REQUIRED TARGET STATE]` PyPI PEP 740 verifiable attestations / Sigstore provenance bundle.
-- **Resolution Source:** `[CYBERASSESS POLICY]` Authoritative PyPI repository over TLS.
+- **Version Verification:** `[REPOSITORY_VERIFIED]` Checked via `importlib.metadata.version("sslyze")`.
+- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]` Exact wheel SHA-256 digest pinned in `backend/requirements.txt`.
+- **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` PyPI PEP 740 verifiable attestations / Sigstore provenance bundle.
+- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Authoritative PyPI repository over TLS.
 
 ### 10. Required Permissions & Privileges
 - Unprivileged user socket access.
@@ -353,7 +376,7 @@ Stderr: Captures runtime diagnostics and errors
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Outbound TLS connections on target ports (443, 8443, custom TLS ports). Pinned to `ValidatedTarget.target_ip`.
+- `[CYBERASSESS_REQUIRED]` Outbound TLS connections on target ports (443, 8443, custom TLS ports). Pinned to `ValidatedTarget.selected_destination`.
 
 ### 14. Safety Policy & Bounded Probing
 - Safe, non-destructive TLS handshakes only.
@@ -392,20 +415,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON structure parsed from stdout.
 
-### 24. Output Schema
-- Validated JSON containing `server_scan_results[].scan_result`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `server_scan_results[].scan_result` JSON object.
+- **Missing Fields:** If a protocol section (e.g. `ssl_2_0_cipher_suites`) is absent, it is marked as `UNSUPPORTED`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and triggers native TLS fallback.
 
 ### 25. Exit Code Semantics
-- `0`: Scan completed successfully.
-- `Non-zero`: Connection error or unsupported target.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Connection refused, TLS timeout, or handshake rejection).
 
 ### 26. Failure Semantics & Coverage Impact
 - Non-zero exit or failure triggers `COVERAGE_DEGRADED` status. Activates native TLS fallback.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python `ssl.SSLContext` protocol sweeper.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native fallback tests TLS 1.0/1.1/1.2/1.3 and basic cert expiry, but lacks SSLyze's granular cipher suite enumeration (e.g. CBC, export, 3DES ciphers) and deep certificate chain validation.
+- **Coverage Loss:** Native fallback tests TLS 1.0/1.1/1.2/1.3 and basic cert expiry, but lacks SSLyze's granular cipher suite enumeration (e.g. CBC, export, 3DES ciphers) and deep certificate chain validation.
 
 ### 28. Cancellation Protocol
 - Standard process group termination via `ProcessSupervisor`.
@@ -451,7 +476,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestSslyzeAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSslyzeAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/sslyze_adapter.py`).
 
 ---
@@ -464,7 +489,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** ProjectDiscovery (https://github.com/projectdiscovery/subfinder)
 - **Security Domain:** Perimeter / EASM
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/subfinder_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/subfinder_adapter.py`) & `[UPSTREAM_VERIFIED]`
 
 ### 2. Security Purpose
 - **Problem Solved:** Fast passive subdomain enumeration using Certificate Transparency logs, search engines, and passive DNS datasets without sending traffic to the target.
@@ -476,14 +501,14 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` passive reconnaissance tool.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `PASSIVE`. Queries third-party passive aggregators only; zero direct network connection to target domain.
+- `[UPSTREAM_VERIFIED]` `PASSIVE`. Queries third-party passive aggregators only; zero direct network connection to target domain.
 
 ### 5. Supported CyberAssess Profiles
-- `FULL_STACK`: `[CYBERASSESS POLICY]` ALLOWED
-- `NETWORK_ONLY`: `[CYBERASSESS POLICY]` ALLOWED
-- `PASSIVE_OSINT`: `[CYBERASSESS POLICY]` ALLOWED
-- `DAST_ONLY`: `[CYBERASSESS POLICY]` ALLOWED (When `include_subdomains=True`)
-- `SAST_ONLY`: `[CYBERASSESS POLICY]` DENIED
+- `FULL_STACK`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `NETWORK_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `PASSIVE_OSINT`: `[CYBERASSESS_REQUIRED]` ALLOWED
+- `DAST_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED (When `include_subdomains=True`)
+- `SAST_ONLY`: `[CYBERASSESS_REQUIRED]` DENIED
 
 ### 6. Supported Target Types
 - `DOMAIN`: Supported
@@ -491,19 +516,19 @@ Stderr: Diagnostic logs
 - `IP`: PROHIBITED
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Subfinder `v2.6.5` (Exact GitHub Release).
-- **Version Detection:** `[CURRENT IMPLEMENTATION]` `subfinder -version` -> Regex `v?([0-9\.]+)`
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Subfinder `v2.6.5` (Exact GitHub Release).
+- **Version Detection:** `[REPOSITORY_VERIFIED]` `subfinder -version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
 - Standalone GitHub release binary downloaded via `github_release_installer.py`.
 
 ### 9. Supply-Chain Integrity & Provenance
-- **Version Verification:** `[CURRENT IMPLEMENTATION]` Runtime probe.
-- **Artifact Integrity (SHA-256):** `[CURRENT IMPLEMENTATION]` Verified in `PINNED_TOOL_MANIFEST`:
+- **Version Verification:** `[REPOSITORY_VERIFIED]` Runtime probe.
+- **Artifact Integrity (SHA-256):** `[REPOSITORY_VERIFIED]` Verified in `PINNED_TOOL_MANIFEST`:
   - `windows_amd64`: `382a5c54ec5a7cfeb60ad4fae3c321fa4ba5b6028a05c6ea4d49a751682ea576`
   - `linux_amd64`: `5ea58ceea06ea64e5aa06b12f68bc7aa3f63e6396da197825d19ec6ad06b2e3e`
-- **Provenance / Attestation:** `[REQUIRED TARGET STATE]` ProjectDiscovery GitHub Release Attestations.
-- **Resolution Source:** `[CYBERASSESS POLICY]` Official GitHub releases over HTTPS.
+- **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` ProjectDiscovery GitHub Release Attestation.
+- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Official GitHub releases over HTTPS.
 
 ### 10. Required Permissions & Privileges
 - Unprivileged user network access.
@@ -552,20 +577,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Line-delimited JSON (JSON Lines).
 
-### 24. Output Schema
-- Objects containing `{"host": "sub.example.com", "input": "example.com", "sources": [...]}`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `{"host": "sub.example.com", "input": "example.com", "sources": [...]}`.
+- **Missing Fields:** If `sources` is missing, defaults to `["unknown"]`.
+- **Malformed Lines:** Unparseable lines are skipped and recorded in `PARSER_WARNING` logs.
 
 ### 25. Exit Code Semantics
-- `0`: Successful enumeration.
-- `Non-zero`: API error or network connectivity failure.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (API connectivity failure or DNS network error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Certificate Transparency log queries.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native `crt.sh` client.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native client queries `crt.sh` exclusively; lacks Subfinder's 30+ multi-source passive aggregators.
+- **Coverage Loss:** Native client queries `crt.sh` exclusively; lacks Subfinder's 30+ multi-source passive aggregators.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -607,7 +634,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestSubfinderAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSubfinderAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/subfinder_adapter.py`).
 
 ---
@@ -620,7 +647,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** ProjectDiscovery (https://github.com/projectdiscovery/httpx)
 - **Security Domain:** HTTP Probing & Discovery
 - **CyberAssess Role:** `VALIDATION`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/httpx_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/httpx_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Rapid multi-point HTTP service validation, technology stack identification, and status code verification across large lists of hosts.
@@ -632,7 +659,7 @@ Stderr: Diagnostic logs
 - **Classification:** `VALIDATION` engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `ACTIVE_READ_ONLY`. Sends standard HTTP GET/HEAD requests.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_READ_ONLY`. Sends standard HTTP GET/HEAD requests.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `NETWORK_ONLY`, `DAST_ONLY`, `QUICK`.
@@ -641,7 +668,7 @@ Stderr: Diagnostic logs
 - `URL`, `DOMAIN`, `IP`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` httpx `v1.6.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` httpx `v1.6.0` (Exact GitHub Release).
 - **Version Detection:** `httpx -version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -662,7 +689,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Direct outbound HTTP/HTTPS connections to target hosts pinned to `ValidatedTarget.target_ip`.
+- `[CYBERASSESS_REQUIRED]` Direct outbound HTTP/HTTPS connections to target hosts pinned to `ValidatedTarget.selected_destination`.
 
 ### 14. Safety Policy & Bounded Probing
 - Enforces SSRF target validation; denies private CIDR sweeps.
@@ -699,19 +726,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON Lines stream.
 
-### 24. Output Schema
-- Objects containing `url`, `status_code`, `title`, `technologies`, `webserver`, `host`, `port`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `url`, `status_code`, `title`, `technologies`, `webserver`, `host`, `port`.
+- **Missing Fields:** `technologies` defaults to empty array; `title` defaults to empty string.
+- **Malformed Lines:** Unparseable lines skipped with warning logs.
 
 ### 25. Exit Code Semantics
-- `0`: Success. `Non-zero`: Network failure.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Host unreachable or network connection failure).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Python HTTP probe.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python `httpx` async library.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native probe captures status codes and basic headers, but lacks ProjectDiscovery's comprehensive Wappalyzer-based tech detection ruleset.
+- **Coverage Loss:** Native probe captures status codes and basic headers, but lacks ProjectDiscovery's comprehensive Wappalyzer-based tech detection ruleset.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -753,7 +783,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestHttpxAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestHttpxAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/httpx_adapter.py`).
 
 ---
@@ -766,7 +796,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** ProjectDiscovery (https://github.com/projectdiscovery/nuclei)
 - **Security Domain:** Web DAST & Vulnerability Assessment
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nuclei_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/nuclei_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Fast, deterministic template-driven vulnerability scanning for known CVEs, security misconfigurations, default credentials, and exposed sensitive panels.
@@ -778,7 +808,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` DAST vulnerability scanner.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `ACTIVE_INTRUSIVE`. Dispatches active HTTP probes matching known CVE patterns.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_INTRUSIVE`. Dispatches active HTTP probes matching known CVE patterns.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `DAST_ONLY`, `QUICK`, `API_FOCUSED`.
@@ -787,7 +817,7 @@ Stderr: Diagnostic logs
 - `URL`, `DOMAIN`, `IP`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Nuclei `v3.2.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Nuclei `v3.2.0` (Exact GitHub Release).
 - **Version Detection:** `nuclei -version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -808,7 +838,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Outbound HTTP/HTTPS access pinned to `ValidatedTarget.target_ip`.
+- `[CYBERASSESS_REQUIRED]` Outbound HTTP/HTTPS access pinned to `ValidatedTarget.selected_destination`.
 
 ### 14. Safety Policy & Bounded Probing
 - Strict template classification: only non-destructive tags (`cve`, `misconfig`, `exposure`) are enabled. Destructive exploit or DoS templates are forbidden.
@@ -845,19 +875,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Line-delimited JSON stream.
 
-### 24. Output Schema
-- Objects containing `template-id`, `info.name`, `info.severity`, `info.classification.cwe-id`, `info.classification.cvss-score`, `matched-at`, `curl-command`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `template-id`, `info.name`, `info.severity`, `info.classification.cwe-id`, `info.classification.cvss-score`, `matched-at`, `curl-command`.
+- **Missing Fields:** `cwe-id` defaults to inferred CWE; `cvss-score` defaults to severity base score.
+- **Malformed Lines:** Skipped with `PARSER_WARNING` log.
 
 ### 25. Exit Code Semantics
-- `0`: Completed with or without findings. `Non-zero`: Network failure.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Template compilation error, network failure, or invalid target).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native DAST heuristic checks.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python DAST rules (`headers_cookies`, `cors_analyzer`, `parameter_fuzzer`).
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native DAST tests core headers, CORS, basic SQLi/XSS reflection, and exposed endpoints, but CANNOT reproduce Nuclei's 5,000+ specialized CVE templates.
+- **Coverage Loss:** Native DAST tests core headers, CORS, basic SQLi/XSS reflection, and exposed endpoints, but CANNOT reproduce Nuclei's 5,000+ specialized CVE templates.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -903,7 +936,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestNucleiAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestNucleiAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nuclei_adapter.py`).
 
 ---
@@ -916,7 +949,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** FFuF (https://github.com/ffuf/ffuf)
 - **Security Domain:** Web Fuzzing & Parameter Discovery
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/ffuf_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/ffuf_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** High-speed fuzzing for hidden web routes, directories, URL query parameters, and HTTP headers.
@@ -928,7 +961,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` parameter and directory discovery engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `ACTIVE_INTRUSIVE`. Dispatches high-volume HTTP fuzzing requests.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_INTRUSIVE`. Dispatches high-volume HTTP fuzzing requests.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `DAST_ONLY`, `API_FOCUSED`.
@@ -937,7 +970,7 @@ Stderr: Diagnostic logs
 - `URL`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` FFuF `v2.1.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` FFuF `v2.1.0` (Exact GitHub Release).
 - **Version Detection:** `ffuf -V` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -957,7 +990,7 @@ Stderr: Diagnostic logs
 - Temporary wordlist files created in sandboxed temp directory.
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Outbound HTTP/HTTPS requests pinned to `ValidatedTarget.target_ip`.
+- `[CYBERASSESS_REQUIRED]` Outbound HTTP/HTTPS requests pinned to `ValidatedTarget.selected_destination`.
 
 ### 14. Safety Policy & Bounded Probing
 - Restrictive wordlists; exclusion patterns for logout and destructive actions (`*logout*`, `*delete*`, `*purge*`).
@@ -994,19 +1027,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON output emitted to stdout.
 
-### 24. Output Schema
-- Validated JSON containing `results[].url`, `results[].status`, `results[].length`, `results[].words`, `results[].input.FUZZ`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `results[].url`, `results[].status`, `results[].length`, `results[].words`, `results[].input.FUZZ`.
+- **Missing Fields:** Defaults to standard zero/empty representations.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native fuzzer.
 
 ### 25. Exit Code Semantics
-- `0`: Success. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Wordlist unreadable or network failure).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native parameter fuzzer.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python BFS crawler and parameter fuzzer.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native fuzzer tests standard top 50 common parameters; lacks FFuF's raw throughput and dynamic calibration.
+- **Coverage Loss:** Native fuzzer tests standard top 50 common parameters; lacks FFuF's raw throughput and dynamic calibration.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -1049,7 +1085,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestFfufAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestFfufAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/ffuf_adapter.py`).
 
 ---
@@ -1062,7 +1098,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** ProjectDiscovery (https://github.com/projectdiscovery/katana)
 - **Security Domain:** Web Crawling & Attack Surface Discovery
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/katana_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/katana_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Next-generation web crawler supporting both standard HTTP DOM parsing and headless Chromium crawling for Single Page Applications (SPAs).
@@ -1074,7 +1110,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` web crawler.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `ACTIVE_READ_ONLY`. Traverses links and parses DOM structures.
+- `[UPSTREAM_VERIFIED]` `ACTIVE_READ_ONLY`. Traverses links and parses DOM structures.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `DAST_ONLY`, `QUICK`.
@@ -1083,7 +1119,7 @@ Stderr: Diagnostic logs
 - `URL`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Katana `v1.0.5` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Katana `v1.0.5` (Exact GitHub Release).
 - **Version Detection:** `katana -version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -1103,7 +1139,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Outbound HTTP/HTTPS access strictly scoped to target domain and pinned to `ValidatedTarget.target_ip`.
+- `[CYBERASSESS_REQUIRED]` Outbound HTTP/HTTPS access strictly scoped to target domain and pinned to `ValidatedTarget.selected_destination`.
 
 ### 14. Safety Policy & Bounded Probing
 - Depth capped at `-d 3`, maximum crawl limit enforced, out-of-scope domain traversal blocked.
@@ -1140,19 +1176,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON Lines stream.
 
-### 24. Output Schema
-- Objects containing `request.endpoint`, `request.method`, `request.tag`, `response.status_code`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `request.endpoint`, `request.method`, `request.tag`, `response.status_code`.
+- **Missing Fields:** `tag` defaults to `"link"`.
+- **Malformed Lines:** Skipped safely.
 
 ### 25. Exit Code Semantics
-- `0`: Success. `Non-zero`: Failure.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Browser crash or connectivity loss).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Python crawler.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python BFS HTML crawler.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native crawler parses static HTML `<a>` and `<form>` tags, but cannot execute dynamic client-side JavaScript or extract routes from compiled SPA bundles.
+- **Coverage Loss:** Native crawler parses static HTML `<a>` and `<form>` tags, but cannot execute dynamic client-side JavaScript or extract routes from compiled SPA bundles.
 
 ### 28. Cancellation Protocol
 - Process tree termination via `ProcessSupervisor`.
@@ -1194,7 +1233,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestKatanaAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestKatanaAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/katana_adapter.py`).
 
 ---
@@ -1207,7 +1246,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Schemathesis (https://github.com/schemathesis/schemathesis)
 - **Security Domain:** API Contract Security & Fuzzing
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/schemathesis_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/schemathesis_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Property-based testing for OpenAPI, Swagger, and GraphQL APIs to detect server crashes (HTTP 500), schema violations, and input validation failures.
@@ -1219,7 +1258,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` API testing engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `STATE_CHANGING` when fuzzing mutation methods (POST/PUT/PATCH/DELETE); `ACTIVE_INTRUSIVE` when executing property-based boundary checks.
+- `[UPSTREAM_VERIFIED]` `STATE_CHANGING` when fuzzing mutation methods (POST/PUT/PATCH/DELETE); `ACTIVE_INTRUSIVE` when executing property-based boundary checks.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `API_FOCUSED`, `DAST_ONLY`.
@@ -1228,7 +1267,7 @@ Stderr: Diagnostic logs
 - `URL` (OpenAPI schema URL or base API URL).
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Schemathesis `3.20.0` (Exact PyPI Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Schemathesis `3.20.0` (Exact PyPI Release).
 - **Version Detection:** `schemathesis --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -1247,7 +1286,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding
-- `[REQUIRED TARGET STATE]` Direct outbound HTTP/HTTPS connections pinned to `ValidatedTarget.target_ip`.
+- `[CYBERASSESS_REQUIRED]` Direct outbound HTTP/HTTPS connections pinned to `ValidatedTarget.selected_destination`.
 
 ### 14. Safety Policy & Bounded Probing
 - Read-only operations prioritized; state-changing endpoints strictly bounded.
@@ -1284,19 +1323,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON report structure.
 
-### 24. Output Schema
-- Validated JSON containing `errors`, `checks`, `interactions`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `errors`, `checks`, `interactions`.
+- **Malformed Data:** Emits `PARSER_ERROR` and falls back to API inspector.
 
 ### 25. Exit Code Semantics
-- `0`: All tests passed. `1`: Schema violations/server errors found. `Non-zero`: Fatal error.
+- `0`: `SUCCESS_NO_FINDINGS` (All schema tests passed).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Schema violations or HTTP 500 errors found).
+- `Non-zero`: `FATAL_ERROR` (Schema load failure or network error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native API Inspector.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python API Inspector.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native inspector checks basic OpenAPI route reachability and auth headers, but lacks Schemathesis's Hypothesis-driven mathematical property generation and crash fuzzing.
+- **Coverage Loss:** Native inspector checks basic OpenAPI route reachability and auth headers, but lacks Schemathesis's Hypothesis-driven mathematical property generation and crash fuzzing.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -1339,7 +1381,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestSchemathesisAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSchemathesisAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/schemathesis_adapter.py`).
 
 ---
@@ -1352,7 +1394,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Semgrep Inc. (https://github.com/semgrep/semgrep)
 - **Security Domain:** Source Code SAST
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/semgrep_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/semgrep_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Fast, polyglot static analysis and AST pattern matching across Python, JavaScript, TypeScript, Go, Java, C#, PHP, and Ruby.
@@ -1364,7 +1406,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` SAST engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `CODE_ANALYSIS`. Reads local source files without execution.
+- `[UPSTREAM_VERIFIED]` `CODE_ANALYSIS`. Reads local source files without execution.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `QUICK`.
@@ -1373,7 +1415,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Semgrep `1.65.0` (Exact PyPI Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Semgrep `1.65.0` (Exact PyPI Release).
 - **Version Detection:** `semgrep --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -1429,19 +1471,23 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Standard Semgrep JSON report.
 
-### 24. Output Schema
-- Validated JSON containing `results[].check_id`, `results[].path`, `results[].start.line`, `results[].extra.message`, `results[].extra.severity`, `results[].extra.lines`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `results[].check_id`, `results[].path`, `results[].start.line`, `results[].extra.message`, `results[].extra.severity`, `results[].extra.lines`.
+- **Missing Lines:** Fallback to line 1.
+- **Malformed JSON:** Emits `PARSER_ERROR` and activates native AST taint analyzer.
 
 ### 25. Exit Code Semantics
-- `0`: Scan completed successfully. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` (Clean scan).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Code issues found).
+- `Non-zero`: `FATAL_ERROR` (Syntax error or out of memory).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native AST taint analyzer.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python AST taint analyzer.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native taint analyzer parses Python AST nodes only; lacks Semgrep's polyglot support for JS, Go, Java, PHP, and Ruby.
+- **Coverage Loss:** Native taint analyzer parses Python AST nodes only; lacks Semgrep's polyglot support for JS, Go, Java, PHP, and Ruby.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -1488,7 +1534,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestSemgrepAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSemgrepAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/semgrep_adapter.py`).
 
 ---
@@ -1501,7 +1547,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** PyCQA (https://github.com/PyCQA/bandit)
 - **Security Domain:** Python Source Code SAST
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/bandit_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/bandit_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Deep AST-based vulnerability analysis specifically engineered for Python source code.
@@ -1513,7 +1559,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` Python SAST engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `CODE_ANALYSIS`. Reads Python source code without execution.
+- `[UPSTREAM_VERIFIED]` `CODE_ANALYSIS`. Reads Python source code without execution.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `QUICK`.
@@ -1522,7 +1568,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Bandit `1.7.8` (Exact PyPI Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Bandit `1.7.8` (Exact PyPI Release).
 - **Version Detection:** `bandit --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -1578,19 +1624,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Bandit JSON report.
 
-### 24. Output Schema
-- Validated JSON containing `results[].test_id`, `results[].filename`, `results[].line_number`, `results[].issue_severity`, `results[].issue_confidence`, `results[].code`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `results[].test_id`, `results[].filename`, `results[].line_number`, `results[].issue_severity`, `results[].issue_confidence`, `results[].code`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native AST visitor.
 
 ### 25. Exit Code Semantics
-- `0`: No issues found. `1`: Issues found. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` (No issues).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Issues found).
+- `Non-zero`: `FATAL_ERROR` (Parse error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Python AST visitor.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python AST visitor.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native AST visitor covers basic `eval` and `subprocess` checks; lacks Bandit's extensive 70+ Python security rule catalog.
+- **Coverage Loss:** Native AST visitor covers basic `eval` and `subprocess` checks; lacks Bandit's extensive 70+ Python security rule catalog.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -1637,7 +1686,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestBanditAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestBanditAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/bandit_adapter.py`).
 
 ---
@@ -1650,7 +1699,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Gitleaks (https://github.com/gitleaks/gitleaks)
 - **Security Domain:** Secret Scanning & Git History
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/gitleaks_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/gitleaks_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Fast, regex and entropy-based detection of committed secrets, API keys, private tokens, and passwords in Git commit history and filesystems.
@@ -1662,7 +1711,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` secret scanning engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `CODE_ANALYSIS` & `CREDENTIAL_AWARE`. Reads files and Git history for exposed secrets.
+- `[UPSTREAM_VERIFIED]` `CODE_ANALYSIS` & `CREDENTIAL_AWARE`. Reads files and Git history for exposed secrets.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `QUICK`.
@@ -1671,7 +1720,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Gitleaks `v8.18.2` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Gitleaks `v8.18.2` (Exact GitHub Release).
 - **Version Detection:** `gitleaks version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -1728,19 +1777,23 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON report file.
 
-### 24. Output Schema
-- Validated JSON array containing `RuleID`, `Description`, `Secret`, `File`, `StartLine`, `Commit`, `Author`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `RuleID`, `Description`, `Secret`, `File`, `StartLine`, `Commit`, `Author`.
+- **Missing Author:** Defaults to `"unknown"`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native secret scanner.
 
 ### 25. Exit Code Semantics
-- `0`: No secrets found. `1`: Secrets detected. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` (No secrets).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Secrets found).
+- `Non-zero`: `FATAL_ERROR` (Repository corruption or path error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native secret scanner.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Shannon entropy & regex secret scanner.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native scanner detects high-entropy strings and common API keys in current files, but does not traverse deep Git commit history.
+- **Coverage Loss:** Native scanner detects high-entropy strings and common API keys in current files, but does not traverse deep Git commit history.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -1783,7 +1836,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestGitleaksAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestGitleaksAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/gitleaks_adapter.py`).
 
 ---
@@ -1796,7 +1849,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Truffle Security (https://github.com/trufflesecurity/trufflehog)
 - **Security Domain:** Secret Scanning & Live Verification
 - **CyberAssess Role:** `VALIDATION`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trufflehog_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/trufflehog_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Detects secrets with detector-specific live verification (e.g. verifying if an AWS key or GitHub token is currently active and authenticated).
@@ -1808,7 +1861,7 @@ Stderr: Diagnostic logs
 - **Classification:** `VALIDATION` engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `CREDENTIAL_AWARE` & `ACTIVE_READ_ONLY`. Initiates read-only authentication probes to cloud providers.
+- `[UPSTREAM_VERIFIED]` `CREDENTIAL_AWARE` & `ACTIVE_READ_ONLY`. Initiates read-only authentication probes to cloud providers.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`.
@@ -1817,7 +1870,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` TruffleHog `v3.63.0` (Exact Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` TruffleHog `v3.63.0` (Exact Release).
 - **Version Detection:** `trufflehog --version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -1873,19 +1926,21 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON Lines stream.
 
-### 24. Output Schema
-- Objects containing `DetectorName`, `Verified`, `Raw`, `SourceMetadata.Data.Filesystem.file`, `SourceMetadata.Data.Filesystem.line`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `DetectorName`, `Verified`, `Raw`, `SourceMetadata.Data.Filesystem.file`, `SourceMetadata.Data.Filesystem.line`.
+- **Malformed Lines:** Skipped safely.
 
 ### 25. Exit Code Semantics
-- `0`: No secrets. `Non-zero`: Secrets found or error.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Execution error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and relies on Gitleaks unverified findings.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native regex scanner & Gitleaks.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native scanner detects patterns but cannot verify if credentials are live and authenticated against external cloud APIs.
+- **Coverage Loss:** Native scanner detects patterns but cannot verify if credentials are live and authenticated against external cloud APIs.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -1928,7 +1983,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestTruffleHogAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestTruffleHogAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trufflehog_adapter.py`).
 
 ---
@@ -1941,7 +1996,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Retire.js (https://github.com/RetireJS/retire.js)
 - **Security Domain:** Client-Side JavaScript SCA
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/retirejs_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/retirejs_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Scans JavaScript source files and node modules for known vulnerable frontend libraries (jQuery, Bootstrap, Angular, Lodash, React).
@@ -1953,7 +2008,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` JavaScript SCA engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `SUPPLY_CHAIN` & `CODE_ANALYSIS`. Reads local JS files.
+- `[UPSTREAM_VERIFIED]` `SUPPLY_CHAIN` & `CODE_ANALYSIS`. Reads local JS files.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `DAST_ONLY`.
@@ -1962,7 +2017,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Retire.js `4.4.3` (Exact Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Retire.js `4.4.3` (Exact Release).
 - **Version Detection:** `retire --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2018,19 +2073,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - JSON report structure.
 
-### 24. Output Schema
-- Validated JSON array containing `data[].file`, `data[].results[].component`, `data[].results[].version`, `data[].results[].vulnerabilities[]`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `data[].file`, `data[].results[].component`, `data[].results[].version`, `data[].results[].vulnerabilities[]`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native SCA.
 
 ### 25. Exit Code Semantics
-- `0`: No issues. `Non-zero`: Vulnerabilities found or error.
+- `0`: `SUCCESS_NO_FINDINGS` (No vulnerabilities).
+- `1` / `13`: `SUCCESS_FINDINGS_PRESENT` (Vulnerabilities found).
+- `Non-zero`: `FATAL_ERROR` (Parse error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native dependency auditor.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native auditor checks `package.json` lockfiles; cannot fingerprint raw unversioned vendor JS files embedded in HTML/JS assets.
+- **Coverage Loss:** Native auditor checks `package.json` lockfiles; cannot fingerprint raw unversioned vendor JS files embedded in HTML/JS assets.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -2074,7 +2132,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestRetireJSAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestRetireJSAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/retirejs_adapter.py`).
 
 ---
@@ -2087,7 +2145,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Aqua Security (https://github.com/aquasecurity/trivy)
 - **Security Domain:** Container, Filesystem & Dependency SCA
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trivy_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/trivy_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Comprehensive scanner for container images, filesystems, Git repositories, and lockfiles for known package CVEs, OS package vulnerabilities, and misconfigurations.
@@ -2099,7 +2157,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` SCA and container security engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `SUPPLY_CHAIN` & `CODE_ANALYSIS`. Reads lockfiles, manifests, and container layers.
+- `[UPSTREAM_VERIFIED]` `SUPPLY_CHAIN` & `CODE_ANALYSIS`. Reads lockfiles, manifests, and container layers.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `INFRA_CONTAINER`, `QUICK`.
@@ -2108,7 +2166,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`, `DOCKERFILE`, `CONTAINER_IMAGE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Trivy `v0.50.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Trivy `v0.50.0` (Exact GitHub Release).
 - **Version Detection:** `trivy --version` -> Regex `Version:\s*([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2165,19 +2223,21 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Standard Trivy JSON schema.
 
-### 24. Output Schema
-- Validated JSON containing `Results[].Target`, `Results[].Vulnerabilities[].VulnerabilityID`, `Results[].Vulnerabilities[].PkgName`, `Results[].Vulnerabilities[].InstalledVersion`, `Results[].Vulnerabilities[].FixedVersion`, `Results[].Vulnerabilities[].Severity`, `Results[].Vulnerabilities[].PrimaryURL`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `Results[].Target`, `Results[].Vulnerabilities[].VulnerabilityID`, `Results[].Vulnerabilities[].PkgName`, `Results[].Vulnerabilities[].InstalledVersion`, `Results[].Vulnerabilities[].FixedVersion`, `Results[].Vulnerabilities[].Severity`, `Results[].Vulnerabilities[].PrimaryURL`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native lockfile auditor.
 
 ### 25. Exit Code Semantics
-- `0`: Scan completed. `Non-zero`: Fatal error.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Database unreadable or target missing).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native lockfile auditor.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native lockfile dependency auditor.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native auditor parses Python and Node lockfiles against a local cache; lacks Trivy's comprehensive multi-ecosystem vulnerability database and OS package scanning.
+- **Coverage Loss:** Native auditor parses Python and Node lockfiles against a local cache; lacks Trivy's comprehensive multi-ecosystem vulnerability database and OS package scanning.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -2209,7 +2269,7 @@ Stderr: Diagnostic logs
 ### 36. Correlation Strategy
 - Clustered with Syft, Grype, and OSV-Scanner findings using `(package_name, version, cve_id)` key.
 
-### 35. Validation Role
+### 37. Validation Role
 - `PRIMARY` SCA and container vulnerability authority.
 
 ### 38. Reproducibility Record
@@ -2222,7 +2282,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestTrivyAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestTrivyAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trivy_adapter.py`).
 
 ---
@@ -2235,7 +2295,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Anchore (https://github.com/anchore/grype)
 - **Security Domain:** SBOM & Container Vulnerability Scanning
 - **CyberAssess Role:** `VALIDATION`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/grype_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/grype_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Fast dependency vulnerability matcher that ingests SBOMs (CycloneDX / SPDX) and container images, matching against Anchore's multi-source vulnerability database.
@@ -2247,7 +2307,7 @@ Stderr: Diagnostic logs
 - **Classification:** `VALIDATION` engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `SUPPLY_CHAIN`. Analyzes SBOMs and container packages.
+- `[UPSTREAM_VERIFIED]` `SUPPLY_CHAIN`. Analyzes SBOMs and container packages.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `INFRA_CONTAINER`.
@@ -2256,7 +2316,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`, `CONTAINER_IMAGE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Grype `v0.74.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Grype `v0.74.0` (Exact GitHub Release).
 - **Version Detection:** `grype version` -> Regex `version:\s*([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2313,19 +2373,21 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Standard Grype JSON schema.
 
-### 24. Output Schema
-- Validated JSON containing `matches[].vulnerability.id`, `matches[].vulnerability.severity`, `matches[].artifact.name`, `matches[].artifact.version`, `matches[].vulnerability.fix.versions[]`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `matches[].vulnerability.id`, `matches[].vulnerability.severity`, `matches[].artifact.name`, `matches[].artifact.version`, `matches[].vulnerability.fix.versions[]`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native SCA.
 
 ### 25. Exit Code Semantics
-- `0`: Success. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Parse error or invalid SBOM input).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and relies on Trivy and native SCA.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native auditor lacks Anchore's proprietary vulnerability matching algorithms and vulnerability database.
+- **Coverage Loss:** Native auditor lacks Anchore's proprietary vulnerability matching algorithms and vulnerability database.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -2370,7 +2432,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestGrypeAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestGrypeAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/grype_adapter.py`).
 
 ---
@@ -2383,7 +2445,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Anchore (https://github.com/anchore/syft)
 - **Security Domain:** Software Bill of Materials (SBOM)
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/syft_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/syft_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Generates authoritative, standard-compliant Software Bill of Materials (SBOM) documents in CycloneDX and SPDX formats from filesystems and container images.
@@ -2395,7 +2457,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` SBOM generation engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `SUPPLY_CHAIN`. Inspects packages and creates SBOMs.
+- `[UPSTREAM_VERIFIED]` `SUPPLY_CHAIN`. Inspects packages and creates SBOMs.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`, `INFRA_CONTAINER`.
@@ -2404,7 +2466,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`, `CONTAINER_IMAGE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Syft `v1.0.1` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Syft `v1.0.1` (Exact GitHub Release).
 - **Version Detection:** `syft version` -> Regex `version:\s*([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2461,19 +2523,21 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Standard CycloneDX 1.5 JSON or SPDX 2.3 JSON.
 
-### 24. Output Schema
-- Validated CycloneDX BOM containing `bomFormat: "CycloneDX"`, `specVersion: "1.5"`, `components[]`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `bomFormat: "CycloneDX"`, `specVersion: "1.5"`, `components[]`.
+- **Malformed Output:** Emits `PARSER_ERROR` and falls back to native CycloneDX exporter.
 
 ### 25. Exit Code Semantics
-- `0`: Success. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` (SBOM generated).
+- `Non-zero`: `FATAL_ERROR` (Cataloging error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native CycloneDX exporter.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python CycloneDX exporter.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native exporter catalogs top-level lockfile entries; lacks Syft's deep binary scanning and license extraction.
+- **Coverage Loss:** Native exporter catalogs top-level lockfile entries; lacks Syft's deep binary scanning and license extraction.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -2515,7 +2579,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestSyftAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSyftAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/syft_adapter.py`).
 
 ---
@@ -2528,7 +2592,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Google (https://github.com/google/osv-scanner)
 - **Security Domain:** Open Source Vulnerability Database SCA
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/osv_scanner_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/osv_scanner_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Direct query interface into Google's authoritative Open Source Vulnerabilities (OSV) distributed database across npm, PyPI, Go, Maven, Rust, Packagist, and Debian.
@@ -2540,7 +2604,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` OSV intelligence engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `SUPPLY_CHAIN`. Queries Google OSV database.
+- `[UPSTREAM_VERIFIED]` `SUPPLY_CHAIN`. Queries Google OSV database.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `SAST_ONLY`.
@@ -2549,7 +2613,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` OSV-Scanner `v1.7.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` OSV-Scanner `v1.7.0` (Exact GitHub Release).
 - **Version Detection:** `osv-scanner --version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2606,19 +2670,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Standard OSV JSON schema.
 
-### 24. Output Schema
-- Validated JSON containing `results[].packages[].package.name`, `results[].packages[].package.version`, `results[].packages[].vulnerabilities[].id`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `results[].packages[].package.name`, `results[].packages[].package.version`, `results[].packages[].vulnerabilities[].id`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native SCA.
 
 ### 25. Exit Code Semantics
-- `0`: No vulnerabilities. `1`: Vulnerabilities found. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` (No vulnerabilities).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Vulnerabilities found).
+- `Non-zero`: `FATAL_ERROR` (Parse failure).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native dependency auditor.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native auditor checks basic CVE listings; lacks Google OSV's precise commit-level hash matching.
+- **Coverage Loss:** Native auditor checks basic CVE listings; lacks Google OSV's precise commit-level hash matching.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -2663,7 +2730,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestOSVScannerAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestOSVScannerAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/osv_scanner_adapter.py`).
 
 ---
@@ -2676,7 +2743,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Bridgecrew / Prisma Cloud (https://github.com/bridgecrewio/checkov)
 - **Security Domain:** Infrastructure-as-Code (IaC) & Cloud Posture
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/checkov_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/checkov_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Static code analysis for Infrastructure-as-Code (IaC) files covering Terraform, CloudFormation, Kubernetes YAML, Dockerfiles, ARM templates, and Serverless frameworks.
@@ -2688,7 +2755,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` IaC security analysis engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `CODE_ANALYSIS`. Reads IaC source manifests.
+- `[UPSTREAM_VERIFIED]` `CODE_ANALYSIS`. Reads IaC source manifests.
 
 ### 5. Supported CyberAssess Profiles
 - `FULL_STACK`, `INFRA_ONLY`, `SAST_ONLY`, `INFRA_CONTAINER`.
@@ -2697,7 +2764,7 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`, `IAC_MANIFEST`, `DOCKERFILE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Checkov `3.2.0` (Exact PyPI Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Checkov `3.2.0` (Exact PyPI Release).
 - **Version Detection:** `checkov --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2753,19 +2820,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Checkov JSON report.
 
-### 24. Output Schema
-- Validated JSON containing `results.failed_checks[].check_id`, `results.failed_checks[].check_name`, `results.failed_checks[].file_path`, `results.failed_checks[].file_line_range`, `results.failed_checks[].guideline`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `results.failed_checks[].check_id`, `results.failed_checks[].check_name`, `results.failed_checks[].file_path`, `results.failed_checks[].file_line_range`, `results.failed_checks[].guideline`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native IaC linters.
 
 ### 25. Exit Code Semantics
-- `0`: All policies passed. `1`: Failed policies detected. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` (All policies passed).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Failed policies detected).
+- `Non-zero`: `FATAL_ERROR` (Parse error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native IaC engine.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Dockerfile, Kubernetes, and Terraform AST linters.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native linters cover root Docker containers and public S3 buckets; lack Checkov's 1,000+ multi-cloud CIS benchmark policy packs.
+- **Coverage Loss:** Native linters cover root Docker containers and public S3 buckets; lack Checkov's 1,000+ multi-cloud CIS benchmark policy packs.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -2810,7 +2880,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestCheckovAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestCheckovAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/checkov_adapter.py`).
 
 ---
@@ -2823,7 +2893,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Prowler (https://github.com/prowler-cloud/prowler)
 - **Security Domain:** Multi-Cloud Posture & CIS Benchmarks
 - **CyberAssess Role:** `PRIMARY`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/prowler_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/prowler_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Multi-cloud security posture assessment (CSPM) across AWS, Azure, GCP, and Kubernetes for CIS Benchmarks, GDPR, HIPAA, and ISO 27001 compliance.
@@ -2835,7 +2905,7 @@ Stderr: Diagnostic logs
 - **Classification:** `PRIMARY` cloud security posture engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `CREDENTIAL_AWARE` & `ACTIVE_READ_ONLY`. Reads cloud configurations using read-only IAM credentials.
+- `[UPSTREAM_VERIFIED]` `CREDENTIAL_AWARE` & `ACTIVE_READ_ONLY`. Reads cloud configurations using read-only IAM credentials.
 
 ### 5. Supported CyberAssess Profiles
 - `INFRA_ONLY`, `FULL_STACK`.
@@ -2844,7 +2914,7 @@ Stderr: Diagnostic logs
 - `CLOUD_ACCOUNT`, `KUBERNETES_CLUSTER`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Prowler `4.1.0` (Exact PyPI Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Prowler `4.1.0` (Exact PyPI Release).
 - **Version Detection:** `prowler -v` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -2900,19 +2970,21 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - AWS Security Finding Format (ASFF) JSON report.
 
-### 24. Output Schema
-- Validated ASFF JSON containing `Findings[].Title`, `Findings[].Severity.Label`, `Findings[].Compliance.Status`, `Findings[].Remediation.Recommendation.Text`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `Findings[].Title`, `Findings[].Severity.Label`, `Findings[].Compliance.Status`, `Findings[].Remediation.Recommendation.Text`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native posture checks.
 
 ### 25. Exit Code Semantics
-- `0`: Scan completed. `Non-zero`: Authentication failure or API error.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Authentication failure or API error).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native posture checks.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Terraform and Cloud posture checks.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native engine audits static manifests; lacks live multi-cloud API queries across live AWS/Azure accounts.
+- **Coverage Loss:** Native engine audits static manifests; lacks live multi-cloud API queries across live AWS/Azure accounts.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -2957,7 +3029,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestProwlerAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestProwlerAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/prowler_adapter.py`).
 
 ---
@@ -2970,7 +3042,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** Aqua Security (https://github.com/aquasecurity/kube-bench)
 - **Security Domain:** Kubernetes CIS Benchmark Auditing
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/kubebench_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/kubebench_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Verifies whether a Kubernetes cluster is configured securely according to the CIS Kubernetes Benchmark standards.
@@ -2982,7 +3054,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` Kubernetes compliance engine.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `PRIVILEGED` & `CODE_ANALYSIS`. Requires read access to `/etc/kubernetes/` configuration files in cluster mode.
+- `[UPSTREAM_VERIFIED]` `PRIVILEGED` & `CODE_ANALYSIS`. Requires read access to `/etc/kubernetes/` configuration files in cluster mode.
 
 ### 5. Supported CyberAssess Profiles
 - `INFRA_ONLY`, `FULL_STACK`.
@@ -2991,7 +3063,7 @@ Stderr: Diagnostic logs
 - `KUBERNETES_CLUSTER`, `LOCAL_PATH` (Manifest mode).
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Kube-Bench `v0.7.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Kube-Bench `v0.7.0` (Exact GitHub Release).
 - **Version Detection:** `kube-bench version` -> Regex `v?([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -3047,19 +3119,21 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Kube-bench JSON schema.
 
-### 24. Output Schema
-- Validated JSON containing `Controls[].tests[].results[].test_number`, `test_desc`, `status`, `remediation`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `Controls[].tests[].results[].test_number`, `test_desc`, `status`, `remediation`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native manifest auditor.
 
 ### 25. Exit Code Semantics
-- `0`: Completed. `Non-zero`: Error.
+- `0`: `SUCCESS_NO_FINDINGS` or `SUCCESS_FINDINGS_PRESENT`.
+- `Non-zero`: `FATAL_ERROR` (Missing cluster config or execution failure).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native K8s manifest auditor.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Kubernetes YAML manifest auditor.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native auditor analyzes static Pod/Deployment manifests; lacks CIS benchmark checks for master node services (apiserver, etcd, kubelet).
+- **Coverage Loss:** Native auditor analyzes static Pod/Deployment manifests; lacks CIS benchmark checks for master node services (apiserver, etcd, kubelet).
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -3103,7 +3177,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestKubeBenchAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestKubeBenchAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/kubebench_adapter.py`).
 
 ---
@@ -3116,7 +3190,7 @@ Stderr: Diagnostic logs
 - **Upstream Project:** GoodWithTech (https://github.com/goodwithtech/dockle)
 - **Security Domain:** Container Image Hardening & CIS Docker
 - **CyberAssess Role:** `SPECIALIZED`
-- **Evidence Basis:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/dockle_adapter.py`)
+- **Evidence Basis:** `[REPOSITORY_VERIFIED]` (`backend/app/adapters/dockle_adapter.py`)
 
 ### 2. Security Purpose
 - **Problem Solved:** Container image linter verifying compliance with CIS Docker Benchmarks, best practices, and security hardening rules.
@@ -3128,7 +3202,7 @@ Stderr: Diagnostic logs
 - **Classification:** `SPECIALIZED` container image hardening linter.
 
 ### 4. Security Classification
-- `[UPSTREAM VERIFIED FACT]` `SUPPLY_CHAIN` & `CODE_ANALYSIS`. Inspects container image layers.
+- `[UPSTREAM_VERIFIED]` `SUPPLY_CHAIN` & `CODE_ANALYSIS`. Inspects container image layers.
 
 ### 5. Supported CyberAssess Profiles
 - `INFRA_CONTAINER`, `INFRA_ONLY`, `FULL_STACK`.
@@ -3137,7 +3211,7 @@ Stderr: Diagnostic logs
 - `CONTAINER_IMAGE`, `DOCKERFILE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[REQUIRED TARGET STATE]` Dockle `v0.4.14` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Dockle `v0.4.14` (Exact GitHub Release).
 - **Version Detection:** `dockle -v` -> Regex `version:\s*([0-9\.]+)`
 
 ### 8. Artifact / Installation Method
@@ -3194,19 +3268,22 @@ Stderr: Diagnostic logs
 ### 23. Output Format
 - Dockle JSON report.
 
-### 24. Output Schema
-- Validated JSON containing `details[].code`, `details[].title`, `details[].level`, `details[].alerts[]`.
+### 24. Output Schema & Error Handling
+- **Valid Schema:** `details[].code`, `details[].title`, `details[].level`, `details[].alerts[]`.
+- **Malformed JSON:** Emits `PARSER_ERROR` and falls back to native Dockerfile linter.
 
 ### 25. Exit Code Semantics
-- `0`: No fatal issues. `Non-zero`: Issues found or error.
+- `0`: `SUCCESS_NO_FINDINGS` (No fatal issues).
+- `1`: `SUCCESS_FINDINGS_PRESENT` (Issues found).
+- `Non-zero`: `FATAL_ERROR` (Daemon unreachable or image missing).
 
 ### 26. Failure Semantics & Coverage Impact
 - Failure sets `COVERAGE_DEGRADED` and activates native Dockerfile linter.
 
-### 27. Fallback Coverage Level & Limitations
+### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Dockerfile security linter.
 - **Coverage Level:** Partial Baseline Coverage.
-- **Coverage Limitations:** Native linter inspects `Dockerfile` syntax; cannot inspect compiled multi-layer binary image tarballs.
+- **Coverage Loss:** Native linter inspects `Dockerfile` syntax; cannot inspect compiled multi-layer binary image tarballs.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -3251,7 +3328,7 @@ Stderr: Diagnostic logs
 - Active core tool.
 
 ### 41. Required Tests & Verification Status
-- `[CURRENT IMPLEMENTATION]` `tests/test_adapters.py::TestDockleAdapter` passing.
+- `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestDockleAdapter` passing.
 - **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/dockle_adapter.py`).
 
 ---
