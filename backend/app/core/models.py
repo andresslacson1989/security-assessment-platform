@@ -282,6 +282,13 @@ class ToolAdapterConfig(BaseModel):
     enable_dockle: bool = Field(default=True, description="Enable Dockle CIS Docker container hardening linter adapter")
     enable_schemathesis: bool = Field(default=True, description="Enable Schemathesis property-based API contract fuzzer adapter")
 
+    # Offensive Verification & Extended Pentest Suite (v14.0.0)
+    enable_metasploit: bool = Field(default=True, description="Enable Metasploit Framework auxiliary scanner & non-destructive CVE verification adapter")
+    enable_sqlmap: bool = Field(default=True, description="Enable sqlmap automated SQL injection safe verification adapter")
+    enable_amass: bool = Field(default=True, description="Enable OWASP Amass deep graph-based EASM attack surface discovery adapter")
+    enable_hydra: bool = Field(default=True, description="Enable THC-Hydra authentication resilience & brute-force audit adapter")
+    enable_gtfobins: bool = Field(default=True, description="Enable GTFOBins & LOLBAS host/container privilege escalation auditor")
+
     # Paths
     nmap_path: Optional[str] = Field(default=None)
     sslyze_path: Optional[str] = Field(default=None)
@@ -304,6 +311,10 @@ class ToolAdapterConfig(BaseModel):
     kube_bench_path: Optional[str] = Field(default=None)
     dockle_path: Optional[str] = Field(default=None)
     schemathesis_path: Optional[str] = Field(default=None)
+    metasploit_path: Optional[str] = Field(default=None)
+    sqlmap_path: Optional[str] = Field(default=None)
+    amass_path: Optional[str] = Field(default=None)
+    hydra_path: Optional[str] = Field(default=None)
 
     custom_nmap_path: Optional[str] = Field(default=None)
     custom_sslyze_path: Optional[str] = Field(default=None)
@@ -326,12 +337,17 @@ class ToolAdapterConfig(BaseModel):
     custom_kube_bench_path: Optional[str] = Field(default=None)
     custom_dockle_path: Optional[str] = Field(default=None)
     custom_schemathesis_path: Optional[str] = Field(default=None)
+    custom_metasploit_path: Optional[str] = Field(default=None)
+    custom_sqlmap_path: Optional[str] = Field(default=None)
+    custom_amass_path: Optional[str] = Field(default=None)
+    custom_hydra_path: Optional[str] = Field(default=None)
 
     @model_validator(mode="after")
     def sync_paths(self) -> "ToolAdapterConfig":
         tools = [
             "nmap", "sslyze", "nuclei", "ffuf", "semgrep", "gitleaks", "bandit", "trivy", "checkov",
-            "subfinder", "httpx", "katana", "syft", "grype", "osv_scanner", "retirejs", "trufflehog", "prowler", "kube_bench", "dockle", "schemathesis"
+            "subfinder", "httpx", "katana", "syft", "grype", "osv_scanner", "retirejs", "trufflehog", "prowler", "kube_bench", "dockle", "schemathesis",
+            "metasploit", "sqlmap", "amass", "hydra"
         ]
         for tool in tools:
             path_attr = f"{tool}_path"

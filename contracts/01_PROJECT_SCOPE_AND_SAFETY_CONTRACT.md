@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Enterprise Security Architecture
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 13.0.0 (Enterprise Assessment Methodology, Tool Assurance & Production Readiness)  
+**Document Version:** 14.0.0 (Enterprise Offensive/Defensive Alignment, 26-Tool Fleet & Production Readiness)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards, Zero-Trust Security Controls, Multi-Tenant Governance & Operational Boundaries  
 
@@ -16,12 +16,14 @@ CyberAssess is logically separated into:
 2. **Execution Plane:** Isolated worker execution environment running containerized or sandboxed workers (DAST, SAST, Infra/Cloud) with strict workspace confinement, egress network controls, resource limits, and real-time process lifecycle governance via `ProcessSupervisor`.
 3. **Evidence & Persistence Layer:** Authoritative relational database (PostgreSQL for enterprise, SQLite WAL for single-node standalone) and encrypted object storage for reproducible, cryptographically hashed evidence artifacts. JSON storage is strictly for exports/backups and never serves as runtime persistence authority.
 
-The platform orchestrates a fleet of **21 authoritative security tool adapters** backed by native fallback engines across five security domains:
-- **Network Perimeter & EASM:** `nmap`, `sslyze`, `subfinder`, `httpx`
-- **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`
+The platform orchestrates an authoritative fleet of **26 specialized security tool adapters** backed by native fallback engines across six security domains:
+- **Network Perimeter & EASM:** `nmap`, `sslyze`, `subfinder`, `httpx`, `amass`
+- **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`, `sqlmap`, `schemathesis`
+- **Exploitation & Auxiliary Verification:** `metasploit` (strictly non-destructive auxiliary scanners)
+- **Authentication & Password Resilience:** `hydra`, `hashcat`, `john`
 - **SAST & Secrets:** `semgrep`, `bandit`, `gitleaks`, `trufflehog`, `retire`
 - **Supply Chain & SCA:** `trivy`, `syft`, `grype`, `osv-scanner`
-- **Cloud, K8s & IaC Posture:** `checkov`, `prowler`, `kube-bench`, `dockle`, `schemathesis`
+- **Cloud, K8s & Host Posture:** `checkov`, `prowler`, `kube-bench`, `dockle`, `gtfobins` (host/privesc rule engine)
 
 ---
 
