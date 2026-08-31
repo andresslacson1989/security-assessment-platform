@@ -34,6 +34,9 @@
         <button class="btn btn-outline" id="btn-open-toolbox">
           <span>⚙️</span> Toolbox
         </button>
+        <button class="btn btn-outline" id="btn-open-telemetry">
+          <span>📊</span> Telemetry Hub
+        </button>
         <button class="btn btn-outline" id="btn-open-history">
           <span>📜</span> History
         </button>
@@ -697,8 +700,153 @@
       </div>
     </div>
 
+    <!-- Assessment Intelligence & Telemetry Hub Modal -->
+    <div class="modal-overlay" id="telemetry-modal" style="display: none;">
+      <div class="modal-card modal-card--telemetry" style="max-width: 1100px; width: 95vw; height: 88vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+          <div class="modal-header-title-group">
+            <h3>📊 Assessment Intelligence & Tool Telemetry Hub</h3>
+            <span class="modal-header-subtitle" id="telemetry-scan-meta">Organized multi-tool logs, tested links, reconnaissance, and execution telemetry</span>
+          </div>
+          <button class="btn-close" id="btn-close-telemetry">&times;</button>
+        </div>
+        <div class="telemetry-nav-tabs" style="display: flex; gap: 8px; padding: 10px 20px; background: rgba(0,0,0,0.2); border-bottom: 1px solid var(--border-subtle);">
+          <button class="btn btn-sm btn-ghost telemetry-tab-btn active" data-tab="logs">📜 Multi-Tool Logs & Stream</button>
+          <button class="btn btn-sm btn-ghost telemetry-tab-btn" data-tab="endpoints">🕸️ Tested Links & Endpoints (<span id="telemetry-links-count">0</span>)</button>
+          <button class="btn btn-sm btn-ghost telemetry-tab-btn" data-tab="matrix">🛠️ Tool Execution Matrix (<span id="telemetry-tools-count">0</span>)</button>
+          <button class="btn btn-sm btn-ghost telemetry-tab-btn" data-tab="surface">📡 Attack Surface & OSINT</button>
+        </div>
+        <div class="modal-body telemetry-hub-body" style="flex: 1; overflow-y: auto; padding: 16px 20px;">
+          
+          <!-- TAB 1: LOG STREAM & FILTERS -->
+          <div class="telemetry-tab-pane active" id="pane-telemetry-logs">
+            <div class="telemetry-filter-bar" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; background: rgba(255,255,255,0.02); padding: 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+              <div style="flex: 2; min-width: 200px;">
+                <input type="text" id="telemetry-log-search" class="form-control form-control-sm" placeholder="🔍 Search log messages, URLs, errors, payloads...">
+              </div>
+              <div style="flex: 1; min-width: 140px;">
+                <select id="telemetry-filter-tool" class="form-control form-control-sm">
+                  <option value="ALL">All Tools / Sources</option>
+                  <option value="orchestrator">orchestrator</option>
+                  <option value="nmap">nmap</option>
+                  <option value="nuclei">nuclei</option>
+                  <option value="katana">katana</option>
+                  <option value="ffuf">ffuf</option>
+                  <option value="sslyze">sslyze</option>
+                  <option value="subfinder">subfinder</option>
+                  <option value="httpx">httpx</option>
+                  <option value="semgrep">semgrep</option>
+                  <option value="bandit">bandit</option>
+                  <option value="gitleaks">gitleaks</option>
+                  <option value="trufflehog">trufflehog</option>
+                  <option value="trivy">trivy</option>
+                  <option value="grype">grype</option>
+                  <option value="syft">syft</option>
+                  <option value="osv-scanner">osv-scanner</option>
+                  <option value="checkov">checkov</option>
+                  <option value="prowler">prowler</option>
+                  <option value="kube-bench">kube-bench</option>
+                  <option value="dockle">dockle</option>
+                  <option value="schemathesis">schemathesis</option>
+                  <option value="retire">retire.js</option>
+                  <option value="native">native engines</option>
+                </select>
+              </div>
+              <div style="flex: 1; min-width: 130px;">
+                <select id="telemetry-filter-level" class="form-control form-control-sm">
+                  <option value="ALL">All Log Levels</option>
+                  <option value="INFO">INFO Only</option>
+                  <option value="WARNING">WARNING Only</option>
+                  <option value="ERROR">ERROR Only</option>
+                  <option value="DEBUG">DEBUG Only</option>
+                </select>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn btn-xs btn-outline" id="btn-copy-telemetry-logs" title="Copy visible logs to clipboard">📋 Copy Logs</button>
+                <button class="btn btn-xs btn-outline" id="btn-export-telemetry-json" title="Download telemetry JSON archive">💾 Export JSON</button>
+              </div>
+            </div>
+            <div class="telemetry-logs-viewer monospace-box" id="telemetry-logs-container" style="background: #080d14; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 12px; height: calc(100% - 70px); min-height: 380px; overflow-y: auto; font-size: 12px; line-height: 1.6;">
+              <!-- Dynamically populated formatted log entries -->
+            </div>
+          </div>
+
+          <!-- TAB 2: TESTED LINKS & CRAWLED ENDPOINTS -->
+          <div class="telemetry-tab-pane" id="pane-telemetry-endpoints" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <input type="text" id="telemetry-endpoint-search" class="form-control form-control-sm" style="max-width: 350px;" placeholder="🔍 Filter links by path, method, status...">
+              <span style="font-size: 12px; color: var(--text-muted);" id="telemetry-endpoint-stats">Showing all discovered links</span>
+            </div>
+            <div class="history-table-container">
+              <table class="data-table monospace-table" id="telemetry-endpoints-table">
+                <thead>
+                  <tr>
+                    <th style="width: 50px;">Depth</th>
+                    <th style="width: 75px;">Method</th>
+                    <th>Target Link / Endpoint</th>
+                    <th style="width: 80px;">Status</th>
+                    <th style="width: 140px;">Content-Type</th>
+                    <th style="width: 70px;">Forms</th>
+                    <th style="width: 80px;">Auth</th>
+                    <th style="width: 110px;">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="telemetry-endpoints-tbody">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- TAB 3: TOOL EXECUTION MATRIX -->
+          <div class="telemetry-tab-pane" id="pane-telemetry-matrix" style="display: none;">
+            <div class="history-table-container">
+              <table class="data-table" id="telemetry-matrix-table">
+                <thead>
+                  <tr>
+                    <th>Tool / Engine</th>
+                    <th>Domain</th>
+                    <th>Execution Status</th>
+                    <th>Runtime</th>
+                    <th>Findings</th>
+                    <th>Telemetry Events</th>
+                    <th>Target Scope</th>
+                  </tr>
+                </thead>
+                <tbody id="telemetry-matrix-tbody">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- TAB 4: SURFACE & OSINT -->
+          <div class="telemetry-tab-pane" id="pane-telemetry-surface" style="display: none;">
+            <h4 style="margin-bottom: 8px; color: var(--color-primary); font-size: 13px;">📡 Passive & Active Subdomain Discoveries</h4>
+            <div class="history-table-container" style="margin-bottom: 20px;">
+              <table class="data-table monospace-table">
+                <thead>
+                  <tr>
+                    <th>Subdomain Domain</th>
+                    <th>Resolved IPs</th>
+                    <th>CNAME Target</th>
+                    <th>Takeover Risk</th>
+                    <th>Source</th>
+                  </tr>
+                </thead>
+                <tbody id="telemetry-subdomains-tbody">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <script src="/static/js/app.js?v=10.0.0"></script>
+  <script src="/static/js/app.js?v=13.0.0"></script>
 </body>
 </html>

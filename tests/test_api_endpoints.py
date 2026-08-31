@@ -176,3 +176,83 @@ async def test_sse_streaming_endpoint(auth_headers):
             
             assert len(lines) >= 2
             assert any("event: completed" in l or "event: connected" in l for l in lines)
+
+
+@pytest.mark.asyncio
+async def test_telemetry_endpoint_structure_and_filters(auth_headers):
+    from app.core.models import LogEntry, LogLevel, Finding, Evidence, DiscoveredEndpoint, DiscoveredSubdomain
+    target = Target(name="Telemetry Target", type=TargetType.URL, value="https://telemetry-test.local")
+    job = ScanJob(
+        target=target,
+        profile=ScanProfile.FULL_STACK,
+        status=ScanStatus.COMPLETED,
+        progress_percent=100,
+        active_adapters=["nmap", "nuclei", "katana"],
+        logs=[
+            LogEntry(level=LogLevel.INFO, engine="network", tool="nmap", message="Nmap detected open port 443"),
+            LogEntry(level=LogLevel.WARNING, engine="web_dast", tool="nuclei", message="Nuclei detected CVE-2024-9999"),
+            LogEntry(level=LogLevel.ERROR, engine="code_sast", tool="semgrep", message="Semgrep parse failure in file"),
+        ],
+        discovered_endpoints=[
+            DiscoveredEndpoint(url="https://telemetry-test.local/login", method="GET", status_code=200, depth=1)
+        ],
+        discovered_subdomains=[
+            DiscoveredSubdomain(domain="api.telemetry-test.local", ip_addresses=["10.0.0.1"], is_takeover_vulnerable=False)
+        ],
+        findings=[
+            Finding(
+                scan_id="scan-telemetry-run",
+                engine="web_dast",
+                source_tool="nuclei",
+                check_id="CVE-2024-9999",
+                category="Injection",
+                title="SQL Injection Vulnerability",
+                severity=Severity.HIGH,
+                cvss_score=8.5,
+                description="SQLi vulnerability detected",
+                impact="Database compromise",
+                remediation="Use parameterized queries",
+                evidence=Evidence(location="https://telemetry-test.local/api/users", observed_value="error in SQL", expected_value="clean")
+            )
+        ]
+    )
+    save_scan(job)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # 1. Unauthenticated request -> 401
+        res_unauth = await ac.get(f"/api/scans/{job.id}/telemetry")
+        assert res_unauth.status_code == 401
+
+        # 2. Authenticated request -> 200 with full structure
+        res = await ac.get(f"/api/scans/{job.id}/telemetry", headers=auth_headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["scan_id"] == job.id
+        assert data["target_value"] == "https://telemetry-test.local"
+        assert data["total_logs"] == 3
+        assert len(data["logs"]) == 3
+        assert len(data["discovered_endpoints"]) == 1
+        assert len(data["discovered_subdomains"]) == 1
+        assert len(data["tools_executed"]) >= 3
+
+        # 3. Filter by tool=nuclei
+        res_tool = await ac.get(f"/api/scans/{job.id}/telemetry?tool=nuclei", headers=auth_headers)
+        assert res_tool.status_code == 200
+        data_tool = res_tool.json()
+        assert len(data_tool["logs"]) == 1
+        assert "Nuclei detected" in data_tool["logs"][0]["message"]
+
+        # 4. Filter by level=ERROR
+        res_lvl = await ac.get(f"/api/scans/{job.id}/telemetry?level=ERROR", headers=auth_headers)
+        assert res_lvl.status_code == 200
+        data_lvl = res_lvl.json()
+        assert len(data_lvl["logs"]) == 1
+        assert "Semgrep parse failure" in data_lvl["logs"][0]["message"]
+
+        # 5. Search query
+        res_search = await ac.get(f"/api/scans/{job.id}/telemetry?search=open port", headers=auth_headers)
+        assert res_search.status_code == 200
+        data_search = res_search.json()
+        assert len(data_search["logs"]) == 1
+        assert "open port 443" in data_search["logs"][0]["message"]
+

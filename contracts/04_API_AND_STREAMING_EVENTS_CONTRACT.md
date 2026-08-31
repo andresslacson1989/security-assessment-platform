@@ -28,6 +28,7 @@
 ### 1.3 Scan Execution & Lifecycle Endpoints (`/api/scans`)
 - `POST /api/scans/start`: Initiates a security assessment (`scan:create`). Enforces universal target security gateway (`assert_safe_target()`) and server-derived workspace sandboxing.
 - `GET /api/scans/{scan_id}`: Retrieves full scan job snapshot and findings (`scan:read`, tenant-scoped).
+- `GET /api/scans/{scan_id}/telemetry`: Retrieves organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface (`scan:read`, tenant-scoped).
 - `POST /api/scans/{scan_id}/cancel`: Cancels an active scan (`scan:cancel`) and forcefully terminates running worker subprocess trees via `ProcessSupervisor`.
 - `GET /api/scans` / `GET /api/scans/history`: Lists historical scan summaries for caller's organization.
 - `DELETE /api/scans/{scan_id}`: Deletes a scan record (`scan:delete`, tenant-scoped).

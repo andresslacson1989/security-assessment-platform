@@ -166,6 +166,25 @@ class ScanStreamManager {
     this.authPasswordInput = document.getElementById("auth-password-input");
     this.authCurrentUsername = document.getElementById("auth-current-username");
     this.authCurrentRole = document.getElementById("auth-current-role");
+
+    // Assessment Intelligence & Telemetry Hub Modal
+    this.btnOpenTelemetry = document.getElementById("btn-open-telemetry");
+    this.btnCloseTelemetry = document.getElementById("btn-close-telemetry");
+    this.telemetryModal = document.getElementById("telemetry-modal");
+    this.telemetryLogsContainer = document.getElementById("telemetry-logs-container");
+    this.telemetryLogSearch = document.getElementById("telemetry-log-search");
+    this.telemetryFilterTool = document.getElementById("telemetry-filter-tool");
+    this.telemetryFilterLevel = document.getElementById("telemetry-filter-level");
+    this.telemetryEndpointsTbody = document.getElementById("telemetry-endpoints-tbody");
+    this.telemetryMatrixTbody = document.getElementById("telemetry-matrix-tbody");
+    this.telemetrySubdomainsTbody = document.getElementById("telemetry-subdomains-tbody");
+    this.telemetryLinksCount = document.getElementById("telemetry-links-count");
+    this.telemetryToolsCount = document.getElementById("telemetry-tools-count");
+    this.telemetryScanMeta = document.getElementById("telemetry-scan-meta");
+    this.telemetryEndpointSearch = document.getElementById("telemetry-endpoint-search");
+    this.btnCopyTelemetryLogs = document.getElementById("btn-copy-telemetry-logs");
+    this.btnExportTelemetryJson = document.getElementById("btn-export-telemetry-json");
+    this.currentTelemetryData = null;
   }
 
   attachEventListeners() {
@@ -351,6 +370,52 @@ class ScanStreamManager {
     }
     if (this.btnLogout) {
       this.btnLogout.addEventListener("click", () => this.handleLogout());
+    }
+
+    // Telemetry Hub Listeners
+    if (this.btnOpenTelemetry) {
+      this.btnOpenTelemetry.addEventListener("click", () => this.openTelemetryModal());
+    }
+    if (this.btnCloseTelemetry) {
+      this.btnCloseTelemetry.addEventListener("click", () => this.closeTelemetryModal());
+    }
+    if (this.telemetryModal) {
+      this.telemetryModal.addEventListener("click", (e) => {
+        if (e.target === this.telemetryModal) this.closeTelemetryModal();
+      });
+    }
+
+    // Telemetry Tab Switching
+    const tabBtns = document.querySelectorAll(".telemetry-tab-btn");
+    tabBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabBtns.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const targetTab = btn.getAttribute("data-tab");
+        document.querySelectorAll(".telemetry-tab-pane").forEach((pane) => {
+          pane.style.display = pane.id === `pane-telemetry-${targetTab}` ? "block" : "none";
+        });
+      });
+    });
+
+    // Telemetry Filters
+    if (this.telemetryLogSearch) {
+      this.telemetryLogSearch.addEventListener("input", () => this.renderTelemetryLogs());
+    }
+    if (this.telemetryFilterTool) {
+      this.telemetryFilterTool.addEventListener("change", () => this.renderTelemetryLogs());
+    }
+    if (this.telemetryFilterLevel) {
+      this.telemetryFilterLevel.addEventListener("change", () => this.renderTelemetryLogs());
+    }
+    if (this.telemetryEndpointSearch) {
+      this.telemetryEndpointSearch.addEventListener("input", () => this.renderTelemetryEndpoints());
+    }
+    if (this.btnCopyTelemetryLogs) {
+      this.btnCopyTelemetryLogs.addEventListener("click", () => this.copyTelemetryLogs());
+    }
+    if (this.btnExportTelemetryJson) {
+      this.btnExportTelemetryJson.addEventListener("click", () => this.exportTelemetryJson());
     }
   }
 
@@ -1142,6 +1207,7 @@ class ScanStreamManager {
           <td>${findCount}</td>
           <td>
             <button class="btn btn-xs btn-outline" onclick="window.app.loadPastScan('${s.id}')">View</button>
+            <button class="btn btn-xs btn-outline" onclick="window.app.openTelemetryModal('${s.id}')">📊 Telemetry</button>
             <button class="btn btn-xs btn-ghost" style="color: var(--color-critical);" onclick="window.app.deletePastScan('${s.id}')">Delete</button>
           </td>
         </tr>
@@ -1714,6 +1780,251 @@ class ScanStreamManager {
       this.authStatusBadge.className = "auth-status-badge badge-none";
     }
     this.closeAuthModal();
+  }
+
+  // --- Assessment Intelligence & Telemetry Hub Implementation ---
+
+  async openTelemetryModal(scanId = null) {
+    const targetScanId = scanId || this.currentScanId;
+    if (this.telemetryModal) {
+      this.telemetryModal.style.display = "flex";
+    }
+
+    if (!targetScanId) {
+      if (this.telemetryLogsContainer) {
+        this.telemetryLogsContainer.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 40px;">No scan selected. Please launch a new assessment or view a past scan from the History archive.</div>`;
+      }
+      return;
+    }
+
+    await this.loadTelemetryData(targetScanId);
+  }
+
+  closeTelemetryModal() {
+    if (this.telemetryModal) {
+      this.telemetryModal.style.display = "none";
+    }
+  }
+
+  async loadTelemetryData(scanId) {
+    try {
+      if (this.telemetryScanMeta) {
+        this.telemetryScanMeta.innerText = `Loading telemetry and reconnaissance for scan: ${scanId}...`;
+      }
+
+      const res = await this.authFetch(`/api/scans/${scanId}/telemetry`);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      this.currentTelemetryData = await res.json();
+
+      if (this.telemetryScanMeta) {
+        this.telemetryScanMeta.innerText = `Scan: ${this.currentTelemetryData.scan_id} | Target: ${this.currentTelemetryData.target_value} | Profile: ${this.currentTelemetryData.profile} | Status: ${this.currentTelemetryData.status}`;
+      }
+
+      if (this.telemetryLinksCount) {
+        this.telemetryLinksCount.innerText = `${(this.currentTelemetryData.discovered_endpoints || []).length}`;
+      }
+      if (this.telemetryToolsCount) {
+        this.telemetryToolsCount.innerText = `${(this.currentTelemetryData.tools_executed || []).length}`;
+      }
+
+      this.renderTelemetryLogs();
+      this.renderTelemetryEndpoints();
+      this.renderTelemetryMatrix();
+      this.renderTelemetrySurface();
+    } catch (e) {
+      console.error("Failed to load telemetry:", e);
+      if (this.telemetryLogsContainer) {
+        this.telemetryLogsContainer.innerHTML = `<div style="color: var(--color-critical); padding: 20px;">Failed to load assessment telemetry: ${this.escapeHtml(e.message)}</div>`;
+      }
+    }
+  }
+
+  renderTelemetryLogs() {
+    if (!this.telemetryLogsContainer || !this.currentTelemetryData) return;
+
+    const searchTerm = this.telemetryLogSearch ? this.telemetryLogSearch.value.trim().toLowerCase() : "";
+    const toolFilter = this.telemetryFilterTool ? this.telemetryFilterTool.value : "ALL";
+    const levelFilter = this.telemetryFilterLevel ? this.telemetryFilterLevel.value : "ALL";
+
+    let logs = this.currentTelemetryData.logs || [];
+
+    if (toolFilter !== "ALL") {
+      const tfLower = toolFilter.toLowerCase();
+      logs = logs.filter((l) => (l.tool && l.tool.toLowerCase() === tfLower) || (l.engine && l.engine.toLowerCase() === tfLower) || (l.message && l.message.toLowerCase().includes(tfLower)));
+    }
+
+    if (levelFilter !== "ALL") {
+      logs = logs.filter((l) => (l.level || "INFO").toUpperCase() === levelFilter);
+    }
+
+    if (searchTerm) {
+      logs = logs.filter((l) => 
+        (l.message && l.message.toLowerCase().includes(searchTerm)) ||
+        (l.engine && l.engine.toLowerCase().includes(searchTerm)) ||
+        (l.tool && l.tool.toLowerCase().includes(searchTerm))
+      );
+    }
+
+    if (logs.length === 0) {
+      this.telemetryLogsContainer.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 30px;">No telemetry logs matched the specified filter criteria.</div>`;
+      return;
+    }
+
+    this.telemetryLogsContainer.innerHTML = logs.map((l) => {
+      const timeStr = l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : "--:--:--";
+      const lvl = (l.level || "INFO").toLowerCase();
+      const source = l.tool ? l.tool : (l.engine || "orchestrator");
+      return `
+        <div class="telemetry-log-item">
+          <span class="telemetry-log-time">[${timeStr}]</span>
+          <span class="telemetry-log-tag level-${lvl}">${lvl}</span>
+          <span class="telemetry-log-source">[${this.escapeHtml(source)}]</span>
+          <span class="telemetry-log-message">${this.escapeHtml(l.message)}</span>
+        </div>
+      `;
+    }).join("");
+  }
+
+  renderTelemetryEndpoints() {
+    if (!this.telemetryEndpointsTbody || !this.currentTelemetryData) return;
+
+    const searchTerm = this.telemetryEndpointSearch ? this.telemetryEndpointSearch.value.trim().toLowerCase() : "";
+    let endpoints = this.currentTelemetryData.discovered_endpoints || [];
+
+    if (searchTerm) {
+      endpoints = endpoints.filter((ep) => 
+        (ep.url && ep.url.toLowerCase().includes(searchTerm)) ||
+        (ep.method && ep.method.toLowerCase().includes(searchTerm)) ||
+        (ep.status_code && String(ep.status_code).includes(searchTerm)) ||
+        (ep.content_type && ep.content_type.toLowerCase().includes(searchTerm))
+      );
+    }
+
+    if (endpoints.length === 0) {
+      this.telemetryEndpointsTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 25px;">No crawled links or attack surface endpoints recorded for this scan.</td></tr>`;
+      return;
+    }
+
+    this.telemetryEndpointsTbody.innerHTML = endpoints.map((ep) => {
+      const sc = ep.status_code || 200;
+      let scClass = "status-2xx";
+      if (sc >= 300 && sc < 400) scClass = "status-3xx";
+      else if (sc >= 400 && sc < 500) scClass = "status-4xx";
+      else if (sc >= 500) scClass = "status-5xx";
+
+      const method = ep.method || "GET";
+      const formsCount = ep.discovered_forms !== undefined ? ep.discovered_forms : (ep.has_forms ? "Yes" : 0);
+      const isAuth = ep.is_authenticated ? "🔒 Yes" : "No";
+
+      return `
+        <tr>
+          <td><code>${ep.depth || 0}</code></td>
+          <td><span class="badge badge-info">${method}</span></td>
+          <td style="word-break: break-all; max-width: 380px;"><strong>${this.escapeHtml(ep.url)}</strong></td>
+          <td><span class="link-status-badge ${scClass}">${sc}</span></td>
+          <td><code>${this.escapeHtml(ep.content_type || "text/html")}</code></td>
+          <td>${formsCount}</td>
+          <td>${isAuth}</td>
+          <td>
+            <button class="btn btn-xs btn-primary" onclick="window.app.sendLinkToRepeater('${encodeURIComponent(ep.url)}', '${method}')">⚡ Repeater</button>
+          </td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  renderTelemetryMatrix() {
+    if (!this.telemetryMatrixTbody || !this.currentTelemetryData) return;
+
+    const tools = this.currentTelemetryData.tools_executed || [];
+    if (tools.length === 0) {
+      this.telemetryMatrixTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 25px;">No tool execution telemetry records available.</td></tr>`;
+      return;
+    }
+
+    this.telemetryMatrixTbody.innerHTML = tools.map((t) => {
+      let statusBadge = `<span class="badge badge-success">PASS</span>`;
+      if (t.status === "FINDINGS") statusBadge = `<span class="badge" style="background: var(--color-critical); color: #fff;">FINDINGS</span>`;
+      else if (t.status === "FAILED") statusBadge = `<span class="badge badge-danger">FAILED</span>`;
+      else if (t.status === "PARTIAL") statusBadge = `<span class="badge badge-warning">PARTIAL</span>`;
+
+      const runtimeStr = t.duration_seconds > 0 ? `${t.duration_seconds.toFixed(2)}s` : "< 1.0s";
+      const endpointsCount = (t.endpoints_tested || []).length;
+      const scopeStr = endpointsCount > 0 ? `${endpointsCount} locations` : (this.currentTelemetryData.target_value || "Target Host");
+
+      return `
+        <tr>
+          <td><strong style="color: var(--accent-cyan); text-transform: uppercase;">${this.escapeHtml(t.tool_name)}</strong></td>
+          <td><code>${this.escapeHtml(t.engine)}</code></td>
+          <td>${statusBadge}</td>
+          <td>${runtimeStr}</td>
+          <td><strong>${t.findings_count}</strong></td>
+          <td>${t.log_count} events</td>
+          <td><span style="font-size: 11px; color: var(--text-muted);">${this.escapeHtml(scopeStr)}</span></td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  renderTelemetrySurface() {
+    if (!this.telemetrySubdomainsTbody || !this.currentTelemetryData) return;
+
+    const subdomains = this.currentTelemetryData.discovered_subdomains || [];
+    if (subdomains.length === 0) {
+      this.telemetrySubdomainsTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">No subdomains discovered via OSINT for this target.</td></tr>`;
+      return;
+    }
+
+    this.telemetrySubdomainsTbody.innerHTML = subdomains.map((sub) => {
+      const ips = (sub.ip_addresses || []).join(", ") || "None";
+      const cnames = (sub.cname_targets || []).join(", ") || "None";
+      const takeover = sub.is_takeover_vulnerable ? `<span class="badge badge-danger">⚠️ Vulnerable</span>` : `<span class="badge badge-success">Safe</span>`;
+      const source = sub.discovered_via || "OSINT / Passive DNS";
+
+      return `
+        <tr>
+          <td><strong>${this.escapeHtml(sub.domain)}</strong></td>
+          <td><code>${this.escapeHtml(ips)}</code></td>
+          <td><code>${this.escapeHtml(cnames)}</code></td>
+          <td>${takeover}</td>
+          <td>${this.escapeHtml(source)}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  sendLinkToRepeater(encodedUrl, method = "GET") {
+    const url = decodeURIComponent(encodedUrl);
+    this.closeTelemetryModal();
+    if (this.repUrlInput) this.repUrlInput.value = url;
+    if (this.repMethodSelect) this.repMethodSelect.value = method;
+    this.openRepeaterModal();
+  }
+
+  copyTelemetryLogs() {
+    if (!this.telemetryLogsContainer) return;
+    const text = this.telemetryLogsContainer.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      alert("Visible telemetry logs copied to clipboard.");
+    });
+  }
+
+  exportTelemetryJson() {
+    if (!this.currentTelemetryData) {
+      alert("No telemetry data loaded to export.");
+      return;
+    }
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(this.currentTelemetryData, null, 2));
+    const dlAnchor = document.createElement("a");
+    dlAnchor.setAttribute("href", dataStr);
+    dlAnchor.setAttribute("download", `telemetry_${this.currentTelemetryData.scan_id}.json`);
+    document.body.appendChild(dlAnchor);
+    dlAnchor.click();
+    dlAnchor.remove();
   }
 
   escapeHtml(str) {
