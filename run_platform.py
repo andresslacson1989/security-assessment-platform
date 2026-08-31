@@ -56,8 +56,9 @@ def main():
     display_host = "localhost" if host == "0.0.0.0" else host
     dashboard_url = f"http://{display_host}:{port}"
 
+    from app.core.version import APP_NAME, APP_VERSION
     print("=" * 72)
-    print(" [CYBERASSESS] AUTOMATED SECURITY ASSESSMENT PLATFORM v8.0.0")
+    print(f" [{APP_NAME.upper()}] AUTOMATED SECURITY ASSESSMENT PLATFORM v{APP_VERSION}")
     print("=" * 72)
     print(f" [*] Local API Server   : {dashboard_url}")
     print(f" [*] Interactive Docs   : {dashboard_url}/docs")
