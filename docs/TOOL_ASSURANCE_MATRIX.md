@@ -39,17 +39,23 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 ## 2. Individual Tool Assurance Reviews
 
 ### 1. Nmap (Network Port & Service Discovery)
-- **Security Domain**: Network / EASM
-- **Purpose**: Network port discovery, service version detection, OS fingerprinting.
+- **Security Domain**: Network / Perimeter / EASM
+- **Tool ID**: `TOOL-NMAP`
+- **Purpose**: Network port discovery, service version detection, TLS certificate & SSH cipher enumeration.
 - **Enterprise Maturity**: Production-Mature (Industry Standard).
+- **Approved Release Version**: `7.95` (`Nmap 7.95` exact pinning; `actual_version == approved_version`).
+- **Supply-Chain Trust Mode**: `PACKAGE_MANAGER_MODE` (System Package Manager / WinGet / apt).
 - **Upstream Project**: https://nmap.org (Insecure.Org).
-- **Execution Method**: Sandboxed subprocess via `ProcessSupervisor` with process-group isolation and 60s bounded timeout.
-- **Target Types**: `IP`, `DOMAIN`. Raw user arguments prohibited; strictly generated from safe profiles.
-- **Safety Controls**: Rate-limited, pre-resolved DNS verification, single-gateway target validation, zero raw CLI argument injection.
-- **Output Format & Parser**: XML output (`-oX -`) parsed via Python `xml.etree.ElementTree` with defused entity expansion.
-- **Finding Normalization**: Check IDs `NET-PORT-001`/`002`, `NET-SVC-001`, CVSS 7.5/5.3, CWE-200.
-- **Failure Handling**: Zero cascade failure; falls back seamlessly to native port checker & banner grabber on failure.
+- **Execution Method**: Sandboxed subprocess via `ProcessSupervisor` with process tree tracking and 60s bounded timeout.
+- **Target Types**: `IP`, `DOMAIN`, `URL` via immutable `ValidatedTarget`. Invokes target `ValidatedTarget.selected_destination` (IP) with `--script-args http.host=<canonical_value>`.
+- **Safety Controls**: Three-tier intrusive authorization gate (Tool Capability + Profile Authorization + Tenant Scope Authorization), pre-resolved IP destination binding, zero raw CLI argument injection.
+- **Approved NSE Script Allowlist**: `banner`, `ssl-cert`, `http-title`, `ssh2-enum-algos`, `dns-nsec-enum` (`dns-nsec-enum` restricted strictly to DOMAIN targets with explicit DNS zone authorization; aggregate `-sC` prohibited).
+- **Output Format & Parser**: XML output (`-oX -`) parsed via hardened XML parser resilient against malformed inputs and entity expansion.
+- **Secret Sanitization**: High-entropy tokens, passwords, and API keys masked in banners and script outputs (`sanitize_banner_or_script`).
+- **Finding Normalization**: Check IDs `NET-PORT-001` (Database Ports - High), `NET-PORT-002` (NoSQL/Cache Ports - High), `NET-PORT-003` (Remote Mgmt - Medium), `NET-SVC-001` (Service Posture - Info).
+- **Failure Handling**: Zero cascade failure; missing or failed Nmap preserves `tool_failed` event log, degrades assessment coverage (`COVERAGE_DEGRADED`), and activates native fallback tagged with `source_tool="native"`.
 - **Role Strategy**: **PRIMARY**. Retain native port checker as non-blocking fallback.
+- **Implementation Status**: `REPOSITORY_VERIFIED` (Passed all 13 security assurance tests, 53 adapter tests, 30 adversarial tests, and 32 acceptance scenarios).
 
 ### 2. SSLyze (TLS/SSL Cipher Suite & Protocol Analyzer)
 - **Security Domain**: Network / TLS

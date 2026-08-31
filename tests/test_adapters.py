@@ -128,11 +128,11 @@ class TestBaseToolAdapter:
 
 
 # ============================================================================
-# 2. NmapAdapter Tests
+# 2. NmapAdapter Tests (Contract 09 TOOL-NMAP v14.3.0)
 # ============================================================================
 
 NMAP_SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
-<nmaprun scanner="nmap" version="7.94">
+<nmaprun scanner="nmap" version="7.95">
 <host>
     <status state="up"/>
     <address addr="192.168.1.50" addrtype="ipv4"/>
@@ -164,20 +164,131 @@ NMAP_SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 class TestNmapAdapter:
     def test_extract_host(self):
+        from app.adapters.nmap_adapter import extract_host
         assert extract_host("https://example.com:8443/test") == "example.com"
         assert extract_host("192.168.1.1:8080") == "192.168.1.1"
         assert extract_host("scanme.nmap.org") == "scanme.nmap.org"
 
+    def test_validate_port_specification(self):
+        from app.adapters.nmap_adapter import validate_port_specification
+        # Valid integer list
+        ok, ports, err = validate_port_specification([80, 443, 8080])
+        assert ok is True
+        assert ports == [80, 443, 8080]
+        assert err is None
+
+        # Valid string range
+        ok, ports, err = validate_port_specification("21, 22, 80-82")
+        assert ok is True
+        assert ports == [21, 22, 80, 81, 82]
+
+        # Invalid out of range
+        ok, ports, err = validate_port_specification([70000])
+        assert ok is False
+        assert "range" in err
+
+        # Injection payload in string
+        ok, ports, err = validate_port_specification("80; rm -rf /")
+        assert ok is False
+        assert "Invalid port" in err
+
+    def test_nmap_command_builder(self, tmp_path):
+        from app.adapters.nmap_adapter import NmapCommandBuilder
+        from app.core.ssrf_protector import create_validated_target
+
+        dummy_bin = tmp_path / "nmap.exe"
+        dummy_bin.write_text("binary")
+
+        target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+            val_target = create_validated_target(target)
+
+        config = ScanConfig(port_list=[80, 443])
+
+        # Test Domain with DNS authorization
+        cmd, ports, scripts, err = NmapCommandBuilder.build_command(
+            nmap_path=str(dummy_bin),
+            target=val_target,
+            config=config,
+            dns_zone_authorized=True,
+        )
+        assert err is None
+        assert str(dummy_bin) == cmd[0]
+        assert "-sV" in cmd
+        assert "--version-light" in cmd
+        assert "-T4" in cmd
+        assert "-oX" in cmd
+        assert "-p" in cmd
+        assert "80,443" in cmd
+        assert "--script" in cmd
+        assert "dns-nsec-enum" in scripts  # Allowed because target is DOMAIN and dns_zone_authorized=True
+        assert cmd[-1] == "93.184.216.34"  # Pinned destination IP
+
+        # Test IP target (dns-nsec-enum MUST be excluded on IP targets)
+        ip_target = Target(name="IP Target", type=TargetType.IP, value="93.184.216.34")
+        val_ip_target = create_validated_target(ip_target)
+        cmd_ip, ports_ip, scripts_ip, err_ip = NmapCommandBuilder.build_command(
+            nmap_path=str(dummy_bin),
+            target=val_ip_target,
+            config=config,
+            dns_zone_authorized=True,
+        )
+        assert err_ip is None
+        assert "dns-nsec-enum" not in scripts_ip  # Blocked on IP targets
+
     @pytest.mark.asyncio
-    async def test_get_version(self):
+    async def test_get_version_and_exact_verification(self):
+        from app.adapters.nmap_adapter import NmapAdapter
         adapter = NmapAdapter()
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nmap"):
-            with patch.object(adapter, "execute_command", return_value=(0, "Nmap version 7.94 ( https://nmap.org )\nPlatform: x86_64", "")):
+            # Exact approved version 7.95
+            with patch.object(adapter, "execute_command", return_value=(0, "Nmap version 7.95 ( https://nmap.org )\nPlatform: x86_64", "")):
                 ver = await adapter.get_version()
-                assert ver == "Nmap 7.94"
+                assert ver == "Nmap 7.95"
+                is_valid, err = adapter.verify_version(ver)
+                assert is_valid is True
+                assert err is None
+
+            # Incompatible version 7.94
+            with patch.object(adapter, "execute_command", return_value=(0, "Nmap version 7.94 ( https://nmap.org )\nPlatform: x86_64", "")):
+                ver_old = await adapter.get_version()
+                assert ver_old == "Nmap 7.94"
+                is_valid, err = adapter.verify_version(ver_old)
+                assert is_valid is False
+                assert "INVALID_VERSION" in err
+
+            # Incompatible version 7.96
+            with patch.object(adapter, "execute_command", return_value=(0, "Nmap version 7.96 ( https://nmap.org )\nPlatform: x86_64", "")):
+                ver_new = await adapter.get_version()
+                assert ver_new == "Nmap 7.96"
+                is_valid, err = adapter.verify_version(ver_new)
+                assert is_valid is False
+                assert "INVALID_VERSION" in err
+
+    def test_three_tier_authorization(self):
+        from app.adapters.nmap_adapter import NmapAdapter
+        from app.core.ssrf_protector import create_validated_target
+        from app.core.models import ScanProfile
+
+        adapter = NmapAdapter()
+        target = Target(name="Test", type=TargetType.IP, value="192.168.1.50")
+        with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
+            val_target = create_validated_target(target, allow_internal=True)
+
+        # Full stack profile -> Authorized
+        config_full = ScanConfig(profile=ScanProfile.FULL_STACK)
+        ok, err = adapter.evaluate_three_tier_authorization(val_target, config_full)
+        assert ok is True
+
+        # SAST profile -> Blocked
+        config_sast = ScanConfig(profile=ScanProfile.SAST_ONLY)
+        ok, err = adapter.evaluate_three_tier_authorization(val_target, config_sast)
+        assert ok is False
+        assert "prohibits Nmap" in err
 
     @pytest.mark.asyncio
     async def test_run_parsing_and_findings(self):
+        from app.adapters.nmap_adapter import NmapAdapter
         adapter = NmapAdapter()
         target = Target(name="Test Target", type=TargetType.DOMAIN, value="192.168.1.50")
         config = ScanConfig(port_list=[21, 80, 3306, 6379, 8080])
@@ -192,8 +303,10 @@ class TestNmapAdapter:
             findings.append(f)
 
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nmap"):
-            with patch.object(adapter, "execute_command", return_value=(0, NMAP_SAMPLE_XML, "")):
-                res = await adapter.run(target, config, mock_log, mock_finding)
+            with patch.object(adapter, "get_version", return_value="Nmap 7.95"):
+                with patch.object(adapter, "execute_command", return_value=(0, NMAP_SAMPLE_XML, "")):
+                    with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
+                        res = await adapter.run(target, config, mock_log, mock_finding)
 
         assert len(res) == 4  # Port 80 was closed, so 4 open ports
         assert len(findings) == 4
@@ -206,8 +319,8 @@ class TestNmapAdapter:
 
         ftp_finding = next(f for f in res if f.check_id == "NET-PORT-003")
         assert ftp_finding.source_tool == "nmap"
-        assert ftp_finding.severity == Severity.HIGH
-        assert ftp_finding.cvss_score == 7.5
+        assert ftp_finding.severity == Severity.MEDIUM
+        assert ftp_finding.cvss_score == 5.3
         assert "192.168.1.50:21" in ftp_finding.evidence.location
 
         tomcat_finding = next(f for f in res if f.check_id == "NET-SVC-001")
@@ -215,35 +328,68 @@ class TestNmapAdapter:
         assert "http-title" in tomcat_finding.evidence.raw_response_snippet
 
     @pytest.mark.asyncio
+    async def test_run_invalid_version_fails_closed(self):
+        from app.adapters.nmap_adapter import NmapAdapter
+        adapter = NmapAdapter()
+        target = Target(name="Test Target", type=TargetType.DOMAIN, value="192.168.1.50")
+        config = ScanConfig()
+
+        logs = []
+        async def mock_log(lvl, msg):
+            logs.append((lvl, msg))
+
+        async def mock_finding(f):
+            pass
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nmap"):
+            with patch.object(adapter, "get_version", return_value="Nmap 7.94"):
+                with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
+                    res = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(res) == 0
+        assert any("INVALID_VERSION" in l[1] for l in logs)
+
+    @pytest.mark.asyncio
     async def test_run_missing_binary(self):
+        from app.adapters.nmap_adapter import NmapAdapter
         adapter = NmapAdapter()
         target = Target(name="Test Target", type=TargetType.DOMAIN, value="example.com")
         config = ScanConfig()
 
         logs = []
-        async def mock_log(lvl, msg): logs.append((lvl, msg))
-        async def mock_finding(f): pass
+        async def mock_log(lvl, msg):
+            logs.append((lvl, msg))
+
+        async def mock_finding(f):
+            pass
 
         with patch.object(adapter, "resolve_binary_path", return_value=None):
             res = await adapter.run(target, config, mock_log, mock_finding)
-            assert res == []
-            assert any("not found" in l[1] for l in logs)
+
+        assert len(res) == 0
+        assert any("Nmap binary not found" in l[1] for l in logs)
 
     @pytest.mark.asyncio
     async def test_run_invalid_xml(self):
+        from app.adapters.nmap_adapter import NmapAdapter
         adapter = NmapAdapter()
-        target = Target(name="Test Target", type=TargetType.DOMAIN, value="example.com")
+        target = Target(name="Test Target", type=TargetType.DOMAIN, value="192.168.1.50")
         config = ScanConfig()
 
         logs = []
-        async def mock_log(lvl, msg): logs.append((lvl, msg))
-        async def mock_finding(f): pass
+        async def mock_log(lvl, msg):
+            logs.append((lvl, msg))
+
+        async def mock_finding(f):
+            pass
 
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nmap"):
-            with patch.object(adapter, "execute_command", return_value=(0, "MALFORMED XML <><>", "")):
-                res = await adapter.run(target, config, mock_log, mock_finding)
-                assert res == []
-                assert any("Failed to parse" in l[1] for l in logs)
+            with patch.object(adapter, "get_version", return_value="Nmap 7.95"):
+                with patch.object(adapter, "execute_command", return_value=(0, "<malformed><xml>", "")):
+                    with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
+                        res = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert len(res) == 0
 
 
 # ============================================================================

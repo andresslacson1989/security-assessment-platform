@@ -271,12 +271,14 @@ def create_validated_target(
     asset_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     allow_internal: bool = False,
+    authorized_scope: Optional[List[str]] = None,
 ) -> Any:
     """
-    Contract 01 §5.1, Contract 02 §3 & Contract 08 §12.1:
+    Contract 01 §5.1, Contract 02 §3, Contract 08 §12.1 & Contract 09 §1.1:
     Authoritative single-pipeline validation gate producing an immutable ValidatedTarget object.
     Fails closed if the target violates SSRF, DNS, or workspace confinement policies.
     """
+    import hashlib
     from app.core.models import ValidatedTarget, TargetType, utc_now
     
     t_val = raw_target.value if hasattr(raw_target, "value") else str(raw_target)
@@ -285,31 +287,73 @@ def create_validated_target(
     
     assert_safe_target(t_type_str, t_val, allow_internal=allow_internal)
     
-    resolved_dest = None
+    canonical_val = t_val.strip()
+    resolved_ips: List[str] = []
+    selected_dest = ""
+    port: Optional[int] = None
+    scheme: Optional[str] = None
+
     if t_type_str == "URL":
-        parsed = urllib.parse.urlparse(t_val.strip())
+        parsed = urllib.parse.urlparse(canonical_val)
+        scheme = parsed.scheme.lower() if parsed.scheme else "http"
+        port = parsed.port or (443 if scheme == "https" else 80)
         if parsed.hostname:
-            ips = resolve_hostname_ips(parsed.hostname.strip("[]"))
-            resolved_dest = ips[0] if ips else None
+            clean_host = parsed.hostname.strip("[]")
+            resolved_ips = resolve_hostname_ips(clean_host)
+            selected_dest = resolved_ips[0] if resolved_ips else clean_host
+        else:
+            selected_dest = canonical_val
     elif t_type_str == "DOMAIN":
-        ips = resolve_hostname_ips(t_val.strip())
-        resolved_dest = ips[0] if ips else None
+        clean_domain = canonical_val.lower().split(":")[0]
+        resolved_ips = resolve_hostname_ips(clean_domain)
+        selected_dest = resolved_ips[0] if resolved_ips else clean_domain
     elif t_type_str == "IP":
-        resolved_dest = t_val.strip()
+        clean_ip = canonical_val.split(":")[0].strip("[]")
+        resolved_ips = [clean_ip]
+        selected_dest = clean_ip
+        if ":" in canonical_val and canonical_val.count(":") == 1:
+            try:
+                port = int(canonical_val.split(":")[1])
+            except ValueError:
+                pass
     elif t_type_str in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"):
         import os
-        resolved_dest = os.path.abspath(t_val.strip())
+        selected_dest = os.path.abspath(canonical_val)
+
+    # Compute cryptographic identity digests per Contract 09 §1.1
+    policy_version = "14.3.0"
+    target_id = hashlib.sha256(f"{canonical_val}:{selected_dest}".encode("utf-8")).hexdigest()
+    auth_decision_id = hashlib.sha256(
+        f"{organization_id}:{project_id or ''}:{asset_id or ''}:{target_id}:{policy_version}".encode("utf-8")
+    ).hexdigest()
+    integrity_seal = hashlib.sha256(
+        f"GATEWAY_SEAL:{target_id}:{auth_decision_id}:{policy_version}".encode("utf-8")
+    ).hexdigest()
+
+    auth_ctx = {
+        "allow_internal": allow_internal,
+        "validated_by": "assert_safe_target",
+        "active_probing_granted": True,
+        "dns_zone_authorized": (t_type_str == "DOMAIN"),
+    }
 
     return ValidatedTarget(
-        id=getattr(raw_target, "id", None) or None,
-        target_type=t_type,
-        normalized_value=t_val.strip(),
+        target_id=target_id,
+        authorization_decision_id=auth_decision_id,
+        integrity_seal=integrity_seal,
         organization_id=organization_id,
         project_id=project_id,
         asset_id=asset_id,
         workspace_id=workspace_id,
-        resolved_destination=resolved_dest,
-        authorization_context={"allow_internal": allow_internal, "validated_by": "assert_safe_target"},
+        target_type=t_type,
+        raw_value=t_val,
+        canonical_value=canonical_val,
+        authorized_scope=authorized_scope or [],
+        resolved_addresses=resolved_ips,
+        selected_destination=selected_dest,
+        port=port,
+        scheme=scheme,
+        authorization_context=auth_ctx,
         validation_timestamp=utc_now(),
-        policy_version="13.0.0",
+        policy_version=policy_version,
     )

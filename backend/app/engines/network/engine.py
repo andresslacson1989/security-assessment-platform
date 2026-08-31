@@ -156,9 +156,9 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                     await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Nmap CLI execution error: {e}")
-                await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
+                await emit_log(LogLevel.INFO, "Nmap CLI execution failed - using pure native port checker & banner grabber fallback")
         else:
-            await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
+            await emit_log(LogLevel.INFO, "Nmap disabled in configuration - using pure native port checker & banner grabber fallback")
 
         if not nmap_executed:
             port_findings = await audit_exposed_ports(
@@ -169,6 +169,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             )
             for f in port_findings:
                 f.scan_id = scan_id
+                f.source_tool = "native"
                 findings.append(f)
                 await emit_finding(f)
 
@@ -183,6 +184,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             if open_port_nums:
                 banner_findings = await audit_service_banners(host, open_port_nums, scan_id=scan_id)
                 for f in banner_findings:
+                    f.source_tool = "native"
                     findings.append(f)
                     await emit_finding(f)
 

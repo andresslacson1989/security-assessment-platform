@@ -365,6 +365,7 @@ class ScanConfig(BaseModel):
     """
     Execution configuration options for a scan.
     """
+    profile: ScanProfile = Field(default=ScanProfile.FULL_STACK, description="Assessment scan profile")
     rate_limit_rps: int = Field(default=5, ge=1, le=20, description="Max requests per second")
     timeout_seconds: int = Field(default=10, ge=2, le=60, description="Network timeout in seconds")
     custom_headers: Dict[str, str] = Field(default_factory=dict, description="Custom request headers")
@@ -561,23 +562,60 @@ class Target(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class NormalizedExecutionState(str, Enum):
+    """
+    Contract 09 §1.1 & §25: Dual Execution State Architecture.
+    Normalized platform execution state distinct from raw upstream process exit code.
+    """
+    COMPLETED_WITH_FINDINGS = "COMPLETED_WITH_FINDINGS"
+    COMPLETED_NO_FINDINGS = "COMPLETED_NO_FINDINGS"
+    PARTIAL_RESULTS_WITH_WARNING = "PARTIAL_RESULTS_WITH_WARNING"
+    TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
+    EXECUTION_TIMED_OUT = "EXECUTION_TIMED_OUT"
+    EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
+    EXECUTION_BLOCKED = "EXECUTION_BLOCKED"
+    INVALID_VERSION = "INVALID_VERSION"
+
+
 class ValidatedTarget(BaseModel):
     """
-    Contract 01 §5.1, Contract 02 §3 & Contract 08 §12.1:
+    Contract 01 §5.1, Contract 02 §3, Contract 08 §12.1 & Contract 09 §1.1:
     Authoritative Validated Target Object.
-    Only validated target representations are authorized to reach the execution plane.
+    Frozen and immutable data model. Only validated target representations
+    are authorized to reach the execution plane.
     """
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Validated target UUID")
-    target_type: TargetType = Field(..., description="Target classification type")
-    normalized_value: str = Field(..., description="Canonical normalized target URI, FQDN, IP, or path")
+    model_config = dict(frozen=True, extra="ignore")
+
+    target_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Cryptographic resource identity: sha256(canonical_value + ':' + selected_destination)")
+    authorization_decision_id: str = Field(default="", description="Cryptographic authorization decision ID")
+    integrity_seal: str = Field(default="", description="Cryptographic gateway integrity seal")
     organization_id: str = Field(default="org-default", description="Authoritative owning organization ID")
     project_id: Optional[str] = Field(default=None, description="Optional project context ID")
     asset_id: Optional[str] = Field(default=None, description="Optional linked asset ID")
     workspace_id: Optional[str] = Field(default=None, description="Optional authorized workspace ID")
-    resolved_destination: Optional[str] = Field(default=None, description="Connection-bound IPv4/IPv6 destination or canonical filesystem root")
+    target_type: TargetType = Field(..., description="Target classification type")
+    raw_value: str = Field(default="", description="Original raw user input string")
+    canonical_value: str = Field(..., description="Canonical normalized target URI, FQDN, IP, or path")
+    authorized_scope: List[str] = Field(default_factory=list, description="Authorized CIDRs or root domain wildcards")
+    resolved_addresses: List[str] = Field(default_factory=list, description="All pre-resolved IPv4/IPv6 addresses")
+    selected_destination: str = Field(..., description="Connection-bound IPv4/IPv6 destination or canonical filesystem root")
+    port: Optional[int] = Field(default=None, description="Target port if applicable")
+    scheme: Optional[str] = Field(default=None, description="Protocol scheme if applicable")
     authorization_context: Dict[str, Any] = Field(default_factory=dict, description="Audit authorization metadata")
     validation_timestamp: datetime = Field(default_factory=utc_now, description="Timestamp of validation gate passage")
-    policy_version: str = Field(default="13.0.0", description="SSRF and boundary policy version applied")
+    policy_version: str = Field(default="14.3.0", description="SSRF and boundary policy version applied")
+
+    @property
+    def id(self) -> str:
+        return self.target_id
+
+    @property
+    def normalized_value(self) -> str:
+        return self.canonical_value
+
+    @property
+    def resolved_destination(self) -> str:
+        return self.selected_destination
 
 
 class Evidence(BaseModel):
