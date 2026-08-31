@@ -139,6 +139,8 @@ class ScanStreamManager {
     this.findingsList = document.getElementById("findings-list-container");
     this.filterTabs = document.querySelectorAll(".filter-tab");
     this.searchInput = document.getElementById("findings-search");
+    this.findingsToolFilter = document.getElementById("findings-tool-filter");
+    this.selectedToolFilter = "ALL";
 
     // History Modal
     this.btnOpenHistory = document.getElementById("btn-open-history");
@@ -271,6 +273,14 @@ class ScanStreamManager {
       this.searchQuery = e.target.value.toLowerCase();
       this.renderFindings();
     });
+
+    // Tool Selector Filter
+    if (this.findingsToolFilter) {
+      this.findingsToolFilter.addEventListener("change", (e) => {
+        this.selectedToolFilter = e.target.value;
+        this.renderFindings();
+      });
+    }
 
     // History Modal
     this.btnOpenHistory.addEventListener("click", () => this.openHistoryModal());
@@ -1034,14 +1044,35 @@ class ScanStreamManager {
 
   renderFindings() {
     this.updateLiveSummaryCounts();
+
+    // Dynamically populate tool filter options from findings
+    if (this.findingsToolFilter) {
+      const currentSelected = (this.selectedToolFilter || "ALL").toLowerCase();
+      const toolsSet = new Set(this.allFindings.map((f) => (f.source_tool || "native").toLowerCase()));
+      const sortedTools = Array.from(toolsSet).sort();
+      this.findingsToolFilter.innerHTML = `
+        <option value="ALL">All Tools (${this.allFindings.length})</option>
+        ${sortedTools.map((t) => {
+          const count = this.allFindings.filter((f) => (f.source_tool || "native").toLowerCase() === t).length;
+          return `<option value="${t}" ${currentSelected === t ? "selected" : ""}>${t.toUpperCase()} (${count})</option>`;
+        }).join("")}
+      `;
+    }
+
     const filtered = this.allFindings.filter((f) => {
+      const toolVal = (f.source_tool || "native").toLowerCase();
+      const matchTool =
+        !this.selectedToolFilter ||
+        this.selectedToolFilter === "ALL" ||
+        toolVal === this.selectedToolFilter.toLowerCase();
       const matchFilter = this.activeFilter === "ALL" || f.severity === this.activeFilter;
       const matchSearch =
         !this.searchQuery ||
         f.title.toLowerCase().includes(this.searchQuery) ||
         f.check_id.toLowerCase().includes(this.searchQuery) ||
+        toolVal.includes(this.searchQuery) ||
         (f.cwe_id && f.cwe_id.toLowerCase().includes(this.searchQuery));
-      return matchFilter && matchSearch;
+      return matchTool && matchFilter && matchSearch;
     });
 
     if (filtered.length === 0) {
@@ -1111,6 +1142,8 @@ class ScanStreamManager {
         `
           : "";
 
+        const toolName = f.source_tool || "native";
+
         return `
         <div class="finding-card ${sevClass}">
           <div class="finding-header" onclick="window.toggleCard('fc-${idx}')">
@@ -1131,7 +1164,7 @@ class ScanStreamManager {
               ${f.owasp_category ? `<span class="meta-tag">${this.escapeHtml(f.owasp_category)}</span>` : ""}
               ${f.nist_control ? `<span class="meta-tag">${this.escapeHtml(f.nist_control)}</span>` : ""}
               <span class="meta-tag engine-tag">${this.escapeHtml(f.engine)}</span>
-              <span class="source-tool-badge source-tool--${(f.source_tool || 'native').toLowerCase()}">[${this.escapeHtml(f.source_tool || 'native')}]</span>
+              <span class="source-tool-badge source-tool--${toolName.toLowerCase()}" style="cursor: pointer;" title="Click to filter findings by ${this.escapeHtml(toolName)}" onclick="event.stopPropagation(); window.app.filterByTool('${this.escapeHtml(toolName)}')">[${this.escapeHtml(toolName)}]</span>
             </div>
 
             <p class="finding-desc"><strong>Description:</strong> ${this.escapeHtml(f.description)}</p>
@@ -1942,7 +1975,7 @@ class ScanStreamManager {
 
     const tools = this.currentTelemetryData.tools_executed || [];
     if (tools.length === 0) {
-      this.telemetryMatrixTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 25px;">No tool execution telemetry records available.</td></tr>`;
+      this.telemetryMatrixTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 25px;">No tool execution telemetry records available.</td></tr>`;
       return;
     }
 
@@ -1956,6 +1989,11 @@ class ScanStreamManager {
       const endpointsCount = (t.endpoints_tested || []).length;
       const scopeStr = endpointsCount > 0 ? `${endpointsCount} locations` : (this.currentTelemetryData.target_value || "Target Host");
 
+      const viewFindingsBtn = t.findings_count > 0
+        ? `<button class="btn btn-xs btn-primary" onclick="window.app.viewToolFindings('${this.escapeHtml(t.tool_name)}')">🔍 View ${t.findings_count} Findings</button>`
+        : "";
+      const viewLogsBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.viewToolLogs('${this.escapeHtml(t.tool_name)}')">📜 View Logs</button>`;
+
       return `
         <tr>
           <td><strong style="color: var(--accent-cyan); text-transform: uppercase;">${this.escapeHtml(t.tool_name)}</strong></td>
@@ -1965,9 +2003,40 @@ class ScanStreamManager {
           <td><strong>${t.findings_count}</strong></td>
           <td>${t.log_count} events</td>
           <td><span style="font-size: 11px; color: var(--text-muted);">${this.escapeHtml(scopeStr)}</span></td>
+          <td>
+            <div style="display: flex; gap: 6px;">
+              ${viewFindingsBtn}
+              ${viewLogsBtn}
+            </div>
+          </td>
         </tr>
       `;
     }).join("");
+  }
+
+  filterByTool(toolName) {
+    this.selectedToolFilter = toolName;
+    if (this.findingsToolFilter) {
+      this.findingsToolFilter.value = toolName.toLowerCase();
+    }
+    this.renderFindings();
+    if (this.findingsList) {
+      this.findingsList.scrollIntoView({ behavior: "smooth" });
+    }
+  }
+
+  viewToolFindings(toolName) {
+    this.closeTelemetryModal();
+    this.filterByTool(toolName);
+  }
+
+  viewToolLogs(toolName) {
+    const logsTabBtn = document.querySelector('.telemetry-tab-btn[data-tab="logs"]');
+    if (logsTabBtn) logsTabBtn.click();
+    if (this.telemetryFilterTool) {
+      this.telemetryFilterTool.value = toolName.toLowerCase();
+      this.renderTelemetryLogs();
+    }
   }
 
   renderTelemetrySurface() {

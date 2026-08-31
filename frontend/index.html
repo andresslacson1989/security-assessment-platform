@@ -444,8 +444,13 @@
               <button class="filter-tab" data-filter="MEDIUM">Medium (<span id="tab-count-medium">0</span>)</button>
               <button class="filter-tab" data-filter="LOW">Low (<span id="tab-count-low">0</span>)</button>
             </div>
-            <div class="search-box">
-              <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search vulnerability title, check ID, CWE...">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <select id="findings-tool-filter" class="form-control form-control-sm" style="max-width: 150px;">
+                <option value="ALL">All Tools</option>
+              </select>
+              <div class="search-box">
+                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search title, check ID, CWE, tool...">
+              </div>
             </div>
           </div>
 
@@ -811,6 +816,7 @@
                     <th>Findings</th>
                     <th>Telemetry Events</th>
                     <th>Target Scope</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="telemetry-matrix-tbody">
