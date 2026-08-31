@@ -1315,62 +1315,6 @@ class ScanStreamManager {
           },
         ],
       },
-      nikto: {
-        displayName: "Nikto Web Server Scanner",
-        subtitle: "Perl-based web server scanner for 6,700+ dangerous files, outdated server versions, and HTTP misconfigurations.",
-        docsUrl: "https://github.com/sullo/nikto",
-        options: [
-          {
-            title: "Step 1: Install Strawberry Perl (Windows) — Required Prerequisite",
-            recommended: true,
-            desc: "Nikto is written in Perl and requires full CPAN library support (such as XML::Writer).",
-            snippet: "winget install StrawberryPerl.StrawberryPerl",
-            explanation: "• 'StrawberryPerl': Complete Perl distribution for Windows including CPAN runtime.\n• Verification: Close and reopen PowerShell, then run 'perl -v' (should output Perl 5.x).",
-          },
-          {
-            title: "Step 2: Clone Nikto Repository (Windows)",
-            recommended: true,
-            desc: "Download the latest Nikto source code directly from upstream GitHub.",
-            snippet: "git clone https://github.com/sullo/nikto.git",
-            explanation: "• 'git clone': Clones the official Nikto repository into a local 'nikto' folder.\n• Verification: Check that 'nikto\\program\\nikto.pl' exists.",
-          },
-          {
-            title: "Step 3 (Optional): Run Manual Test Scan Against Target",
-            recommended: false,
-            desc: "Test your Nikto installation directly from PowerShell against any web application.",
-            snippet: "perl .\\nikto\\program\\nikto.pl -h http://testphp.vulnweb.com",
-            explanation: "• 'perl': Executes the Perl runtime.\n• '.\\nikto\\program\\nikto.pl': Path to the Nikto scanner script.\n• '-h <target>': Specifies the target hostname or URL to audit.\n• Tip: In CyberAssess, the platform runs this automatically during Web DAST scans!",
-          },
-          {
-            title: "Alternative Method: Scoop Package Manager (Windows)",
-            recommended: false,
-            desc: "Install Scoop first (irm get.scoop.sh | iex), then run this to auto-configure Nikto shims.",
-            snippet: "scoop install nikto",
-            explanation: "Scoop automatically sets up Perl environment shims on Windows PATH.",
-          },
-          {
-            title: "Alternative Method: Docker Container (Zero Local Dependencies)",
-            recommended: false,
-            desc: "Runs Nikto in an isolated Linux container (requires Docker Desktop).",
-            snippet: "docker run --rm sullo/nikto -h http://example.com",
-            explanation: "• '--rm': Cleans up container upon scan completion.\n• 'sullo/nikto': Official Docker Hub image.",
-          },
-          {
-            title: "Linux (Debian / Ubuntu / Kali / WSL)",
-            recommended: false,
-            desc: "Direct APT install.",
-            snippet: "sudo apt-get update && sudo apt-get install -y nikto",
-            explanation: "Verification: 'nikto -Version'",
-          },
-          {
-            title: "macOS (Homebrew)",
-            recommended: false,
-            desc: "Direct Homebrew install.",
-            snippet: "brew install nikto",
-            explanation: "Verification: 'nikto -Version'",
-          },
-        ],
-      },
     };
     return DATA[toolName] || null;
   }

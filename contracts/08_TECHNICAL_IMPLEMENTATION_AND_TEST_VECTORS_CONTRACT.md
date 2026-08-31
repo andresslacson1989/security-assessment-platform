@@ -464,7 +464,7 @@ def resolve_tool_binary(tool_name: str, custom_path: Optional[str] = None, local
 ```
 
 ### 9.6 System Tool Health & Version Verification Gate
-To prevent false-positive capability reporting (e.g. Git-bundled Perl missing CPAN modules required by Nikto), system tools (`SYSTEM_PACKAGE_MANAGER`) MUST satisfy the following health gate before status is set to `INSTALLED`:
+To prevent false-positive capability reporting (e.g. broken runtime dependencies or missing system libraries), system tools (`SYSTEM_PACKAGE_MANAGER`) MUST satisfy the following health gate before status is set to `INSTALLED`:
 1. Binary path resolved via `resolve_tool_binary()`.
 2. Version check command returns exit code `0`.
 3. STDOUT/STDERR contains valid version string and zero error keywords (`error:`, `not found`, `can't locate`, `failed`).

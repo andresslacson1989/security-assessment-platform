@@ -20,9 +20,9 @@
   - [ ] `code_sast` (`secret_scanner.py`, `crypto_lint.py`, `injection_lint.py`, `dependency_auditor.py`, `ast_taint_analyzer.py`, `git_history_scanner.py`)
   - [ ] `infra_iac` (`dockerfile_auditor.py`, `compose_auditor.py`, `k8s_manifest_auditor.py`, `terraform_auditor.py`)
   - [ ] `cicd_audit` (`github_actions_auditor.py`)
-- [ ] **22 Pluggable Hybrid Tool Adapters (`app/adapters/`):**
+- [ ] **21 Pluggable Hybrid Tool Adapters (`app/adapters/`):**
   - [ ] `BaseToolAdapter` (`app/adapters/base_adapter.py`) with 5-tier deterministic binary resolver
-  - [ ] Core Adapters: `NmapAdapter`, `SslyzeAdapter`, `NucleiAdapter`, `FfufAdapter`, `NiktoAdapter`, `SemgrepAdapter`, `GitleaksAdapter`, `BanditAdapter`, `TrivyAdapter`, `CheckovAdapter`
+  - [ ] Core Adapters: `NmapAdapter`, `SslyzeAdapter`, `NucleiAdapter`, `FfufAdapter`, `SemgrepAdapter`, `GitleaksAdapter`, `BanditAdapter`, `TrivyAdapter`, `CheckovAdapter`
   - [ ] Expanded Enterprise Adapters: `SubfinderAdapter`, `HttpxAdapter`, `KatanaAdapter`, `SyftAdapter`, `GrypeAdapter`, `OSVScannerAdapter`, `RetireJSAdapter`, `TruffleHogAdapter`, `ProwlerAdapter`, `KubeBenchAdapter`, `DockleAdapter`, `SchemathesisAdapter`
 - [ ] **Pluggable In-App Tool Installers Engine (`app/installers/`):**
   - [ ] `BaseToolInstaller` (`app/installers/base_installer.py`)

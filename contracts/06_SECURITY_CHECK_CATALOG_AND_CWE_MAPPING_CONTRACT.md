@@ -163,8 +163,6 @@ When findings are produced by external tool adapters, they MUST be normalized in
 | **Nuclei** | `http/misconfiguration/*` | `DAST-HDR-xxx` or `DAST-CORS-xxx` | Misconfiguration | 5.0 - 7.5 | CWE-16 / CWE-942 |
 | **FFuF** | Discovered Exposed Backup / Config File | `DAST-EXP-001` / `DAST-EXP-002` | Sensitive Exposure | 9.8 | CWE-552 |
 | **FFuF** | Discovered Hidden Administrative Endpoint | `DAST-EXP-003` / `DAST-EXP-004` | Broken Access Control | 7.5 | CWE-200 |
-| **Nikto** | Outdated Web Server Component / Banner | `NET-SVC-001` / `DAST-HDR-007` | Service Posture | 5.3 - 7.5 | CWE-200 |
-| **Nikto** | Dangerous HTTP Methods (TRACE / PUT) | `DAST-METH-001` | Misconfiguration | 4.3 | CWE-489 |
 | **Katana** | Discovered Single-Page App Endpoint | `DAST-SPA-001` | Endpoint Discovery | 3.1 | CWE-200 |
 | **Schemathesis** | OpenAPI / GraphQL Contract Fuzzing Crash | `API-SCHEMA-001` | API Security | 7.5 | CWE-20 |
 | **Semgrep** | Rule matching SQL injection | `SAST-TAINT-001` | Code Injection | 9.8 | CWE-89 |

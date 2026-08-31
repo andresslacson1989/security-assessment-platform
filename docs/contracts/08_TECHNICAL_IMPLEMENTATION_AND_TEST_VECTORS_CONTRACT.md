@@ -464,7 +464,7 @@ def resolve_tool_binary(tool_name: str, custom_path: Optional[str] = None, local
 ```
 
 ### 9.6 System Tool Health & Version Verification Gate
-To prevent false-positive capability reporting (e.g. Git-bundled Perl missing CPAN modules required by Nikto), system tools (`SYSTEM_PACKAGE_MANAGER`) MUST satisfy the following health gate before status is set to `INSTALLED`:
+To prevent false-positive capability reporting (e.g. broken runtime dependencies or missing system libraries), system tools (`SYSTEM_PACKAGE_MANAGER`) MUST satisfy the following health gate before status is set to `INSTALLED`:
 1. Binary path resolved via `resolve_tool_binary()`.
 2. Version check command returns exit code `0`.
 3. STDOUT/STDERR contains valid version string and zero error keywords (`error:`, `not found`, `can't locate`, `failed`).
@@ -559,17 +559,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 RUN mkdir -p /app/data/scans /app/backend /app/frontend
 
-# Install Python requirements
+# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, FastAPI, etc.)
 COPY backend/requirements.txt /app/backend/
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r /app/backend/requirements.txt && \
-    pip install --no-cache-dir bandit sslyze semgrep checkov prowler schemathesis
-
-# Copy pre-compiled standalone Go binaries AFTER pip to prevent collision
-COPY --from=builder /tmp/bin/* /usr/local/bin/
-
-# Pre-bake Nuclei community templates into image
-RUN nuclei -update-templates || true
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy backend application, frontend HUD assets, and root runner
 COPY backend/ /app/backend/

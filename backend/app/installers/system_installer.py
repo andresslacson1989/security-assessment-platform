@@ -1,5 +1,5 @@
 """
-Contract 03 & 08 System / Driver-Level Tool Helper (nmap, nikto).
+Contract 03 & 08 System / Driver-Level Tool Helper (nmap, retire).
 Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 """
 
@@ -30,17 +30,6 @@ SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
         },
         "download_url": "https://nmap.org/download.html",
         "version_cmd": ["--version"],
-    },
-    "nikto": {
-        "display_name": "Nikto Web Server Misconfiguration Scanner",
-        "category": "Web DAST",
-        "command_hint": {
-            "windows": "scoop install nikto (or 'choco install nikto' / clone https://github.com/sullo/nikto with Strawberry Perl)",
-            "linux": "sudo apt-get update && sudo apt-get install -y nikto",
-            "darwin": "brew install nikto",
-        },
-        "download_url": "https://github.com/sullo/nikto",
-        "version_cmd": ["-Version"],
     },
     "retire": {
         "display_name": "Retire.js Client-Side JavaScript CVE Auditor",

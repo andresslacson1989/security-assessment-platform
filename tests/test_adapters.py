@@ -24,7 +24,6 @@ from app.adapters.nmap_adapter import NmapAdapter, extract_host
 from app.adapters.sslyze_adapter import SslyzeAdapter
 from app.adapters.nuclei_adapter import NucleiAdapter, normalize_target_url
 from app.adapters.ffuf_adapter import FfufAdapter
-from app.adapters.nikto_adapter import NiktoAdapter
 from app.adapters.semgrep_adapter import SemgrepAdapter
 from app.adapters.gitleaks_adapter import GitleaksAdapter
 from app.adapters.bandit_adapter import BanditAdapter
@@ -610,56 +609,6 @@ class TestFfufAdapter:
         assert env_f.source_tool == "ffuf"
 
 
-# ============================================================================
-# 8. Nikto Adapter Tests
-# ============================================================================
-
-class TestNiktoAdapter:
-    def test_tool_name(self):
-        adapter = NiktoAdapter()
-        assert adapter.tool_name == "nikto"
-
-    @pytest.mark.asyncio
-    async def test_get_version(self):
-        adapter = NiktoAdapter()
-        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nikto"):
-            with patch.object(adapter, "execute_command", return_value=(0, "Nikto 2.5.0", "")):
-                ver = await adapter.get_version()
-                assert "2.5.0" in ver
-
-    @pytest.mark.asyncio
-    async def test_run_nikto_json_findings(self):
-        adapter = NiktoAdapter()
-        sample_json = {
-            "vulnerabilities": [
-                {
-                    "id": "999996",
-                    "OSVDB": "0",
-                    "url": "/cgi-bin/test.cgi",
-                    "msg": "The anti-clickjacking X-Frame-Options header is not present.",
-                },
-                {
-                    "id": "000001",
-                    "OSVDB": "3092",
-                    "url": "/phpmyadmin/",
-                    "msg": "Found phpmyadmin directory which may expose database credentials.",
-                },
-            ]
-        }
-
-        mock_log = AsyncMock()
-        mock_finding = AsyncMock()
-        target = Target(name="Target", type=TargetType.URL, value="https://example.com")
-        config = ScanConfig()
-
-        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nikto"):
-            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
-                findings = await adapter.run(target, config, mock_log, mock_finding)
-
-        assert len(findings) == 2
-        hdr_f = next(f for f in findings if "X-Frame-Options" in f.title)
-        assert hdr_f.check_id == "DAST-HDR-002"
-        assert hdr_f.source_tool == "nikto"
 
 
 # ============================================================================
@@ -974,7 +923,7 @@ class TestCapabilitiesAndRegistry:
                 is_available=AsyncMock(return_value=False),
                 get_version=AsyncMock(return_value=None),
             )
-            for tool in ["sslyze", "ffuf", "nikto", "gitleaks", "bandit", "trivy", "checkov"]
+            for tool in ["sslyze", "ffuf", "katana", "gitleaks", "bandit", "trivy", "checkov"]
         }
         mock_registry["nmap"] = mock_nmap
         mock_registry["nuclei"] = mock_nuclei

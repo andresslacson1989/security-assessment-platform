@@ -67,13 +67,6 @@ Returns host tool discovery status, binary paths, versions, and execution modes 
       "execution_mode": "ADAPTER_ACTIVE"
     },
     {
-      "name": "nikto",
-      "available": false,
-      "version": null,
-      "path": null,
-      "execution_mode": "NATIVE_FALLBACK"
-    },
-    {
       "name": "semgrep",
       "available": true,
       "version": "1.60.0",

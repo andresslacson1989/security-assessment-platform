@@ -170,7 +170,7 @@ To combine zero-dependency portability with enterprise-grade penetration testing
 │ • SSLyze (Deep TLS Ciphers) │                                             │ • Git History Secret Mining │
 │ • Nuclei (CVE Templates)    │                                             │ • Active Parameter Fuzzing  │
 │ • FFuF (Endpoint Discovery) │                                             │ • CT Subdomain OSINT crt.sh │
-│ • Nikto (Web Server Config) │                                             │ • Dangling CNAME Takeover   │
+│ • Katana (Headless SPA Crawl│                                             │ • Dangling CNAME Takeover   │
 │ • Semgrep (AST Code Rules)  │                                             │ • Authoritative DNS Hygiene │
 │ • Gitleaks (Git Secrets)    │                                             │ • Auth Session Management   │
 │ • Bandit (Python AST SAST)  │                                             └──────────────┬──────────────┘

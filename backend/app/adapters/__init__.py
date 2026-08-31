@@ -20,7 +20,6 @@ from app.adapters.nmap_adapter import NmapAdapter
 from app.adapters.sslyze_adapter import SslyzeAdapter
 from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
-from app.adapters.nikto_adapter import NiktoAdapter
 from app.adapters.semgrep_adapter import SemgrepAdapter
 from app.adapters.gitleaks_adapter import GitleaksAdapter
 from app.adapters.bandit_adapter import BanditAdapter
@@ -46,7 +45,6 @@ __all__ = [
     "SslyzeAdapter",
     "NucleiAdapter",
     "FfufAdapter",
-    "NiktoAdapter",
     "SemgrepAdapter",
     "GitleaksAdapter",
     "BanditAdapter",

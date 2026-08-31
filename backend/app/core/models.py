@@ -48,10 +48,10 @@ class ScanProfile(str, Enum):
     """
     Scan profile configurations determining which engine subsets run.
     """
-    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 22 available adapters
+    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 21 available modern adapters
     QUICK = "QUICK"                              # Fast audit alias
     QUICK_AUDIT = "QUICK_AUDIT"                  # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Nikto + Katana + Schemathesis
+    DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Katana + Schemathesis
     SAST_ONLY = "SAST_ONLY"                      # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + TruffleHog + RetireJS
     NETWORK_ONLY = "NETWORK_ONLY"                # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze + Subfinder + Httpx
     NETWORK_TLS = "NETWORK_TLS"                  # Network Ports + TLS Ciphers + DNS + OSINT alias
@@ -126,7 +126,7 @@ class ToolInstallMethod(str, Enum):
     PIP = "PIP"                                        # Pure Python package installed via sys.executable -m pip
     STANDALONE_BINARY = "STANDALONE_BINARY"            # Standalone Go/compiled binary downloaded from GitHub Releases into backend/bin/
     SYSTEM_PACKAGE_MANAGER = "SYSTEM_PACKAGE_MANAGER"  # System tool requiring OS package manager (winget/brew/apt) or elevated setup
-    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool (e.g. Nikto Perl script)
+    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool downloaded via direct script
     MANUAL = "MANUAL"                                  # Manual binary placement
 
 
@@ -211,19 +211,18 @@ OsintConfig = OSINTConfig
 
 class ToolAdapterConfig(BaseModel):
     """
-    Configuration for hybrid external binary tool adapters across 22 enterprise tools:
+    Configuration for hybrid external binary tool adapters across 21 modern enterprise tools:
     - Network / EASM: Nmap, SSLyze, Subfinder, Httpx
-    - Web DAST: Nuclei, FFuF, Nikto, Katana, Schemathesis
+    - Web DAST: Nuclei, FFuF, Katana, Schemathesis
     - SAST / Secrets: Semgrep, Gitleaks, Bandit, TruffleHog, RetireJS
     - SCA / Supply Chain: Trivy, Syft, Grype, OSV-Scanner
     - Cloud / IaC / CIS: Checkov, Prowler, Kube-bench, Dockle
     """
-    # Core 10 Adapters
+    # Core 9 Adapters
     enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")
     enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
     enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
     enable_ffuf: bool = Field(default=True, description="Enable FFuF high-speed content discovery adapter")
-    enable_nikto: bool = Field(default=False, description="Enable legacy Nikto scanner (deprecated in favor of Nuclei)")
     enable_semgrep: bool = Field(default=True, description="Enable Semgrep multi-language AST SAST adapter")
     enable_gitleaks: bool = Field(default=True, description="Enable Gitleaks git history secret scanner adapter")
     enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")
@@ -249,7 +248,6 @@ class ToolAdapterConfig(BaseModel):
     sslyze_path: Optional[str] = Field(default=None)
     nuclei_path: Optional[str] = Field(default=None)
     ffuf_path: Optional[str] = Field(default=None)
-    nikto_path: Optional[str] = Field(default=None)
     semgrep_path: Optional[str] = Field(default=None)
     gitleaks_path: Optional[str] = Field(default=None)
     bandit_path: Optional[str] = Field(default=None)
@@ -272,7 +270,6 @@ class ToolAdapterConfig(BaseModel):
     custom_sslyze_path: Optional[str] = Field(default=None)
     custom_nuclei_path: Optional[str] = Field(default=None)
     custom_ffuf_path: Optional[str] = Field(default=None)
-    custom_nikto_path: Optional[str] = Field(default=None)
     custom_semgrep_path: Optional[str] = Field(default=None)
     custom_gitleaks_path: Optional[str] = Field(default=None)
     custom_bandit_path: Optional[str] = Field(default=None)
@@ -294,7 +291,7 @@ class ToolAdapterConfig(BaseModel):
     @model_validator(mode="after")
     def sync_paths(self) -> "ToolAdapterConfig":
         tools = [
-            "nmap", "sslyze", "nuclei", "ffuf", "nikto", "semgrep", "gitleaks", "bandit", "trivy", "checkov",
+            "nmap", "sslyze", "nuclei", "ffuf", "semgrep", "gitleaks", "bandit", "trivy", "checkov",
             "subfinder", "httpx", "katana", "syft", "grype", "osv_scanner", "retirejs", "trufflehog", "prowler", "kube_bench", "dockle", "schemathesis"
         ]
         for tool in tools:
@@ -523,7 +520,7 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
-    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
+    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
     category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")

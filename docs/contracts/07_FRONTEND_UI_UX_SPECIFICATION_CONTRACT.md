@@ -48,12 +48,12 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🛡️ CYBERASSESS HUD  [Target Input: URL / IP / Repo / Docker]  [🚀 LAUNCH SCAN]│
-│ [⚙️ Manage 22 Security Tools]  [📦 Export SBOM: CycloneDX / SPDX]          │
+│ [⚙️ Manage 21 Security Tools]  [📦 Export SBOM: CycloneDX / SPDX]          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 HYBRID TOOL STATUS: [NMAP: Active] [SSLYZE: Active] [NUCLEI: Active]     │
-│    [FFUF: Active] [NIKTO: Fallback] [SEMGREP: Active] [GITLEAKS: Active]    │
+│    [FFUF: Active] [KATANA: Active] [SEMGREP: Active] [GITLEAKS: Active]     │
 │    [BANDIT: Active] [TRIVY: Active] [CHECKOV: Fallback]                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🟢 SCAN STATUS: RUNNING (65%) | Stage: Adapters Primary & Active Fuzzing   │
@@ -74,7 +74,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 🛠️ PENTESTER WORKBENCH: [Vulnerability Findings] [HTTP Repeater Tool]       │
 │ Engine Filter: [All] [Network] [DAST] [SAST] [IaC/Docker] [CI/CD]           │
-│ Tool Filter: [All] [Native Core] [Nmap] [SSLyze] [Nuclei] [FFuF] [Nikto]    │
+│ Tool Filter: [All] [Native Core] [Nmap] [SSLyze] [Nuclei] [FFuF] [Katana]   │
 │              [Semgrep] [Gitleaks] [Bandit] [Trivy] [Checkov]                │
 │ Severity Tabs: [All (10)] [Critical (0)] [High (1)] [Med (3)] [Low (4)]     │
 │ [🔍 Search findings...] [Export: 📄 HTML | ⚡ SARIF | 💾 JSON]              │
@@ -93,7 +93,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 1. **Target Launch Bar & Advanced Config Drawers:**
    - Auto-detects input type (`URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`).
-   - **System Tool Capabilities Pill Bar:** Displays live detection status badges for all 10 adapters (`Nmap`, `SSLyze`, `Nuclei`, `FFuF`, `Nikto`, `Semgrep`, `Gitleaks`, `Bandit`, `Trivy`, `Checkov`) fetched from `/api/system/capabilities`.
+   - **System Tool Capabilities Pill Bar:** Displays live detection status badges for all 21 adapters (`Nmap`, `SSLyze`, `Nuclei`, `FFuF`, `Katana`, `Schemathesis`, `Semgrep`, `Gitleaks`, `Bandit`, `Trivy`, `Checkov`, etc.) fetched from `/api/system/capabilities`.
    - **Authentication Controls:** Radio pills for `No Auth`, `Custom Header/Bearer`, `Session Cookie`, `Form Login` (fields for Login URL, Username, Password, CSRF Field, and Logged-In Indicator).
    - **Crawler Controls:** Depth ($1-5$), Max Pages ($10-200$), Exclude Patterns (`*logout*`, `*delete*`).
    - **Active Fuzzing Controls:** Toggles for SQLi probes, Canary XSS tokens, Path Traversal, SSTI evaluation, and Open Redirect.
@@ -105,7 +105,7 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
    - **Discovered Subdomains HUD:** Real-time table displaying subdomain names, resolved IPs, CNAME aliases, and Takeover Vulnerability status badges.
 
 3. **Interactive Findings Explorer:**
-   - Filterable by engine, tool source (`native`, `nmap`, `sslyze`, `nuclei`, `ffuf`, `nikto`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`), severity, and text search.
+   - Filterable by engine, tool source (`native`, `nmap`, `sslyze`, `nuclei`, `ffuf`, `katana`, `semgrep`, `gitleaks`, `bandit`, `trivy`, `checkov`), severity, and text search.
    - Expandable finding cards with CVSS badges, `source_tool` tags, CWE/OWASP tags, evidence diffs, and remediation code blocks.
    - **One-Click "Copy cURL PoC":** Copies exact, standalone reproduction cURL command with test payloads and headers to clipboard.
    - **AST Taint Trace Viewer:** Visual step-by-step ladder showing untrusted user source variable down to database/command execution sink.
@@ -121,15 +121,15 @@ The dashboard is structured as a **Cyber-Security Operations Center (SOC) Comman
 
 6. **Toolbox & Adapters Manager Modal (`#tool-manager-modal`) & Setup Guide Modal (`#tool-instructions-modal`):**
    - Opened via header button `⚙️ Manage Toolbox & Adapters` or clicking missing tool badge.
-   - **Tool Matrix Table:** Lists all 10 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `OS / PKG MGR`), and individual action buttons:
+   - **Tool Matrix Table:** Lists all 21 tools with category, installation status badge (`Installed` / `Not Installed` / `Installing`), detected binary path/version, installation method badge (`PIP`, `STANDALONE BINARY`, `OS / PKG MGR`), and individual action buttons:
      - For automated tools (`PIP`, `STANDALONE BINARY`): `⚡ Install` / `Reinstall` / `⏹ Cancel`.
-     - For system package manager tools (`OS / PKG MGR` like `Nmap`, `Nikto`): `📖 How to Install` (when missing) or `📖 Setup Guide` (when installed).
+     - For system package manager tools (`OS / PKG MGR` like `Nmap`, `Retire`): `📖 How to Install` (when missing) or `📖 Setup Guide` (when installed).
    - **Interactive Tool Setup & Guide Modal (`#tool-instructions-modal`):**
      - Subtitle explaining tool role and OS requirements.
-     - Option cards sorted with **Recommended First** (e.g. `winget install Insecure.Nmap`, Strawberry Perl + git clone for Nikto).
+     - Option cards sorted with **Recommended First** (e.g. `winget install Insecure.Nmap`, `npm install -g retire`).
      - One-click copy code boxes (`btn-copy-code`) for copy-pasteable PowerShell/bash commands.
-     - Cyan parameter breakdowns (`.instruction-explanation`) detailing what each flag does (`winget install`, `git clone`, `-h <target>`, `-T4`, etc.).
-     - Actionable step-by-step verification commands (`nmap --version`, `perl -v`, `nikto -Version`).
+     - Cyan parameter breakdowns (`.instruction-explanation`) detailing what each flag does (`winget install`, `npm install -g`, `-h <target>`, `-T4`, etc.).
+     - Actionable step-by-step verification commands (`nmap --version`, `retire --version`).
      - Live **"🔄 Re-check Status"** trigger re-probing backend capabilities in real-time.
    - **Batch Installer Action:** Master `⚡ Install All Missing Tools` button triggering parallel user-space installations.
    - **Live Installation Terminal Console:** Real-time progress bar, stage indicator, and auto-scrolling monospace terminal connected to `/api/system/tools/events`.

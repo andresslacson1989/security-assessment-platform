@@ -100,7 +100,7 @@ class BaseAssessmentEngine(ABC):
 - Native fallback & enrichment: `port_checker`, `banner_grabber`, `tls_auditor`, `dns_hygiene`, `subdomain_recon` (Certificate Transparency).
 
 ### 3.2 Engine 2: Web DAST, Headless SPA Crawler & API Contract Fuzzer (`web_dast`)
-- Integrates `NucleiAdapter`, `FfufAdapter`, `NiktoAdapter`, `KatanaAdapter`, `SchemathesisAdapter`.
+- Integrates `NucleiAdapter`, `FfufAdapter`, `KatanaAdapter`, `SchemathesisAdapter`.
 - Native fallback & enrichment: `headers_cookies`, `cors_analyzer`, `api_inspector`, `browser_posture`, `crawler`, `auth_session`, `parameter_fuzzer`.
 
 ### 3.3 Engine 3: Code SAST, Taint Analysis & Verified Secrets (`code_sast`)
@@ -230,9 +230,9 @@ class BaseToolInstaller(ABC):
    - Downloads official release zip/tarball from GitHub Releases API / CDN.
    - Extracts binary into `backend/bin/` with ZipSlip path traversal protection. Sets permissions `0o755`.
 
-3. **`SystemToolHelper` (`nmap`, `nikto`, `retire`):**
+3. **`SystemToolHelper` (`nmap`, `retire`):**
    - Performs 5-tier binary discovery including Windows Registry uninstall scanning, multi-drive Program Files checks, and npm globals.
-   - Integrates with `#tool-instructions-modal` presenting verified parameter breakdowns for `winget`, Strawberry Perl, npm, apt, and brew.
+   - Integrates with `#tool-instructions-modal` presenting verified parameter breakdowns for `winget`, npm, apt, and brew.
 
 **Applicable Target Types:** `URL`, `DOMAIN`, `IP`  
 #### Submodules:
@@ -300,18 +300,18 @@ from app.core.binary_resolver import resolve_tool_binary, safe_execute_subproces
 
 class BaseToolAdapter(ABC):
     """
-    Abstract contract for external tool adapters.
-    Supported enterprise tools:
-    - Network / TLS: Nmap, SSLyze
-    - Web DAST: Nuclei, FFuF, Nikto
-    - SAST / Secrets: Semgrep, Gitleaks, Bandit
-    - SCA / IaC: Trivy, Checkov
+    Abstract contract for external tool adapters across 21 modern enterprise tools:
+    - Network / TLS: Nmap, SSLyze, Subfinder, Httpx
+    - Web DAST: Nuclei, FFuF, Katana, Schemathesis
+    - SAST / Secrets: Semgrep, Gitleaks, Bandit, TruffleHog, RetireJS
+    - SCA / Supply Chain: Trivy, Syft, Grype, OSV-Scanner
+    - Cloud / IaC / CIS: Checkov, Prowler, Kube-bench, Dockle
     """
 
     @property
     @abstractmethod
     def tool_name(self) -> str:
-        """Name of executable: 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'."""
+        """Name of executable: 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'."""
         pass
 
     def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
@@ -384,7 +384,6 @@ class BaseToolAdapter(ABC):
 | **`SslyzeAdapter`** | `sslyze` | `sslyze --json_out=- <host>:<port>` | JSON (`--json_out=-`) | **Primary** Deep TLS/SSL Auditor | `tls_auditor.py` | Maps deprecated TLS protocols, weak ciphers, and cert issues to `NET-TLS-xxx`. `source_tool="sslyze"`. |
 | **`NucleiAdapter`** | `nuclei` | `nuclei -u <target> -j -silent -tags cve,misconfig` | JSON Lines (`-j`) | **Primary** DAST Vulnerability Engine | `parameter_fuzzer.py` + `headers_cookies.py` | Maps Nuclei template IDs and severity to canonical CWEs and `DAST-xxx`. `source_tool="nuclei"`. |
 | **`FfufAdapter`** | `ffuf` | `ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302,307,401,403 -o - -of json -t 5 -rate 10` | JSON (`-of json`) | **Primary** Endpoint & Content Discovery | `crawler.py` | Discovers hidden routes, backup files, and endpoints, emitting `DAST-EXP-xxx` findings and `DiscoveredEndpoint` models. `source_tool="ffuf"`. |
-| **`NiktoAdapter`** | `nikto` | `nikto -h <target> -Format json -output - -Tuning 1,2,3,4,8,9,a,b,c` | JSON (`-Format json`) | **Primary** Server Misconfiguration Scanner | `headers_cookies.py` + `api_inspector.py` | Maps outdated server components, dangerous HTTP methods, and insecure headers to `DAST-HDR-xxx` / `DAST-EXP-xxx`. `source_tool="nikto"`. |
 | **`SemgrepAdapter`** | `semgrep` | `semgrep scan --config auto --json <dir>` | JSON (`--json`) | **Primary** Multi-Language AST SAST | `injection_lint.py` + `crypto_lint.py` | Normalizes Semgrep rules into `SAST-xxx` with line numbers and evidence diffs. `source_tool="semgrep"`. |
 | **`GitleaksAdapter`** | `gitleaks` | `gitleaks detect --source <dir> --report-format json --report-path -` | JSON (`--report-format json`) | **Primary** Dedicated Git Secret Scanner | `secret_scanner.py` + `git_history_scanner.py` | Extracts hardcoded tokens, private keys, and API secrets with mandatory masking to `SAST-SEC-xxx`. `source_tool="gitleaks"`. |
 | **`BanditAdapter`** | `bandit` | `bandit -r <dir> -f json` | JSON (`-f json`) | **Primary** Python AST Security Linter | `crypto_lint.py` + `injection_lint.py` | Maps high/medium confidence AST flaws to `SAST-CRY-xxx` and `SAST-INJ-xxx`. `source_tool="bandit"`. |
@@ -449,8 +448,8 @@ class BaseToolInstaller(ABC):
    - Sets executable permissions (`0o755`).
    - Zero administrative elevation required.
 
-3. **`SystemToolHelper` (`nmap`, `nikto`):**
+3. **`SystemToolHelper` (`nmap`, `retire`):**
    - Detects OS platform and performs 5-tier binary discovery including Windows Registry uninstall scanning and multi-drive Program Files checks.
-   - **System Tool Health & Version Verification Gate:** Requires execution of the tool's version command returning exit code `0` and non-error output. If the underlying runtime is missing dependencies (e.g. Git-bundled Perl lacking `XML::Writer`), the tool is accurately classified as `NOT_INSTALLED` with detailed interactive setup guidance.
-   - **In-App Interactive Setup Guidance:** Integrates with `#tool-instructions-modal` in the frontend HUD to present prioritized, copyable CLI snippets with parameter breakdowns for `winget`, official installer, Strawberry Perl, Scoop, Chocolatey, apt, and brew.
+   - **System Tool Health & Version Verification Gate:** Requires execution of the tool's version command returning exit code `0` and non-error output.
+   - **In-App Interactive Setup Guidance:** Integrates with `#tool-instructions-modal` in the frontend HUD to present prioritized, copyable CLI snippets with parameter breakdowns for `winget`, official installer, npm, apt, and brew.
 

@@ -41,9 +41,9 @@ class Severity(str, Enum):
 ### 2.3 Scan Profiles (`ScanProfile`)
 ```python
 class ScanProfile(str, Enum):
-    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 22 available adapters
+    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 21 available modern adapters
     QUICK_AUDIT = "QUICK_AUDIT"                  # Network + Web DAST Header Check only
-    DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Nikto + Katana + Schemathesis
+    DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Katana + Schemathesis
     SAST_ONLY = "SAST_ONLY"                      # Static Code + Taint AST + Secrets + Semgrep + Gitleaks + Bandit + TruffleHog + RetireJS
     NETWORK_TLS = "NETWORK_TLS"                  # Network Ports + TLS Ciphers + DNS + OSINT + Nmap + SSLyze + Subfinder + Httpx
     INFRA_ONLY = "INFRA_ONLY"                    # Dockerfile + Compose + K8s + Terraform + Trivy + Checkov + Dockle + KubeBench + Prowler
@@ -90,7 +90,7 @@ class ToolInstallMethod(str, Enum):
     PIP = "PIP"                                        # Pure Python package installed via sys.executable -m pip
     STANDALONE_BINARY = "STANDALONE_BINARY"            # Standalone Go/compiled binary downloaded from GitHub Releases into backend/bin/
     SYSTEM_PACKAGE_MANAGER = "SYSTEM_PACKAGE_MANAGER"  # System tool requiring OS package manager (winget/brew/apt) or elevated setup
-    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool (e.g. Nikto Perl script)
+    SCRIPT_DOWNLOAD = "SCRIPT_DOWNLOAD"                # Script-based tool downloaded via direct script
     MANUAL = "MANUAL"                                  # Manual binary placement
 
 class ToolInstallStatus(str, Enum):
@@ -140,7 +140,7 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
-    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'nikto', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
+    source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
     category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")
@@ -185,12 +185,11 @@ class DiscoveredEndpoint(BaseModel):
 ### 3.5 Hybrid Tool Adapter Configurations & Status Models
 ```python
 class ToolAdapterConfig(BaseModel):
-    # Core 10 Adapters
+    # Core 9 Adapters
     enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")
     enable_sslyze: bool = Field(default=True, description="Enable SSLyze deep TLS/SSL configuration adapter")
     enable_nuclei: bool = Field(default=True, description="Enable Nuclei CVE template scanner adapter")
     enable_ffuf: bool = Field(default=True, description="Enable FFuF high-speed content discovery adapter")
-    enable_nikto: bool = Field(default=True, description="Enable Nikto web server misconfiguration adapter")
     enable_semgrep: bool = Field(default=True, description="Enable Semgrep multi-language AST SAST adapter")
     enable_gitleaks: bool = Field(default=True, description="Enable Gitleaks git history secret scanner adapter")
     enable_bandit: bool = Field(default=True, description="Enable Bandit Python AST security linter adapter")
@@ -216,7 +215,6 @@ class ToolAdapterConfig(BaseModel):
     custom_sslyze_path: Optional[str] = Field(default=None)
     custom_nuclei_path: Optional[str] = Field(default=None)
     custom_ffuf_path: Optional[str] = Field(default=None)
-    custom_nikto_path: Optional[str] = Field(default=None)
     custom_semgrep_path: Optional[str] = Field(default=None)
     custom_gitleaks_path: Optional[str] = Field(default=None)
     custom_bandit_path: Optional[str] = Field(default=None)
@@ -236,7 +234,7 @@ class ToolAdapterConfig(BaseModel):
     custom_schemathesis_path: Optional[str] = Field(default=None)
 
 class ToolStatus(BaseModel):
-    name: str = Field(..., description="Tool identifier (nmap, sslyze, nuclei, ffuf, nikto, semgrep, gitleaks, bandit, trivy, checkov, subfinder, httpx, katana, syft, grype, osv_scanner, retirejs, trufflehog, prowler, kube_bench, dockle, schemathesis)")
+    name: str = Field(..., description="Tool identifier (nmap, sslyze, nuclei, ffuf, semgrep, gitleaks, bandit, trivy, checkov, subfinder, httpx, katana, syft, grype, osv_scanner, retirejs, trufflehog, prowler, kube_bench, dockle, schemathesis)")
     available: bool = Field(..., description="Whether binary was detected and verified on PATH/filesystem")
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")

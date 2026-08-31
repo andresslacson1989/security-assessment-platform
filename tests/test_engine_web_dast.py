@@ -223,7 +223,7 @@ async def test_web_dast_engine_full_run():
             auth=AuthConfig(auth_type=AuthType.HEADER, headers={"Authorization": "Bearer test"}),
             fuzzing=FuzzingConfig(enabled=False),
             adapters=ToolAdapterConfig(
-                enable_nuclei=False, enable_ffuf=False, enable_nikto=False,
+                enable_nuclei=False, enable_ffuf=False,
                 enable_katana=False, enable_schemathesis=False,
             ),
         )
@@ -295,7 +295,7 @@ async def test_web_dast_engine_audits_all_crawled_pages():
         auth=AuthConfig(auth_type=AuthType.NONE),
         fuzzing=FuzzingConfig(enabled=False),
         adapters=ToolAdapterConfig(
-            enable_nuclei=False, enable_ffuf=False, enable_nikto=False,
+            enable_nuclei=False, enable_ffuf=False,
             enable_katana=False, enable_schemathesis=False,
         ),
     )

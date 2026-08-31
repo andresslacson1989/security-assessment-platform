@@ -33,7 +33,7 @@ class BaseToolInstaller(ABC):
     @property
     @abstractmethod
     def tool_name(self) -> str:
-        """Unique tool key: 'sslyze', 'bandit', 'semgrep', 'checkov', 'nuclei', 'ffuf', 'gitleaks', 'trivy', 'nmap', 'nikto'."""
+        """Unique tool key: 'sslyze', 'bandit', 'semgrep', 'checkov', 'nuclei', 'ffuf', 'gitleaks', 'trivy', 'nmap', 'retire'."""
         pass
 
     @property

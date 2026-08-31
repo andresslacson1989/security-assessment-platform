@@ -1274,14 +1274,14 @@ async def test_scenario_16_adapters_first_priority_and_native_pruning():
 @pytest.mark.asyncio
 async def test_scenario_17_expanded_enterprise_tool_adapters(tmp_path):
     """
-    Scenario 17: Enterprise Tool Adapter Integrations (Gitleaks, Bandit, Checkov, FFuF, Nikto, SSLyze)
+    Scenario 17: Enterprise Tool Adapter Integrations (Gitleaks, Bandit, Checkov, FFuF, Katana, SSLyze)
     - Verifies command construction, non-destructive execution flags, output parsing, and error isolation.
     """
     from app.adapters.gitleaks_adapter import GitleaksAdapter
     from app.adapters.bandit_adapter import BanditAdapter
     from app.adapters.checkov_adapter import CheckovAdapter
     from app.adapters.ffuf_adapter import FfufAdapter
-    from app.adapters.nikto_adapter import NiktoAdapter
+    from app.adapters.katana_adapter import KatanaAdapter
     from app.adapters.sslyze_adapter import SslyzeAdapter
     from app.core.models import Target, TargetType, ScanConfig
 
@@ -1301,9 +1301,9 @@ async def test_scenario_17_expanded_enterprise_tool_adapters(tmp_path):
     ffuf = FfufAdapter()
     assert ffuf.tool_name == "ffuf"
 
-    # 5. Nikto
-    nikto = NiktoAdapter()
-    assert nikto.tool_name == "nikto"
+    # 5. Katana
+    katana = KatanaAdapter()
+    assert katana.tool_name == "katana"
 
     # 6. SSLyze
     sslyze = SslyzeAdapter()

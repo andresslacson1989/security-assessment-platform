@@ -56,11 +56,11 @@ async def test_system_endpoints():
         data_caps = resp_caps.json()
         assert "tools" in data_caps
         assert "native_engines_ready" in data_caps
-        assert len(data_caps["tools"]) == 22
+        assert len(data_caps["tools"]) == 21
         tool_names = {t["name"] for t in data_caps["tools"]}
         assert {
             "nmap", "sslyze", "subfinder", "httpx",
-            "nuclei", "ffuf", "nikto", "katana", "schemathesis",
+            "nuclei", "ffuf", "katana", "schemathesis",
             "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
             "trivy", "syft", "grype", "osv-scanner",
             "checkov", "prowler", "kube-bench", "dockle",
