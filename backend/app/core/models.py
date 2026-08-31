@@ -18,6 +18,16 @@ def utc_now() -> datetime:
 
 
 # ============================================================================
+# Centralized Version Authority & Hierarchy (Contract 01 §1 & Contract 02 §1)
+# ============================================================================
+APP_VERSION = "14.3.0"           # Authoritative CyberAssess Platform Release Version
+CONTRACT_VERSION = "14.3.0"      # Authoritative Contract Specification Suite Version
+SCHEMA_VERSION = "4.1.0"        # Data Schema Model Specification Version (Contract 02 v4.1.0)
+RULESET_VERSION = "14.3.0"       # Security Check Catalog Ruleset Version (Contract 06 v14.3.0)
+RISK_MODEL_VERSION = "14.3.0"    # Risk & Threat Scoring Engine Version (Contract 07 v14.3.0)
+
+
+# ============================================================================
 # 1. Enums & Classifications
 # ============================================================================
 

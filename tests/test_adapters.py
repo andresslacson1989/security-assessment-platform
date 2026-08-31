@@ -277,14 +277,16 @@ class TestNmapAdapter:
 
         # Full stack profile -> Authorized
         config_full = ScanConfig(profile=ScanProfile.FULL_STACK)
-        ok, err = adapter.evaluate_three_tier_authorization(val_target, config_full)
+        ok, err, gate = adapter.evaluate_three_tier_authorization(val_target, config_full)
         assert ok is True
+        assert gate is None
 
         # SAST profile -> Blocked
         config_sast = ScanConfig(profile=ScanProfile.SAST_ONLY)
-        ok, err = adapter.evaluate_three_tier_authorization(val_target, config_sast)
+        ok, err, gate = adapter.evaluate_three_tier_authorization(val_target, config_sast)
         assert ok is False
-        assert "prohibits Nmap" in err
+        assert gate == "PROFILE_AUTHORIZATION"
+        assert "does not authorize network" in err
 
     @pytest.mark.asyncio
     async def test_run_parsing_and_findings(self):
@@ -312,10 +314,8 @@ class TestNmapAdapter:
         assert len(findings) == 4
 
         check_ids = [f.check_id for f in res]
-        assert "NET-PORT-003" in check_ids  # FTP 21
-        assert "NET-PORT-001" in check_ids  # MySQL 3306
-        assert "NET-PORT-002" in check_ids  # Redis 6379
-        assert "NET-SVC-001" in check_ids   # Tomcat 8080
+        assert "NET-PORT-003" in check_ids  # FTP 21 (Insecure cleartext)
+        assert "NET-SVC-001" in check_ids   # MySQL 3306, Redis 6379, Tomcat 8080 (Service posture observations)
 
         ftp_finding = next(f for f in res if f.check_id == "NET-PORT-003")
         assert ftp_finding.source_tool == "nmap"
@@ -323,7 +323,7 @@ class TestNmapAdapter:
         assert ftp_finding.cvss_score == 5.3
         assert "192.168.1.50:21" in ftp_finding.evidence.location
 
-        tomcat_finding = next(f for f in res if f.check_id == "NET-SVC-001")
+        tomcat_finding = next(f for f in res if "8080" in f.evidence.location)
         assert "Apache Tomcat" in tomcat_finding.evidence.observed_value
         assert "http-title" in tomcat_finding.evidence.raw_response_snippet
 

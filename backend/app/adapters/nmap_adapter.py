@@ -11,6 +11,7 @@ Authoritative References:
 
 from __future__ import annotations
 from datetime import datetime, timezone
+from enum import Enum
 import hashlib
 import ipaddress
 import logging
@@ -43,6 +44,18 @@ from app.core.ssrf_protector import create_validated_target, is_ip_allowed
 logger = logging.getLogger("cyberassess.adapters.nmap")
 
 
+class ToolOperationClass(str, Enum):
+    """
+    Contract 09 §1.1 Invariant 2 & §2: Authoritative Operation Classifications.
+    """
+    PASSIVE = "PASSIVE"
+    ACTIVE_READ_ONLY = "ACTIVE_READ_ONLY"
+    ACTIVE_INTRUSIVE = "ACTIVE_INTRUSIVE"
+    STATE_CHANGING = "STATE_CHANGING"
+    CREDENTIAL_AWARE = "CREDENTIAL_AWARE"
+    PRIVILEGED = "PRIVILEGED"
+
+
 # ============================================================================
 # 1. Authoritative Constants & Policy Invariants (Contract 09 v14.3.0)
 # ============================================================================
@@ -54,6 +67,7 @@ APPROVED_VERSION_FULL = "Nmap 7.95"
 TRUST_MODE = "PACKAGE_MANAGER_MODE"
 ROLE = "PRIMARY"
 SECURITY_DOMAIN = "NETWORK / PERIMETER / EASM"
+DEFAULT_OPERATION_CLASS = ToolOperationClass.ACTIVE_READ_ONLY
 
 # Approved NSE Script Allowlist (Contract 09 TOOL-NMAP §14 & §15)
 APPROVED_NSE_SCRIPTS: Set[str] = {
@@ -308,6 +322,10 @@ class NmapAdapter(BaseToolAdapter):
     def trust_mode(self) -> str:
         return TRUST_MODE
 
+    @property
+    def operation_class(self) -> ToolOperationClass:
+        return DEFAULT_OPERATION_CLASS
+
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
         """
         Contract 09 TOOL-NMAP §7: Retrieves Nmap version via `nmap --version`.
@@ -348,13 +366,21 @@ class NmapAdapter(BaseToolAdapter):
         target: ValidatedTarget,
         config: ScanConfig,
         requested_intrusive: bool = False,
-    ) -> Tuple[bool, Optional[str]]:
+        custom_scripts: Optional[List[str]] = None,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Contract 09 §1.1 Invariant 7 & TOOL-NMAP §4: Three-Tier Authorization Gate.
-        Evaluates (1) Tool Capability, (2) Profile Authorization, (3) Tenant Scope Authorization.
+        Evaluates:
+          Gate 1: TOOL_CAPABILITY (Supported scan type & approved NSE allowlist)
+          Gate 2: PROFILE_AUTHORIZATION (Profile allows network sweep / port probing)
+          Gate 3: TENANT_SCOPE_AUTHORIZATION (Tenant policy active_probing_granted == True)
+        Returns (is_authorized, reason, failed_gate_name).
         """
         # Gate 1: Tool Capability
-        # Nmap adapter natively supports port scanning and approved NSE scripts.
+        if custom_scripts:
+            for s in custom_scripts:
+                if s.lower() not in APPROVED_NSE_SCRIPTS:
+                    return False, f"NSE script '{s}' is not supported by TOOL-NMAP capability allowlist (Gate 1).", "TOOL_CAPABILITY"
 
         # Gate 2: Profile Authorization
         allowed_profiles = {
@@ -368,15 +394,14 @@ class NmapAdapter(BaseToolAdapter):
         }
         active_profile = getattr(config, "profile", ScanProfile.FULL_STACK)
         if active_profile not in allowed_profiles:
-            return False, f"Scan profile '{active_profile.value}' prohibits Nmap network execution."
+            return False, f"Scan profile '{active_profile.value}' does not authorize network port scanning (Gate 2).", "PROFILE_AUTHORIZATION"
 
         # Gate 3: Tenant Scope Authorization
         auth_ctx = getattr(target, "authorization_context", {}) or {}
-        if requested_intrusive:
-            if not auth_ctx.get("active_probing_granted", False):
-                return False, "Tenant scope authorization lacks explicit active intrusive probing grant."
+        if not auth_ctx.get("active_probing_granted", False):
+            return False, "Tenant scope authorization lacks explicit active probing grant (Gate 3).", "TENANT_SCOPE_AUTHORIZATION"
 
-        return True, None
+        return True, None, None
 
     def parse_nmap_xml(
         self,
@@ -453,34 +478,11 @@ class NmapAdapter(BaseToolAdapter):
                     script_outputs.append(f"[{s_id}]\n{masked_out}")
             script_text = "\n\n".join(script_outputs) if script_outputs else None
 
-            # Finding Normalization (Contract 09 TOOL-NMAP §31)
-            if portid in (3306, 5432) or service_name in ("mysql", "postgresql", "postgres"):
-                check_id = "NET-PORT-001"
-                title = f"Exposed Database Port (Port {portid} - {service_name.capitalize()})"
-                category = "Network Perimeter Exposure"
-                severity = Severity.HIGH
-                cvss_score = 7.5
-                cvss_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
-                cwe_id = "CWE-284"
-                owasp = "A01:2021-Broken Access Control"
-                nist = "AC-3, SC-7"
-                description = f"Database port {portid} ({service_name}) is publicly reachable on {target_host} ({target_ip})."
-                remediation = "Bind database daemon to 127.0.0.1 or internal VPC subnet; block public access via perimeter firewall."
-            elif portid in (6379, 27017, 9200) or service_name in ("redis", "mongodb", "mongod", "elasticsearch"):
-                check_id = "NET-PORT-002"
-                title = f"Exposed In-Memory Cache / NoSQL Datastore (Port {portid} - {service_name.capitalize()})"
-                category = "Network Perimeter Exposure"
-                severity = Severity.HIGH
-                cvss_score = 7.5
-                cvss_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
-                cwe_id = "CWE-284"
-                owasp = "A01:2021-Broken Access Control"
-                nist = "AC-3, SC-7"
-                description = f"In-memory datastore/cache port {portid} ({service_name}) is exposed on {target_host} ({target_ip})."
-                remediation = "Bind service to localhost, enforce strict authentication, and restrict firewall access."
-            elif portid in (21, 23) or service_name in ("ftp", "telnet"):
+            # Finding Normalization & Service Observation vs Misconfiguration Distinction (Contract 09 §38 & §39)
+            if portid in (21, 23) or service_name in ("ftp", "telnet"):
+                # Cleartext insecure remote management misconfiguration
                 check_id = "NET-PORT-003"
-                title = f"Exposed Insecure Remote Management Service (Port {portid} - {service_name.upper()})"
+                title = f"Insecure Cleartext Remote Management Service (Port {portid} - {service_name.upper()})"
                 category = "Network Perimeter Exposure"
                 severity = Severity.MEDIUM
                 cvss_score = 5.3
@@ -488,21 +490,21 @@ class NmapAdapter(BaseToolAdapter):
                 cwe_id = "CWE-319"
                 owasp = "A02:2021-Cryptographic Failures"
                 nist = "AC-17, IA-2"
-                description = f"Insecure plaintext remote management service {service_name.upper()} is active on port {portid} ({target_ip})."
+                description = f"Insecure cleartext remote management service {service_name.upper()} is active on port {portid} on {target_host} ({target_ip}). Cleartext protocols transmit credentials unencrypted across the network."
                 remediation = "Disable plaintext management service and migrate exclusively to SSH or SFTP with TLS."
             else:
-                # Service discovery observation (Contract 09 TOOL-NMAP §39)
+                # Service discovery & asset observation posture (Contract 09 TOOL-NMAP §39)
                 check_id = "NET-SVC-001"
                 title = f"Service Daemon Detected on Port {portid} ({version_desc})"
-                category = "Service Posture"
+                category = "Service Posture / Asset Observation"
                 severity = Severity.INFO
                 cvss_score = 0.0
                 cvss_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"
                 cwe_id = "CWE-200"
                 owasp = "A05:2021-Security Misconfiguration"
                 nist = "CM-6"
-                description = f"Service '{service_name}' ({version_desc}) detected on port {portid} on {target_host} ({target_ip})."
-                remediation = "Verify whether this port must be publicly accessible and ensure the service daemon is updated."
+                description = f"Service daemon '{service_name}' ({version_desc}) is open and listening on port {portid} on {target_host} ({target_ip})."
+                remediation = "Verify whether this port must be publicly accessible and ensure the service daemon is updated and firewall-restricted if non-public."
 
             location = f"{target_host}:{portid}"
             observed_val = f"Port {portid}/{protocol} is open - Service: {version_desc}"
@@ -600,9 +602,9 @@ class NmapAdapter(BaseToolAdapter):
             return findings
 
         # 4. Three-Tier Authorization Check
-        is_auth, auth_err = self.evaluate_three_tier_authorization(val_target, config)
+        is_auth, auth_err, failed_gate = self.evaluate_three_tier_authorization(val_target, config)
         if not is_auth:
-            await emit_log(LogLevel.WARNING, f"Nmap execution blocked by policy: {auth_err}")
+            await emit_log(LogLevel.WARNING, f"Nmap execution blocked by policy ({failed_gate}): {auth_err}")
             return findings
 
         # 5. Build Command via Command Builder
