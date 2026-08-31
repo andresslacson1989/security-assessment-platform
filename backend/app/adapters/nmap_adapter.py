@@ -207,6 +207,26 @@ def sanitize_banner_or_script(text: str) -> str:
     return sanitized
 
 
+def classify_nmap_operation(
+    scripts: Optional[List[str]] = None,
+    dns_zone_authorized: bool = False,
+    is_domain: bool = False,
+) -> ToolOperationClass:
+    """
+    Contract 09 §1.1 Invariant 2 & TOOL-NMAP §2:
+    Deterministically classifies the requested Nmap operation based on target, scripts, and arguments.
+    - If dns-nsec-enum or explicit intrusive scripts are requested: ToolOperationClass.ACTIVE_INTRUSIVE
+    - Otherwise (port discovery, service version probing -sV, standard discovery scripts): ToolOperationClass.ACTIVE_READ_ONLY
+    """
+    if scripts:
+        for s in scripts:
+            if s.lower() in ("dns-nsec-enum",):
+                return ToolOperationClass.ACTIVE_INTRUSIVE
+    elif is_domain and dns_zone_authorized:
+        return ToolOperationClass.ACTIVE_INTRUSIVE
+    return ToolOperationClass.ACTIVE_READ_ONLY
+
+
 # ============================================================================
 # 4. Dedicated Nmap Command Builder (Contract 09 §11, §19, §20, §21)
 # ============================================================================
@@ -215,6 +235,7 @@ class NmapCommandBuilder:
     """
     Dedicated deterministic Nmap command builder.
     Rejects raw user command strings and constructs bounded argument vectors.
+    Enforces intrusive authorization directly at the command construction boundary.
     """
 
     @staticmethod
@@ -264,6 +285,16 @@ class NmapCommandBuilder:
             resolved_scripts = ["banner", "ssl-cert", "http-title", "ssh2-enum-algos"]
             if target.target_type == TargetType.DOMAIN and dns_zone_authorized:
                 resolved_scripts.append("dns-nsec-enum")
+
+        # Classify operation and enforce intrusive authorization at builder boundary
+        op_class = classify_nmap_operation(resolved_scripts)
+        if op_class == ToolOperationClass.ACTIVE_INTRUSIVE and not intrusive_authorized:
+            return (
+                [],
+                [],
+                [],
+                "INTRUSIVE_OPERATION_REJECTED: Active intrusive operation (e.g. dns-nsec-enum) requested but intrusive_authorized is False at execution boundary.",
+            )
 
         # Base Command Vector (Contract 09 TOOL-NMAP §19)
         cmd: List[str] = [
@@ -365,7 +396,7 @@ class NmapAdapter(BaseToolAdapter):
         self,
         target: ValidatedTarget,
         config: ScanConfig,
-        requested_intrusive: bool = False,
+        operation_class: ToolOperationClass = ToolOperationClass.ACTIVE_READ_ONLY,
         custom_scripts: Optional[List[str]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -373,7 +404,7 @@ class NmapAdapter(BaseToolAdapter):
         Evaluates:
           Gate 1: TOOL_CAPABILITY (Supported scan type & approved NSE allowlist)
           Gate 2: PROFILE_AUTHORIZATION (Profile allows network sweep / port probing)
-          Gate 3: TENANT_SCOPE_AUTHORIZATION (Tenant policy active_probing_granted == True)
+          Gate 3: TENANT_SCOPE_AUTHORIZATION (Target scope authorized; ACTIVE_INTRUSIVE requires active_probing_granted)
         Returns (is_authorized, reason, failed_gate_name).
         """
         # Gate 1: Tool Capability
@@ -398,8 +429,18 @@ class NmapAdapter(BaseToolAdapter):
 
         # Gate 3: Tenant Scope Authorization
         auth_ctx = getattr(target, "authorization_context", {}) or {}
-        if not auth_ctx.get("active_probing_granted", False):
-            return False, "Tenant scope authorization lacks explicit active probing grant (Gate 3).", "TENANT_SCOPE_AUTHORIZATION"
+        
+        # Verify base scope authorization
+        if auth_ctx.get("out_of_scope", False):
+            return False, "Target is outside tenant authorized scope (Gate 3).", "TENANT_SCOPE_AUTHORIZATION"
+        authorized_scope_list = getattr(target, "authorized_scope", None)
+        if authorized_scope_list and target.canonical_value not in authorized_scope_list and target.selected_destination not in authorized_scope_list:
+            return False, "Target is outside tenant authorized scope list (Gate 3).", "TENANT_SCOPE_AUTHORIZATION"
+
+        # For ACTIVE_INTRUSIVE operations (e.g. dns-nsec-enum zone walking), require explicit active_probing_granted
+        if operation_class == ToolOperationClass.ACTIVE_INTRUSIVE:
+            if not auth_ctx.get("active_probing_granted", False):
+                return False, "Active intrusive probing requested but tenant authorization lacks active_probing_granted (Gate 3).", "TENANT_SCOPE_AUTHORIZATION"
 
         return True, None, None
 
@@ -601,20 +642,41 @@ class NmapAdapter(BaseToolAdapter):
             await emit_log(LogLevel.ERROR, f"Nmap version rejected: {v_err}. Execution blocked.")
             return findings
 
-        # 4. Three-Tier Authorization Check
-        is_auth, auth_err, failed_gate = self.evaluate_three_tier_authorization(val_target, config)
+        # 4. Classify Operation & Evaluate Three-Tier Authorization Check
+        custom_scripts = kwargs.get("custom_scripts")
+        auth_ctx = getattr(val_target, "authorization_context", {}) or {}
+        dns_zone_auth = (
+            auth_ctx.get("dns_zone_assessment_authorized", False)
+            or auth_ctx.get("dns_zone_authorized", False)
+            or kwargs.get("dns_zone_authorized", False)
+        )
+        is_domain = val_target.target_type == TargetType.DOMAIN
+        intrusive_granted = bool(auth_ctx.get("active_probing_granted", False))
+
+        op_class = classify_nmap_operation(
+            scripts=custom_scripts,
+            dns_zone_authorized=dns_zone_auth,
+            is_domain=is_domain,
+        )
+
+        is_auth, auth_err, failed_gate = self.evaluate_three_tier_authorization(
+            val_target,
+            config,
+            operation_class=op_class,
+            custom_scripts=custom_scripts,
+        )
         if not is_auth:
             await emit_log(LogLevel.WARNING, f"Nmap execution blocked by policy ({failed_gate}): {auth_err}")
             return findings
 
-        # 5. Build Command via Command Builder
-        dns_auth = val_target.authorization_context.get("dns_zone_authorized", False)
+        # 5. Build Command via Command Builder (Enforces intrusive authorization at builder boundary)
         cmd, ports_scanned, scripts_executed, cmd_err = NmapCommandBuilder.build_command(
             nmap_path=nmap_path,
             target=val_target,
             config=config,
-            intrusive_authorized=True,
-            dns_zone_authorized=dns_auth,
+            intrusive_authorized=intrusive_granted,
+            dns_zone_authorized=dns_zone_auth,
+            custom_scripts=custom_scripts,
         )
         if cmd_err:
             await emit_log(LogLevel.ERROR, f"Failed to build Nmap command: {cmd_err}")

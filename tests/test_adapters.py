@@ -210,6 +210,7 @@ class TestNmapAdapter:
             nmap_path=str(dummy_bin),
             target=val_target,
             config=config,
+            intrusive_authorized=True,
             dns_zone_authorized=True,
         )
         assert err is None

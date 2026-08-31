@@ -129,6 +129,7 @@ class TestNmapDestinationBinding:
             nmap_path="/usr/bin/nmap",
             target=val_target,
             config=config,
+            intrusive_authorized=True,
             dns_zone_authorized=True,
         )
         assert err is None
@@ -236,17 +237,19 @@ class TestNmapNSEPolicy:
         assert "not on the approved allowlist" in err_bad
 
     def test_dns_nsec_enum_scope_policy(self):
-        # 1. Target is DOMAIN and dns_zone_authorized=True -> ALLOWED
+        # 1. Target is DOMAIN, dns_zone_authorized=True, intrusive_authorized=True -> ALLOWED
         domain_target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
         with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
             val_domain = create_validated_target(domain_target)
 
-        _, _, scripts_domain, _ = NmapCommandBuilder.build_command(
+        _, _, scripts_domain, err = NmapCommandBuilder.build_command(
             nmap_path="/usr/bin/nmap",
             target=val_domain,
             config=ScanConfig(),
+            intrusive_authorized=True,
             dns_zone_authorized=True,
         )
+        assert err is None
         assert "dns-nsec-enum" in scripts_domain
 
         # 2. Target is DOMAIN and dns_zone_authorized=False -> EXCLUDED
@@ -254,6 +257,7 @@ class TestNmapNSEPolicy:
             nmap_path="/usr/bin/nmap",
             target=val_domain,
             config=ScanConfig(),
+            intrusive_authorized=True,
             dns_zone_authorized=False,
         )
         assert "dns-nsec-enum" not in scripts_domain_unauth
@@ -265,9 +269,52 @@ class TestNmapNSEPolicy:
             nmap_path="/usr/bin/nmap",
             target=val_ip,
             config=ScanConfig(),
+            intrusive_authorized=True,
             dns_zone_authorized=True,
         )
         assert "dns-nsec-enum" not in scripts_ip
+
+    def test_command_builder_enforces_intrusive_authorization_boundary(self):
+        """
+        Contract 09 §1.1 Invariant 7: Proves that NmapCommandBuilder refuses to construct
+        an intrusive command if intrusive_authorized is False at the execution boundary.
+        """
+        from app.adapters.nmap_adapter import classify_nmap_operation
+
+        domain_target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+            val_domain = create_validated_target(domain_target)
+
+        # 1. Intrusive script requested with intrusive_authorized=False -> COMMAND REFUSED
+        cmd, _, _, err = NmapCommandBuilder.build_command(
+            nmap_path="/usr/bin/nmap",
+            target=val_domain,
+            config=ScanConfig(),
+            intrusive_authorized=False,
+            dns_zone_authorized=True,
+            custom_scripts=["dns-nsec-enum"],
+        )
+        assert cmd == []
+        assert err is not None
+        assert "INTRUSIVE_OPERATION_REJECTED" in err
+
+        # 2. Read-only scripts requested with intrusive_authorized=False -> COMMAND PERMITTED
+        cmd_ro, _, scripts_ro, err_ro = NmapCommandBuilder.build_command(
+            nmap_path="/usr/bin/nmap",
+            target=val_domain,
+            config=ScanConfig(),
+            intrusive_authorized=False,
+            custom_scripts=["banner", "ssl-cert"],
+        )
+        assert err_ro is None
+        assert "banner" in scripts_ro
+        assert "ssl-cert" in scripts_ro
+
+        # 3. Test classify_nmap_operation deterministic outputs
+        assert classify_nmap_operation(["banner", "ssl-cert"]) == ToolOperationClass.ACTIVE_READ_ONLY
+        assert classify_nmap_operation(["dns-nsec-enum"]) == ToolOperationClass.ACTIVE_INTRUSIVE
+        assert classify_nmap_operation(None, dns_zone_authorized=True, is_domain=True) == ToolOperationClass.ACTIVE_INTRUSIVE
+        assert classify_nmap_operation(None, dns_zone_authorized=False, is_domain=True) == ToolOperationClass.ACTIVE_READ_ONLY
 
 
 # ============================================================================
@@ -277,21 +324,23 @@ class TestNmapNSEPolicy:
 class TestNmapThreeTierAuthorization:
     def test_three_tier_authorization_complete_truth_table(self):
         """
-        Tests all 5 conditions of the three-tier authorization gate:
-        | Case | Capability | Profile | Tenant Scope | Expected | Failed Gate |
-        | 1    | False      | False   | False        | BLOCK    | TOOL_CAPABILITY |
-        | 2    | False      | True    | True         | BLOCK    | TOOL_CAPABILITY |
-        | 3    | True       | False   | True         | BLOCK    | PROFILE_AUTHORIZATION |
-        | 4    | True       | True    | False        | BLOCK    | TENANT_SCOPE_AUTHORIZATION |
-        | 5    | True       | True    | True         | ALLOW    | None |
+        Tests all conditions of the three-tier authorization gate:
+        | Case | Capability | Profile | Tenant Scope | Operation Class   | Expected | Failed Gate |
+        | 1    | False      | False   | False        | ACTIVE_READ_ONLY  | BLOCK    | TOOL_CAPABILITY |
+        | 2    | False      | True    | True         | ACTIVE_READ_ONLY  | BLOCK    | TOOL_CAPABILITY |
+        | 3    | True       | False   | True         | ACTIVE_READ_ONLY  | BLOCK    | PROFILE_AUTHORIZATION |
+        | 4a   | True       | True    | False (Out)  | ACTIVE_READ_ONLY  | BLOCK    | TENANT_SCOPE_AUTHORIZATION |
+        | 4b   | True       | True    | False (Intr) | ACTIVE_INTRUSIVE  | BLOCK    | TENANT_SCOPE_AUTHORIZATION |
+        | 4c   | True       | True    | True (Scope) | ACTIVE_READ_ONLY  | ALLOW    | None |
+        | 5    | True       | True    | True (Intr)  | ACTIVE_INTRUSIVE  | ALLOW    | None |
         """
         adapter = NmapAdapter()
         target = Target(name="Test", type=TargetType.IP, value="192.168.1.50")
         with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
             val_target_authorized = create_validated_target(target, allow_internal=True)
 
-        # Create target with tenant scope active_probing_granted = False
-        val_target_unauthorized = ValidatedTarget(
+        # Target with active_probing_granted = False in authorization context
+        val_target_no_active_probing = ValidatedTarget(
             target_id=val_target_authorized.target_id,
             authorization_decision_id="auth-123",
             integrity_seal="seal-123",
@@ -299,7 +348,34 @@ class TestNmapThreeTierAuthorization:
             raw_value="192.168.1.50",
             canonical_value="192.168.1.50",
             selected_destination="192.168.1.50",
+            authorized_scope=["192.168.1.50"],
             authorization_context={"active_probing_granted": False},
+        )
+
+        # Target outside authorized scope
+        val_target_out_of_scope = ValidatedTarget(
+            target_id=val_target_authorized.target_id,
+            authorization_decision_id="auth-123",
+            integrity_seal="seal-123",
+            target_type=TargetType.IP,
+            raw_value="192.168.1.50",
+            canonical_value="192.168.1.50",
+            selected_destination="192.168.1.50",
+            authorized_scope=["10.0.0.1"],
+            authorization_context={"active_probing_granted": True},
+        )
+
+        # Target with active_probing_granted = True and in-scope
+        val_target_active_probing = ValidatedTarget(
+            target_id=val_target_authorized.target_id,
+            authorization_decision_id="auth-123",
+            integrity_seal="seal-123",
+            target_type=TargetType.IP,
+            raw_value="192.168.1.50",
+            canonical_value="192.168.1.50",
+            selected_destination="192.168.1.50",
+            authorized_scope=["192.168.1.50"],
+            authorization_context={"active_probing_granted": True},
         )
 
         cfg_valid_profile = ScanConfig(profile=ScanProfile.FULL_STACK)
@@ -307,8 +383,9 @@ class TestNmapThreeTierAuthorization:
 
         # Case 1: Capability=False, Profile=False, TenantScope=False -> BLOCK (TOOL_CAPABILITY)
         ok1, _, gate1 = adapter.evaluate_three_tier_authorization(
-            val_target_unauthorized,
+            val_target_no_active_probing,
             cfg_invalid_profile,
+            operation_class=ToolOperationClass.ACTIVE_READ_ONLY,
             custom_scripts=["prohibited_exploit_script"],
         )
         assert ok1 is False
@@ -316,8 +393,9 @@ class TestNmapThreeTierAuthorization:
 
         # Case 2: Capability=False, Profile=True, TenantScope=True -> BLOCK (TOOL_CAPABILITY)
         ok2, _, gate2 = adapter.evaluate_three_tier_authorization(
-            val_target_authorized,
+            val_target_active_probing,
             cfg_valid_profile,
+            operation_class=ToolOperationClass.ACTIVE_READ_ONLY,
             custom_scripts=["prohibited_dos_script"],
         )
         assert ok2 is False
@@ -325,27 +403,50 @@ class TestNmapThreeTierAuthorization:
 
         # Case 3: Capability=True, Profile=False, TenantScope=True -> BLOCK (PROFILE_AUTHORIZATION)
         ok3, _, gate3 = adapter.evaluate_three_tier_authorization(
-            val_target_authorized,
+            val_target_active_probing,
             cfg_invalid_profile,
+            operation_class=ToolOperationClass.ACTIVE_READ_ONLY,
             custom_scripts=["banner"],
         )
         assert ok3 is False
         assert gate3 == "PROFILE_AUTHORIZATION"
 
-        # Case 4: Capability=True, Profile=True, TenantScope=False -> BLOCK (TENANT_SCOPE_AUTHORIZATION)
-        ok4, _, gate4 = adapter.evaluate_three_tier_authorization(
-            val_target_unauthorized,
+        # Case 4a: Capability=True, Profile=True, Out of Scope -> BLOCK (TENANT_SCOPE_AUTHORIZATION)
+        ok4a, _, gate4a = adapter.evaluate_three_tier_authorization(
+            val_target_out_of_scope,
             cfg_valid_profile,
+            operation_class=ToolOperationClass.ACTIVE_READ_ONLY,
             custom_scripts=["banner"],
         )
-        assert ok4 is False
-        assert gate4 == "TENANT_SCOPE_AUTHORIZATION"
+        assert ok4a is False
+        assert gate4a == "TENANT_SCOPE_AUTHORIZATION"
 
-        # Case 5: Capability=True, Profile=True, TenantScope=True -> ALLOW (None)
-        ok5, _, gate5 = adapter.evaluate_three_tier_authorization(
-            val_target_authorized,
+        # Case 4b: Capability=True, Profile=True, Intrusive requested without active_probing -> BLOCK (TENANT_SCOPE_AUTHORIZATION)
+        ok4b, _, gate4b = adapter.evaluate_three_tier_authorization(
+            val_target_no_active_probing,
             cfg_valid_profile,
+            operation_class=ToolOperationClass.ACTIVE_INTRUSIVE,
+            custom_scripts=["dns-nsec-enum"],
+        )
+        assert ok4b is False
+        assert gate4b == "TENANT_SCOPE_AUTHORIZATION"
+
+        # Case 4c: Capability=True, Profile=True, Read-only operation with base scope -> ALLOW (None)
+        ok4c, _, gate4c = adapter.evaluate_three_tier_authorization(
+            val_target_no_active_probing,
+            cfg_valid_profile,
+            operation_class=ToolOperationClass.ACTIVE_READ_ONLY,
             custom_scripts=["banner"],
+        )
+        assert ok4c is True
+        assert gate4c is None
+
+        # Case 5: Capability=True, Profile=True, Intrusive operation with active_probing -> ALLOW (None)
+        ok5, _, gate5 = adapter.evaluate_three_tier_authorization(
+            val_target_active_probing,
+            cfg_valid_profile,
+            operation_class=ToolOperationClass.ACTIVE_INTRUSIVE,
+            custom_scripts=["dns-nsec-enum"],
         )
         assert ok5 is True
         assert gate5 is None
