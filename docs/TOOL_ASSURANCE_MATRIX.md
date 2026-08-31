@@ -1,35 +1,38 @@
-# CyberAssess v13 — Enterprise Tool Assurance Program & Methodology Matrix
+# CyberAssess v14 — Enterprise Tool Assurance Program & Methodology Matrix
 
 ## Document Purpose & Authority
-This authoritative specification details the **Enterprise Tool Assurance Review** for all 21 external security tools integrated into the CyberAssess platform. In strict accordance with CyberAssess v13 Methodology, popularity alone does not qualify a tool as enterprise-grade. Each tool and CyberAssess's implementation of that tool are evaluated across safety controls, execution governance, supply chain provenance, finding normalization, failure semantics, and overlap strategy.
+This specification serves as the **Audit & Assurance Matrix** for all 21 external security tools integrated into the CyberAssess platform.
+
+- **Authoritative Implementation Contract:** [`contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md`](../contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md) defines the canonical 41-point implementation requirements, invocation boundaries, schemas, and security controls.
+- **Audit & Assurance View:** This document provides the high-level methodology overview, evaluation taxonomy, and operational governance mappings.
 
 ---
 
 ## 1. Tool Taxonomy & Role Classification Strategy
 
-| Security Domain | Tool Name | Tool Role | Primary / Fallback Purpose | Upstream Artifact Type |
-|---|---|---|---|---|
-| **Network / EASM** | Nmap | PRIMARY | Network Port Probing & Service Fingerprinting | Compiled System Executable / WinGet |
-| **Network / TLS** | SSLyze | PRIMARY | Comprehensive TLS Protocol & Cipher Suite Analysis | Pure Python Package (pip) |
-| **Perimeter / EASM** | Subfinder | PRIMARY | Passive Multi-Source Subdomain Enumeration | Standalone Go Binary (GitHub Release) |
-| **HTTP Probing** | httpx | VALIDATION | High-Speed HTTP Endpoint Verification & Technology Detection | Standalone Go Binary (GitHub Release) |
-| **Web DAST** | Nuclei | PRIMARY | Template-Driven CVE & Misconfiguration Scanning | Standalone Go Binary (GitHub Release) |
-| **Web Fuzzing** | FFuF | SPECIALIZED | Active Parameter, Directory & Header Fuzzing | Standalone Go Binary (GitHub Release) |
-| **Web Crawling** | Katana | PRIMARY | Next-Gen Headless & Standard DOM Crawling | Standalone Go Binary (GitHub Release) |
-| **API Contract DAST** | Schemathesis | SPECIALIZED | Property-Based OpenAPI / GraphQL Contract Fuzzing | Pure Python Package (pip) |
-| **Code SAST** | Semgrep | PRIMARY | AST Pattern Matching & Polyglot Code Auditing | Standalone Binary / Python CLI |
-| **Code SAST (Python)**| Bandit | SPECIALIZED | Deep Python AST Vulnerability & Crypto Linting | Pure Python Package (pip) |
-| **Secret Scanning** | Gitleaks | PRIMARY | Git Commit History & Filesystem Secret Scanner | Standalone Go Binary (GitHub Release) |
-| **Secret Verification**| TruffleHog | VALIDATION | Live Real-Time Credential Validation Engine | Standalone Go Binary (GitHub Release) |
-| **Client-Side JS** | Retire.js | SPECIALIZED | Vulnerable JavaScript Library Auditor | Standalone Node/Go Binary |
-| **Container / SCA** | Trivy | PRIMARY | Multi-Domain Container, FS & Dependency Scanner | Standalone Go Binary (GitHub Release) |
-| **SCA Vulnerability** | Grype | VALIDATION | Fast Dependency Vulnerability Identification | Standalone Go Binary (GitHub Release) |
-| **SBOM Generation** | Syft | PRIMARY | CycloneDX & SPDX Software Bill of Materials Engine | Standalone Go Binary (GitHub Release) |
-| **OSV Intelligence** | OSV-Scanner | SPECIALIZED | Google Open Source Vulnerabilities (OSV) Lookup | Standalone Go Binary (GitHub Release) |
-| **Infrastructure IaC**| Checkov | PRIMARY | Terraform, Kubernetes, CloudFormation & Dockerfile SAST | Pure Python Package (pip) |
-| **Cloud Posture** | Prowler | PRIMARY | AWS, Azure, GCP & K8s CIS Benchmark Auditing | Pure Python Package (pip) |
-| **Kubernetes CIS** | Kube-Bench | SPECIALIZED | In-Cluster / Manifest CIS Kubernetes Benchmark Checker | Standalone Go Binary (GitHub Release) |
-| **Container Linter** | Dockle | SPECIALIZED | Container Image Best Practice & CIS Docker Linter | Standalone Go Binary (GitHub Release) |
+| Security Domain | Tool Name | Tool ID | Tool Role | Primary / Fallback Purpose | Upstream Artifact Type |
+|---|---|---|---|---|---|
+| **Network / EASM** | Nmap | `TOOL-NMAP` | PRIMARY | Network Port Probing & Service Fingerprinting | Compiled System Executable / WinGet |
+| **Network / TLS** | SSLyze | `TOOL-SSLYZE` | PRIMARY | Comprehensive TLS Protocol & Cipher Suite Analysis | Pure Python Package (pip) |
+| **Perimeter / EASM** | Subfinder | `TOOL-SUBFINDER` | PRIMARY | Passive Multi-Source Subdomain Enumeration | Standalone Go Binary (GitHub Release) |
+| **HTTP Probing** | httpx | `TOOL-HTTPX` | VALIDATION | High-Speed HTTP Endpoint Verification & Technology Detection | Standalone Go Binary (GitHub Release) |
+| **Web DAST** | Nuclei | `TOOL-NUCLEI` | PRIMARY | Template-Driven CVE & Misconfiguration Scanning | Standalone Go Binary (GitHub Release) |
+| **Web Fuzzing** | FFuF | `TOOL-FFUF` | SPECIALIZED | Active Parameter, Directory & Header Fuzzing | Standalone Go Binary (GitHub Release) |
+| **Web Crawling** | Katana | `TOOL-KATANA` | PRIMARY | Next-Gen Headless & Standard DOM Crawling | Standalone Go Binary (GitHub Release) |
+| **API Contract DAST** | Schemathesis | `TOOL-SCHEMATHESIS` | SPECIALIZED | Property-Based OpenAPI / GraphQL Contract Fuzzing | Pure Python Package (pip) |
+| **Code SAST** | Semgrep | `TOOL-SEMGREP` | PRIMARY | AST Pattern Matching & Polyglot Code Auditing | Standalone Binary / Python CLI |
+| **Code SAST (Python)**| Bandit | `TOOL-BANDIT` | SPECIALIZED | Deep Python AST Vulnerability & Crypto Linting | Pure Python Package (pip) |
+| **Secret Scanning** | Gitleaks | `TOOL-GITLEAKS` | PRIMARY | Git Commit History & Filesystem Secret Scanner | Standalone Go Binary (GitHub Release) |
+| **Secret Verification**| TruffleHog | `TOOL-TRUFFLEHOG` | VALIDATION | Live Real-Time Credential Validation Engine | Standalone Go Binary (GitHub Release) |
+| **Client-Side JS** | Retire.js | `TOOL-RETIREJS` | SPECIALIZED | Vulnerable JavaScript Library Auditor | Standalone Node/Go Binary |
+| **Container / SCA** | Trivy | `TOOL-TRIVY` | PRIMARY | Multi-Domain Container, FS & Dependency Scanner | Standalone Go Binary (GitHub Release) |
+| **SCA Vulnerability** | Grype | `TOOL-GRYPE` | VALIDATION | Fast Dependency Vulnerability Identification | Standalone Go Binary (GitHub Release) |
+| **SBOM Generation** | Syft | `TOOL-SYFT` | PRIMARY | CycloneDX & SPDX Software Bill of Materials Engine | Standalone Go Binary (GitHub Release) |
+| **OSV Intelligence** | OSV-Scanner | `TOOL-OSV-SCANNER` | SPECIALIZED | Google Open Source Vulnerabilities (OSV) Lookup | Standalone Go Binary (GitHub Release) |
+| **Infrastructure IaC**| Checkov | `TOOL-CHECKOV` | PRIMARY | Terraform, Kubernetes, CloudFormation & Dockerfile SAST | Pure Python Package (pip) |
+| **Cloud Posture** | Prowler | `TOOL-PROWLER` | PRIMARY | AWS, Azure, GCP & K8s CIS Benchmark Auditing | Pure Python Package (pip) |
+| **Kubernetes CIS** | Kube-Bench | `TOOL-KUBE-BENCH` | SPECIALIZED | In-Cluster / Manifest CIS Kubernetes Benchmark Checker | Standalone Go Binary (GitHub Release) |
+| **Container Linter** | Dockle | `TOOL-DOCKLE` | SPECIALIZED | Container Image Best Practice & CIS Docker Linter | Standalone Go Binary (GitHub Release) |
 
 ---
 
