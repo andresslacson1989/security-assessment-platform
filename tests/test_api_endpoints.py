@@ -256,3 +256,35 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
         assert len(data_search["logs"]) == 1
         assert "open port 443" in data_search["logs"][0]["message"]
 
+
+@pytest.mark.asyncio
+async def test_asset_creation_all_supported_types(auth_headers):
+    """
+    Verifies that all supported AssetType values (WEB_APPLICATION, API_ENDPOINT,
+    DOMAIN, IP_ADDRESS, GIT_REPOSITORY, CONTAINER_IMAGE) pass security policy validation.
+    """
+    test_cases = [
+        ("virtualhymn", "WEB_APPLICATION", "https://vh.pixelretrobooth.com"),
+        ("users-api", "API_ENDPOINT", "https://api.pixelretrobooth.com/v1"),
+        ("main-domain", "DOMAIN", "pixelretrobooth.com"),
+        ("production-node", "IP_ADDRESS", "93.184.216.34"),
+        ("backend-repo", "GIT_REPOSITORY", "https://github.com/example/security-platform.git"),
+        ("api-container", "CONTAINER_IMAGE", "cyberassess/core-engine:v13.0.0"),
+    ]
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        for name, a_type, target_val in test_cases:
+            payload = {
+                "name": name,
+                "type": a_type,
+                "target_value": target_val,
+                "criticality": "HIGH",
+            }
+            res = await ac.post("/api/assets", json=payload, headers=auth_headers)
+            assert res.status_code == 201, f"Failed for {a_type}: {res.text}"
+            data = res.json()
+            assert data["name"] == name
+            assert data["type"] == a_type
+            assert data["target_value"] == target_val
+
+

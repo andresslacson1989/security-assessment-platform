@@ -98,6 +98,7 @@ class ScanOrchestrator:
                 save_scan(job)
                 await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", "Scan job cancelled by user.")
                 await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
+                await self.emit_cancelled(scan_id, "Scan job cancelled by user.")
             return True
         return False
 
@@ -252,7 +253,11 @@ class ScanOrchestrator:
         })
 
     async def emit_error(self, scan_id: str, error_message: str) -> None:
+        await self._broadcast(scan_id, "failed", {"reason": error_message})
         await self._broadcast(scan_id, "error", {"message": error_message})
+
+    async def emit_cancelled(self, scan_id: str, message: str = "Scan cancelled by user.") -> None:
+        await self._broadcast(scan_id, "cancelled", {"message": message})
 
     async def emit_tool_status(self, scan_id: str, tool_name: str, available: bool, mode: str, version: Optional[str] = None) -> None:
         """
@@ -422,6 +427,7 @@ class ScanOrchestrator:
             save_scan(job)
             await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", "Scan task was cancelled.")
             await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
+            await self.emit_cancelled(scan_id, "Scan task was cancelled.")
             raise
         except Exception as ex:
             job.status = ScanStatus.FAILED

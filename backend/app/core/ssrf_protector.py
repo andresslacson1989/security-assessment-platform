@@ -201,21 +201,47 @@ def validate_target_security(
     allow_internal: bool = False,
 ) -> Tuple[bool, Optional[str]]:
     """
-    Authoritative single-pipeline security validation for all target types:
-    URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST.
+    Authoritative single-pipeline security validation for all target and asset types:
+    TargetType: URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST
+    AssetType: WEB_APPLICATION, API_ENDPOINT, DOMAIN, IP_ADDRESS, GIT_REPOSITORY,
+               CONTAINER_IMAGE, KUBERNETES_CLUSTER, CLOUD_ACCOUNT, IAC_TEMPLATE
     Ensures zero bypass routes around the security gateway.
     """
     t_type = target_type.value if hasattr(target_type, "value") else str(target_type).upper()
-    
+    val = target_value.strip()
+
     if t_type == "URL":
-        return validate_target_url(target_value, allow_internal=allow_internal)
-    elif t_type == "DOMAIN":
-        return validate_target_domain(target_value, allow_internal=allow_internal)
-    elif t_type == "IP":
-        return validate_target_ip(target_value, allow_internal=allow_internal)
-    elif t_type in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"):
+        return validate_target_url(val, allow_internal=allow_internal)
+    elif t_type in ("WEB_APPLICATION", "API_ENDPOINT"):
+        if not val.startswith("http://") and not val.startswith("https://") and "://" not in val:
+            if "/" not in val and ":" not in val and "." in val:
+                return validate_target_domain(val, allow_internal=allow_internal)
+            val = f"https://{val}"
+        return validate_target_url(val, allow_internal=allow_internal)
+    elif t_type in ("DOMAIN",):
+        return validate_target_domain(val, allow_internal=allow_internal)
+    elif t_type in ("IP", "IP_ADDRESS"):
+        return validate_target_ip(val, allow_internal=allow_internal)
+    elif t_type in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST", "IAC_TEMPLATE"):
         from app.core.path_sandbox import validate_path_sandbox
-        return validate_path_sandbox(target_value)
+        return validate_path_sandbox(val)
+    elif t_type in ("GIT_REPOSITORY",):
+        if val.startswith("http://") or val.startswith("https://"):
+            return validate_target_url(val, allow_internal=allow_internal)
+        elif val.startswith("git@"):
+            # SSH format: git@github.com:org/repo.git -> extract domain
+            parts = val.split("@", 1)[1].split(":", 1)[0]
+            return validate_target_domain(parts, allow_internal=allow_internal)
+        else:
+            from app.core.path_sandbox import validate_path_sandbox
+            return validate_path_sandbox(val)
+    elif t_type in ("CONTAINER_IMAGE", "KUBERNETES_CLUSTER", "CLOUD_ACCOUNT"):
+        # Safe format check: ensure no control chars or shell injection attempts
+        if any(c in val for c in [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\0"]):
+            return False, f"Dangerous characters detected in {t_type} specification: '{val}'"
+        if t_type == "KUBERNETES_CLUSTER" and (val.startswith("http://") or val.startswith("https://")):
+            return validate_target_url(val, allow_internal=allow_internal)
+        return True, None
     else:
         return False, f"Unsupported target type: '{target_type}'"
 

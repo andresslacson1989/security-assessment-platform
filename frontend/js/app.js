@@ -638,10 +638,15 @@ class ScanStreamManager {
   async handleCancelScan() {
     if (!this.currentScanId) return;
     try {
+      this.btnCancel.disabled = true;
+      this.btnCancel.innerHTML = `<span>⏳</span> Cancelling...`;
+      this.updateProgress(null, "Cancelling active security assessment...");
       await this.authFetch(`/api/scans/${this.currentScanId}/cancel`, { method: "POST" });
       this.appendLog("orchestrator", "WARNING", "Scan cancellation requested by user.");
     } catch (e) {
-      console.error(e);
+      console.error("Cancellation error:", e);
+      this.btnCancel.disabled = false;
+      this.btnCancel.innerHTML = `<span>🛑</span> Cancel Active Scan`;
     }
   }
 
@@ -701,16 +706,48 @@ class ScanStreamManager {
       this.updateProgress(100, "Assessment complete.");
       this.btnLaunch.style.display = "inline-flex";
       this.btnCancel.style.display = "none";
+      this.btnCancel.disabled = false;
+      this.btnCancel.innerHTML = `<span>🛑</span> Cancel Active Scan`;
       if (summary.authenticated_session_active) {
         this.updateAuthStatusBadge("ACTIVE", true);
       }
       this.eventSource.close();
     });
 
+    this.eventSource.addEventListener("cancelled", (e) => {
+      let msg = "Scan cancelled by user.";
+      try {
+        const d = JSON.parse(e.data);
+        if (d && d.message) msg = d.message;
+      } catch (_) {}
+      this.updateProgress(null, msg);
+      this.btnLaunch.style.display = "inline-flex";
+      this.btnCancel.style.display = "none";
+      this.btnCancel.disabled = false;
+      this.btnCancel.innerHTML = `<span>🛑</span> Cancel Active Scan`;
+      if (this.eventSource) this.eventSource.close();
+    });
+
+    this.eventSource.addEventListener("failed", (e) => {
+      let reason = "Assessment execution failed.";
+      try {
+        const d = JSON.parse(e.data);
+        if (d && d.reason) reason = d.reason;
+      } catch (_) {}
+      this.updateProgress(null, `Scan failed: ${reason}`);
+      this.btnLaunch.style.display = "inline-flex";
+      this.btnCancel.style.display = "none";
+      this.btnCancel.disabled = false;
+      this.btnCancel.innerHTML = `<span>🛑</span> Cancel Active Scan`;
+      if (this.eventSource) this.eventSource.close();
+    });
+
     this.eventSource.addEventListener("error", (e) => {
-      if (this.eventSource.readyState === EventSource.CLOSED) {
+      if (this.eventSource && this.eventSource.readyState === EventSource.CLOSED) {
         this.btnLaunch.style.display = "inline-flex";
         this.btnCancel.style.display = "none";
+        this.btnCancel.disabled = false;
+        this.btnCancel.innerHTML = `<span>🛑</span> Cancel Active Scan`;
       }
     });
   }
