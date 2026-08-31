@@ -650,7 +650,12 @@ class ScanStreamManager {
       this.eventSource.close();
     }
 
-    this.eventSource = new EventSource(`/api/scans/${scanId}/events`);
+    const token = localStorage.getItem("cyberassess_token") || "";
+    const url = token
+      ? `/api/scans/${scanId}/events?token=${encodeURIComponent(token)}`
+      : `/api/scans/${scanId}/events`;
+
+    this.eventSource = new EventSource(url);
 
     this.eventSource.addEventListener("progress", (e) => {
       const data = JSON.parse(e.data);
@@ -1580,7 +1585,11 @@ class ScanStreamManager {
   connectToolEventsStream() {
     if (this.toolEventsSource) return;
     try {
-      this.toolEventsSource = new EventSource("/api/system/tools/events");
+      const token = localStorage.getItem("cyberassess_token") || "";
+      const url = token
+        ? `/api/system/tools/events?token=${encodeURIComponent(token)}`
+        : "/api/system/tools/events";
+      this.toolEventsSource = new EventSource(url);
 
       this.toolEventsSource.addEventListener("install_progress", (e) => {
         const d = JSON.parse(e.data);
