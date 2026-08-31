@@ -120,13 +120,23 @@ async def audit_subdomain_osint(
     if not config.osint.subdomain_enumeration:
         return findings
 
-    apex_domain = domain.lower().strip()
-    if apex_domain.startswith("www."):
-        apex_domain = apex_domain[4:]
+    val = domain.lower().strip()
+    if "://" in val:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(val)
+        val = (parsed.hostname or val).lower().strip()
+    if ":" in val:
+        val = val.split(":")[0]
+    if "/" in val:
+        val = val.split("/")[0]
+    if val.startswith("www."):
+        val = val[4:]
 
-    # Remove port if present
-    if ":" in apex_domain:
-        apex_domain = apex_domain.split(":")[0]
+    parts = val.split(".")
+    if len(parts) >= 2 and not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", val):
+        apex_domain = ".".join(parts[-2:])
+    else:
+        apex_domain = val
 
     # Don't query crt.sh for IP addresses or local domains
     if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", apex_domain) or apex_domain in ("localhost", "127.0.0.1"):

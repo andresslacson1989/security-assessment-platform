@@ -100,15 +100,27 @@ async def fetch_ct_logs(
     discovered_subdomains: Set[str] = set()
     cert_records: List[Dict[str, Any]] = []
     wildcard_domains: List[str] = []
-    apex_domain = domain.lower().strip()
+    
+    val = domain.lower().strip()
+    if "://" in val:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(val)
+        val = (parsed.hostname or val).lower().strip()
+    if ":" in val:
+        val = val.split(":")[0]
+    if "/" in val:
+        val = val.split("/")[0]
+    if val.startswith("www."):
+        val = val[4:]
 
-    if apex_domain.startswith("www."):
-        apex_domain = apex_domain[4:]
-    if ":" in apex_domain:
-        apex_domain = apex_domain.split(":")[0]
+    parts = val.split(".")
+    if len(parts) >= 2 and not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", val):
+        apex_domain = ".".join(parts[-2:])
+    else:
+        apex_domain = val
 
     # Skip IP addresses and local hostnames
-    if is_private_or_loopback_ip(apex_domain) or re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", apex_domain):
+    if is_private_or_loopback_ip(apex_domain) or re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", apex_domain) or apex_domain in ("localhost", "127.0.0.1"):
         return discovered_subdomains, cert_records, wildcard_domains
 
     async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:

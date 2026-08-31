@@ -53,13 +53,25 @@ class SubfinderAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Subfinder binary not found. Skipping Subfinder EASM recon.")
             return findings
 
-        # Extract domain
+        # Extract apex domain
         domain = target.value
         if "://" in domain:
             domain = urlparse(domain).hostname or domain
+        if ":" in domain:
+            domain = domain.split(":")[0]
+        if "/" in domain:
+            domain = domain.split("/")[0]
+        if domain.startswith("www."):
+            domain = domain[4:]
 
-        await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {domain}")
-        cmd = [binary, "-d", domain, "-silent", "-oJ"]
+        parts = domain.split(".")
+        if len(parts) >= 2 and not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", domain):
+            apex_domain = ".".join(parts[-2:])
+        else:
+            apex_domain = domain
+
+        await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {apex_domain}")
+        cmd = [binary, "-d", apex_domain, "-silent", "-oJ"]
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=45.0, emit_log=emit_log)
         if code != 0 and not stdout:
