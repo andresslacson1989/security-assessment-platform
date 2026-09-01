@@ -205,13 +205,14 @@ class TestNmapAdapter:
 
         config = ScanConfig(port_list=[80, 443])
 
-        # Test Domain with DNS authorization
+        # Test Domain with explicit DNS authorization and explicit script request
         cmd, ports, scripts, err = NmapCommandBuilder.build_command(
             nmap_path=str(dummy_bin),
             target=val_target,
             config=config,
             intrusive_authorized=True,
             dns_zone_authorized=True,
+            custom_scripts=["banner", "dns-nsec-enum"],
         )
         assert err is None
         assert str(dummy_bin) == cmd[0]
@@ -222,20 +223,34 @@ class TestNmapAdapter:
         assert "-p" in cmd
         assert "80,443" in cmd
         assert "--script" in cmd
-        assert "dns-nsec-enum" in scripts  # Allowed because target is DOMAIN and dns_zone_authorized=True
+        assert "dns-nsec-enum" in scripts  # Allowed because target is DOMAIN, explicitly requested, and authorized
         assert cmd[-1] == "93.184.216.34"  # Pinned destination IP
 
-        # Test IP target (dns-nsec-enum MUST be excluded on IP targets)
+        # Test default scan (strictly read-only scripts without automatic intrusive escalation)
+        cmd_def, _, scripts_def, err_def = NmapCommandBuilder.build_command(
+            nmap_path=str(dummy_bin),
+            target=val_target,
+            config=config,
+            intrusive_authorized=False,
+            dns_zone_authorized=True,
+            custom_scripts=None,
+        )
+        assert err_def is None
+        assert scripts_def == ["banner", "ssl-cert", "http-title", "ssh2-enum-algos"]
+
+        # Test IP target (dns-nsec-enum MUST be rejected on IP targets)
         ip_target = Target(name="IP Target", type=TargetType.IP, value="93.184.216.34")
         val_ip_target = create_validated_target(ip_target)
         cmd_ip, ports_ip, scripts_ip, err_ip = NmapCommandBuilder.build_command(
             nmap_path=str(dummy_bin),
             target=val_ip_target,
             config=config,
+            intrusive_authorized=True,
             dns_zone_authorized=True,
+            custom_scripts=["dns-nsec-enum"],
         )
-        assert err_ip is None
-        assert "dns-nsec-enum" not in scripts_ip  # Blocked on IP targets
+        assert err_ip is not None
+        assert "restricted exclusively to DOMAIN targets" in err_ip
 
     @pytest.mark.asyncio
     async def test_get_version_and_exact_verification(self):

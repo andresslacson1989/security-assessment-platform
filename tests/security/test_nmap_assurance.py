@@ -237,7 +237,7 @@ class TestNmapNSEPolicy:
         assert "not on the approved allowlist" in err_bad
 
     def test_dns_nsec_enum_scope_policy(self):
-        # 1. Target is DOMAIN, dns_zone_authorized=True, intrusive_authorized=True -> ALLOWED
+        # 1. Target is DOMAIN, custom_scripts=["dns-nsec-enum"], dns_zone_authorized=True, intrusive_authorized=True -> ALLOWED
         domain_target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
         with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
             val_domain = create_validated_target(domain_target)
@@ -248,31 +248,49 @@ class TestNmapNSEPolicy:
             config=ScanConfig(),
             intrusive_authorized=True,
             dns_zone_authorized=True,
+            custom_scripts=["dns-nsec-enum"],
         )
         assert err is None
         assert "dns-nsec-enum" in scripts_domain
 
-        # 2. Target is DOMAIN and dns_zone_authorized=False -> EXCLUDED
-        _, _, scripts_domain_unauth, _ = NmapCommandBuilder.build_command(
+        # 2. Target is DOMAIN, custom_scripts=["dns-nsec-enum"], dns_zone_authorized=False -> REJECTED
+        _, _, _, err_unauth = NmapCommandBuilder.build_command(
             nmap_path="/usr/bin/nmap",
             target=val_domain,
             config=ScanConfig(),
             intrusive_authorized=True,
             dns_zone_authorized=False,
+            custom_scripts=["dns-nsec-enum"],
         )
-        assert "dns-nsec-enum" not in scripts_domain_unauth
+        assert err_unauth is not None
+        assert "requires explicit DNS zone" in err_unauth
 
-        # 3. Target is IP -> ALWAYS EXCLUDED
+        # 3. Target is IP, custom_scripts=["dns-nsec-enum"] -> REJECTED (Domain only)
         ip_target = Target(name="IP Target", type=TargetType.IP, value="93.184.216.34")
         val_ip = create_validated_target(ip_target)
-        _, _, scripts_ip, _ = NmapCommandBuilder.build_command(
+        _, _, _, err_ip = NmapCommandBuilder.build_command(
             nmap_path="/usr/bin/nmap",
             target=val_ip,
             config=ScanConfig(),
             intrusive_authorized=True,
             dns_zone_authorized=True,
+            custom_scripts=["dns-nsec-enum"],
         )
-        assert "dns-nsec-enum" not in scripts_ip
+        assert err_ip is not None
+        assert "restricted exclusively to DOMAIN targets" in err_ip
+
+        # 4. Default discovery scripts are strictly ACTIVE_READ_ONLY (no automatic intrusive escalation)
+        _, _, default_scripts, default_err = NmapCommandBuilder.build_command(
+            nmap_path="/usr/bin/nmap",
+            target=val_domain,
+            config=ScanConfig(),
+            intrusive_authorized=False,
+            dns_zone_authorized=True,
+            custom_scripts=None,
+        )
+        assert default_err is None
+        assert "dns-nsec-enum" not in default_scripts
+        assert default_scripts == ["banner", "ssl-cert", "http-title", "ssh2-enum-algos"]
 
     def test_command_builder_enforces_intrusive_authorization_boundary(self):
         """
@@ -310,11 +328,11 @@ class TestNmapNSEPolicy:
         assert "banner" in scripts_ro
         assert "ssl-cert" in scripts_ro
 
-        # 3. Test classify_nmap_operation deterministic outputs
+        # 3. Test classify_nmap_operation deterministic outputs from NSE_SCRIPT_CAPABILITIES taxonomy
         assert classify_nmap_operation(["banner", "ssl-cert"]) == ToolOperationClass.ACTIVE_READ_ONLY
         assert classify_nmap_operation(["dns-nsec-enum"]) == ToolOperationClass.ACTIVE_INTRUSIVE
-        assert classify_nmap_operation(None, dns_zone_authorized=True, is_domain=True) == ToolOperationClass.ACTIVE_INTRUSIVE
-        assert classify_nmap_operation(None, dns_zone_authorized=False, is_domain=True) == ToolOperationClass.ACTIVE_READ_ONLY
+        assert classify_nmap_operation(None) == ToolOperationClass.ACTIVE_READ_ONLY
+        assert classify_nmap_operation(["http-title", "ssh2-enum-algos"]) == ToolOperationClass.ACTIVE_READ_ONLY
 
 
 # ============================================================================

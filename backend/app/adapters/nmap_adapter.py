@@ -69,14 +69,52 @@ ROLE = "PRIMARY"
 SECURITY_DOMAIN = "NETWORK / PERIMETER / EASM"
 DEFAULT_OPERATION_CLASS = ToolOperationClass.ACTIVE_READ_ONLY
 
-# Approved NSE Script Allowlist (Contract 09 TOOL-NMAP §14 & §15)
-APPROVED_NSE_SCRIPTS: Set[str] = {
+# Capability & Classification Taxonomy for Approved NSE Scripts (Contract 09 TOOL-NMAP §14 & §15)
+NSE_SCRIPT_CAPABILITIES: Dict[str, Dict[str, Any]] = {
+    "banner": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "Standard service banner grabbing",
+        "intrusive": False,
+        "category": "discovery",
+    },
+    "ssl-cert": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "TLS certificate retrieval and Subject Alternative Name parsing",
+        "intrusive": False,
+        "category": "discovery",
+    },
+    "http-title": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "HTTP/HTTPS page title detection and technology fingerprinting",
+        "intrusive": False,
+        "category": "discovery",
+    },
+    "ssh2-enum-algos": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "SSH2 supported encryption and integrity algorithm negotiation",
+        "intrusive": False,
+        "category": "discovery",
+    },
+    "dns-nsec-enum": {
+        "operation_class": ToolOperationClass.ACTIVE_INTRUSIVE,
+        "description": "DNSSEC NSEC record enumeration and zone walking",
+        "intrusive": True,
+        "category": "intrusive_recon",
+        "requires_dns_zone_auth": True,
+        "required_target_type": TargetType.DOMAIN,
+    },
+}
+
+# Approved NSE Script Allowlist (Derived strictly from taxonomy table keys)
+APPROVED_NSE_SCRIPTS: Set[str] = set(NSE_SCRIPT_CAPABILITIES.keys())
+
+# Default Discovery Scripts are strictly ACTIVE_READ_ONLY (no automatic intrusive escalation)
+DEFAULT_READ_ONLY_DISCOVERY_SCRIPTS: List[str] = [
     "banner",
     "ssl-cert",
     "http-title",
     "ssh2-enum-algos",
-    "dns-nsec-enum",
-}
+]
 
 # Forbidden Intrusive Script Categories (Contract 09 TOOL-NMAP §14)
 FORBIDDEN_SCRIPT_CATEGORIES: Set[str] = {
@@ -209,21 +247,25 @@ def sanitize_banner_or_script(text: str) -> str:
 
 def classify_nmap_operation(
     scripts: Optional[List[str]] = None,
-    dns_zone_authorized: bool = False,
-    is_domain: bool = False,
+    timing_profile: str = DEFAULT_TIMING_PROFILE,
 ) -> ToolOperationClass:
     """
     Contract 09 §1.1 Invariant 2 & TOOL-NMAP §2:
-    Deterministically classifies the requested Nmap operation based on target, scripts, and arguments.
-    - If dns-nsec-enum or explicit intrusive scripts are requested: ToolOperationClass.ACTIVE_INTRUSIVE
-    - Otherwise (port discovery, service version probing -sV, standard discovery scripts): ToolOperationClass.ACTIVE_READ_ONLY
+    Deterministically classifies the requested Nmap operation based on the authoritative
+    NSE_SCRIPT_CAPABILITIES taxonomy table.
+    - If any script in the candidate set has intrusive=True or operation_class=ACTIVE_INTRUSIVE: ToolOperationClass.ACTIVE_INTRUSIVE
+    - Otherwise (standard port discovery, service detection -sV, read-only discovery scripts): ToolOperationClass.ACTIVE_READ_ONLY
     """
     if scripts:
         for s in scripts:
-            if s.lower() in ("dns-nsec-enum",):
+            s_clean = s.strip().lower()
+            cap = NSE_SCRIPT_CAPABILITIES.get(s_clean)
+            if cap:
+                if cap.get("intrusive", False) or cap.get("operation_class") == ToolOperationClass.ACTIVE_INTRUSIVE:
+                    return ToolOperationClass.ACTIVE_INTRUSIVE
+            elif s_clean in FORBIDDEN_SCRIPT_CATEGORIES:
                 return ToolOperationClass.ACTIVE_INTRUSIVE
-    elif is_domain and dns_zone_authorized:
-        return ToolOperationClass.ACTIVE_INTRUSIVE
+
     return ToolOperationClass.ACTIVE_READ_ONLY
 
 
@@ -267,33 +309,33 @@ class NmapCommandBuilder:
         if not is_ports_valid:
             return [], [], [], f"Port validation error: {port_err}"
 
-        # Resolve approved scripts
+        # Resolve candidate scripts
         resolved_scripts: List[str] = []
         if custom_scripts:
             for s in custom_scripts:
                 s_clean = s.strip().lower()
                 if s_clean in APPROVED_NSE_SCRIPTS:
-                    if s_clean == "dns-nsec-enum":
-                        if target.target_type == TargetType.DOMAIN and dns_zone_authorized:
-                            resolved_scripts.append(s_clean)
-                    else:
-                        resolved_scripts.append(s_clean)
+                    cap = NSE_SCRIPT_CAPABILITIES.get(s_clean, {})
+                    if cap.get("requires_dns_zone_auth", False):
+                        if target.target_type != TargetType.DOMAIN:
+                            return [], [], [], f"NSE Script '{s}' is restricted exclusively to DOMAIN targets (found {target.target_type.value})."
+                        if not dns_zone_authorized:
+                            return [], [], [], f"NSE Script '{s}' requires explicit DNS zone assessment authorization."
+                    resolved_scripts.append(s_clean)
                 else:
                     return [], [], [], f"NSE Script '{s}' is not on the approved allowlist."
         else:
-            # Default discovery scripts
-            resolved_scripts = ["banner", "ssl-cert", "http-title", "ssh2-enum-algos"]
-            if target.target_type == TargetType.DOMAIN and dns_zone_authorized:
-                resolved_scripts.append("dns-nsec-enum")
+            # Default discovery scripts are strictly ACTIVE_READ_ONLY (no automatic intrusive escalation)
+            resolved_scripts = list(DEFAULT_READ_ONLY_DISCOVERY_SCRIPTS)
 
-        # Classify operation and enforce intrusive authorization at builder boundary
+        # Classify operation via capability taxonomy and enforce intrusive authorization at builder boundary
         op_class = classify_nmap_operation(resolved_scripts)
         if op_class == ToolOperationClass.ACTIVE_INTRUSIVE and not intrusive_authorized:
             return (
                 [],
                 [],
                 [],
-                "INTRUSIVE_OPERATION_REJECTED: Active intrusive operation (e.g. dns-nsec-enum) requested but intrusive_authorized is False at execution boundary.",
+                "INTRUSIVE_OPERATION_REJECTED: Active intrusive operation requested but intrusive_authorized is False at execution boundary.",
             )
 
         # Base Command Vector (Contract 09 TOOL-NMAP §19)
@@ -655,8 +697,6 @@ class NmapAdapter(BaseToolAdapter):
 
         op_class = classify_nmap_operation(
             scripts=custom_scripts,
-            dns_zone_authorized=dns_zone_auth,
-            is_domain=is_domain,
         )
 
         is_auth, auth_err, failed_gate = self.evaluate_three_tier_authorization(
