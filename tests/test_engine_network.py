@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 
-from app.core.models import Target, TargetType, ScanConfig, Severity, LogLevel, ToolAdapterConfig, OSINTConfig, NormalizedExecutionState
+from app.core.models import Target, TargetType, ScanConfig, Severity, LogLevel, ToolAdapterConfig, OSINTConfig, NormalizedExecutionState, Finding, Evidence
 from app.engines.network.tls_auditor import (
     extract_host_and_port,
     matches_san,
@@ -32,6 +32,71 @@ def test_tls_helpers():
     assert extract_host_and_port("http://192.168.1.1:8080") == ("192.168.1.1", 8080)
     assert extract_host_and_port("example.com:8443") == ("example.com", 8443)
     assert extract_host_and_port("example.com") == ("example.com", 443)
+
+
+@pytest.mark.asyncio
+async def test_network_engine_marks_native_tls_results_as_fallback_after_sslyze_failure():
+    class FailedSslyze:
+        last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+
+        async def is_available(self, _path=None):
+            return True
+
+        async def run(self, *_args, **_kwargs):
+            return []
+
+    native_finding = Finding(
+        scan_id="scan-fallback",
+        engine="network",
+        check_id="NET-TLS-001",
+        category="TLS",
+        title="Deprecated TLS protocol detected",
+        severity=Severity.HIGH,
+        cvss_score=7.5,
+        description="Native fallback result",
+        impact="Reduced TLS posture",
+        remediation="Disable deprecated protocols",
+        evidence=Evidence(location="example.com:443", observed_value="TLSv1.0", expected_value="TLSv1.2+"),
+    )
+    states = []
+
+    async def capture_state(tool, state):
+        states.append((tool, state))
+
+    async def noop(*_args, **_kwargs):
+        return []
+
+    config = ScanConfig(
+        adapters=ToolAdapterConfig(
+            enable_nmap=False,
+            enable_sslyze=True,
+            enable_subfinder=False,
+            enable_httpx=False,
+            enable_amass=False,
+            enable_metasploit=False,
+        ),
+        osint=OSINTConfig(subdomain_enumeration=False),
+    )
+    with patch("app.engines.network.engine.SslyzeAdapter", FailedSslyze), \
+         patch("app.engines.network.engine.audit_tls_certificates", new_callable=AsyncMock, return_value=[native_finding]), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_dns_hygiene", new_callable=AsyncMock, side_effect=noop), \
+         patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
+        results = await NetworkAssessmentEngine().run(
+            Target(name="Target", type=TargetType.IP, value="93.184.216.34"),
+            config,
+            AsyncMock(),
+            AsyncMock(),
+            AsyncMock(),
+            scan_id="scan-fallback",
+            organization_id="org-fallback",
+            emit_tool_execution_state=capture_state,
+        )
+
+    assert results[0].source_tool == "native"
+    assert results[0].is_fallback is True
+    assert results[0].primary_tool_failed == "sslyze"
+    assert ("sslyze", "TOOL_EXECUTION_FAILED") in states
 
     assert matches_san("example.com", ["example.com", "api.example.com"]) is True
     assert matches_san("app.example.com", ["*.example.com"]) is True

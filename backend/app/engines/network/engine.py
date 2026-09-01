@@ -69,6 +69,13 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         tool_state_cb = kwargs.get("emit_tool_execution_state")
         endpoint_cb = kwargs.get("emit_endpoint_discovered")
 
+        def mark_fallback(findings_to_mark: List[Finding], primary_tool: str) -> None:
+            """Attach the mandatory provenance when native coverage follows a tool failure."""
+            for finding in findings_to_mark:
+                finding.source_tool = "native"
+                finding.is_fallback = True
+                finding.primary_tool_failed = primary_tool
+
         # Establish one authoritative target identity before any active network
         # adapter is allowed to run. Passive Subfinder remains on the original
         # domain value because it must not resolve or connect to discoveries.
@@ -109,10 +116,10 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         f.source_tool = "sslyze"
                         f.scan_id = scan_id
                         findings.append(f)
+                    state = getattr(sslyze_adapter, "last_execution_state", None)
                     if tool_state_cb:
-                        state = getattr(sslyze_adapter, "last_execution_state", None)
                         await tool_state_cb("sslyze", (state or (NormalizedExecutionState.COMPLETED_WITH_FINDINGS if sslyze_findings else NormalizedExecutionState.COMPLETED_NO_FINDINGS)).value)
-                    sslyze_executed = True
+                    sslyze_executed = state in (None, NormalizedExecutionState.COMPLETED_WITH_FINDINGS, NormalizedExecutionState.COMPLETED_NO_FINDINGS)
                 else:
                     if tool_state_cb:
                         await tool_state_cb("sslyze", "TOOL_EXECUTION_FAILED")
@@ -135,6 +142,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             )
             for f in tls_cert_findings:
                 f.scan_id = scan_id
+                if not sslyze_executed:
+                    mark_fallback([f], "sslyze")
                 findings.append(f)
                 await emit_finding(f)
 
@@ -147,6 +156,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             )
             for f in tls_proto_findings:
                 f.scan_id = scan_id
+                if not sslyze_executed:
+                    mark_fallback([f], "sslyze")
                 findings.append(f)
                 await emit_finding(f)
 
@@ -185,10 +196,10 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         f.source_tool = "nmap"
                         f.scan_id = scan_id
                         findings.append(f)
+                    state = getattr(nmap_adapter, "last_execution_state", None)
                     if tool_state_cb:
-                        state = getattr(nmap_adapter, "last_execution_state", None)
                         await tool_state_cb("nmap", (state or (NormalizedExecutionState.COMPLETED_WITH_FINDINGS if nmap_findings else NormalizedExecutionState.COMPLETED_NO_FINDINGS)).value)
-                    nmap_executed = True
+                    nmap_executed = state in (None, NormalizedExecutionState.COMPLETED_WITH_FINDINGS, NormalizedExecutionState.COMPLETED_NO_FINDINGS)
                 else:
                     if tool_state_cb:
                         await tool_state_cb("nmap", "TOOL_EXECUTION_FAILED")
@@ -212,6 +223,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
             for f in port_findings:
                 f.scan_id = scan_id
                 f.source_tool = "native"
+                if not nmap_executed:
+                    mark_fallback([f], "nmap")
                 findings.append(f)
                 await emit_finding(f)
 
@@ -232,6 +245,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 )
                 for f in banner_findings:
                     f.source_tool = "native"
+                    if not nmap_executed:
+                        mark_fallback([f], "nmap")
                     findings.append(f)
                     await emit_finding(f)
 
