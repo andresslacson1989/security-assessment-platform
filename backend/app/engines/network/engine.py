@@ -64,10 +64,18 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
     ) -> List[Finding]:
         findings: List[Finding] = []
         scan_id = kwargs.get("scan_id", "active")
+        organization_id = kwargs.get("organization_id")
         subdomain_cb = kwargs.get("emit_subdomain_discovered")
         rejected_discovery_cb = kwargs.get("emit_rejected_discovery")
         tool_state_cb = kwargs.get("emit_tool_execution_state")
         endpoint_cb = kwargs.get("emit_endpoint_discovered")
+
+        if not isinstance(organization_id, str) or not organization_id.strip():
+            await emit_log(LogLevel.ERROR, "Network assessment blocked: authoritative organization context is required.")
+            if tool_state_cb:
+                for tool_name in ("nmap", "sslyze", "subfinder", "httpx", "amass", "metasploit"):
+                    await tool_state_cb(tool_name, NormalizedExecutionState.EXECUTION_BLOCKED.value)
+            return findings
 
         def mark_fallback(findings_to_mark: List[Finding], primary_tool: str) -> None:
             """Attach the mandatory provenance when native coverage follows a tool failure."""
@@ -82,7 +90,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         try:
             validated_target = create_validated_target(
                 target,
-                organization_id=kwargs.get("organization_id") or "org-default",
+                organization_id=organization_id,
                 project_id=kwargs.get("project_id"),
                 asset_id=kwargs.get("asset_id"),
             )
@@ -263,7 +271,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
-                        organization_id=kwargs.get("organization_id") or "org-default",
+                        organization_id=organization_id,
                         port=target_port or 443,
                     )
                     findings.extend(metasploit_findings)
@@ -290,7 +298,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
-                        organization_id=kwargs.get("organization_id") or "org-default",
+                        organization_id=organization_id,
                         emit_subdomain=subdomain_cb,
                         emit_rejected_discovery=rejected_discovery_cb,
                     )
@@ -322,7 +330,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                             emit_log,
                             emit_finding,
                             scan_id=scan_id,
-                            organization_id=kwargs.get("organization_id") or "org-default",
+                            organization_id=organization_id,
                             output_file=output_file,
                             emit_subdomain=subdomain_cb,
                         )
@@ -371,7 +379,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 target.value,
                 config=config,
                 scan_id=scan_id,
-                organization_id=kwargs.get("organization_id"),
+                organization_id=organization_id,
                 emit_subdomain=subdomain_cb,
                 emit_finding=emit_finding,
                 emit_log=emit_log,
@@ -385,7 +393,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 target.value,
                 config=config,
                 scan_id=scan_id,
-                organization_id=kwargs.get("organization_id"),
+                organization_id=organization_id,
                 emit_subdomain=subdomain_cb,
                 emit_finding=emit_finding,
                 emit_log=emit_log,

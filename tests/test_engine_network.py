@@ -36,6 +36,27 @@ def test_tls_helpers():
 
 
 @pytest.mark.asyncio
+async def test_network_engine_blocks_without_authoritative_organization_context():
+    states = []
+
+    async def record_state(tool_name, state):
+        states.append((tool_name, state))
+
+    results = await NetworkAssessmentEngine().run(
+        Target(name="Target", type=TargetType.DOMAIN, value="example.com"),
+        ScanConfig(),
+        AsyncMock(),
+        AsyncMock(),
+        AsyncMock(),
+        emit_tool_execution_state=record_state,
+    )
+
+    assert results == []
+    assert {tool for tool, _ in states} == {"nmap", "sslyze", "subfinder", "httpx", "amass", "metasploit"}
+    assert all(state == NormalizedExecutionState.EXECUTION_BLOCKED.value for _, state in states)
+
+
+@pytest.mark.asyncio
 async def test_service_banner_evidence_masks_credentials():
     with patch(
         "app.engines.network.banner_grabber.grab_service_banner",
@@ -220,7 +241,7 @@ async def test_network_engine_full_run():
             osint=OSINTConfig(subdomain_enumeration=False),
         )
 
-        results = await engine.run(target, config, log_cb, prog_cb, find_cb)
+        results = await engine.run(target, config, log_cb, prog_cb, find_cb, organization_id="org-test")
 
         assert results == []
         assert len(progress_updates) >= 4

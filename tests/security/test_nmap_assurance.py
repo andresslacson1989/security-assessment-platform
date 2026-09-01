@@ -656,7 +656,7 @@ class TestNmapFallbackPreservation:
                 )
                 mock_port.return_value = [dummy_port_finding]
 
-                results = await engine.run(target, config, log_cb, prog_cb, find_cb)
+                results = await engine.run(target, config, log_cb, prog_cb, find_cb, organization_id="org-test")
 
                 # Verify native port checker ran and tagged finding as native
                 assert len(results) >= 1
