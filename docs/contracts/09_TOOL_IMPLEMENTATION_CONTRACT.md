@@ -574,7 +574,7 @@ Stderr: Diagnostic logs
 - `FULL_STACK`: `[CYBERASSESS_REQUIRED]` ALLOWED
 - `NETWORK_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED
 - `PASSIVE_OSINT`: `[CYBERASSESS_REQUIRED]` ALLOWED
-- `DAST_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED (When `include_subdomains=True`)
+- `DAST_ONLY`: `[CYBERASSESS_REQUIRED]` ALLOWED only as a passive prerequisite when `include_subdomains=True`; discoveries do not become DAST targets automatically.
 - `SAST_ONLY`: `[CYBERASSESS_REQUIRED]` DENIED
 
 ### 6. Supported Target Types
@@ -608,7 +608,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding Mechanism
-- **Destination Binding Mechanism:** Outbound HTTPS access to public passive API endpoints. Zero direct traffic sent to target domain.
+- **Destination Binding Mechanism:** Outbound HTTPS access to public passive API endpoints, governed by provider-egress policy when enabled. The adapter performs no DNS queries or direct traffic to target hosts.
 
 ### 14. Safety Policy & Bounded Probing
 - 100% passive; zero active network interaction with target servers.
@@ -628,13 +628,13 @@ Stderr: Diagnostic logs
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_subfinder_path>
-Command Line: subfinder -d <target_domain> -silent -json
+Command Line: subfinder -d <authorized_root> -silent -json -timeout 10 -max-time 1
 Stdout: Captures JSON Lines stream
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `-d <domain>`, `-silent`, `-json`, `-t <threads>`, `-timeout <seconds>`.
+- Server-generated `-d <authorized_root>`, `-silent`, `-json`, `-timeout 10`, and `-max-time 1`. Client-supplied providers, resolvers, active mode, paths, and extra arguments are prohibited.
 
 ### 21. Forbidden Arguments
 - Arbitrary file write (`-o <path>`), execution wrappers.
@@ -672,7 +672,7 @@ Stderr: Diagnostic logs
 - Process termination cleans up all temporary memory descriptors.
 
 ### 30. Parser Specification
-- Parses JSON Lines stream, extracts `host`, resolves active DNS A/AAAA records asynchronously, and constructs `DiscoveredSubdomain` models.
+- Parses JSON Lines, normalizes and scope-classifies `host`, and constructs an untrusted `DiscoveredSubdomain` observation with `dns_status=UNRESOLVED`. DNS resolution requires a separate authorized stage.
 
 ### 31. Finding Normalization
 - Populates `scan.discovered_subdomains` list and emits `NET-OSINT-001` informational findings.
@@ -684,7 +684,7 @@ Stderr: Diagnostic logs
 - `CWE-200`, `OWASP A05:2021`, `NIST CM-8`.
 
 ### 34. Evidence Mapping & Cryptographic Hashing
-- FQDN, discovery source list, active resolved IP list, CNAME targets, evidence hash.
+- Canonical FQDN, source list, authorized root, scope classification, timestamp, and evidence hash. Active IP/CNAME data is outside this passive adapter.
 
 ### 35. Secret Handling & Masking
 - Redacts any API tokens passed to external providers in debug logs.
@@ -693,7 +693,7 @@ Stderr: Diagnostic logs
 - Merged into unified attack surface inventory with native CT findings.
 
 ### 37. Validation Role
-- Feeds validated endpoints downstream to `httpx` and `katana`.
+- Produces discovery observations/candidate assets only. It does not produce `ValidatedTarget` objects, authorize assets, admit inventory, or directly feed `httpx`/`katana`.
 
 ### 38. Reproducibility Record
 - Records Subfinder version, query timestamp, domain seed, and discovered host count.
