@@ -184,6 +184,7 @@ async def test_infra_iac_trivy_uses_managed_execution_boundary(monkeypatch, tmp_
     run_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(TrivyAdapter, "is_available", AsyncMock(return_value=True))
     monkeypatch.setattr(TrivyAdapter, "run", run_mock)
+    tool_states = []
 
     async def log_cb(*_args):
         return None
@@ -194,13 +195,18 @@ async def test_infra_iac_trivy_uses_managed_execution_boundary(monkeypatch, tmp_
     async def finding_cb(*_args):
         return None
 
+    async def tool_state_cb(tool, state):
+        tool_states.append((tool, state))
+
     await InfraIacAssessmentEngine().run(
         Target(name="IaC Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
         config,
         log_cb,
         progress_cb,
         finding_cb,
+        emit_tool_execution_state=tool_state_cb,
     )
 
     assert run_mock.await_count == 1
     assert run_mock.await_args.kwargs["require_managed_binary"] is True
+    assert tool_states == [("trivy", "COMPLETED_NO_FINDINGS")]

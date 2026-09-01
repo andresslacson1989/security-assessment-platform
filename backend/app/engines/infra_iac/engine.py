@@ -5,7 +5,7 @@ Contract 03, 06 & 08 Infrastructure-as-Code & Container Security Engine Coordina
 from __future__ import annotations
 from typing import List
 
-from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel
+from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel, NormalizedExecutionState
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.engines.infra_iac.dockerfile_auditor import audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_files
@@ -61,6 +61,15 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         existing_fps = set()
         target_path = target.value
         record_cis = kwargs.get("record_cis_result")
+        tool_state_cb = kwargs.get("emit_tool_execution_state")
+
+        async def report_tool_state(tool_name: str, adapter, finding_count: int = 0) -> None:
+            if not tool_state_cb:
+                return
+            state = getattr(adapter, "last_execution_state", NormalizedExecutionState.TOOL_EXECUTION_FAILED)
+            if finding_count and state == NormalizedExecutionState.COMPLETED_NO_FINDINGS:
+                state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
+            await tool_state_cb(tool_name, state.value)
 
         # --- Stage 0: Primary External IaC & CIS Tool Adapters First-in-Line ---
         await emit_progress(5, "Running primary external IaC & CIS benchmark tool adapters...")
@@ -105,6 +114,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         scan_id="active",
                         require_managed_binary=True,
                     )
+                    await report_tool_state("trivy", trivy_adapter, len(trivy_findings))
                     for f in trivy_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -112,8 +122,12 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("trivy", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Trivy CLI not available - using native Dockerfile auditor")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("trivy", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e}")
 
         # 0.3 Dockle Adapter (CIS Docker Container Hardening)
