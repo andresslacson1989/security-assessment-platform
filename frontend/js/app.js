@@ -5,6 +5,9 @@
 
 class ScanStreamManager {
   constructor() {
+    // Access tokens are intentionally memory-only. Do not persist credentials
+    // in localStorage/sessionStorage where any injected script can recover them.
+    this.accessToken = null;
     this.currentScanId = null;
     this.eventSource = null;
     this.allFindings = [];
@@ -1658,7 +1661,7 @@ class ScanStreamManager {
 
     (async () => {
       try {
-        const token = localStorage.getItem("cyberassess_token") || "";
+        const token = this.accessToken || "";
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const response = await fetch(url, { headers, signal: controller.signal });
         if (!response.ok || !response.body) throw new Error(`SSE request failed (${response.status})`);
@@ -1826,7 +1829,7 @@ class ScanStreamManager {
 
   async authFetch(url, options = {}) {
     options.headers = options.headers || {};
-    const token = localStorage.getItem("cyberassess_token");
+    const token = this.accessToken;
     if (token) {
       if (typeof options.headers.set === "function") {
         options.headers.set("Authorization", `Bearer ${token}`);
@@ -1850,7 +1853,7 @@ class ScanStreamManager {
           console.warn("CyberAssess is uninitialized. First-run administrator bootstrap required.");
         }
       }
-      const token = localStorage.getItem("cyberassess_token");
+      const token = this.accessToken;
       if (token) {
         const meRes = await this.authFetch("/api/auth/me");
         if (meRes.ok) {
@@ -1863,7 +1866,7 @@ class ScanStreamManager {
             this.authStatusBadge.className = "auth-status-badge badge-admin";
           }
         } else {
-          localStorage.removeItem("cyberassess_token");
+          this.accessToken = null;
         }
       }
     } catch (e) {
@@ -1895,7 +1898,7 @@ class ScanStreamManager {
       });
       if (res.ok) {
         const data = await res.json();
-        localStorage.setItem("cyberassess_token", data.access_token);
+        this.accessToken = data.access_token;
         if (this.userRoleBadge) this.userRoleBadge.innerText = data.user.role;
         if (this.authCurrentUsername) this.authCurrentUsername.innerText = data.user.username;
         if (this.authCurrentRole) this.authCurrentRole.innerText = data.user.role;
@@ -1913,8 +1916,15 @@ class ScanStreamManager {
     }
   }
 
-  handleLogout() {
-    localStorage.removeItem("cyberassess_token");
+  async handleLogout() {
+    if (this.accessToken) {
+      try {
+        await this.authFetch("/api/auth/logout", { method: "POST" });
+      } catch (e) {
+        console.warn("Session revocation request failed; clearing local session state.");
+      }
+    }
+    this.accessToken = null;
     if (this.userRoleBadge) this.userRoleBadge.innerText = "VIEWER";
     if (this.authCurrentUsername) this.authCurrentUsername.innerText = "Anonymous";
     if (this.authCurrentRole) this.authCurrentRole.innerText = "VIEWER";

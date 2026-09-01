@@ -43,6 +43,13 @@ from app.core.correlator import correlator
 from app.core.risk_engine import calculate_finding_contextual_risk, calculate_contextual_posture_grade
 
 
+def test_frontend_does_not_persist_bearer_tokens_in_browser_storage():
+    frontend_js = (Path(__file__).resolve().parents[1] / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "localStorage." not in frontend_js
+    assert "sessionStorage." not in frontend_js
+    assert "this.accessToken" in frontend_js
+
+
 # ============================================================================
 # 1. SSRF Protection Gateway Tests
 # ============================================================================
