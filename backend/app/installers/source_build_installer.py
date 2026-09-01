@@ -36,7 +36,7 @@ SOURCE_BUILD_CONFIG = {
         "category": "Infra IaC",
         "source_root": "trivy-0.50.0",
         "source_commit": "8ec3938e01a93855503e3400eae9831abbb5de4a",
-        "go_version": "1.21.13",
+        "go_version": "go1.21.13",
         "build_package": "./cmd/trivy",
         "version_cmd": ["--version"],
     }

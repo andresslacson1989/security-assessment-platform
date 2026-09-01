@@ -28,7 +28,7 @@ from app.core.auth import create_access_token
 from app.installers.base_installer import BaseToolInstaller, SecurityError
 from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
-from app.installers.source_build_installer import SourceBuildInstaller
+from app.installers.source_build_installer import SourceBuildInstaller, SOURCE_BUILD_CONFIG
 from app.core.binary_resolver import resolve_tool_binary
 from app.installers.system_installer import SystemToolHelper
 from app.installers.manager import ToolInstallationManager
@@ -145,6 +145,7 @@ def test_trivy_uses_the_verified_source_build_installer():
     assert isinstance(installer, SourceBuildInstaller)
     assert PINNED_TOOL_MANIFEST["trivy"]["trust_mode"] == "SOURCE_BUILD_MODE"
     assert PINNED_TOOL_MANIFEST["trivy"]["direct_release_artifact_available"] is False
+    assert SOURCE_BUILD_CONFIG["trivy"]["go_version"] == PINNED_TOOL_MANIFEST["trivy"]["build_toolchain"]
 
 
 @pytest.mark.asyncio
