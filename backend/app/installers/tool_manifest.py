@@ -12,6 +12,9 @@ from typing import Dict, Optional, Any, Tuple
 # Authoritative Pinned Tool Manifest with Pinned Release Tags & Canonical SHA-256 Checksums
 PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
     "nuclei": {
+        "tool_name": "nuclei",
+        "version": "3.2.0",
+        "release_tag": "v3.2.0",
         "repo": "projectdiscovery/nuclei",
         "pinned_version": "v3.2.0",
         "category": "Web DAST",
@@ -21,9 +24,19 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "57886fcfd9b15548adbfbc0816b18db5aa9bd0b9b72d5183a55ccac586feeaa5",
             "darwin_amd64": "407437c4cbf1bffc040e5c03c375c98e2d9b48c33e054f0e0798656706d3574f",
             "darwin_arm64": "1970bd8164fbef8c0368f559bf7d36dced65442e708ae2a476ae8ce047fadd5c",
+        },
+        "asset_names": {
+            "windows_amd64": "nuclei_3.2.0_windows_amd64.zip",
+            "linux_amd64": "nuclei_3.2.0_linux_amd64.zip",
+            "linux_arm64": "nuclei_3.2.0_linux_arm64.zip",
+            "darwin_amd64": "nuclei_3.2.0_macOS_amd64.zip",
+            "darwin_arm64": "nuclei_3.2.0_macOS_arm64.zip",
         }
     },
     "ffuf": {
+        "tool_name": "ffuf",
+        "version": "2.1.0",
+        "release_tag": "v2.1.0",
         "repo": "ffuf/ffuf",
         "pinned_version": "v2.1.0",
         "category": "Web DAST",
@@ -33,9 +46,19 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "6ae920d09d5202762fca21967a460c6fb88135bdfa806bee4d3d2c430dcedeea",
             "darwin_amd64": "d2d8a561f166d34d60d90f2f9b0a7ebe1414c0836549a1292e8da3206ac8781d",
             "darwin_arm64": "df1fdfbdc7ab6abb54cdf212452d585121bf291512649cf36c43a18d849f960e",
+        },
+        "asset_names": {
+            "windows_amd64": "ffuf_2.1.0_windows_amd64.zip",
+            "linux_amd64": "ffuf_2.1.0_linux_amd64.tar.gz",
+            "linux_arm64": "ffuf_2.1.0_linux_arm64.tar.gz",
+            "darwin_amd64": "ffuf_2.1.0_macOS_amd64.tar.gz",
+            "darwin_arm64": "ffuf_2.1.0_macOS_arm64.tar.gz",
         }
     },
     "gitleaks": {
+        "tool_name": "gitleaks",
+        "version": "8.18.2",
+        "release_tag": "v8.18.2",
         "repo": "gitleaks/gitleaks",
         "pinned_version": "v8.18.2",
         "category": "Code SAST",
@@ -45,39 +68,60 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "4df25683f95b9e1dbb8cc71dac74d10067b8aba221e7f991e01cafa05bcbd030",
             "darwin_amd64": "b2dc4f853128062856273d422e2f29791a036641c1655feb83192078970fbfc0",
             "darwin_arm64": "7be53fa77d7ec10cb8a7085d6ebcf375d55dd4c71f2cf6e7e6bf11554847a095",
+        },
+        "asset_names": {
+            "windows_amd64": "gitleaks_8.18.2_windows_x64.zip",
+            "linux_amd64": "gitleaks_8.18.2_linux_x64.tar.gz",
+            "linux_arm64": "gitleaks_8.18.2_linux_arm64.tar.gz",
+            "darwin_amd64": "gitleaks_8.18.2_darwin_x64.tar.gz",
+            "darwin_arm64": "gitleaks_8.18.2_darwin_arm64.tar.gz",
         }
     },
     "trivy": {
+        "tool_name": "trivy",
+        "version": "0.50.0",
+        "release_tag": "v0.50.0",
         "repo": "aquasecurity/trivy",
         "pinned_version": "v0.50.0",
         "category": "Infra IaC / Supply Chain",
-        "sha256_checksums": {
-            "windows_amd64": "7ef999da89cc79aa9369d714cb9fdf3c32ef093a1f8d48e35a111a43a059f3d9",
-            "linux_amd64": "1ff1e6d2bc1050a4da61706f30a91176b6ef0aa0fefca23a63ec592ff3320f69",
-            "linux_arm64": "b535d21469e38d4f40f09ce988f57273cae1823eb5d7426bc1c4228fe00bca80",
-            "darwin_amd64": "5cbef468bfbdf8a3c8e54737d2f9d854ef24cf74f7622c4f1c1f5165bb057632",
-            "darwin_arm64": "1adceeb01a2f641fb00c0f83652ee995726fa45d62551cf1639d675aa97e20ec",
-        }
+        "sha256_checksums": {}
     },
     "subfinder": {
+        "tool_name": "subfinder",
+        "version": "2.6.5",
+        "release_tag": "v2.6.5",
         "repo": "projectdiscovery/subfinder",
         "pinned_version": "v2.6.5",
         "category": "Network EASM",
         "sha256_checksums": {
             "windows_amd64": "11c2a40a822546e0a8373b201c3fbccbc693b80c2189e12bf84324cd0be701d9",
             "linux_amd64": "19320e575c4fb422b1d2f9e4800b624eb5b5215e526db506570cb73dd2de5907",
+        },
+        "asset_names": {
+            "windows_amd64": "subfinder_2.6.5_windows_amd64.zip",
+            "linux_amd64": "subfinder_2.6.5_linux_amd64.zip",
         }
     },
     "httpx": {
+        "tool_name": "httpx",
+        "version": "1.6.0",
+        "release_tag": "v1.6.0",
         "repo": "projectdiscovery/httpx",
         "pinned_version": "v1.6.0",
         "category": "Network EASM",
         "sha256_checksums": {
             "windows_amd64": "52c3721a905f04d88efd0c66321fe1b03c64182e55da0d7c0ddcb2f92f479bb6",
             "linux_amd64": "a209fbf6eb95cdfb3be9a90a1a57463c6dd1879a56ca32bb4a39cc55d9b0754d",
+        },
+        "asset_names": {
+            "windows_amd64": "httpx_1.6.0_windows_amd64.zip",
+            "linux_amd64": "httpx_1.6.0_linux_amd64.zip",
         }
     },
     "katana": {
+        "tool_name": "katana",
+        "version": "1.0.5",
+        "release_tag": "v1.0.5",
         "repo": "projectdiscovery/katana",
         "pinned_version": "v1.0.5",
         "category": "Web DAST",
@@ -85,9 +129,17 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "windows_amd64": "4ba8e8a926dd5ca7b84462544a87ea9711ca06c7c28b131e7dae0d64d145b511",
             "linux_amd64": "d50ba599822701628396659a2b2bc7dc074eed23374c3e7c1794355cd4852f83",
             "linux_arm64": "e9fa87ef114ab8afde2f1f77ce357d62ba3d68091a46f550f32358918162d0aa",
+        },
+        "asset_names": {
+            "windows_amd64": "katana_1.0.5_windows_amd64.zip",
+            "linux_amd64": "katana_1.0.5_linux_amd64.zip",
+            "linux_arm64": "katana_1.0.5_linux_arm64.zip",
         }
     },
     "syft": {
+        "tool_name": "syft",
+        "version": "1.0.1",
+        "release_tag": "v1.0.1",
         "repo": "anchore/syft",
         "pinned_version": "v1.0.1",
         "category": "Supply Chain",
@@ -97,9 +149,19 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "c8582aa0e1c92c84c4a751c739ac3d7ca48c88a54b5d1b884d0629d7df72a6f9",
             "darwin_amd64": "3730868e23a65c0c2b94bd1d3c7ce608176aa98b631bf98249f04bec1a035b12",
             "darwin_arm64": "5dc061290afb7e8249dc590fcf4a7e15966346e73948415559855e1154fc0f42",
+        },
+        "asset_names": {
+            "windows_amd64": "syft_1.0.1_windows_amd64.zip",
+            "linux_amd64": "syft_1.0.1_linux_amd64.tar.gz",
+            "linux_arm64": "syft_1.0.1_linux_arm64.tar.gz",
+            "darwin_amd64": "syft_1.0.1_darwin_amd64.tar.gz",
+            "darwin_arm64": "syft_1.0.1_darwin_arm64.tar.gz",
         }
     },
     "grype": {
+        "tool_name": "grype",
+        "version": "0.74.0",
+        "release_tag": "v0.74.0",
         "repo": "anchore/grype",
         "pinned_version": "v0.74.0",
         "category": "Supply Chain",
@@ -109,9 +171,19 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "754edfce7cdaa28849f997c9959879b21f753c382066af7c31ef238353558ba9",
             "darwin_amd64": "4c26b9047407f3743f7cfc025613aebcda4fee2c2befac4800f3c560bfbbb4cb",
             "darwin_arm64": "540e72006397995440e134641c05ce16f19538ad1e44cc2cabb3be091b763acf",
+        },
+        "asset_names": {
+            "windows_amd64": "grype_0.74.0_windows_amd64.zip",
+            "linux_amd64": "grype_0.74.0_linux_amd64.tar.gz",
+            "linux_arm64": "grype_0.74.0_linux_arm64.tar.gz",
+            "darwin_amd64": "grype_0.74.0_darwin_amd64.tar.gz",
+            "darwin_arm64": "grype_0.74.0_darwin_arm64.tar.gz",
         }
     },
     "osv_scanner": {
+        "tool_name": "osv_scanner",
+        "version": "1.7.0",
+        "release_tag": "v1.7.0",
         "repo": "google/osv-scanner",
         "pinned_version": "v1.7.0",
         "category": "Supply Chain",
@@ -121,9 +193,19 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "9ac3f0dc3f0fbfae5fc9e8e00d46906e08e5e85f88c5e79950d331d0f139a5c5",
             "darwin_amd64": "db94288f80a29742e98f0c7e520fae411e16f5c2a251f5bf12d8a30a91fd6bdd",
             "darwin_arm64": "b814f74155a9bc30794589f74c8fe3ea23c2e50290a437dc530ca5bc90eb5049",
+        },
+        "asset_names": {
+            "windows_amd64": "osv-scanner_windows_amd64.exe",
+            "linux_amd64": "osv-scanner_linux_amd64",
+            "linux_arm64": "osv-scanner_linux_arm64",
+            "darwin_amd64": "osv-scanner_darwin_amd64",
+            "darwin_arm64": "osv-scanner_darwin_arm64",
         }
     },
     "dockle": {
+        "tool_name": "dockle",
+        "version": "0.4.14",
+        "release_tag": "v0.4.14",
         "repo": "goodwithtech/dockle",
         "pinned_version": "v0.4.14",
         "category": "Infra IaC",
@@ -132,6 +214,12 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "linux_arm64": "2ab0fbf42fdbbb1532958244a8c7832f8aeabee27d1e3a545ffdfcff9b0ef332",
             "darwin_amd64": "23d9994f96e5d284fdc573c45c48080b02ca27ac0bd5326bd081cb7548b04837",
             "darwin_arm64": "417f3f9c20f6465c3973d10ee43e1a04fe5ed2338ff989b81b638c87ad9c922e",
+        },
+        "asset_names": {
+            "linux_amd64": "dockle_0.4.14_Linux-64bit.tar.gz",
+            "linux_arm64": "dockle_0.4.14_Linux-ARM64.tar.gz",
+            "darwin_amd64": "dockle_0.4.14_macOS-64bit.tar.gz",
+            "darwin_arm64": "dockle_0.4.14_macOS-ARM64.tar.gz",
         }
     },
 }

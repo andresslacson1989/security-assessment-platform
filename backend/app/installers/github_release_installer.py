@@ -217,6 +217,20 @@ class GithubReleaseInstaller(BaseToolInstaller):
         system = platform.system().lower()
         os_keys, arch_keys = self._get_platform_keywords()
 
+        # Prefer an exact, manifest-bound filename. This is required for
+        # releases whose executable assets have no archive suffix (for example
+        # OSV-Scanner), and prevents a loose keyword match from selecting a
+        # different platform artifact.
+        from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+        manifest = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
+        machine = platform.machine().lower()
+        os_name = "windows" if ("windows" in system or sys.platform == "win32") else ("darwin" if "darwin" in system else "linux")
+        arch_name = "arm64" if (machine in ("aarch64", "arm64")) else "amd64"
+        platform_key = f"{os_name}_{arch_name}"
+        exact_name = manifest.get("asset_names", {}).get(platform_key)
+        if exact_name:
+            return next((asset for asset in assets if asset.get("name") == exact_name), None)
+
         for asset in assets:
             name = asset.get("name", "").lower()
             if not (name.endswith(".zip") or name.endswith(".tar.gz") or name.endswith(".tgz")):
