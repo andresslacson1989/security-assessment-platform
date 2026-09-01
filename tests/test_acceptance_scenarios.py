@@ -1549,6 +1549,8 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
     config = ScanConfig()
     config.osint.subdomain_enumeration = False
     config.crawler.enabled = False
+    config.adapters.enable_nuclei = False
+    config.adapters.enable_schemathesis = False
 
     emitted_logs = []
     emitted_findings = []
