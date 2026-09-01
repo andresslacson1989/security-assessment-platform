@@ -491,6 +491,10 @@ class ToolInstallationInfo(BaseModel):
     download_url: Optional[str] = Field(default=None, description="Direct download URL or repo reference")
     error_message: Optional[str] = Field(default=None, description="Last installation error message if failed")
     progress_percent: int = Field(default=0, ge=0, le=100, description="Real-time installation progress percentage")
+    assurance_status: str = Field(
+        default="UNASSURED",
+        description="Supply-chain assurance: ASSURED, DELEGATED, INCOMPLETE, INVALID, or UNREGISTERED",
+    )
 
 
 class ToolInstallRequest(BaseModel):

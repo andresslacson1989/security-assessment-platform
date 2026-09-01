@@ -250,6 +250,17 @@ def test_pip_installer_uses_exact_contract_version():
 
 
 @pytest.mark.asyncio
+async def test_tool_installation_info_exposes_manifest_assurance_status():
+    assured = await PipToolInstaller("sslyze").get_info()
+    delegated = await SystemToolHelper("nmap").get_info()
+    unregistered = await SystemToolHelper("sqlmap").get_info()
+
+    assert assured.assurance_status == "ASSURED"
+    assert delegated.assurance_status == "DELEGATED"
+    assert unregistered.assurance_status == "UNREGISTERED"
+
+
+@pytest.mark.asyncio
 async def test_system_installer_accepts_only_exact_contract_version(monkeypatch):
     installer = SystemToolHelper("nmap")
     monkeypatch.setattr(installer, "get_version", AsyncMock(return_value="Nmap version 7.94"))

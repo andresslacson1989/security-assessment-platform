@@ -96,11 +96,22 @@ class BaseToolInstaller(ABC):
         """
         Gathers current installation information and status.
         """
+        from app.installers.tool_manifest import audit_tool_manifest
+
         path = self.resolve_binary_path()
         version = await self.get_version() if (path and os.path.isfile(path)) else None
         is_installed = bool(path and os.path.isfile(path) and (version is not None or self.install_method != ToolInstallMethod.SYSTEM_PACKAGE_MANAGER))
 
         status = ToolInstallStatus.INSTALLED if is_installed else ToolInstallStatus.NOT_INSTALLED
+        manifest_status = audit_tool_manifest([self.tool_name])
+        if self.tool_name in manifest_status["assured"]:
+            assurance_status = "ASSURED"
+        elif self.tool_name in manifest_status["incomplete"]:
+            assurance_status = "DELEGATED" if self.tool_name == "nmap" else "INCOMPLETE"
+        elif self.tool_name in manifest_status["invalid"]:
+            assurance_status = "INVALID"
+        else:
+            assurance_status = "UNREGISTERED"
 
         return ToolInstallationInfo(
             name=self.tool_name,
@@ -115,6 +126,7 @@ class BaseToolInstaller(ABC):
             download_url=self.download_url,
             error_message=None,
             progress_percent=100 if is_installed else 0,
+            assurance_status=assurance_status,
         )
 
     @abstractmethod
