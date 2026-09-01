@@ -29,8 +29,18 @@ class BaseToolAdapter(ABC):
 
     def _record_execution(self, returncode: int, stdout: str, stderr: str, findings_count: int = 0, parser_error: bool = False) -> None:
         """Map upstream process results to the platform execution-state contract."""
+        if not parser_error and getattr(self, "_parser_error_output", None) != stdout:
+            self._parser_error_output = None
         if parser_error:
+            # Some adapters report a parser failure and then make a second
+            # bookkeeping call with the same process output. Keep the
+            # degraded state attached to that output so it cannot be relabeled
+            # as a clean completion by the later call. A different output
+            # starts a fresh execution record naturally.
+            self._parser_error_output = stdout
             self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if stdout.strip() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+        elif getattr(self, "_parser_error_output", None) == stdout:
+            return
         elif "timed out" in (stderr or "").lower():
             self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
         elif returncode == 126 and "security check" in (stderr or "").lower():

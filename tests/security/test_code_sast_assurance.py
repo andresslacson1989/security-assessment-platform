@@ -33,6 +33,13 @@ def test_e13_workspace_rejects_escape_and_symlink(tmp_path):
         resolve_authorized_workspace(str(link), [authorized])
 
 
+def test_e13_parser_degradation_cannot_be_overwritten_by_final_bookkeeping():
+    adapter = SemgrepAdapter()
+    adapter._record_execution(0, "malformed", "", parser_error=True)
+    adapter._record_execution(0, "malformed", "", findings_count=0)
+    assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
+
 @pytest.mark.asyncio
 async def test_e13_engine_blocks_unauthorized_workspace_and_publishes_state(tmp_path):
     engine = CodeSastAssessmentEngine()
