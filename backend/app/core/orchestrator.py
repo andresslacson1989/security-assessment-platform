@@ -40,6 +40,24 @@ class ScanOrchestrator:
         self._lock = asyncio.Lock()
 
     @staticmethod
+    def _normalize_tool_state(state: str) -> str:
+        """Convert only known adapter states into the canonical telemetry vocabulary."""
+        state_map = {
+            "EXECUTION_BLOCKED": "BLOCKED",
+            "EXECUTION_TIMED_OUT": "TIMED_OUT",
+            "EXECUTION_CANCELLED": "CANCELLED",
+            "COMPLETED_WITH_FINDINGS": "COMPLETED_WITH_FINDINGS",
+            "COMPLETED_NO_FINDINGS": "COMPLETED_NO_FINDINGS",
+            "PARTIAL_RESULTS_WITH_WARNING": "PARTIAL_RESULTS_WITH_WARNING",
+            "TOOL_EXECUTION_FAILED": "TOOL_EXECUTION_FAILED",
+            "INVALID_VERSION": "INVALID_VERSION",
+        }
+        normalized = state_map.get(state)
+        if normalized is None:
+            raise ValueError(f"Unknown tool execution state: {state!r}")
+        return normalized
+
+    @staticmethod
     def _recalculate_summary(job: ScanJob, duration_seconds: float) -> None:
         """Refresh calculated metrics without discarding execution coverage evidence."""
         previous = job.summary
@@ -252,7 +270,15 @@ class ScanOrchestrator:
 
     async def emit_tool_execution_state(self, scan_id: str, tool_name: str, state: str) -> None:
         job = self._active_jobs.get(scan_id)
-        state = state.replace("EXECUTION_", "")
+        try:
+            state = self._normalize_tool_state(state)
+        except ValueError:
+            state = "TOOL_EXECUTION_FAILED"
+            if job:
+                limitation = f"{tool_name}: INVALID_STATE"
+                job.summary.coverage.is_fully_assessed = False
+                if limitation not in job.summary.coverage.coverage_limitations:
+                    job.summary.coverage.coverage_limitations.append(limitation)
         if job:
             job.tool_execution_states[tool_name] = state
             if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}:

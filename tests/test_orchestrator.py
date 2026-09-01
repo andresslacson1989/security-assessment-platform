@@ -229,6 +229,19 @@ async def test_final_grading_preserves_subfinder_coverage_degradation():
 
 
 @pytest.mark.asyncio
+async def test_unknown_tool_state_fails_closed():
+    orch = ScanOrchestrator()
+    job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
+    orch._active_jobs[job.id] = job
+
+    await orch.emit_tool_execution_state(job.id, "subfinder", "EXECUTION_NOT_A_REAL_STATE")
+
+    assert job.tool_execution_states["subfinder"] == "TOOL_EXECUTION_FAILED"
+    assert job.summary.coverage.is_fully_assessed is False
+    assert "subfinder: INVALID_STATE" in job.summary.coverage.coverage_limitations
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_error_isolation():
     orch = ScanOrchestrator()
     orch.register_engine(MockFailingEngine())
