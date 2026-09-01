@@ -360,6 +360,7 @@ class ScanOrchestrator:
         try:
             capabilities = await discover_system_capabilities(job.config.adapters)
             active_adapters: List[str] = []
+            job.summary.coverage.tools_unavailable = []
             for tool_status in capabilities.tools:
                 await self.emit_tool_status(
                     scan_id,
@@ -370,6 +371,8 @@ class ScanOrchestrator:
                 )
                 if tool_status.available:
                     active_adapters.append(tool_status.name)
+                elif tool_status.name not in job.summary.coverage.tools_unavailable:
+                    job.summary.coverage.tools_unavailable.append(tool_status.name)
             job.active_adapters = active_adapters
             job.summary.active_adapters = active_adapters
             if active_adapters:
@@ -399,11 +402,27 @@ class ScanOrchestrator:
             job.current_stage = "Completed (No applicable engines)."
             job.completed_at = utc_now()
             job.summary = calculate_scan_grade([], duration_seconds=0.0)
+            job.summary.coverage.engines_requested = list(job.enabled_engines)
+            job.summary.coverage.engines_skipped = [engine_name for engine_name in job.enabled_engines]
+            job.summary.coverage.is_fully_assessed = not bool(job.enabled_engines)
+            if job.enabled_engines:
+                job.summary.coverage.coverage_limitations.append("No enabled engines were applicable to the target.")
             save_scan(job)
             await self.emit_completed(scan_id, job.summary)
             return
 
         total_engines = len(applicable_engines)
+        job.summary.coverage.engines_requested = list(job.enabled_engines)
+        job.summary.coverage.engines_skipped = [
+            engine_name for engine_name in job.enabled_engines
+            if engine_name not in {engine.name for engine in applicable_engines}
+        ]
+        if job.summary.coverage.engines_skipped:
+            job.summary.coverage.is_fully_assessed = False
+            for engine_name in job.summary.coverage.engines_skipped:
+                limitation = f"{engine_name}: SKIPPED"
+                if limitation not in job.summary.coverage.coverage_limitations:
+                    job.summary.coverage.coverage_limitations.append(limitation)
         progress_per_engine = 90.0 / total_engines
 
         try:
@@ -484,10 +503,18 @@ class ScanOrchestrator:
                             job.findings.append(finding)
 
                     await self.emit_log(scan_id, LogLevel.INFO, engine.name, f"Completed {engine.display_name}. Found {len(engine_findings)} findings.")
+                    if engine.name not in job.summary.coverage.engines_executed:
+                        job.summary.coverage.engines_executed.append(engine.name)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     # Error isolation guarantee: single engine failure never crashes the scan
+                    if engine.name not in job.summary.coverage.engines_failed:
+                        job.summary.coverage.engines_failed.append(engine.name)
+                    job.summary.coverage.is_fully_assessed = False
+                    limitation = f"{engine.name}: ENGINE_EXECUTION_FAILED"
+                    if limitation not in job.summary.coverage.coverage_limitations:
+                        job.summary.coverage.coverage_limitations.append(limitation)
                     await self.emit_log(scan_id, LogLevel.ERROR, engine.name, f"Engine failed with error: {str(e)}")
 
             # Finalize scan

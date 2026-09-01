@@ -194,6 +194,9 @@ async def test_orchestrator_full_scan_lifecycle():
     assert len(completed_job.findings) == 1
     assert completed_job.findings[0].check_id == "MOCK-001"
     assert completed_job.summary.overall_security_grade == "B"  # 1 Medium finding -> Grade B
+    assert completed_job.summary.coverage.engines_requested == ["mock_success"]
+    assert completed_job.summary.coverage.engines_executed == ["mock_success"]
+    assert completed_job.summary.coverage.engines_failed == []
 
     # Verify event stream items received in queue
     events = []
@@ -207,6 +210,30 @@ async def test_orchestrator_full_scan_lifecycle():
     assert "completed" in event_types
 
     orch.unsubscribe_events(scan_job.id, queue)
+
+
+@pytest.mark.asyncio
+async def test_engine_exception_degrades_persisted_coverage():
+    orch = ScanOrchestrator()
+    orch.register_engine(MockFailingEngine())
+    job = ScanJob(
+        target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),
+        profile=ScanProfile.CUSTOM,
+        enabled_engines=["mock_fail"],
+        organization_id="org-failure",
+    )
+
+    task = await orch.start_scan(job)
+    await task
+
+    completed = orch.get_active_job(job.id, organization_id="org-failure")
+    assert completed is not None
+    assert completed.status == ScanStatus.COMPLETED
+    assert completed.summary.coverage.engines_requested == ["mock_fail"]
+    assert completed.summary.coverage.engines_executed == []
+    assert completed.summary.coverage.engines_failed == ["mock_fail"]
+    assert completed.summary.coverage.is_fully_assessed is False
+    assert "mock_fail: ENGINE_EXECUTION_FAILED" in completed.summary.coverage.coverage_limitations
 
 
 @pytest.mark.asyncio
