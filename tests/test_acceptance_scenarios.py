@@ -1274,13 +1274,14 @@ async def test_scenario_16_adapters_first_priority_and_native_pruning():
          patch("app.engines.network.engine.audit_dns_hygiene", AsyncMock(return_value=[])), \
          patch("app.engines.network.engine.audit_subdomain_osint", AsyncMock(return_value=[])):
 
-        findings = await net_engine.run(
-            target=target,
-            config=config,
-            emit_log=mock_log,
-            emit_progress=mock_progress,
-            emit_finding=mock_finding,
-        )
+            findings = await net_engine.run(
+                target=target,
+                config=config,
+                emit_log=mock_log,
+                emit_progress=mock_progress,
+                emit_finding=mock_finding,
+                organization_id="org-test",
+            )
 
     assert len(findings) >= 2
     sources = {f.source_tool for f in findings}

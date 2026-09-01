@@ -558,6 +558,7 @@ class TestSslyzeFallbackPreservation:
                                                             emit_log=mock_log,
                                                             emit_progress=mock_progress,
                                                             emit_finding=mock_finding,
+                                                            organization_id="org-test",
                                                         )
 
         fallback_logs = [l for l in logs if "pure native TLS auditor fallback" in l]
@@ -775,5 +776,4 @@ class TestSslyzeCapabilitySegmentation:
         assert "--heartbleed" not in DEFAULT_SCAN_FLAGS
         assert "--robot" not in DEFAULT_SCAN_FLAGS
         assert "--openssl_ccs" not in DEFAULT_SCAN_FLAGS
-
 
