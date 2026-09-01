@@ -688,6 +688,19 @@ class DatabaseManager:
         if event.correlation_id is None:
             from app.core.correlation import get_correlation_id
             event.correlation_id = get_correlation_id()
+
+        # The chain predecessor and sequence number must be read and written
+        # as one serialized operation.  SQLite needs an immediate write lock
+        # when this is the outermost transaction; PostgreSQL needs a
+        # transaction-scoped advisory lock because its default isolation level
+        # otherwise permits concurrent readers to observe the same predecessor.
+        if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        elif isinstance(conn, _PostgresConnection):
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                ("cyberassess:audit-chain",),
+            )
         cur = conn.cursor()
         cur.execute(
             "SELECT event_hash, sequence_number FROM audit_events "

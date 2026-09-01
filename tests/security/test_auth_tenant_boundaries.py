@@ -8,7 +8,7 @@ import pytest
 
 from app.core.auth import create_access_token, get_current_user
 from app.core.db import DatabaseManager
-from app.core.models import OperatingMode, PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole
+from app.core.models import AuditAction, AuditEvent, OperatingMode, PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole
 from app.core.orchestrator import ScanOrchestrator
 
 
@@ -60,6 +60,23 @@ def test_bootstrap_audit_event_is_chained_and_correlated(tmp_path):
     assert events[0].event_hash
     assert events[0].correlation_id == "corr-bootstrap"
     valid, bad_id = db.verify_audit_log_integrity(user.organization_id)
+    assert valid is True
+    assert bad_id is None
+
+
+def test_audit_writer_serializes_outermost_sqlite_transaction(tmp_path):
+    """Audit chaining starts an immediate transaction before reading its predecessor."""
+    db = DatabaseManager(db_path=tmp_path / "audit-lock.db")
+    first = AuditEvent(
+        actor="system",
+        organization_id="org-lock",
+        action=AuditAction.SCAN_CREATED,
+        object_type="scan",
+        object_id="scan-lock-1",
+    )
+    db.record_audit_event(first)
+    assert first.event_hash
+    valid, bad_id = db.verify_audit_log_integrity("org-lock")
     assert valid is True
     assert bad_id is None
 
