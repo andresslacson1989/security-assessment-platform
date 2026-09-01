@@ -50,6 +50,15 @@ def test_frontend_does_not_persist_bearer_tokens_in_browser_storage():
     assert "this.accessToken" in frontend_js
 
 
+def test_frontend_uses_context_safe_encoding_for_dynamic_inline_handlers():
+    frontend_js = (Path(__file__).resolve().parents[1] / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "encodeInlineArg(value)" in frontend_js
+    assert "decodeURIComponent('${this.encodeInlineArg(" in frontend_js
+    assert "onclick=\"window.app.handleInstallTool('${t.name}'" not in frontend_js
+    assert "onclick=\"window.auditAsset('${this.escapeHtml(" not in frontend_js
+    assert "<td><code>${t.category}</code></td>" not in frontend_js
+
+
 # ============================================================================
 # 1. SSRF Protection Gateway Tests
 # ============================================================================

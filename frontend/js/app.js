@@ -878,7 +878,7 @@ class ScanStreamManager {
           <td><code style="font-size: 11px; color: var(--accent-cyan);">${this.escapeHtml(cnamesStr)}</code></td>
           <td>${takeoverBadge}</td>
           <td>
-            <button class="btn btn-xs btn-outline" onclick="window.app.setTargetSubdomain('${this.escapeHtml(sub.domain)}')">Scan</button>
+            <button class="btn btn-xs btn-outline" onclick="window.app.setTargetSubdomain(decodeURIComponent('${this.encodeInlineArg(sub.domain)}'))">Scan</button>
           </td>
         </tr>
       `;
@@ -1212,7 +1212,7 @@ class ScanStreamManager {
               ${f.owasp_category ? `<span class="meta-tag">${this.escapeHtml(f.owasp_category)}</span>` : ""}
               ${f.nist_control ? `<span class="meta-tag">${this.escapeHtml(f.nist_control)}</span>` : ""}
               <span class="meta-tag engine-tag">${this.escapeHtml(f.engine)}</span>
-              <span class="source-tool-badge source-tool--${toolName.toLowerCase()}" style="cursor: pointer;" title="Click to filter findings by ${this.escapeHtml(toolName)}" onclick="event.stopPropagation(); window.app.filterByTool('${this.escapeHtml(toolName)}')">[${this.escapeHtml(toolName)}]</span>
+              <span class="source-tool-badge source-tool--${this.escapeHtml(toolName.toLowerCase())}" style="cursor: pointer;" title="Click to filter findings by ${this.escapeHtml(toolName)}" onclick="event.stopPropagation(); window.app.filterByTool(decodeURIComponent('${this.encodeInlineArg(toolName)}'))">[${this.escapeHtml(toolName)}]</span>
             </div>
 
             <p class="finding-desc"><strong>Description:</strong> ${this.escapeHtml(f.description)}</p>
@@ -1425,20 +1425,23 @@ class ScanStreamManager {
           statusBadge = `<span class="badge-installed">INSTALLED</span>`;
         }
 
-        const methodLabel = t.install_method === "SYSTEM_PACKAGE_MANAGER" ? "OS / PKG MGR" : t.install_method.replace("_", " ");
-        const methodBadge = `<span class="method-tag">${methodLabel}</span>`;
-        const pathOrVersion = t.version || (t.path ? `<code class="path-code">${this.escapeHtml(t.path)}</code>` : `<span style="color: var(--text-dim);">-</span>`);
+        const methodLabel = t.install_method === "SYSTEM_PACKAGE_MANAGER" ? "OS / PKG MGR" : String(t.install_method || "").replace("_", " ");
+        const methodBadge = `<span class="method-tag">${this.escapeHtml(methodLabel)}</span>`;
+        const pathOrVersion = t.version
+          ? this.escapeHtml(t.version)
+          : (t.path ? `<code class="path-code">${this.escapeHtml(t.path)}</code>` : `<span style="color: var(--text-dim);">-</span>`);
+        const toolArg = this.encodeInlineArg(t.name);
 
         let actionBtn = "";
         if (t.install_method === "SYSTEM_PACKAGE_MANAGER") {
           const btnText = isInstalled ? "📖 Setup Guide" : "📖 How to Install";
-          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.openToolInstructionsModal('${t.name}')">${btnText}</button>`;
+          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.openToolInstructionsModal(decodeURIComponent('${toolArg}'))">${btnText}</button>`;
         } else if (t.status === "INSTALLING") {
-          actionBtn = `<button class="btn btn-xs btn-outline" style="color: var(--color-critical); border-color: var(--color-critical);" onclick="window.app.handleCancelTool('${t.name}')">⏹ Cancel</button>`;
+          actionBtn = `<button class="btn btn-xs btn-outline" style="color: var(--color-critical); border-color: var(--color-critical);" onclick="window.app.handleCancelTool(decodeURIComponent('${toolArg}'))">⏹ Cancel</button>`;
         } else if (isInstalled) {
-          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.handleInstallTool('${t.name}', true)">Reinstall</button>`;
+          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.handleInstallTool(decodeURIComponent('${toolArg}'), true)">Reinstall</button>`;
         } else {
-          actionBtn = `<button class="btn-install-tool" onclick="window.app.handleInstallTool('${t.name}', false)">⚡ Install</button>`;
+          actionBtn = `<button class="btn-install-tool" onclick="window.app.handleInstallTool(decodeURIComponent('${toolArg}'), false)">⚡ Install</button>`;
         }
 
         return `
@@ -1448,7 +1451,7 @@ class ScanStreamManager {
                 <span>${this.escapeHtml(t.display_name || t.name)}</span>
               </div>
             </td>
-            <td><code>${t.category}</code></td>
+            <td><code>${this.escapeHtml(t.category)}</code></td>
             <td>${methodBadge}</td>
             <td>${statusBadge}</td>
             <td>${pathOrVersion}</td>
@@ -1551,7 +1554,7 @@ class ScanStreamManager {
           : "";
         const snippetAction = opt.isLink
           ? `<a href="${this.escapeHtml(opt.snippet)}" target="_blank" class="btn-copy-code">Open ↗</a>`
-          : `<button class="btn-copy-code" onclick="navigator.clipboard.writeText('${this.escapeHtml(opt.snippet)}').then(()=>this.textContent='Copied!').catch(()=>{})">📋 Copy</button>`;
+          : `<button class="btn-copy-code" onclick="navigator.clipboard.writeText(decodeURIComponent('${this.encodeInlineArg(opt.snippet)}')).then(()=>this.textContent='Copied!').catch(()=>{})">📋 Copy</button>`;
 
         const explanationHtml = opt.explanation
           ? `<div class="instruction-explanation">${this.escapeHtml(opt.explanation).replace(/\n/g, '<br>')}</div>`
@@ -1774,11 +1777,11 @@ class ScanStreamManager {
           <td><strong>${this.escapeHtml(a.name)}</strong></td>
           <td><span class="meta-tag">${this.escapeHtml(a.type)}</span></td>
           <td><code>${this.escapeHtml(a.target_value)}</code></td>
-          <td><span class="badge ${a.criticality === 'CRITICAL' ? 'badge-critical' : a.criticality === 'HIGH' ? 'badge-high' : 'badge-none'}">${a.criticality}</span></td>
+          <td><span class="badge ${a.criticality === 'CRITICAL' ? 'badge-critical' : a.criticality === 'HIGH' ? 'badge-high' : 'badge-none'}">${this.escapeHtml(a.criticality)}</span></td>
           <td>${a.active_findings_count || 0}</td>
           <td>
-            <button class="btn btn-xs btn-primary" onclick="window.auditAsset('${this.escapeHtml(a.target_value)}', '${this.escapeHtml(a.type)}')">Audit</button>
-            <button class="btn btn-xs btn-danger" onclick="window.deleteAsset('${a.id}')">Delete</button>
+            <button class="btn btn-xs btn-primary" onclick="window.auditAsset(decodeURIComponent('${this.encodeInlineArg(a.target_value)}'), decodeURIComponent('${this.encodeInlineArg(a.type)}'))">Audit</button>
+            <button class="btn btn-xs btn-danger" onclick="window.deleteAsset(decodeURIComponent('${this.encodeInlineArg(a.id)}'))">Delete</button>
           </td>
         </tr>
       `).join("");
@@ -2158,7 +2161,7 @@ class ScanStreamManager {
           <div style="padding: 12px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; cursor: pointer; user-select: none;" onclick="window.app.toggleEndpointDossier('${cardId}')">
             <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 300px;">
               <span id="${cardId}-icon" style="font-size: 12px; color: var(--accent-cyan); width: 14px;">▶</span>
-              <span class="badge ${method === 'POST' ? 'badge-warning' : (method === 'DELETE' ? 'badge-danger' : 'badge-info')}" style="font-weight: 700; font-size: 11px;">${method}</span>
+              <span class="badge ${method === 'POST' ? 'badge-warning' : (method === 'DELETE' ? 'badge-danger' : 'badge-info')}" style="font-weight: 700; font-size: 11px;">${this.escapeHtml(method)}</span>
               <span style="font-family: monospace; font-size: 13px; font-weight: 600; color: #fff; word-break: break-all;">${this.escapeHtml(ep.url)}</span>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
@@ -2211,8 +2214,8 @@ class ScanStreamManager {
                 Content-Type: <code>${this.escapeHtml(ep.content_type || 'text/html')}</code> | Crawl Depth: <code>${ep.depth || 0}</code>
               </div>
               <div style="display: flex; gap: 8px;">
-                <button class="btn btn-xs btn-outline" onclick="navigator.clipboard.writeText('${this.escapeHtml(ep.url)}')">📋 Copy URL</button>
-                <button class="btn btn-xs btn-primary" onclick="window.app.sendLinkToRepeater('${encodeURIComponent(ep.url)}', '${method}')">⚡ Send to HTTP Repeater</button>
+                <button class="btn btn-xs btn-outline" onclick="navigator.clipboard.writeText(decodeURIComponent('${this.encodeInlineArg(ep.url)}'))">📋 Copy URL</button>
+                <button class="btn btn-xs btn-primary" onclick="window.app.sendLinkToRepeater('${this.encodeInlineArg(ep.url)}', decodeURIComponent('${this.encodeInlineArg(method)}'))">⚡ Send to HTTP Repeater</button>
               </div>
             </div>
 
@@ -2256,9 +2259,9 @@ class ScanStreamManager {
       const scopeStr = endpointsCount > 0 ? `${endpointsCount} locations` : (this.currentTelemetryData.target_value || "Target Host");
 
       const viewFindingsBtn = t.findings_count > 0
-        ? `<button class="btn btn-xs btn-primary" onclick="window.app.viewToolFindings('${this.escapeHtml(t.tool_name)}')">🔍 View ${t.findings_count} Findings</button>`
+        ? `<button class="btn btn-xs btn-primary" onclick="window.app.viewToolFindings(decodeURIComponent('${this.encodeInlineArg(t.tool_name)}'))">🔍 View ${t.findings_count} Findings</button>`
         : "";
-      const viewLogsBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.viewToolLogs('${this.escapeHtml(t.tool_name)}')">📜 View Logs</button>`;
+      const viewLogsBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.viewToolLogs(decodeURIComponent('${this.encodeInlineArg(t.tool_name)}'))">📜 View Logs</button>`;
 
       return `
         <tr>
@@ -2369,6 +2372,10 @@ class ScanStreamManager {
     document.body.appendChild(dlAnchor);
     dlAnchor.click();
     dlAnchor.remove();
+  }
+
+  encodeInlineArg(value) {
+    return encodeURIComponent(String(value ?? ""));
   }
 
   escapeHtml(str) {
