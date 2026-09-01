@@ -252,6 +252,10 @@ class SubfinderAdapter(BaseToolAdapter):
                     service_fingerprint=f"Sources: {', '.join(sorted(source_map[host]))}",
                     discovered_via="Subfinder",
                     dns_status="UNRESOLVED",
+                    organization_id=kwargs.get("organization_id"),
+                    assessment_id=kwargs.get("scan_id"),
+                    authorized_root=apex_domain,
+                    sources=sorted(source_map[host]),
                 ))
 
         if parser_warnings:

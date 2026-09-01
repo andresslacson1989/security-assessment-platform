@@ -363,6 +363,10 @@ async def audit_origin_exposure(
                     is_takeover_vulnerable=False,
                     service_fingerprint="Cloudflare Anycast" if is_cf else "Exposed Origin Host",
                     discovered_via="Certificate Transparency Logs",
+                    organization_id=organization_id,
+                    assessment_id=scan_id,
+                    authorized_root=apex_domain,
+                    sources=["crt.sh"],
                 )
             )
 

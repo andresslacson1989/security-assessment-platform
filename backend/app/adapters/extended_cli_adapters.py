@@ -306,6 +306,9 @@ class AmassAdapter(GovernedExtendedAdapter):
                                 cname_targets=[],
                                 discovered_via=", ".join(str(source) for source in data.get("sources", []) if source) or "Amass",
                                 dns_status="UNRESOLVED",
+                                organization_id=kwargs.get("organization_id"),
+                                assessment_id=kwargs.get("scan_id"),
+                                sources=[str(source) for source in data.get("sources", []) if source],
                             ))
                         finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="EASM-SUB-001", title="Amass Passive Subdomain Discovery", category="OSINT", severity=Severity.INFO, cvss_score=0.0, location=name, observed=json.dumps({"name": name, "sources": data.get("sources", [])}, sort_keys=True), description="Amass passively reported a subdomain from configured public sources.", impact="The hostname expands the observed external attack surface.", remediation="Review and explicitly admit the hostname to inventory before any active assessment.")
                         findings.append(finding)

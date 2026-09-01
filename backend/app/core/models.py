@@ -443,6 +443,10 @@ class DiscoveredSubdomain(BaseModel):
     service_fingerprint: Optional[str] = Field(default=None, description="Identified hosting provider or technology")
     discovered_via: str = Field(default="crt.sh", description="Reconnaissance source (crt.sh, Certspotter, Subfinder)")
     dns_status: str = Field(default="ACTIVE", description="DNS resolution status (ACTIVE or NXDOMAIN)")
+    organization_id: Optional[str] = Field(default=None, description="Authoritative owning tenant organization ID")
+    assessment_id: Optional[str] = Field(default=None, description="Parent assessment execution identity")
+    authorized_root: Optional[str] = Field(default=None, description="Root scope used to classify the discovery")
+    sources: List[str] = Field(default_factory=list, description="Provider/source attribution for the discovery")
 
 
 class RejectedDiscovery(BaseModel):

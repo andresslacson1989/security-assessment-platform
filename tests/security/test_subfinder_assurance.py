@@ -126,6 +126,8 @@ async def test_orchestrator_discovery_callback_does_not_authorize_or_queue_targe
     assert not hasattr(job, "validated_targets")
     assert not hasattr(orchestrator, "active_target_queue")
     assert job.discovered_subdomains[0].dns_status == "UNRESOLVED"
+    assert job.discovered_subdomains[0].organization_id == "org-a"
+    assert job.discovered_subdomains[0].assessment_id == job.id
 
 
 @pytest.mark.asyncio

@@ -182,6 +182,12 @@ async def audit_subdomain_osint(
 
     for sub in sorted(discovered_names):
         sub_info = await resolve_subdomain_details(sub, resolver)
+        sub_info = sub_info.model_copy(update={
+            "organization_id": organization_id,
+            "assessment_id": scan_id,
+            "authorized_root": apex_domain,
+            "sources": ["crt.sh"],
+        })
         
         if emit_subdomain:
             await emit_subdomain(sub_info)

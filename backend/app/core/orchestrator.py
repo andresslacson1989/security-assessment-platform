@@ -290,6 +290,12 @@ class ScanOrchestrator:
         """
         job = self._active_jobs.get(scan_id)
         if job:
+            # Adapter callbacks are observations; authoritative tenant and
+            # assessment identity come from the persisted job boundary.
+            subdomain = subdomain.model_copy(update={
+                "organization_id": job.organization_id,
+                "assessment_id": scan_id,
+            })
             existing_domains = {sd.domain for sd in job.discovered_subdomains}
             if subdomain.domain not in existing_domains:
                 job.discovered_subdomains.append(subdomain)
