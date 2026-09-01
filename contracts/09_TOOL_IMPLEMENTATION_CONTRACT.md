@@ -598,6 +598,13 @@ Stderr: Diagnostic logs
 - **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` ProjectDiscovery GitHub Release Attestation.
 - **Resolution Source:** `[CYBERASSESS_REQUIRED]` Official GitHub releases over HTTPS.
 
+### 9.1 Runtime Executable Trust Boundary
+- **Enterprise-assured mode:** Only a CyberAssess-managed installation may execute as an assured Subfinder tool. The installation record must bind `TOOL-SUBFINDER`, approved version, release artifact filename and archive SHA-256, executable relative path and executable SHA-256, platform, architecture, installer version, installation timestamp, and a valid trust state.
+- **Runtime authorization:** Immediately before process creation, the resolver must verify that the resolved path is the managed executable, that its current SHA-256 matches the installation record, and that its reported version matches `v2.6.5`. Missing records, path changes, hash mismatches, version mismatches, missing files, and invalid trust states fail closed.
+- **Non-assured mode:** Custom, PATH, Python-environment, package-manager, or otherwise unmanaged binaries may be detected for diagnostics where permitted, but must not satisfy the enterprise-assured Subfinder execution contract.
+- **Evidence distinction:** `ARCHIVE_INTEGRITY_VERIFIED`, `EXECUTABLE_INTEGRITY_VERIFIED`, and `UPSTREAM_PROVENANCE_VERIFIED` are separate evidence claims and must not be collapsed into a generic trusted boolean.
+- **TOCTOU control:** Verification must occur as close as practical to process creation; a startup-only hash check is insufficient.
+
 ### 10. Required Permissions & Privileges
 - Unprivileged user network access.
 
