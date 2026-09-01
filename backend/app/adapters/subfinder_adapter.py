@@ -18,6 +18,7 @@ from app.core.models import (
     calculate_fingerprint, DiscoveredSubdomain, RejectedDiscovery, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
 
 class SubfinderAdapter(BaseToolAdapter):
@@ -90,11 +91,20 @@ class SubfinderAdapter(BaseToolAdapter):
                 return False
             current_platform = "windows" if os.name == "nt" else ("darwin" if platform.system().lower() == "darwin" else "linux")
             current_arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
+            manifest = PINNED_TOOL_MANIFEST.get("subfinder", {})
+            platform_key = f"{current_platform}_{current_arch}"
+            expected_artifact = manifest.get("asset_names", {}).get(platform_key)
+            expected_artifact_sha = manifest.get("sha256_checksums", {}).get(platform_key)
             if record.get("tool_version") != self.APPROVED_VERSION:
                 return False
             if record.get("platform") != current_platform or record.get("architecture") != current_arch:
                 return False
-            if record.get("artifact_filename") is None or not record.get("artifact_sha256"):
+            if (
+                not expected_artifact
+                or not expected_artifact_sha
+                or record.get("artifact_filename") != expected_artifact
+                or record.get("artifact_sha256") != expected_artifact_sha
+            ):
                 return False
             if record.get("installer_version") is None:
                 return False

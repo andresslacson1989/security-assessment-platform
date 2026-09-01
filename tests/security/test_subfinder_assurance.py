@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredSubdomain, NormalizedExecutionState
 from app.core.orchestrator import ScanOrchestrator
+from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
 from app.adapters.subfinder_adapter import SubfinderAdapter
 from app.engines.network.engine import NetworkAssessmentEngine
@@ -126,14 +127,24 @@ def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()
         current_platform = "windows" if os.name == "nt" else ("darwin" if module.platform.system().lower() == "darwin" else "linux")
         current_arch = "arm64" if module.platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
-        record.write_text(json.dumps({
-            "tool_id": "TOOL-SUBFINDER", "tool_version": "v2.6.5", "artifact_filename": "release.zip",
-            "artifact_sha256": "a" * 64, "executable_relative_path": "subfinder", "executable_sha256": digest,
+        platform_key = f"{current_platform}_{current_arch}"
+        manifest = PINNED_TOOL_MANIFEST["subfinder"]
+        record_data = {
+            "tool_id": "TOOL-SUBFINDER", "tool_version": "v2.6.5",
+            "artifact_filename": manifest["asset_names"][platform_key],
+            "artifact_sha256": manifest["sha256_checksums"][platform_key],
+            "executable_relative_path": "subfinder", "executable_sha256": digest,
             "platform": current_platform, "architecture": current_arch, "installer_version": "13.0.0",
             "trust_status": "VALID", "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
-        }))
+        }
+        record.write_text(json.dumps(record_data))
         adapter = SubfinderAdapter()
         assert adapter.verify_managed_binary(str(binary)) is True
+        record_data["artifact_sha256"] = "a" * 64
+        record.write_text(json.dumps(record_data))
+        assert adapter.verify_managed_binary(str(binary)) is False
+        record_data["artifact_sha256"] = manifest["sha256_checksums"][platform_key]
+        record.write_text(json.dumps(record_data))
         binary.write_bytes(b"tampered-binary")
         assert adapter.verify_managed_binary(str(binary)) is False
     finally:
