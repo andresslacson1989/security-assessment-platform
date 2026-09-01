@@ -1849,14 +1849,20 @@ async def test_scenario_24_cloud_container_and_k8s_cis_benchmarks(tmp_path):
     mock_prowler = '{"CheckID":"iam_root_mfa_enabled","Status":"FAIL","Severity":"critical","StatusExtended":"MFA not enabled on root account"}\n'
 
     with patch.object(DockleAdapter, "is_available", AsyncMock(return_value=True)), \
-         patch.object(DockleAdapter, "resolve_binary_path", return_value="/bin/dockle"), \
-         patch.object(DockleAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_dockle), ""))), \
-         patch.object(KubeBenchAdapter, "is_available", AsyncMock(return_value=True)), \
-         patch.object(KubeBenchAdapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
-         patch.object(KubeBenchAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_kb), ""))), \
-         patch.object(ProwlerAdapter, "is_available", AsyncMock(return_value=True)), \
-         patch.object(ProwlerAdapter, "resolve_binary_path", return_value="/bin/prowler"), \
-         patch.object(ProwlerAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_prowler, ""))):
+             patch.object(DockleAdapter, "resolve_binary_path", return_value="/bin/dockle"), \
+             patch.object(DockleAdapter, "verify_managed_binary", return_value=True), \
+             patch.object(DockleAdapter, "get_version", AsyncMock(return_value="dockle 0.4.14")), \
+             patch.object(DockleAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_dockle), ""))), \
+             patch.object(KubeBenchAdapter, "is_available", AsyncMock(return_value=True)), \
+             patch.object(KubeBenchAdapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
+             patch.object(KubeBenchAdapter, "verify_managed_binary", return_value=True), \
+             patch.object(KubeBenchAdapter, "get_version", AsyncMock(return_value="kube-bench 0.7.0")), \
+             patch.object(KubeBenchAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_kb), ""))), \
+             patch.object(ProwlerAdapter, "is_available", AsyncMock(return_value=True)), \
+             patch.object(ProwlerAdapter, "resolve_binary_path", return_value="/bin/prowler"), \
+             patch.object(ProwlerAdapter, "verify_managed_binary", return_value=True), \
+             patch.object(ProwlerAdapter, "get_version", AsyncMock(return_value="prowler 4.1.0")), \
+             patch.object(ProwlerAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_prowler, ""))):
 
         findings = await engine.run(
             target, config, emit_log, emit_prog, emit_find,
