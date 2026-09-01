@@ -1579,8 +1579,11 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
     with ExitStack() as stack:
         stack.enter_context(patch.object(SubfinderAdapter, "is_available", AsyncMock(return_value=True)))
         stack.enter_context(patch.object(SubfinderAdapter, "resolve_binary_path", return_value="/bin/subfinder"))
-        stack.enter_context(patch.object(SubfinderAdapter, "_resolve_host_dns", AsyncMock(return_value=(["192.168.1.1"], [], "ACTIVE"))))
+        stack.enter_context(patch.object(SubfinderAdapter, "verify_managed_binary", return_value=True))
+        stack.enter_context(patch.object(SubfinderAdapter, "get_version", AsyncMock(return_value="subfinder v2.6.5")))
         stack.enter_context(patch.object(SubfinderAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_sf_stdout, ""))))
+        stack.enter_context(patch("app.engines.network.engine.SslyzeAdapter.is_available", new=AsyncMock(return_value=False)))
+        stack.enter_context(patch("app.engines.network.engine.NmapAdapter.is_available", new=AsyncMock(return_value=False)))
         stack.enter_context(patch.object(HttpxAdapter, "is_available", AsyncMock(return_value=True)))
         stack.enter_context(patch.object(HttpxAdapter, "resolve_binary_path", return_value="/bin/httpx"))
         stack.enter_context(patch.object(HttpxAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_hx_stdout, ""))))
@@ -1591,6 +1594,9 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
         stack.enter_context(patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("app.engines.network.engine.audit_dns_hygiene", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("app.engines.network.engine.audit_exposed_ports", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.network.engine.audit_service_banners", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.network.engine.audit_origin_exposure", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.network.engine.audit_subdomain_osint", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new=AsyncMock(return_value=[])))
@@ -2085,4 +2091,3 @@ def test_scenario_32_contextual_risk_scoring_and_vulnerability_sla():
     assert sla_high.sla_days == 14
     sla_med = compute_sla_info(Severity.MEDIUM)
     assert sla_med.sla_days == 30
-
