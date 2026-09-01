@@ -1,127 +1,246 @@
-CyberAssess Proprietary Non-Commercial License
-Version 1.0
+CyberAssess Proprietary Personal-Use License
+Version 1.1
 
 Copyright (c) 2026 Andress Lacson. All rights reserved.
 
-This license applies only to the original software, documentation, and other
-materials created by or for the CyberAssess project (collectively, the
-"Software") that are owned by Andress Lacson (the "Owner"). It does not apply
-to Third-Party Components described below.
+IMPORTANT: THIS IS A PROPRIETARY PERSONAL-USE LICENSE. IT IS NOT AN OPEN-
+SOURCE LICENSE AND IT DOES NOT GRANT A COMPANY, ORGANIZATION, OR OTHER ENTITY
+ANY RIGHT TO USE CYBERASSESS.
 
-1. Ownership
+1. Scope and Definitions
 
-The Software is proprietary and source-available. The Owner retains all right,
-title, and interest in and to the Software, including all copyright and other
-intellectual-property rights. This license grants limited permission to use
-the Software; it does not sell, assign, transfer, or otherwise convey ownership
-of the Software to you. No rights are granted except those expressly stated in
-this license.
+"CyberAssess" or the "Software" means the CyberAssess source code,
+object/binary code, documentation, configuration, scripts, user interface,
+repository contents, original selection and arrangement of those materials,
+and other materials created by or for the CyberAssess project and owned by the
+Owner. It excludes Third-Party Components defined in Section 9.
 
-2. Non-Commercial Permission
+"Owner" means Andress Lacson.
 
-Subject to this license, the Owner grants you a worldwide, non-exclusive,
-non-transferable, royalty-free license to:
+"Individual Licensee" means one natural person acting solely in that person's
+private, individual capacity. A company, corporation, partnership, school,
+university, laboratory, nonprofit, charity, association, club, team,
+government body, public agency, or other organization or legal entity is not an
+Individual Licensee. A person is also not an Individual Licensee while acting
+as an employee, officer, director, contractor, consultant, agent, volunteer,
+representative, student, researcher, or member of any organization, or while
+acting for an employer, client, customer, sponsor, funder, or other third party.
 
-* download and run the Software for personal use;
-* use the Software for education, teaching, or academic or scientific research;
-* inspect and study the source code;
-* modify the Software and create derivative versions for personal,
-  educational, academic, research, or other genuinely non-commercial use; and
-* run those modifications privately for such non-commercial use.
+"Personal Use" means use solely by an Individual Licensee for that person's
+own private purposes, on that person's own behalf, without compensation,
+reimbursement, sponsorship, funding, or other benefit from an organization or
+third party. Personal Use excludes use with an organization's, employer's,
+client's, customer's, or other third party's data; use that produces work
+product or a result for another person or entity; and use that supports,
+enables, or benefits another person's or entity's activities.
 
-"Non-Commercial Use" means use that is not intended to generate revenue,
-commercial advantage, or monetary compensation, whether directly or
-indirectly. Use by a business, government contractor, or other organization in
-its operations is Commercial Use when it supports, enables, or substitutes for
-the organization's revenue-generating, customer-facing, billable, or
-profit-seeking activities. Nonprofit status alone does not make use
-non-commercial if the use generates revenue or commercial advantage.
+"Commercial Use" means any use for revenue, monetary compensation, commercial
+advantage, business operations, customer or client service, professional
+practice, paid or sponsored work, or any other organizational or third-party
+benefit. Commercial Use includes use by an organization even if the particular
+use is free, internal, educational, charitable, or not directly profitable.
 
-3. Commercial Restrictions
+2. Ownership and Reservation of Rights
 
-Without the Owner's prior written authorization, you may not use, reproduce,
-modify, distribute, publish, display, perform, sell, sublicense, lease, rent,
-or otherwise exploit the Software for Commercial Use. Commercial Use includes,
-without limitation:
+The Owner exclusively retains all right, title, and interest in and to
+CyberAssess and all copyright and other intellectual-property rights that the
+Owner owns in it. CyberAssess is licensed, not sold. No transfer, assignment,
+sale, gift, or other conveyance of ownership is made to any Individual
+Licensee, recipient, contributor, company, organization, or other person.
 
-* providing paid services, consulting, assessments, scanning, monitoring,
-  managed security, or support based on the Software;
-* offering the Software or its functionality as paid SaaS, a hosted service,
-  API, managed service, or other service for customers;
-* incorporating the Software into a commercial product or service or deploying
-  it for a commercial organization's internal business operations;
-* redistributing it in a paid or commercial package, or using it to support
-  advertising, sponsorship, subscriptions, or other monetization; and
-* representing the Software as your own proprietary software.
+This license does not give any person ownership of CyberAssess, its repository,
+its original code, documentation, configuration, user interface, selection,
+coordination, arrangement, architecture as expressed in the materials,
+branding, or project identity. A modified copy, fork, adaptation, or derivative
+version remains subject to the Owner's rights in the CyberAssess material it
+contains and may not be represented as the modifier's or distributor's own
+CyberAssess project.
 
-You may not remove, obscure, or alter copyright, license, or attribution
-notices, or attach terms that weaken or contradict this license.
+To the extent an Individual Licensee creates original material that is legally
+separable from CyberAssess, any rights that applicable law independently gives
+that person in that separate material do not give that person ownership of
+CyberAssess. Those rights remain subject to the restrictions in this license
+when the material is combined with, based on, or distributed with CyberAssess.
+No such person receives any right to exploit, distribute, or commercialize
+CyberAssess or a derivative version. Nothing in this license claims copyright in
+an idea,
+procedure, system, method, concept, principle, discovery, or other subject
+matter that applicable law excludes from copyright protection.
 
-4. Non-Commercial Redistribution
+3. Limited Personal Permission
 
-You may redistribute unmodified or modified source or binary copies solely for
-Non-Commercial Use, provided that you include this license and all applicable
-copyright notices, identify material modifications, preserve the restrictions
-in this license for recipients, do not charge or attach a commercial
-transaction to the distribution, and do not imply ownership, endorsement, or
-affiliation with the Owner or CyberAssess. A recipient receives no greater
-rights than those granted by this license.
+Subject to every condition in this license, the Owner grants only to an
+Individual Licensee a limited, worldwide, non-exclusive, non-transferable,
+non-sublicensable, royalty-free permission to:
 
-5. Derivative Works and Forks
+* download and run an unmodified copy of CyberAssess solely for Personal Use;
+* inspect and study the source code solely for Personal Use; and
+* modify CyberAssess and run a modified copy privately, solely for that
+  Individual Licensee's Personal Use.
 
-Non-commercial modifications and forks are permitted under Section 2. Any
-distributed derivative must clearly identify that it has been modified, retain
-the notices and this license, and remain subject to the same non-commercial
-restrictions. You retain copyright in your original additions to the extent
-the law permits, but you do not acquire ownership or commercial rights in the
-Software. By distributing an addition that incorporates the Software, you
-grant the Owner a perpetual, worldwide, royalty-free license to use,
-reproduce, modify, and distribute that addition as part of the Software or a
-derivative, while this license remains applicable to the Software.
+This permission is personal to the Individual Licensee. It may not be assigned,
+sublicensed, transferred, lent, rented, or made available for use by another
+person or entity, except for the limited person-to-person copy transfer
+expressly allowed by Section 5. No permission is granted to use CyberAssess on
+behalf of, or for the benefit of, any organization, business, client, customer,
+sponsor, or other non-personal third party.
 
-6. Commercial Licensing
+4. No Organizational or Commercial Use
 
-Commercial rights are reserved exclusively to the Owner. Commercial Use
-requires a separate written license signed by the Owner before it begins. The
-Owner alone may grant such permissions unless that right is separately
-assigned in writing. No payment, contribution, distribution, or use creates an
-automatic commercial license.
+Without a separate written commercial license signed by the Owner, no company,
+organization, institution, school, university, laboratory, nonprofit, charity,
+government body, public agency, team, group, or other entity may access, run,
+copy, modify, deploy, host, integrate, distribute, or otherwise use
+CyberAssess. An Individual Licensee may not use CyberAssess in any role or
+context listed in this paragraph.
 
-7. Trademarks and Branding
+Without that separate written license, no person or entity may:
 
-This license grants no rights to the names, trademarks, service marks, logos,
-branding, product identity, or documentation branding of CyberAssess. You may
-refer to CyberAssess factually to identify the Software, but may not use its
-branding to imply endorsement, sponsorship, origin, or affiliation, or to name
-a modified product without the Owner's prior written permission.
+* provide paid or unpaid consulting, assessments, scanning, monitoring,
+  managed security, support, training, or other services based on CyberAssess;
+* offer CyberAssess or its functionality as SaaS, a hosted service, API,
+  managed service, remote service, or service bureau;
+* use CyberAssess for internal business, professional, institutional,
+  employment, client, customer, or operational purposes;
+* incorporate CyberAssess into a product, service, workflow, deliverable, or
+  package for another person or entity;
+* sell, rent, lease, sublicense, publish, monetize, advertise, sponsor, or
+  redistribute CyberAssess, except for the limited person-to-person sharing
+  expressly allowed by Section 5; or
+* use CyberAssess to obtain revenue, compensation, reimbursement, funding,
+  commercial advantage, or any other third-party benefit.
 
-8. Third-Party Components
+Calling a use “personal,” “educational,” “research,” “nonprofit,” “free,”
+“internal,” or “open source” does not make it permitted if it is performed for,
+on behalf of, or for the benefit of an organization or third party.
 
-Third-Party Components, including dependency packages, bundled tools, and
-upstream source code, remain the property of their respective owners and are
-subject to their respective licenses. This license does not claim ownership of
-or supersede those licenses. See THIRD_PARTY_NOTICES.md and the component
-documentation for available notices and obligations. You are responsible for
-reviewing those licenses before redistribution or Commercial Use.
+5. No General Redistribution; Limited Person-to-Person Sharing
 
-9. Disclaimer and Limitation of Liability
+The permission to redistribute is not granted generally. An Individual
+Licensee may give an unmodified source copy, or a modified source copy, to
+another known Individual Licensee only if all of the following are true:
 
-THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTIES OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
-NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE OWNER WILL NOT
-BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY
-DAMAGES ARISING FROM OR RELATING TO THE SOFTWARE OR THIS LICENSE.
+* the transfer is free and has no commercial transaction, compensation,
+  sponsorship, advertising, or organizational involvement;
+* the recipient accepts and remains bound by this license;
+* this license, copyright notices, and applicable Third-Party notices remain
+  with the copy;
+* material modifications are clearly identified;
+* the copy is not uploaded, mirrored, packaged, or made available for an
+  organization, public service, marketplace, repository, distribution channel,
+  or other broad audience; and
+* neither party implies ownership, endorsement, sponsorship, or affiliation
+  with the Owner or CyberAssess.
 
-10. Termination
+No binary distribution, public fork, public mirror, package publication, or
+other public redistribution is authorized by this license. A platform's
+technical ability to view, copy, or fork a public repository does not transfer
+ownership or expand the permissions granted by this license.
 
-This license terminates automatically if you breach it. Upon termination, you
-must stop using and distributing the Software and destroy copies in your
-possession or control. Permissions that were properly exercised before
-termination do not cure the breach or grant continuing rights.
+6. Modifications and Derivative Versions
 
-11. Governing Terms
+Private modifications are permitted only under Section 3. No modification,
+fork, adaptation, translation, arrangement, compilation, or other derivative
+version transfers ownership of CyberAssess or creates commercial rights.
 
-If any provision is unenforceable, it will be limited to the minimum extent
-necessary and the remaining provisions will remain in effect. This license is
-the complete agreement governing the Software's use and may be changed only by
-the Owner in writing.
+No distributed derivative version is authorized except the limited sharing
+allowed by Section 5. Any such shared version must identify material changes,
+preserve all notices and this license, remain subject to this license, and not
+use CyberAssess branding in a way that implies endorsement or origin.
+
+7. Contributions and Submissions
+
+This license does not require the Owner to accept contributions. Unless the
+Owner and contributor sign a separate written agreement, submitting code,
+documentation, suggestions, or other material to the repository does not
+transfer ownership of CyberAssess to the contributor and does not grant the
+contributor any right to use or license CyberAssess.
+
+To the extent a contributor owns rights in material voluntarily submitted for
+inclusion in CyberAssess, the contributor grants the Owner a perpetual,
+worldwide, irrevocable, royalty-free, transferable, sublicensable license to
+use, reproduce, modify, adapt, combine, publish, distribute, display, perform,
+commercialize, and otherwise exploit that material in CyberAssess and related
+works. The contributor represents that the submission may lawfully be licensed
+on these terms and does not include material subject to obligations that would
+conflict with this license. This paragraph does not transfer ownership of the
+contributor's separable original material unless a separate written assignment
+does so, but it gives the Owner the broad rights needed to control and develop
+CyberAssess.
+
+8. Commercial Licensing Reserved
+
+All commercial and organizational rights are reserved exclusively to the
+Owner. They may be granted only by a separate written commercial license signed
+by the Owner. No payment, contribution, download, repository access, fork,
+modification, distribution, or passage of time creates an implied or automatic
+commercial license.
+
+9. Third-Party Components
+
+This license applies only to CyberAssess material owned by the Owner.
+Third-party libraries, dependency packages, bundled tools, external security
+utilities, upstream source code, and other components not owned by the Owner
+("Third-Party Components") remain the property of their respective owners and
+remain subject to their respective licenses. This license does not claim
+ownership of, relicense, restrict, or supersede any Third-Party Component or
+its license. See THIRD_PARTY_NOTICES.md and the relevant component files for
+additional information. No permission under a Third-Party Component's license
+authorizes use of CyberAssess beyond this license.
+
+10. Trademarks and Branding
+
+No trademark, service-mark, trade-name, logo, design, branding, product
+identity, documentation branding, publicity, or other brand right is granted
+for CyberAssess or any related name or logo. Factual reference to CyberAssess
+to identify the original project is permitted only when it does not imply
+endorsement, sponsorship, affiliation, or ownership. A modified version must
+not use CyberAssess branding as its product name without the Owner's prior
+written permission.
+
+11. Notices and No Implied Rights
+
+You may not remove, obscure, alter, or replace copyright, license, attribution,
+or proprietary notices. No rights are granted by implication, estoppel, waiver,
+repository visibility, or otherwise except those expressly stated here. No
+patent, trade-secret, trademark, publicity, or other intellectual-property
+license is granted except as expressly stated.
+
+12. Disclaimer and Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, CYBERASSESS IS PROVIDED
+"AS IS" AND WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+NON-INFRINGEMENT, ACCURACY, SECURITY, OR AVAILABILITY. TO THE MAXIMUM EXTENT
+PERMITTED BY LAW, THE OWNER WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
+SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR LOSS OF DATA,
+PROFITS, REVENUE, BUSINESS, OR GOODWILL, ARISING FROM OR RELATING TO
+CYBERASSESS OR THIS LICENSE.
+
+13. Termination and Remedies
+
+This license terminates automatically upon breach. Upon termination, all
+permissions under this license end immediately, and the violating person or
+entity must stop using, copying, modifying, and distributing CyberAssess and,
+to the extent permitted by law, delete or destroy copies under its control.
+Termination does not limit any other rights or remedies available to the Owner
+under applicable law. A later cure does not reinstate permission unless the
+Owner confirms reinstatement in writing.
+
+14. Governing Law and Severability
+
+This license is governed by the laws of the Republic of the Philippines,
+without regard to conflict-of-law rules. The parties submit to the jurisdiction
+of the competent courts of the Philippines, subject to any mandatory
+jurisdictional requirement imposed by applicable law. If a provision is held
+invalid or unenforceable, it will be enforced to the maximum extent permitted
+and the remaining provisions will remain in effect. Nothing in this license
+waives a right or remedy that cannot lawfully be waived.
+
+15. Entire Agreement and Written Changes
+
+This license states the complete terms for the permission granted to use
+CyberAssess. Any exception, commercial permission, assignment, or amendment
+must be in a written instrument signed by the Owner. If this license conflicts
+with a separate written license signed by the Owner, that separate license
+controls for its stated scope.
