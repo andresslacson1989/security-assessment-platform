@@ -3,6 +3,7 @@ Unit tests for Engine 2: Web Application & API DAST (v3.1.0).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from pathlib import Path
 import httpx
 import pytest
 
@@ -17,6 +18,7 @@ from app.core.models import (
     FuzzingConfig,
     ToolAdapterConfig,
     DiscoveredEndpoint,
+    NormalizedExecutionState,
 )
 from app.engines.web_dast.headers_cookies import audit_security_headers_and_cookies
 from app.engines.web_dast.cors_analyzer import audit_cors_policies
@@ -244,6 +246,70 @@ async def test_web_dast_engine_full_run():
         assert len(auth_statuses) == 1
         assert auth_statuses[0]["auth_type"] == "HEADER"
         assert auth_statuses[0]["authenticated"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_dast_engine_reaches_bounded_sqlmap_path():
+    """The active-fuzzing production path invokes sqlmap with a server workspace."""
+    calls = {}
+
+    class FakeSqlmap:
+        last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+        async def is_available(self, custom_path=None):
+            return True
+
+        async def run(self, target, config, emit_log, emit_finding, **kwargs):
+            calls["sqlmap"] = kwargs
+            assert Path(kwargs["output_dir"]).is_absolute()
+            return []
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    async def log_cb(level, message):
+        pass
+
+    async def progress_cb(percent, stage):
+        pass
+
+    async def finding_cb(finding):
+        pass
+
+    with patch("app.engines.web_dast.engine.SqlmapAdapter", FakeSqlmap), \
+         patch("app.engines.web_dast.engine.httpx.AsyncClient", return_value=mock_client), \
+         patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_browser_posture", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_graphql_endpoints", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.WebCrawler.crawl", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.AuthSessionManager.authenticate", new_callable=AsyncMock, return_value=False), \
+         patch("app.engines.web_dast.engine.AuthSessionManager.audit_auth_and_forms", new_callable=AsyncMock, return_value=[]):
+        config = ScanConfig(
+            crawler=CrawlerConfig(enabled=False),
+            fuzzing=FuzzingConfig(enabled=True),
+            adapters=ToolAdapterConfig(
+                enable_nuclei=False,
+                enable_ffuf=False,
+                enable_katana=False,
+                enable_schemathesis=False,
+                enable_sqlmap=True,
+            ),
+        )
+        await WebDastAssessmentEngine().run(
+            Target(name="Web", type=TargetType.URL, value="https://example.com/item?id=1"),
+            config,
+            log_cb,
+            progress_cb,
+            finding_cb,
+            organization_id="org-test",
+            scan_id="scan-sqlmap-runtime",
+        )
+
+    assert "sqlmap" in calls
 
 
 @pytest.mark.asyncio

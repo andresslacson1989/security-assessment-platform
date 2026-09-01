@@ -4,10 +4,11 @@ Unit tests for Engine 1: Network Perimeter, TLS/SSL and DNS Auditor.
 
 import asyncio
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 
-from app.core.models import Target, TargetType, ScanConfig, Severity, LogLevel, ToolAdapterConfig, OSINTConfig
+from app.core.models import Target, TargetType, ScanConfig, Severity, LogLevel, ToolAdapterConfig, OSINTConfig, NormalizedExecutionState
 from app.engines.network.tls_auditor import (
     extract_host_and_port,
     matches_san,
@@ -141,3 +142,72 @@ async def test_network_engine_full_run():
         assert len(progress_updates) >= 4
         assert progress_updates[-1][0] == 100
         assert len(logs) >= 2
+
+
+@pytest.mark.asyncio
+async def test_network_engine_reaches_governed_extended_adapters():
+    """The production network path invokes the governed Amass and Metasploit adapters."""
+    calls = {}
+
+    class FakeAmass:
+        last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+        async def is_available(self, custom_path=None):
+            return True
+
+        async def run(self, target, config, emit_log, emit_finding, **kwargs):
+            calls["amass"] = kwargs
+            assert Path(kwargs["output_file"]).is_absolute()
+            return []
+
+    class FakeMetasploit:
+        last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+        async def is_available(self, custom_path=None):
+            return True
+
+        async def run(self, target, config, emit_log, emit_finding, **kwargs):
+            calls["metasploit"] = kwargs
+            return []
+
+    logs = []
+
+    async def log_cb(level, message):
+        logs.append((level, message))
+
+    async def progress_cb(percent, stage):
+        pass
+
+    async def finding_cb(finding):
+        pass
+
+    with patch("app.engines.network.engine.AmassAdapter", FakeAmass), \
+         patch("app.engines.network.engine.MetasploitAdapter", FakeMetasploit), \
+         patch("app.engines.network.engine.audit_tls_certificates", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_dns_hygiene", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_exposed_ports", new_callable=AsyncMock, return_value=[]):
+        config = ScanConfig(
+            adapters=ToolAdapterConfig(
+                enable_nmap=False,
+                enable_sslyze=False,
+                enable_subfinder=False,
+                enable_httpx=False,
+                enable_amass=True,
+                enable_metasploit=True,
+            ),
+            osint=OSINTConfig(subdomain_enumeration=False),
+        )
+        await NetworkAssessmentEngine().run(
+            Target(name="Web App", type=TargetType.URL, value="https://example.com"),
+            config,
+            log_cb,
+            progress_cb,
+            finding_cb,
+            organization_id="org-one",
+            scan_id="scan-extended-runtime",
+        )
+
+    assert "amass" in calls
+    assert "metasploit" in calls
+    assert calls["metasploit"]["port"] == 443

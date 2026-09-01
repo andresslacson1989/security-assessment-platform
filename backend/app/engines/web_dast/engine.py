@@ -5,6 +5,8 @@ Integrates scoped BFS web crawling, session authentication, and comprehensive vu
 
 from __future__ import annotations
 from typing import List, Optional, Dict
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import httpx
 
 from app.core.models import (
@@ -40,7 +42,9 @@ from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
+from app.adapters.sqlmap_adapter import SqlmapAdapter
 from app.core.ssrf_protector import create_validated_target, ValidatedTargetTransport
+from app.core.path_sandbox import get_default_workspace_dir
 
 
 class WebDastAssessmentEngine(BaseAssessmentEngine):
@@ -478,6 +482,43 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     await emit_finding(f)
 
             # --- Stage 7: Active Parameter Fuzzing & Injection Probes (85% - 95%) ---
+            if (
+                config.fuzzing.enabled
+                and getattr(config.adapters, "enable_sqlmap", True)
+                and target.type == TargetType.URL
+            ):
+                sqlmap_adapter = SqlmapAdapter()
+                custom_path = getattr(config.adapters, "sqlmap_path", None) or getattr(config.adapters, "custom_sqlmap_path", None)
+                try:
+                    if await sqlmap_adapter.is_available(custom_path):
+                        await emit_progress(84, "Executing bounded sqlmap SQL injection verification...")
+                        with TemporaryDirectory(
+                            prefix=f"sqlmap-{kwargs.get('scan_id', 'active')}-",
+                            dir=str(get_default_workspace_dir()),
+                        ) as workspace:
+                            sqlmap_findings = await sqlmap_adapter.run(
+                                target,
+                                config,
+                                emit_log,
+                                emit_finding,
+                                scan_id=kwargs.get("scan_id", "active"),
+                                organization_id=organization_id,
+                                output_dir=str(Path(workspace)),
+                            )
+                            for finding in sqlmap_findings:
+                                if finding.fingerprint not in existing_fps:
+                                    existing_fps.add(finding.fingerprint)
+                                    findings.append(finding)
+                        if tool_state_cb:
+                            await publish_tool_state("sqlmap", sqlmap_adapter, "TOOL_EXECUTION_FAILED")
+                    elif tool_state_cb:
+                        await tool_state_cb("sqlmap", "TOOL_EXECUTION_FAILED")
+                        await emit_log(LogLevel.WARNING, "sqlmap unavailable: SQL injection verification was not assessed.")
+                except Exception as exc:
+                    if tool_state_cb:
+                        await tool_state_cb("sqlmap", "TOOL_EXECUTION_FAILED")
+                    await emit_log(LogLevel.WARNING, f"sqlmap adapter error: {exc}")
+
             if config.fuzzing.enabled:
                 await emit_progress(85, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
                 await emit_log(LogLevel.INFO, "Fuzzing discovered query parameters and forms with non-destructive payloads.")

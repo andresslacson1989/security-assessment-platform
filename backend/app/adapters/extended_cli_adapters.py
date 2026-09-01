@@ -26,6 +26,7 @@ from app.core.models import (
     Severity,
     Target,
     TargetType,
+    DiscoveredSubdomain,
     calculate_fingerprint,
     sanitize_sensitive_text,
 )
@@ -274,12 +275,21 @@ class AmassAdapter(GovernedExtendedAdapter):
         command = self.build_command(binary, target.value, output_file)
         code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
         findings: List[Finding] = []
+        emit_subdomain = kwargs.get("emit_subdomain")
         try:
             with open(output_file, "r", encoding="utf-8") as report:
                 for line in report:
                     data = json.loads(line)
                     name = data.get("name")
                     if isinstance(name, str) and _host(name):
+                        if emit_subdomain:
+                            await emit_subdomain(DiscoveredSubdomain(
+                                domain=_host(name),
+                                ip_addresses=[],
+                                cname_targets=[],
+                                discovered_via=", ".join(str(source) for source in data.get("sources", []) if source) or "Amass",
+                                dns_status="UNRESOLVED",
+                            ))
                         finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="EASM-SUB-001", title="Amass Passive Subdomain Discovery", category="OSINT", severity=Severity.INFO, cvss_score=0.0, location=name, observed=json.dumps({"name": name, "sources": data.get("sources", [])}, sort_keys=True), description="Amass passively reported a subdomain from configured public sources.", impact="The hostname expands the observed external attack surface.", remediation="Review and explicitly admit the hostname to inventory before any active assessment.")
                         findings.append(finding)
                         await emit_finding(finding)

@@ -4,6 +4,8 @@ Contract 03, 06 & 08 Network & TLS Assessment Engine Coordinator.
 
 from __future__ import annotations
 from typing import List
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
 from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel, NormalizedExecutionState
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
@@ -17,7 +19,10 @@ from app.adapters.nmap_adapter import NmapAdapter
 from app.adapters.sslyze_adapter import SslyzeAdapter
 from app.adapters.subfinder_adapter import SubfinderAdapter
 from app.adapters.httpx_adapter import HttpxAdapter
+from app.adapters.amass_adapter import AmassAdapter
+from app.adapters.metasploit_adapter import MetasploitAdapter
 from app.core.ssrf_protector import create_validated_target
+from app.core.path_sandbox import get_default_workspace_dir
 
 
 class NetworkAssessmentEngine(BaseAssessmentEngine):
@@ -222,6 +227,33 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                     findings.append(f)
                     await emit_finding(f)
 
+        if getattr(config.adapters, "enable_metasploit", True) and target.type in (TargetType.URL, TargetType.DOMAIN, TargetType.IP):
+            metasploit_adapter = MetasploitAdapter()
+            custom_path = getattr(config.adapters, "metasploit_path", None) or getattr(config.adapters, "custom_metasploit_path", None)
+            try:
+                if await metasploit_adapter.is_available(custom_path):
+                    await emit_progress(68, "Executing governed Metasploit auxiliary verification...")
+                    _, target_port = extract_host_and_port(target.value)
+                    metasploit_findings = await metasploit_adapter.run(
+                        target,
+                        config,
+                        emit_log,
+                        emit_finding,
+                        scan_id=scan_id,
+                        organization_id=kwargs.get("organization_id"),
+                        port=target_port or 443,
+                    )
+                    findings.extend(metasploit_findings)
+                    if tool_state_cb:
+                        await tool_state_cb("metasploit", metasploit_adapter.last_execution_state.value)
+                elif tool_state_cb:
+                    await tool_state_cb("metasploit", "TOOL_EXECUTION_FAILED")
+                    await emit_log(LogLevel.WARNING, "Metasploit unavailable: auxiliary verification was not assessed.")
+            except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("metasploit", "TOOL_EXECUTION_FAILED")
+                await emit_log(LogLevel.WARNING, f"Metasploit adapter error: {e}")
+
         # --- Stage 4: High-Speed EASM & Tech Fingerprinting (Subfinder + Httpx) (70% - 85%) ---
         if getattr(config.adapters, "enable_subfinder", True):
             subfinder_adapter = SubfinderAdapter()
@@ -249,6 +281,38 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 if tool_state_cb:
                     await tool_state_cb("subfinder", "TOOL_EXECUTION_FAILED")
                 await emit_log(LogLevel.WARNING, f"Subfinder adapter error: {e}")
+
+        if getattr(config.adapters, "enable_amass", True) and target.type in (TargetType.URL, TargetType.DOMAIN):
+            amass_adapter = AmassAdapter()
+            custom_path = getattr(config.adapters, "amass_path", None) or getattr(config.adapters, "custom_amass_path", None)
+            try:
+                if await amass_adapter.is_available(custom_path):
+                    await emit_progress(75, "Executing Amass passive attack-surface reconnaissance...")
+                    with TemporaryDirectory(
+                        prefix=f"amass-{scan_id}-",
+                        dir=str(get_default_workspace_dir()),
+                    ) as workspace:
+                        output_file = str(Path(workspace) / "amass.jsonl")
+                        amass_findings = await amass_adapter.run(
+                            target,
+                            config,
+                            emit_log,
+                            emit_finding,
+                            scan_id=scan_id,
+                            organization_id=kwargs.get("organization_id"),
+                            output_file=output_file,
+                            emit_subdomain=subdomain_cb,
+                        )
+                        findings.extend(amass_findings)
+                    if tool_state_cb:
+                        await tool_state_cb("amass", amass_adapter.last_execution_state.value)
+                elif tool_state_cb:
+                    await tool_state_cb("amass", "TOOL_EXECUTION_FAILED")
+                    await emit_log(LogLevel.WARNING, "Amass unavailable: passive discovery was not assessed.")
+            except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("amass", "TOOL_EXECUTION_FAILED")
+                await emit_log(LogLevel.WARNING, f"Amass adapter error: {e}")
 
         if getattr(config.adapters, "enable_httpx", True):
             httpx_adapter = HttpxAdapter()
