@@ -26,6 +26,7 @@ from app.core.models import (
     AuditAction,
     sanitize_sensitive_text,
 )
+from app.core.version import APP_VERSION
 from app.installers.manager import ToolInstallationManager
 from app.core.ssrf_protector import (
     assert_safe_url,
@@ -238,7 +239,7 @@ async def execute_http_repeater(
     
     headers = dict(payload.headers) if payload.headers else {}
     if "user-agent" not in {k.lower() for k in headers.keys()}:
-        headers["User-Agent"] = "CyberAssess-Repeater/13.0.0"
+        headers["User-Agent"] = f"CyberAssess-Repeater/{APP_VERSION}"
 
     async def on_redirect_response(response: httpx.Response):
         """Hop-by-hop redirect SSRF validator."""

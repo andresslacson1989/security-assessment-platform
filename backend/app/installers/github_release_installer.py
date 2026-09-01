@@ -22,6 +22,7 @@ from typing import Optional, Dict, List, Tuple
 import httpx
 
 from app.core.models import ToolInstallMethod
+from app.core.version import APP_VERSION
 from app.installers.base_installer import (
     BaseToolInstaller,
     SecurityError,
@@ -345,7 +346,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
         await emit_progress(10, f"Fetching release metadata for {self.display_name} ({rel_label})...")
 
         headers = {
-            "User-Agent": "CyberAssess-Platform/13.0.0",
+            "User-Agent": f"CyberAssess-Platform/{APP_VERSION}",
             "Accept": "application/vnd.github.v3+json",
         }
 
@@ -474,7 +475,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
                     "executable_sha256": executable_hash,
                     "platform": os_prefix,
                     "architecture": arch_suffix,
-                    "installer_version": "13.0.0",
+                    "installer_version": APP_VERSION,
                     "trust_status": "VALID",
                     "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
                 }

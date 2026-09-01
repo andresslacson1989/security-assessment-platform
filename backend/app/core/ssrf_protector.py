@@ -10,6 +10,7 @@ import urllib.parse
 import httpx
 import httpcore
 from typing import Any, List, Tuple, Optional
+from app.core.version import APP_VERSION
 
 
 # Blocked IPv4 and IPv6 Networks
@@ -427,7 +428,7 @@ def create_validated_target(
                     )
 
     # Compute cryptographic identity digests per Contract 09 §1.1
-    policy_version = "14.3.0"
+    policy_version = APP_VERSION
     target_id = hashlib.sha256(f"{canonical_val}:{selected_dest}".encode("utf-8")).hexdigest()
     auth_decision_id = hashlib.sha256(
         f"{organization_id}:{project_id or ''}:{asset_id or ''}:{target_id}:{policy_version}".encode("utf-8")

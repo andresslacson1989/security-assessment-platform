@@ -33,6 +33,7 @@ from app.core.models import (
     TargetType,
     LogLevel,
     NormalizedExecutionState,
+    APP_VERSION,
     calculate_fingerprint,
     utc_now,
 )
@@ -215,7 +216,7 @@ class SslyzeExecutionRecord(BaseModel):
     trust_mode: str = Field(default=TRUST_MODE)
     validated_target_id: str = Field(..., description="Cryptographic Target ID")
     authorization_decision_id: str = Field(..., description="Cryptographic Authorization Decision ID")
-    policy_version: str = Field(default="14.3.0")
+    policy_version: str = Field(default=APP_VERSION)
     target_destination: str = Field(..., description="Pre-resolved IP address")
     target_port: int = Field(default=443)
     server_name_sni: str = Field(..., description="Host header / SNI passed to --sni")
@@ -1007,7 +1008,7 @@ class SslyzeAdapter(BaseToolAdapter):
         record = SslyzeExecutionRecord(
             validated_target_id=val_target.target_id,
             authorization_decision_id=val_target.authorization_decision_id,
-            policy_version="14.3.0",
+            policy_version=APP_VERSION,
             target_destination=target_dest,
             target_port=target_port,
             server_name_sni=val_target.canonical_value,

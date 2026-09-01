@@ -33,6 +33,7 @@ from app.core.models import (
     TargetType,
     LogLevel,
     NormalizedExecutionState,
+    APP_VERSION,
     calculate_fingerprint,
     calculate_evidence_hash,
     mask_secret,
@@ -148,7 +149,7 @@ class NmapExecutionRecord(BaseModel):
     trust_mode: str = Field(default=TRUST_MODE)
     validated_target_id: str = Field(..., description="Cryptographic Target ID")
     authorization_decision_id: str = Field(..., description="Cryptographic Authorization Decision ID")
-    policy_version: str = Field(default="14.3.0")
+    policy_version: str = Field(default=APP_VERSION)
     command_args: List[str] = Field(default_factory=list)
     ports_scanned: List[int] = Field(default_factory=list)
     scripts_executed: List[str] = Field(default_factory=list)

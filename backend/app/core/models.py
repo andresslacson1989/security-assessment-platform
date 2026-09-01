@@ -635,7 +635,7 @@ class ValidatedTarget(BaseModel):
     scheme: Optional[str] = Field(default=None, description="Protocol scheme if applicable")
     authorization_context: Dict[str, Any] = Field(default_factory=dict, description="Audit authorization metadata")
     validation_timestamp: datetime = Field(default_factory=utc_now, description="Timestamp of validation gate passage")
-    policy_version: str = Field(default="14.3.0", description="SSRF and boundary policy version applied")
+    policy_version: str = Field(default=APP_VERSION, description="SSRF and boundary policy version applied")
 
     @property
     def id(self) -> str:

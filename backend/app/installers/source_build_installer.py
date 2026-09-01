@@ -19,6 +19,7 @@ from typing import Optional
 import httpx
 
 from app.core.models import ToolInstallMethod
+from app.core.version import APP_VERSION
 from app.core.process_supervisor import process_supervisor
 from app.installers.base_installer import (
     BaseToolInstaller,
@@ -182,7 +183,7 @@ class SourceBuildInstaller(BaseToolInstaller):
                 if code != 0 or not re.search(r"Version:\s*0\.50\.0\b", stdout or stderr, re.IGNORECASE):
                     raise SecurityError(f"Built Trivy failed exact runtime version verification: {stdout or stderr}")
                 executable_sha = hashlib.sha256(staged_binary.read_bytes()).hexdigest()
-                trust = {"tool_id": "TOOL-TRIVY", "tool_version": "v0.50.0", "artifact_filename": manifest["asset_names"]["source_archive"], "artifact_sha256": source_actual, "source_commit": self._cfg["source_commit"], "build_toolchain": self._cfg["go_version"], "build_toolchain_sha256": go_actual, "executable_relative_path": "trivy", "executable_sha256": executable_sha, "platform": "linux", "architecture": "arm64" if platform_key.endswith("arm64") else "amd64", "installer_version": "14.3.0", "trust_status": "VALID", "claims": ["SOURCE_ARCHIVE_INTEGRITY_VERIFIED", "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"]}
+                trust = {"tool_id": "TOOL-TRIVY", "tool_version": "v0.50.0", "artifact_filename": manifest["asset_names"]["source_archive"], "artifact_sha256": source_actual, "source_commit": self._cfg["source_commit"], "build_toolchain": self._cfg["go_version"], "build_toolchain_sha256": go_actual, "executable_relative_path": "trivy", "executable_sha256": executable_sha, "platform": "linux", "architecture": "arm64" if platform_key.endswith("arm64") else "amd64", "installer_version": APP_VERSION, "trust_status": "VALID", "claims": ["SOURCE_ARCHIVE_INTEGRITY_VERIFIED", "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"]}
                 staged_trust.write_text(json.dumps(trust, sort_keys=True), encoding="utf-8")
                 with open(staged_trust, "a", encoding="utf-8") as record:
                     record.flush()
