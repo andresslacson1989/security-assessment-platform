@@ -111,7 +111,10 @@ class SubfinderAdapter(BaseToolAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command(
+            [binary, "-version"], timeout=10.0,
+            pre_launch_check=lambda: self.verify_managed_binary(binary),
+        )
         output = stdout + " " + stderr
         match = re.search(r"(?<![0-9A-Za-z])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z])", output, re.IGNORECASE)
         if match:
@@ -167,7 +170,10 @@ class SubfinderAdapter(BaseToolAdapter):
         await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {apex_domain}")
         cmd = self.build_command(binary, apex_domain)
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=30.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(
+            cmd, timeout=30.0, emit_log=emit_log,
+            pre_launch_check=lambda: self.verify_managed_binary(binary),
+        )
         if code != 0 and not stdout:
             await emit_log(LogLevel.WARNING, f"Subfinder exited with code {code}: {stderr.strip()[:200]}")
             return findings

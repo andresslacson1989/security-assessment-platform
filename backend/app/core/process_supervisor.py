@@ -10,7 +10,7 @@ import os
 import signal
 import subprocess
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
@@ -78,6 +78,7 @@ class ProcessSupervisor:
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         max_output_bytes: int = 10 * 1024 * 1024,
+        pre_launch_check: Optional[Callable[[], bool]] = None,
     ) -> Tuple[int, str, str]:
         """
         Executes a subprocess with execution tracking, timeout enforcement,
@@ -93,6 +94,8 @@ class ProcessSupervisor:
         def _run_sync() -> Tuple["int", "str", "str"]:
             proc = None
             try:
+                if pre_launch_check is not None and not pre_launch_check():
+                    return 126, "", "Process launch rejected by pre-launch security check"
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,

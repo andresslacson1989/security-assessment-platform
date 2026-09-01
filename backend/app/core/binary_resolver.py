@@ -21,7 +21,7 @@ import shutil
 import string
 import subprocess
 import sys
-from typing import Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple
 
 
 def get_default_bin_dir() -> str:
@@ -218,6 +218,7 @@ async def safe_execute_subprocess(
     timeout: float = 60.0,
     cwd: Optional[str] = None,
     env: Optional[dict] = None,
+    pre_launch_check: Optional[Callable[[], bool]] = None,
 ) -> Tuple[int, str, str]:
     """
     Loop-agnostic safe subprocess execution helper.
@@ -233,6 +234,7 @@ async def safe_execute_subprocess(
         timeout=timeout,
         cwd=cwd,
         env=env,
+        pre_launch_check=pre_launch_check,
     )
     if "<3>WSL" in stderr:
         cleaned_lines = [line for line in stderr.splitlines() if not line.startswith("<3>WSL")]

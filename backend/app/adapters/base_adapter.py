@@ -81,6 +81,7 @@ class BaseToolAdapter(ABC):
         cwd: Optional[str] = None,
         env: Optional[dict] = None,
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
+        pre_launch_check: Optional[Callable[[], bool]] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -97,6 +98,7 @@ class BaseToolAdapter(ABC):
             timeout=timeout,
             cwd=cwd,
             env=env,
+            pre_launch_check=pre_launch_check,
         )
 
         if code != 0 and emit_log:
