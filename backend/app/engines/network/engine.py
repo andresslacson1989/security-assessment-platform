@@ -248,7 +248,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
-                        organization_id=kwargs.get("organization_id"),
+                        organization_id=kwargs.get("organization_id") or "org-default",
                         port=target_port or 443,
                     )
                     findings.extend(metasploit_findings)
@@ -275,7 +275,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
-                        organization_id=kwargs.get("organization_id"),
+                        organization_id=kwargs.get("organization_id") or "org-default",
                         emit_subdomain=subdomain_cb,
                         emit_rejected_discovery=rejected_discovery_cb,
                     )
@@ -307,7 +307,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                             emit_log,
                             emit_finding,
                             scan_id=scan_id,
-                            organization_id=kwargs.get("organization_id"),
+                            organization_id=kwargs.get("organization_id") or "org-default",
                             output_file=output_file,
                             emit_subdomain=subdomain_cb,
                         )

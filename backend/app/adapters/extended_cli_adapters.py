@@ -141,7 +141,7 @@ class GovernedExtendedAdapter(BaseToolAdapter):
         )
         return Finding(
             scan_id=scan_id,
-            organization_id=organization_id,
+            organization_id=organization_id or "org-default",
             engine="network",
             source_tool=self.tool_name,
             check_id=check_id,

@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from pathlib import Path
 import pytest
+from pydantic import ValidationError
 
 from app.core.models import (
     Severity,
@@ -310,6 +311,31 @@ def test_finding_model_extensions():
     assert finding.reproduction_curl.startswith("curl")
     assert finding.taint_trace == ["request.GET['id']", "cursor.execute(query)"]
     assert len(finding.fingerprint) == 64
+
+
+def test_finding_requires_non_null_tenant_identity():
+    finding = create_sample_finding(Severity.HIGH, "Tenant-scoped finding")
+    assert finding.organization_id == "org-default"
+
+    with pytest.raises(ValidationError):
+        Finding(
+            scan_id="00000000-0000-0000-0000-000000000000",
+            organization_id=None,
+            engine="network",
+            check_id="TEST-NULL-ORG",
+            category="Test Category",
+            title="Tenant identity is required",
+            severity=Severity.INFO,
+            cvss_score=0.0,
+            description="Test description",
+            impact="Test impact",
+            remediation="Test remediation",
+            evidence=Evidence(
+                location="https://example.com",
+                observed_value="Observed Test",
+                expected_value="Expected Test",
+            ),
+        )
 
 
 def test_fingerprint_and_secret_masking():

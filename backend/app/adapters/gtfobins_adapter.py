@@ -65,7 +65,7 @@ def evaluate_host_audit(
         )
         finding = Finding(
             scan_id=scan_id,
-            organization_id=organization_id,
+            organization_id=organization_id or "org-default",
             engine="infra_iac",
             source_tool="gtfobins",
             check_id=check_id,
@@ -159,7 +159,7 @@ class GTFOBinsAdapter(BaseToolAdapter):
         findings = evaluate_host_audit(
             audit_input,
             scan_id=kwargs.get("scan_id", "local-scan"),
-            organization_id=kwargs.get("organization_id"),
+            organization_id=kwargs.get("organization_id") or "org-default",
         )
         self._record_execution(0, "", "", findings_count=len(findings))
         for finding in findings:

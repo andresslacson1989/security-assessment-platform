@@ -197,7 +197,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                     emit_log,
                     emit_finding,
                     scan_id=kwargs.get("scan_id", "active"),
-                    organization_id=kwargs.get("organization_id"),
+                    organization_id=kwargs.get("organization_id") or "org-default",
                     host_audit_input=kwargs.get("host_audit_input"),
                 )
                 for finding in gtfobins_findings:

@@ -741,7 +741,7 @@ class Finding(BaseModel):
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
-    organization_id: Optional[str] = Field(default=None, description="Owning tenant organization ID")
+    organization_id: str = Field(default="org-default", description="Owning tenant organization ID; never null")
     workspace_id: Optional[str] = Field(default=None, description="Authorized workspace identity")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
     source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
