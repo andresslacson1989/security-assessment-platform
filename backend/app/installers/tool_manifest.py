@@ -12,6 +12,19 @@ from typing import Dict, Optional, Any, Tuple
 
 # Authoritative Pinned Tool Manifest with Pinned Release Tags & Canonical SHA-256 Checksums
 PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
+    "nmap": {
+        "tool_name": "nmap",
+        "version": "7.95",
+        "release_tag": "v7.95",
+        "repo": "insecure-org/nmap",
+        "pinned_version": "v7.95",
+        "category": "Network Perimeter",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "package_manager": "OS package manager",
+        "sha256_checksums": {},
+        "asset_names": {},
+        "integrity_note": "Raw release archive digest is delegated to the authenticated OS package manager.",
+    },
     "nuclei": {
         "tool_name": "nuclei",
         "version": "3.2.0",

@@ -117,13 +117,22 @@ def test_retire_manifest_records_official_npm_tarball_identity():
     assert entry["sha256_checksums"]["npm_tarball"] == "1352bd6054d92d261b4d85dbfd75c4cee800f583573b5d9d0c45b56e3282c280"
 
 
+def test_nmap_manifest_records_package_manager_delegated_identity():
+    entry = PINNED_TOOL_MANIFEST["nmap"]
+
+    assert entry["version"] == "7.95"
+    assert entry["trust_mode"] == "PACKAGE_MANAGER_MODE"
+    assert entry["sha256_checksums"] == {}
+    assert "OS package manager" in entry["integrity_note"]
+
+
 def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
     status = audit_tool_manifest(
-        ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "trivy", "unknown-tool"]
+        ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "nmap", "trivy", "unknown-tool"]
     )
 
     assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire"}
-    assert status["incomplete"] == ["trivy"]
+    assert status["incomplete"] == ["nmap", "trivy"]
     assert status["invalid"] == []
     assert status["unregistered"] == ["unknown-tool"]
 
