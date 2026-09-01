@@ -60,6 +60,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         scan_id = kwargs.get("scan_id", "active")
         subdomain_cb = kwargs.get("emit_subdomain_discovered")
         rejected_discovery_cb = kwargs.get("emit_rejected_discovery")
+        tool_state_cb = kwargs.get("emit_tool_execution_state")
         endpoint_cb = kwargs.get("emit_endpoint_discovered")
 
         # --- Stage 1: TLS / SSL Audit (SSLyze Adapter First -> Native Fallback) (0% - 30%) ---
@@ -206,6 +207,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_rejected_discovery=rejected_discovery_cb,
                     )
                     findings.extend(sf_findings)
+                    if tool_state_cb:
+                        await tool_state_cb("subfinder", subfinder_adapter.last_execution_state.value)
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Subfinder adapter error: {e}")
 

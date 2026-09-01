@@ -238,6 +238,12 @@ class ScanOrchestrator:
             job.rejected_discoveries.append(rejection)
         await self._broadcast(scan_id, "discovery_rejected", rejection.model_dump(mode="json"))
 
+    async def emit_tool_execution_state(self, scan_id: str, tool_name: str, state: str) -> None:
+        job = self._active_jobs.get(scan_id)
+        if job:
+            job.tool_execution_states[tool_name] = state
+        await self._broadcast(scan_id, "tool_execution_state", {"tool_name": tool_name, "state": state})
+
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
         job = self._active_jobs.get(scan_id)
         active_adapters = getattr(job, "active_adapters", []) if job else []
@@ -371,6 +377,9 @@ class ScanOrchestrator:
                 async def _rejected_cb(rejection: RejectedDiscovery) -> None:
                     await self.emit_rejected_discovery(scan_id, rejection)
 
+                async def _tool_state_cb(tool_name: str, state: str) -> None:
+                    await self.emit_tool_execution_state(scan_id, tool_name, state)
+
                 def _sbom_cb(sbom: SBOMReport) -> None:
                     if job:
                         job.sbom_report = sbom
@@ -394,6 +403,8 @@ class ScanOrchestrator:
                         run_kwargs["emit_subdomain_discovered"] = _subdomain_cb
                     if "emit_rejected_discovery" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_rejected_discovery"] = _rejected_cb
+                    if "emit_tool_execution_state" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["emit_tool_execution_state"] = _tool_state_cb
                     if "record_sbom_report" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_sbom_report"] = _sbom_cb
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:

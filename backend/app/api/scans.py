@@ -282,6 +282,7 @@ async def get_scan_telemetry(
             findings_count=0,
             log_count=0,
             endpoints_tested=[],
+            normalized_state=getattr(job, "tool_execution_states", {}).get(t_name),
         )
 
     for f in job.findings:
@@ -401,6 +402,7 @@ async def get_scan_telemetry(
         tools_executed=tools_executed_list,
         discovered_endpoints=enriched_endpoints,
         discovered_subdomains=job.discovered_subdomains,
+        rejected_discoveries=job.rejected_discoveries,
         coverage=coverage_data,
         generated_at=utc_now(),
     )
