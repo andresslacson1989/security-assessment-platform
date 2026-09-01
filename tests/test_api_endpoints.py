@@ -50,6 +50,10 @@ async def test_system_endpoints(auth_headers):
         assert "uptime_seconds" in data
         assert "storage" in data
         assert data["storage"]["status"] == "OK"
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["x-frame-options"] == "DENY"
+        assert resp.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+        assert "default-src 'self'" in resp.headers["content-security-policy"]
 
         # 2. Engines catalog
         assert (await ac.get("/api/system/engines")).status_code == 401
