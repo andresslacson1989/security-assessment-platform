@@ -231,6 +231,37 @@ def test_pip_installer_uses_exact_contract_version():
     assert installer.install_command_hint == "python -m pip install --require-hashes -r tool-requirements/bandit.lock"
 
 
+@pytest.mark.asyncio
+async def test_system_installer_accepts_only_exact_contract_version(monkeypatch):
+    installer = SystemToolHelper("nmap")
+    monkeypatch.setattr(installer, "get_version", AsyncMock(return_value="Nmap version 7.94"))
+    logs = []
+    progress = []
+
+    result = await installer.install(
+        lambda message: logs.append(message) or asyncio.sleep(0),
+        lambda percent, stage: progress.append((percent, stage)) or asyncio.sleep(0),
+    )
+
+    assert result is False
+    assert any("expected exact version 7.95" in message for message in logs)
+
+
+@pytest.mark.asyncio
+async def test_system_installer_keeps_unversioned_manual_tools_diagnostic_only(monkeypatch):
+    installer = SystemToolHelper("sqlmap")
+    monkeypatch.setattr(installer, "get_version", AsyncMock(return_value="sqlmap/1.8.4#stable"))
+    logs = []
+
+    result = await installer.install(
+        lambda message: logs.append(message) or asyncio.sleep(0),
+        lambda _percent, _stage: asyncio.sleep(0),
+    )
+
+    assert result is False
+    assert any("diagnostic-only" in message for message in logs)
+
+
 def test_pip_tool_resolves_managed_virtualenv_binary_first(monkeypatch, tmp_path):
     venv_bin = tmp_path / "bandit" / ("Scripts" if os.name == "nt" else "bin")
     venv_bin.mkdir(parents=True)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import re
 import shutil
 import sys
 from typing import Optional, Dict
@@ -31,6 +32,7 @@ SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
         },
         "download_url": "https://nmap.org/download.html",
         "version_cmd": ["--version"],
+        "approved_version": "7.95",
     },
     "retire": {
         "display_name": "Retire.js Client-Side JavaScript CVE Auditor",
@@ -42,6 +44,7 @@ SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
         },
         "download_url": "https://github.com/RetireJS/retire.js",
         "version_cmd": ["--version"],
+        "approved_version": "4.4.3",
     },
     "metasploit": {
         "display_name": "Metasploit Auxiliary Verification Framework",
@@ -172,6 +175,20 @@ class SystemToolHelper(BaseToolInstaller):
         # Check if already installed
         ver = await self.get_version()
         if ver:
+            approved_version = self._cfg.get("approved_version")
+            if not approved_version:
+                await emit_log(
+                    f"System-level tool '{self.tool_name}' is diagnostic-only: no exact contract-approved version is configured."
+                )
+                await emit_progress(100, f"Assured installation unavailable for {self.tool_name}")
+                return False
+            version_match = re.search(r"(?<![0-9])v?([0-9]+(?:\.[0-9]+)+)(?![0-9])", ver)
+            if not version_match or version_match.group(1) != approved_version:
+                await emit_log(
+                    f"System-level tool '{self.tool_name}' rejected: expected exact version {approved_version}, found {ver}."
+                )
+                await emit_progress(100, f"Version verification failed for {self.tool_name}")
+                return False
             await emit_progress(100, f"{self.display_name} is already available: {ver}")
             await emit_log(f"Detected existing installation: {ver}")
             return True
