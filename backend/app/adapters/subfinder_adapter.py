@@ -213,7 +213,7 @@ class SubfinderAdapter(BaseToolAdapter):
             if self.classify_scope(host, apex_domain) != "IN_SCOPE":
                 out_of_scope += 1
                 if emit_rejected:
-                    await emit_rejected(RejectedDiscovery(domain=host, reason="OUT_OF_SCOPE", authorized_root=apex_domain, assessment_id=scan_id, organization_id=kwargs.get("organization_id", "org-default")))
+                    await emit_rejected(RejectedDiscovery(domain=host, reason="OUT_OF_SCOPE", sources=sorted(sources), authorized_root=apex_domain, assessment_id=scan_id, organization_id=kwargs.get("organization_id", "org-default")))
                 continue
             if host in discovered_hosts:
                 source_map[host].update(sources)

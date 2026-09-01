@@ -97,4 +97,5 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
     assert [item.domain for item in emitted] == ["admin.example.com"]
     assert rejected[0].domain == "outside.example.net"
     assert rejected[0].organization_id == "org-a"
+    assert rejected[0].sources == ["provider"]
     assert adapter.last_execution_state.value == "PARTIAL_RESULTS_WITH_WARNING"

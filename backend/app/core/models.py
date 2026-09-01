@@ -448,6 +448,7 @@ class RejectedDiscovery(BaseModel):
     domain: str
     reason: str
     source: str = "Subfinder"
+    sources: List[str] = Field(default_factory=list)
     authorized_root: str
     assessment_id: str
     organization_id: str
