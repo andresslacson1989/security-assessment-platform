@@ -416,6 +416,24 @@ class DatabaseManager:
             )
             return key_record, user_profile
 
+    def get_user_by_id(self, user_id: str) -> Optional[UserProfile]:
+        """Load the current authoritative identity state for a bearer-token subject."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return UserProfile(
+                id=row["id"],
+                username=row["username"],
+                email=row["email"],
+                role=UserRole(row["role"]),
+                organization_id=row["organization_id"],
+                is_active=bool(row["is_active"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+
     def revoke_api_key(self, key_id: str, organization_id: Optional[str] = None) -> bool:
         """Revokes an API Key and updates its status to REVOKED."""
         with self._get_connection() as conn:

@@ -412,6 +412,23 @@ async def get_current_user(
 
     if raw_jwt:
         payload = decode_access_token(raw_jwt)
+        from app.core.db import db_manager
+
+        subject_id = str(payload.get("sub", "")).strip()
+        authoritative_user = db_manager.get_user_by_id(subject_id) if subject_id else None
+        if authoritative_user is not None:
+            if not authoritative_user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User account has been deactivated.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            p_type_val = payload.get("principal_type", "TENANT_PRINCIPAL")
+            p_type = PrincipalType(p_type_val) if p_type_val in [p.value for p in PrincipalType] else PrincipalType.TENANT_PRINCIPAL
+            authoritative_user.principal_type = p_type
+            authoritative_user.scopes = payload.get("scopes", ["*"])
+            return authoritative_user
+
         p_type_val = payload.get("principal_type", "TENANT_PRINCIPAL")
         p_type = PrincipalType(p_type_val) if p_type_val in [p.value for p in PrincipalType] else PrincipalType.TENANT_PRINCIPAL
         

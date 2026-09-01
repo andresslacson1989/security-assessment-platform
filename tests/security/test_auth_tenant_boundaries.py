@@ -6,9 +6,9 @@ import hashlib
 
 import pytest
 
-from app.core.auth import get_current_user
+from app.core.auth import create_access_token, get_current_user
 from app.core.db import DatabaseManager
-from app.core.models import PrincipalType, ScanJob, Target, TargetType, UserRole
+from app.core.models import PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole
 from app.core.orchestrator import ScanOrchestrator
 
 
@@ -35,6 +35,46 @@ async def test_api_key_revocation_is_checked_against_database_each_request(tmp_p
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc_info:
         await get_current_user(x_api_key=raw_key)
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_bearer_identity_rechecks_authoritative_user_status(tmp_path, monkeypatch):
+    """A signed token cannot keep a database-backed account active after deactivation."""
+    db = DatabaseManager(db_path=tmp_path / "jwt-boundary.db")
+    with db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            (
+                "usr-jwt-boundary",
+                "jwt-boundary",
+                "jwt-boundary@example.test",
+                "unused",
+                "SECURITY_ANALYST",
+                "org-one",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+
+    import app.core.db as db_module
+    monkeypatch.setattr(db_module, "db_manager", db)
+    token = create_access_token(UserProfile(
+        id="usr-jwt-boundary",
+        username="jwt-boundary",
+        email="jwt-boundary@example.test",
+        role=UserRole.SECURITY_ANALYST,
+        organization_id="org-one",
+    ))
+
+    current = await get_current_user(authorization=f"Bearer {token}", x_api_key=None, token=None)
+    assert current.organization_id == "org-one"
+    with db._get_connection() as conn:
+        conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", ("usr-jwt-boundary",))
+
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(authorization=f"Bearer {token}", x_api_key=None, token=None)
     assert exc_info.value.status_code == 401
 
 
