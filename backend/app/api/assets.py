@@ -18,6 +18,7 @@ from app.core.auth import (
     UserProfile,
     UserRole,
     authorize_asset_access,
+    authorize_internal_target,
 )
 from app.core.db import db_manager
 
@@ -77,7 +78,7 @@ async def create_asset(
     """Registers a new monitored asset within the caller's organization."""
     from app.core.ssrf_protector import assert_safe_target, SSRFProtectionError
     from app.core.path_sandbox import PathSandboxViolation
-    allow_internal = (current_user.role == UserRole.ADMIN)
+    allow_internal = authorize_internal_target(current_user, payload.target_value)
     if payload.active_probing_granted and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may grant intrusive probing authorization.")
     try:

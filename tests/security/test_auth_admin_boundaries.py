@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from app.api.auth import CreateUserRequest, create_user
+from app.api.assets import CreateAssetRequest, create_asset
+from app.api.scans import StartScanRequest, start_security_scan
 from app.core.auth import UserProfile, authorize_internal_target
 from app.core.models import PrincipalType, UserRole
 
@@ -44,3 +46,41 @@ def test_internal_target_accepts_explicit_wildcard_scope():
     )
 
     assert authorize_internal_target(analyst, "http://127.0.0.1") is True
+
+
+@pytest.mark.asyncio
+async def test_asset_registration_requires_internal_scope_even_for_admin_role():
+    from fastapi import HTTPException
+
+    admin_without_scope = UserProfile(
+        username="admin", email="admin@example.test", role=UserRole.ADMIN,
+        scopes=["asset:write"], organization_id="org-internal-test",
+    )
+    payload = CreateAssetRequest(
+        name="Internal host", type="IP_ADDRESS", target_value="192.168.1.50",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_asset(payload, admin_without_scope)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_scan_start_requires_internal_scope_even_for_admin_role():
+    from starlette.requests import Request
+    from fastapi import HTTPException
+
+    admin_without_scope = UserProfile(
+        username="admin", email="admin@example.test", role=UserRole.ADMIN,
+        scopes=["scan:create"], organization_id="org-internal-test",
+    )
+    payload = StartScanRequest(target_type="IP", target_value="192.168.1.50", enabled_engines=[])
+    request = Request({
+        "type": "http", "method": "POST", "path": "/api/scans/start",
+        "headers": [], "query_string": b"", "server": ("test", 80),
+        "scheme": "http", "client": ("127.0.0.1", 1),
+    })
+
+    with pytest.raises(HTTPException) as exc_info:
+        await start_security_scan(payload, request, admin_without_scope)
+    assert exc_info.value.status_code == 400

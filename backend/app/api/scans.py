@@ -46,6 +46,7 @@ from app.core.auth import (
     UserProfile,
     UserRole,
     authorize_scan_access,
+    authorize_internal_target,
 )
 from app.core.db import db_manager
 
@@ -107,7 +108,7 @@ async def start_security_scan(
     Validates the target, creates a ScanJob, and launches asynchronous security assessment in the background.
     Protected by SSRF gateway, path sandboxing, and RBAC multi-tenant authentication.
     """
-    allow_internal = (current_user.role == UserRole.ADMIN)
+    allow_internal = authorize_internal_target(current_user, payload.target_value)
     asset = None
     if payload.asset_id:
         asset = db_manager.get_asset(payload.asset_id, organization_id=_organization_scope(current_user))
@@ -124,7 +125,7 @@ async def start_security_scan(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan target does not match the selected asset.")
         if payload.project_id and payload.project_id != asset.project_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan project does not match the selected asset.")
-        allow_internal = current_user.role == UserRole.ADMIN
+        allow_internal = authorize_internal_target(current_user, payload.target_value)
     validate_target_input(payload.target_type, payload.target_value, allow_internal=allow_internal)
 
     target_name = payload.target_name or payload.target_value
