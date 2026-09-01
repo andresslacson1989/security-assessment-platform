@@ -6,7 +6,8 @@ import os
 import shutil
 import uuid
 
-from app.core.models import ScanConfig, Target, TargetType
+from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredSubdomain
+from app.core.orchestrator import ScanOrchestrator
 
 from app.adapters.subfinder_adapter import SubfinderAdapter
 
@@ -99,3 +100,18 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
     assert rejected[0].organization_id == "org-a"
     assert rejected[0].sources == ["provider"]
     assert adapter.last_execution_state.value == "PARTIAL_RESULTS_WITH_WARNING"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_discovery_callback_does_not_authorize_or_queue_target():
+    orchestrator = ScanOrchestrator()
+    job = ScanJob(target=Target(name="root", type=TargetType.DOMAIN, value="example.com"), organization_id="org-a")
+    orchestrator._active_jobs[job.id] = job
+    discovered = DiscoveredSubdomain(domain="api.example.com", discovered_via="Subfinder", dns_status="UNRESOLVED")
+
+    await orchestrator.emit_subdomain_discovered(job.id, discovered)
+
+    assert [item.domain for item in job.discovered_subdomains] == ["api.example.com"]
+    assert not hasattr(job, "validated_targets")
+    assert not hasattr(orchestrator, "active_target_queue")
+    assert job.discovered_subdomains[0].dns_status == "UNRESOLVED"
