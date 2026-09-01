@@ -1574,25 +1574,33 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
     mock_hx_stdout = '{"url":"https://api.corp.example.com","status_code":200,"title":"API Gateway","tech":["FastAPI","Uvicorn"]}\n'
     mock_katana_stdout = '{"request":{"endpoint":"https://corp.example.com/app/dashboard","method":"GET"},"response":{"status_code":200}}\n'
 
-    with patch.object(SubfinderAdapter, "is_available", AsyncMock(return_value=True)), \
-         patch.object(SubfinderAdapter, "resolve_binary_path", return_value="/bin/subfinder"), \
-         patch.object(SubfinderAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_sf_stdout, ""))), \
-         patch.object(HttpxAdapter, "is_available", AsyncMock(return_value=True)), \
-         patch.object(HttpxAdapter, "resolve_binary_path", return_value="/bin/httpx"), \
-         patch.object(HttpxAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_hx_stdout, ""))), \
-         patch.object(KatanaAdapter, "is_available", AsyncMock(return_value=True)), \
-         patch.object(KatanaAdapter, "resolve_binary_path", return_value="/bin/katana"), \
-         patch.object(KatanaAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_katana_stdout, ""))), \
-         patch("app.engines.network.engine.audit_tls_certificates", new=AsyncMock(return_value=[])), \
-         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new=AsyncMock(return_value=[])), \
-         patch("app.engines.network.engine.audit_dns_hygiene", new=AsyncMock(return_value=[])), \
-         patch("app.engines.network.engine.audit_exposed_ports", new=AsyncMock(return_value=[])), \
-         patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])), \
-         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])), \
-         patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new=AsyncMock(return_value=[])), \
-         patch("app.engines.web_dast.engine.audit_browser_posture", new=AsyncMock(return_value=[])), \
-         patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])), \
-         patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])):
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(SubfinderAdapter, "is_available", AsyncMock(return_value=True)))
+        stack.enter_context(patch.object(SubfinderAdapter, "resolve_binary_path", return_value="/bin/subfinder"))
+        stack.enter_context(patch.object(SubfinderAdapter, "_resolve_host_dns", AsyncMock(return_value=(["192.168.1.1"], [], "ACTIVE"))))
+        stack.enter_context(patch.object(SubfinderAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_sf_stdout, ""))))
+        stack.enter_context(patch.object(HttpxAdapter, "is_available", AsyncMock(return_value=True)))
+        stack.enter_context(patch.object(HttpxAdapter, "resolve_binary_path", return_value="/bin/httpx"))
+        stack.enter_context(patch.object(HttpxAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_hx_stdout, ""))))
+        stack.enter_context(patch.object(KatanaAdapter, "is_available", AsyncMock(return_value=True)))
+        stack.enter_context(patch.object(KatanaAdapter, "resolve_binary_path", return_value="/bin/katana"))
+        stack.enter_context(patch.object(KatanaAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_katana_stdout, ""))))
+        stack.enter_context(patch("app.engines.network.engine.audit_tls_certificates", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.network.engine.audit_dns_hygiene", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.network.engine.audit_exposed_ports", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.web_dast.engine.audit_browser_posture", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])))
+        mock_resp = MagicMock(status_code=200, text="<html><body>OK</body></html>", headers={"content-type": "text/html"})
+        stack.enter_context(patch.object(httpx.AsyncClient, "request", new=AsyncMock(return_value=mock_resp)))
+        stack.enter_context(patch.object(httpx.AsyncClient, "get", new=AsyncMock(return_value=mock_resp)))
+        stack.enter_context(patch.object(httpx.AsyncClient, "send", new=AsyncMock(return_value=mock_resp)))
 
         net_findings = await net_engine.run(
             target, config, emit_log, emit_prog, emit_find,

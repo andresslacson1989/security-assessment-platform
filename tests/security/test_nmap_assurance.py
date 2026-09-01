@@ -27,6 +27,7 @@ from app.core.models import (
     LogLevel,
     NormalizedExecutionState,
     ToolAdapterConfig,
+    OSINTConfig,
     APP_VERSION,
     CONTRACT_VERSION,
     SCHEMA_VERSION,
@@ -614,7 +615,10 @@ class TestNmapFallbackPreservation:
     async def test_network_engine_nmap_fallback(self):
         engine = NetworkAssessmentEngine()
         target = Target(name="Test Target", type=TargetType.DOMAIN, value="example.com")
-        config = ScanConfig(adapters=ToolAdapterConfig(enable_nmap=True, enable_sslyze=False))
+        config = ScanConfig(
+            adapters=ToolAdapterConfig(enable_nmap=True, enable_sslyze=False),
+            osint=OSINTConfig(subdomain_enumeration=False),
+        )
 
         logs = []
         findings = []

@@ -58,7 +58,7 @@ class AuthSessionManager:
         """
         Establishes authenticated session based on configured AuthType.
         """
-        if self.config.auth_type == AuthType.NONE:
+        if self.config.auth_type in (AuthType.NONE, AuthType.NO_AUTH):
             self.is_authenticated = False
             return True
 

@@ -702,8 +702,10 @@ class TestSslyzeAdapter:
         config = ScanConfig()
 
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/sslyze"):
-            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
-                findings = await adapter.run(target, config, mock_log, mock_finding)
+            with patch.object(adapter, "get_version", return_value="SSLyze 5.2.0"):
+                with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+                    with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
+                        findings = await adapter.run(target, config, mock_log, mock_finding)
 
         assert len(findings) >= 3
         check_ids = {f.check_id for f in findings}
