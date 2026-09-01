@@ -53,7 +53,7 @@ router = APIRouter()
     include_in_schema=False,
 )
 async def list_tools(
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="tool:read")),
 ) -> List[ToolInstallationInfo]:
     """Returns installation status, detected binary path, version, and install method for all tools."""
     mgr = ToolInstallationManager.get_instance()
@@ -67,7 +67,7 @@ async def list_tools(
 )
 async def stream_tool_events(
     request: Request,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="tool:read")),
 ):
     """SSE stream yielding real-time tool installation progress and logs."""
     mgr = ToolInstallationManager.get_instance()
@@ -99,7 +99,7 @@ async def stream_tool_events(
 )
 async def get_tool_status(
     tool_name: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="tool:read")),
 ) -> ToolInstallationInfo:
     mgr = ToolInstallationManager.get_instance()
     info = await mgr.get_tool_info(tool_name)

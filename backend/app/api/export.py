@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.storage import get_scan
 from app.core.orchestrator import orchestrator
-from app.core.auth import get_current_user, UserProfile, authorize_scan_access
+from app.core.auth import require_permission, UserProfile, authorize_scan_access
 from app.core.models import AuditEvent, AuditAction, PrincipalType
 from app.core.db import db_manager
 from app.exporters.html_exporter import export_scan_to_html
@@ -31,7 +31,7 @@ def _organization_scope(user: UserProfile) -> str | None:
 @router.get("/{scan_id}/export/html", summary="Export Standalone Interactive HTML Report")
 async def export_html_report(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="report:read")),
 ):
     """
     Downloads a self-contained, standalone single-file HTML report with zero external dependencies.
@@ -68,7 +68,7 @@ async def export_html_report(
 @router.get("/{scan_id}/export/sarif", summary="Export OASIS SARIF v2.1.0 JSON Report")
 async def export_sarif_report(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="report:read")),
 ):
     """
     Downloads an OASIS SARIF v2.1.0 standardized security report for GitHub/GitLab Code Scanning.
@@ -104,7 +104,7 @@ async def export_sarif_report(
 @router.get("/{scan_id}/export/json", summary="Export Raw Scan JSON")
 async def export_raw_json_report(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="report:read")),
 ):
     """
     Downloads the complete serialized ScanJob data model in JSON format.
@@ -141,7 +141,7 @@ async def export_raw_json_report(
 @router.get("/{scan_id}/export/sbom/cyclonedx", summary="Export CycloneDX 1.5 JSON SBOM")
 async def export_cyclonedx_sbom_report(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="report:read")),
 ):
     """
     Downloads a CycloneDX 1.5 standardized Software Bill of Materials (SBOM) JSON.
