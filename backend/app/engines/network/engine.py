@@ -233,7 +233,14 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_endpoint=endpoint_cb,
                     )
                     findings.extend(hx_findings)
+                    if tool_state_cb:
+                        await tool_state_cb("httpx", httpx_adapter.last_execution_state.value)
+                elif tool_state_cb:
+                    await tool_state_cb("httpx", "TOOL_EXECUTION_FAILED")
+                    await emit_log(LogLevel.WARNING, "Httpx unavailable: HTTP validation was not assessed.")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("httpx", "TOOL_EXECUTION_FAILED")
                 await emit_log(LogLevel.WARNING, f"Httpx adapter error: {e}")
 
         # --- Stage 5: Passive OSINT Subdomain Recon, Origin Exposure & Takeover (85% - 100%) ---

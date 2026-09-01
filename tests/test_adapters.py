@@ -1182,6 +1182,23 @@ class TestHttpxAdapter:
             assert len(endpoints) == 1
             assert endpoints[0].url == "https://example.com"
             assert findings[0].check_id == "EASM-EXPOSURE-001"
+            from app.core.models import NormalizedExecutionState
+            assert adapter.last_execution_state == NormalizedExecutionState.COMPLETED_WITH_FINDINGS
+
+    @pytest.mark.asyncio
+    async def test_httpx_failure_is_not_no_findings(self):
+        from app.adapters.httpx_adapter import HttpxAdapter
+        from app.core.models import NormalizedExecutionState
+        adapter = HttpxAdapter()
+        target = Target(name="Web", type=TargetType.URL, value="https://example.com")
+        config = ScanConfig()
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(1, "", "connection failed"))):
+            findings = await adapter.run(target, config, AsyncMock(), AsyncMock())
+
+        assert findings == []
+        assert adapter.last_execution_state == NormalizedExecutionState.TOOL_EXECUTION_FAILED
 
 
 # ============================================================================
@@ -1579,5 +1596,4 @@ class TestCISBenchmarkAdapters:
             assert len(findings) == 1
             assert findings[0].check_id == "CLOUD-CIS-001"
             assert len(recorded_cis) == 1
-
 

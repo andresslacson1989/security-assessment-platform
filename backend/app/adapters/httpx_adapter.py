@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, DiscoveredEndpoint
+    calculate_fingerprint, DiscoveredEndpoint, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -24,6 +24,9 @@ class HttpxAdapter(BaseToolAdapter):
     @property
     def tool_name(self) -> str:
         return "httpx"
+
+    def __init__(self):
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
@@ -53,11 +56,13 @@ class HttpxAdapter(BaseToolAdapter):
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         scan_id = kwargs.get("scan_id", "local-scan")
         emit_endpoint: Optional[Callable[[DiscoveredEndpoint], Awaitable[None]]] = kwargs.get("emit_endpoint")
 
         binary = self.resolve_binary_path(config.adapters.httpx_path or config.adapters.custom_httpx_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Httpx binary not found. Skipping Httpx probe.")
             return findings
 
@@ -70,6 +75,7 @@ class HttpxAdapter(BaseToolAdapter):
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=45.0, emit_log=emit_log)
         if code != 0 and not stdout:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, f"Httpx exited with code {code}: {stderr.strip()[:200]}")
             return findings
 
@@ -134,7 +140,12 @@ class HttpxAdapter(BaseToolAdapter):
                     findings.append(finding)
                     await emit_finding(finding)
             except Exception as e:
+                self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
                 continue
 
         await emit_log(LogLevel.INFO, f"Httpx completed probe: {len(probed_results)} HTTP responses analyzed.")
+        if code != 0 or any(line.strip() and line.strip() not in {""} for line in stdout.splitlines() if not line.strip().startswith("{") ):
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+        elif findings:
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
         return findings
