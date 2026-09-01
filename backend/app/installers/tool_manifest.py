@@ -101,6 +101,8 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "trust_mode": "SOURCE_BUILD_MODE",
         "source_build": True,
         "source_archive_url": "https://github.com/aquasecurity/trivy/archive/refs/tags/v0.50.0.tar.gz",
+        "source_commit": "8ec3938e01a93855503e3400eae9831abbb5de4a",
+        "build_toolchain": "go1.21.13",
         "sha256_checksums": {
             "source_archive": "16fa56d6c3549657baa49f1de8ffef5b6a976d7bf11d378d0f097189b70bae2b",
             "go_linux_amd64": "502fc16d5910562461e6a6631fb6377de2322aad7304bf2bcd23500ba9dab4a7",

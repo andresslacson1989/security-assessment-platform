@@ -174,9 +174,16 @@ class BaseToolAdapter(ABC):
                 if "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED" not in claims:
                     return False
                 expected_source = manifest.get("sha256_checksums", {}).get("source_archive")
-                if expected_source and record.get("artifact_sha256") != expected_source:
+                if expected_source and (
+                    record.get("artifact_sha256") != expected_source
+                    or record.get("artifact_filename") != manifest.get("asset_names", {}).get("source_archive")
+                    or record.get("source_commit") != manifest.get("source_commit")
+                    or record.get("build_toolchain") != manifest.get("build_toolchain")
+                ):
                     return False
-                if not record.get("source_commit") or not record.get("build_toolchain_sha256"):
+                platform_key = f"{record.get('platform')}_{record.get('architecture')}"
+                expected_toolchain = manifest.get("sha256_checksums", {}).get(f"go_{platform_key}")
+                if not expected_toolchain or record.get("build_toolchain_sha256") != expected_toolchain:
                     return False
             with open(path, "rb") as binary_file:
                 digest = hashlib.sha256(binary_file.read()).hexdigest()

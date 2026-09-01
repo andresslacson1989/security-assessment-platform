@@ -167,8 +167,20 @@ class SourceBuildInstaller(BaseToolInstaller):
                 go_root = os.path.join(go_dir, "go")
                 if not os.path.isdir(source_root) or not os.path.isfile(os.path.join(go_root, "bin", "go")):
                     raise SecurityError("Verified source-build inputs are incomplete")
-                env = dict(os.environ)
-                env.update({"PATH": os.path.join(go_root, "bin") + os.pathsep + env.get("PATH", ""), "GOTOOLCHAIN": "local", "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64" if platform_key.endswith("amd64") else "arm64"})
+                build_cache = os.path.join(temp, "go-cache")
+                module_cache = os.path.join(temp, "go-mod-cache")
+                os.makedirs(build_cache)
+                os.makedirs(module_cache)
+                env = {
+                    "PATH": os.path.join(go_root, "bin"),
+                    "GOTOOLCHAIN": "local",
+                    "CGO_ENABLED": "0",
+                    "GOOS": "linux",
+                    "GOARCH": "amd64" if platform_key.endswith("amd64") else "arm64",
+                    "GOCACHE": build_cache,
+                    "GOMODCACHE": module_cache,
+                    "HOME": temp,
+                }
                 for command, stage, message in [
                     ([os.path.join(go_root, "bin", "go"), "mod", "download"], 50, "Verifying Go module dependencies from go.sum..."),
                     ([os.path.join(go_root, "bin", "go"), "build", "-trimpath", "-buildvcs=false", "-ldflags", "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0", "-o", str(staged_binary), self._cfg["build_package"]], 75, "Building Trivy from the verified source tag..."),
