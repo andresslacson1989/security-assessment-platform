@@ -148,6 +148,13 @@ def test_trivy_uses_the_verified_source_build_installer():
     assert SOURCE_BUILD_CONFIG["trivy"]["go_version"] == PINNED_TOOL_MANIFEST["trivy"]["build_toolchain"]
 
 
+def test_github_release_installer_requires_exact_release_tag():
+    installer = GithubReleaseInstaller("nuclei")
+    assert installer._release_matches_pin({"tag_name": "v3.2.0"}, "v3.2.0") is True
+    assert installer._release_matches_pin({"tag_name": "v3.2.1"}, "v3.2.0") is False
+    assert installer._release_matches_pin({"name": "v3.2.0"}, "v3.2.0") is False
+
+
 @pytest.mark.asyncio
 async def test_source_build_refuses_when_direct_release_availability_is_not_false():
     installer = SourceBuildInstaller("trivy")

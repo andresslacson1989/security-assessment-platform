@@ -267,6 +267,11 @@ class GithubReleaseInstaller(BaseToolInstaller):
 
         return None
 
+    @staticmethod
+    def _release_matches_pin(release: dict, pinned_tag: str) -> bool:
+        """Require the release API response to identify the exact requested tag."""
+        return isinstance(release, dict) and release.get("tag_name") == pinned_tag
+
     async def get_version(self) -> Optional[str]:
         path = self.resolve_binary_path()
         if not path:
@@ -361,6 +366,10 @@ class GithubReleaseInstaller(BaseToolInstaller):
                 resp = await client.get(rel_url)
                 if resp.status_code == 200:
                     data = resp.json()
+                    if not self._release_matches_pin(data, pinned_tag):
+                        raise SecurityError(
+                            f"GitHub release identity mismatch: expected tag {pinned_tag!r}."
+                        )
                     assets = data.get("assets", [])
                     matched = self._match_release_asset(assets)
                     if matched:
