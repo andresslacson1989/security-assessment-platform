@@ -108,6 +108,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 project_id=kwargs.get("project_id"),
                 asset_id=kwargs.get("asset_id"),
                 state_changing_granted=kwargs.get("state_changing_granted", False),
+                active_probing_granted=kwargs.get("active_probing_granted", False),
             )
         except Exception as exc:
             await emit_log(LogLevel.WARNING, f"Web DAST target blocked by security policy: {exc}")

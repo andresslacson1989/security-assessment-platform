@@ -109,6 +109,57 @@ async def test_scan_correlation_id_propagates_to_job_logs_telemetry_and_audit(mo
 
 
 @pytest.mark.asyncio
+async def test_scan_asset_binding_carries_explicit_intrusive_authorization(monkeypatch, auth_headers):
+    captured = {}
+
+    async def fake_start_scan(job):
+        captured["job"] = job
+        return asyncio.create_task(asyncio.sleep(0))
+
+    monkeypatch.setattr(orchestrator, "start_scan", fake_start_scan)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        asset_response = await ac.post(
+            "/api/assets",
+            json={
+                "name": "Authorized probe target",
+                "type": "IP_ADDRESS",
+                "target_value": "192.168.1.50",
+                "active_probing_granted": True,
+            },
+            headers=auth_headers,
+        )
+        assert asset_response.status_code == 201
+        asset_id = asset_response.json()["id"]
+
+        start_response = await ac.post(
+            "/api/scans/start",
+            json={
+                "target_type": "IP",
+                "target_value": "192.168.1.50",
+                "asset_id": asset_id,
+                "enabled_engines": [],
+            },
+            headers=auth_headers,
+        )
+        assert start_response.status_code == 201
+        job = captured["job"]
+        assert job.asset_id == asset_id
+        assert job.active_probing_granted is True
+
+        mismatch = await ac.post(
+            "/api/scans/start",
+            json={
+                "target_type": "IP",
+                "target_value": "192.168.1.51",
+                "asset_id": asset_id,
+                "enabled_engines": [],
+            },
+            headers=auth_headers,
+        )
+        assert mismatch.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_unexpected_api_errors_are_generic_and_correlated():
     request = Request({
         "type": "http",

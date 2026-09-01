@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from app.core.models import (
     Target,
     TargetType,
+    AssetType,
     ScanProfile,
     ScanStatus,
     ScanConfig,
@@ -107,6 +108,23 @@ async def start_security_scan(
     Protected by SSRF gateway, path sandboxing, and RBAC multi-tenant authentication.
     """
     allow_internal = (current_user.role == UserRole.ADMIN)
+    asset = None
+    if payload.asset_id:
+        asset = db_manager.get_asset(payload.asset_id, organization_id=_organization_scope(current_user))
+        if not asset:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Authorized asset not found.")
+        asset_target_type = {
+            AssetType.WEB_APPLICATION: TargetType.URL,
+            AssetType.API_ENDPOINT: TargetType.URL,
+            AssetType.DOMAIN: TargetType.DOMAIN,
+            AssetType.IP_ADDRESS: TargetType.IP,
+            AssetType.IAC_TEMPLATE: TargetType.IAC_MANIFEST,
+        }.get(asset.type)
+        if asset_target_type != payload.target_type or asset.target_value.strip().lower() != payload.target_value.strip().lower():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan target does not match the selected asset.")
+        if payload.project_id and payload.project_id != asset.project_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan project does not match the selected asset.")
+        allow_internal = current_user.role == UserRole.ADMIN
     validate_target_input(payload.target_type, payload.target_value, allow_internal=allow_internal)
 
     target_name = payload.target_name or payload.target_value
@@ -129,7 +147,10 @@ async def start_security_scan(
 
     scan_job = ScanJob(
         correlation_id=getattr(request.state, "correlation_id", None),
-        organization_id=current_user.organization_id,
+        organization_id=asset.organization_id if asset else current_user.organization_id,
+        project_id=asset.project_id if asset else payload.project_id,
+        asset_id=asset.id if asset else None,
+        active_probing_granted=bool(asset and asset.active_probing_granted),
         target=target,
         profile=payload.profile,
         enabled_engines=selected_engines,

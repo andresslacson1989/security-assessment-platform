@@ -36,6 +36,7 @@ class CreateAssetRequest(BaseModel):
     target_value: str = Field(..., min_length=1, max_length=1024)
     criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
     internet_exposed: bool = Field(default=True)
+    active_probing_granted: bool = Field(default=False, description="Explicit authorization for intrusive probing")
     tags: List[str] = Field(default_factory=list)
     owner: Optional[str] = Field(default=None)
 
@@ -77,6 +78,8 @@ async def create_asset(
     from app.core.ssrf_protector import assert_safe_target, SSRFProtectionError
     from app.core.path_sandbox import PathSandboxViolation
     allow_internal = (current_user.role == UserRole.ADMIN)
+    if payload.active_probing_granted and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may grant intrusive probing authorization.")
     try:
         assert_safe_target(payload.type.value, payload.target_value.strip(), allow_internal=allow_internal)
     except (SSRFProtectionError, PathSandboxViolation) as err:
@@ -92,6 +95,7 @@ async def create_asset(
         target_value=payload.target_value.strip(),
         criticality=payload.criticality,
         internet_exposed=payload.internet_exposed,
+        active_probing_granted=payload.active_probing_granted,
         tags=payload.tags,
         owner=payload.owner or current_user.username,
         created_at=utc_now(),

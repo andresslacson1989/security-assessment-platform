@@ -515,6 +515,10 @@ class ScanOrchestrator:
                     accepts_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
                     if accepts_var_keyword:
                         run_kwargs["organization_id"] = job.organization_id
+                        run_kwargs["project_id"] = job.project_id
+                        run_kwargs["asset_id"] = job.asset_id
+                        run_kwargs["active_probing_granted"] = job.active_probing_granted
+                        run_kwargs["state_changing_granted"] = job.state_changing_granted
                     if "emit_auth_status" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_auth_status"] = _auth_cb
                     if "emit_endpoint_discovered" in sig.parameters or accepts_var_keyword:

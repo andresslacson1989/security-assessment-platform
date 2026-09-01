@@ -50,6 +50,20 @@ from app.adapters.nmap_adapter import (
     FORBIDDEN_SCRIPT_CATEGORIES,
 )
 from app.core.ssrf_protector import create_validated_target, SSRFProtectionError
+
+
+def test_validated_target_does_not_grant_intrusive_probing_by_default():
+    target = Target(name="Test", type=TargetType.IP, value="192.168.1.50")
+    with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
+        ordinary = create_validated_target(target, allow_internal=True)
+        authorized = create_validated_target(
+            target,
+            allow_internal=True,
+            active_probing_granted=True,
+        )
+
+    assert ordinary.authorization_context["active_probing_granted"] is False
+    assert authorized.authorization_context["active_probing_granted"] is True
 from app.core.process_supervisor import ProcessSupervisor
 from app.engines.network.engine import NetworkAssessmentEngine
 

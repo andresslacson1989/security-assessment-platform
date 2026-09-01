@@ -872,6 +872,8 @@ class ScanJob(BaseModel):
     organization_id: str = Field(default="org-default")
     project_id: Optional[str] = Field(default=None)
     asset_id: Optional[str] = Field(default=None)
+    active_probing_granted: bool = Field(default=False, description="Explicit tenant asset authorization for intrusive probing")
+    state_changing_granted: bool = Field(default=False, description="Explicit authorization for state-changing checks")
     target: Target = Field(...)
     profile: ScanProfile = Field(default=ScanProfile.FULL_STACK)
     enabled_engines: List[str] = Field(
@@ -1057,6 +1059,7 @@ class Asset(BaseModel):
     target_value: str = Field(...)
     criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
     internet_exposed: bool = Field(default=True)
+    active_probing_granted: bool = Field(default=False, description="Explicit tenant authorization for intrusive probing")
     tags: List[str] = Field(default_factory=list)
     owner: Optional[str] = Field(default=None)
     lifecycle_status: AssetLifecycleStatus = Field(default=AssetLifecycleStatus.MONITORED)

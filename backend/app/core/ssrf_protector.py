@@ -361,6 +361,7 @@ def create_validated_target(
     allow_internal: bool = False,
     authorized_scope: Optional[List[str]] = None,
     state_changing_granted: bool = False,
+    active_probing_granted: bool = False,
 ) -> Any:
     """
     Contract 01 §5.1, Contract 02 §3, Contract 08 §12.1 & Contract 09 §1.1:
@@ -440,7 +441,7 @@ def create_validated_target(
     auth_ctx = {
         "allow_internal": allow_internal,
         "validated_by": "assert_safe_target",
-        "active_probing_granted": True,
+        "active_probing_granted": bool(active_probing_granted),
         "state_changing_granted": bool(state_changing_granted),
         "dns_zone_authorized": (t_type_str == "DOMAIN"),
     }

@@ -717,6 +717,7 @@ class NmapAdapter(BaseToolAdapter):
                     organization_id=kwargs.get("organization_id", "org-default"),
                     project_id=kwargs.get("project_id"),
                     asset_id=kwargs.get("asset_id"),
+                    active_probing_granted=kwargs.get("active_probing_granted", False),
                 )
             except Exception as e:
                 self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED

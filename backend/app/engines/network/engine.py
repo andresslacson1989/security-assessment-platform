@@ -93,6 +93,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 organization_id=organization_id,
                 project_id=kwargs.get("project_id"),
                 asset_id=kwargs.get("asset_id"),
+                active_probing_granted=kwargs.get("active_probing_granted", False),
             )
         except Exception as exc:
             await emit_log(LogLevel.ERROR, f"Network assessment blocked by target validation: {exc}")
