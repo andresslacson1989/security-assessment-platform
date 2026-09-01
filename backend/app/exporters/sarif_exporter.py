@@ -5,6 +5,7 @@ Contract 04 & 05 OASIS SARIF v2.1.0 Exporter for GitHub Code Scanning & CI/CD Se
 from __future__ import annotations
 from typing import Dict, Any, List
 from app.core.models import ScanJob, Severity, mask_secret, sanitize_sensitive_text
+from app.core.version import APP_VERSION
 
 
 def severity_to_sarif_level(severity: Severity) -> str:
@@ -115,7 +116,7 @@ def export_scan_to_sarif(scan_job: ScanJob) -> Dict[str, Any]:
                 "tool": {
                     "driver": {
                         "name": "CyberAssess Security Scanner",
-                        "version": "6.0.0",
+                        "version": APP_VERSION,
                         "informationUri": "https://github.com/andresslacson1989/security-assessment-platform",
                         "rules": list(rules_map.values()),
                     }

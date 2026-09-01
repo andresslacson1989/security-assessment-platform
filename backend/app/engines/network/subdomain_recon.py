@@ -22,6 +22,7 @@ from app.core.models import (
     DiscoveredSubdomain,
     calculate_fingerprint,
 )
+from app.core.version import APP_VERSION
 from app.engines.base import LogCallback, FindingCallback, SubdomainDiscoveredCallback
 
 logger = logging.getLogger("cyberassess.engines.subdomain_recon")
@@ -162,7 +163,7 @@ async def audit_subdomain_osint(
         # crt.sh is a fixed external dependency; provider redirects must not
         # expand the scan's external egress destinations.
         async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "CyberAssess-OSINT/4.1.0"})
+            resp = await client.get(url, headers={"User-Agent": f"CyberAssess-OSINT/{APP_VERSION}"})
             if resp.status_code == 200:
                 entries = resp.json()
                 if isinstance(entries, list):

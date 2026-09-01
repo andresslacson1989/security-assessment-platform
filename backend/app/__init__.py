@@ -2,4 +2,6 @@
 Security Assessment Platform Backend Application.
 """
 
-__version__ = "6.0.0"
+from app.core.version import APP_VERSION
+
+__version__ = APP_VERSION

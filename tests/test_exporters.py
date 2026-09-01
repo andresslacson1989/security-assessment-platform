@@ -113,6 +113,7 @@ def test_sarif_exporter_v210():
     run = sarif["runs"][0]
     driver = run["tool"]["driver"]
     assert driver["name"] == "CyberAssess Security Scanner"
+    assert driver["version"] == APP_VERSION
     assert len(driver["rules"]) == 2
 
     # Validate rules catalog
