@@ -212,7 +212,11 @@ async def test_network_engine_full_run():
 
         target = Target(name="Web App", type=TargetType.URL, value="https://example.com")
         config = ScanConfig(
-            adapters=ToolAdapterConfig(enable_nmap=False, enable_sslyze=False),
+            adapters=ToolAdapterConfig(
+                enable_nmap=False,
+                enable_sslyze=False,
+                enable_subfinder=False,
+            ),
             osint=OSINTConfig(subdomain_enumeration=False),
         )
 
