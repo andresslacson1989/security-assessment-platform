@@ -67,14 +67,14 @@ async def test_bearer_identity_rechecks_authoritative_user_status(tmp_path, monk
         organization_id="org-one",
     ))
 
-    current = await get_current_user(authorization=f"Bearer {token}", x_api_key=None, token=None)
+    current = await get_current_user(authorization=f"Bearer {token}", x_api_key=None)
     assert current.organization_id == "org-one"
     with db._get_connection() as conn:
         conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", ("usr-jwt-boundary",))
 
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc_info:
-        await get_current_user(authorization=f"Bearer {token}", x_api_key=None, token=None)
+        await get_current_user(authorization=f"Bearer {token}", x_api_key=None)
     assert exc_info.value.status_code == 401
 
 

@@ -51,7 +51,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     chmod +x gitleaks
 
 # 4. Trivy (v0.50.0)
-# The official v0.50.0 release currently has no downloadable binary archive;
+# The official trivy v0.50.0 release currently has no downloadable binary archive;
 # it is intentionally omitted until an authentic pinned artifact is available.
 
 # 5. Subfinder (v2.6.5)

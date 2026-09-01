@@ -1144,12 +1144,10 @@ diff --git a/config.py b/config.py
 +DATABASE_URI = "postgres://admin:SecretPass123@db.internal:5432/prod"
 """
 
-    with patch("asyncio.create_subprocess_exec") as mock_exec, \
-         patch("pathlib.Path.exists", return_value=True):
-        mock_proc = AsyncMock()
-        mock_proc.communicate.return_value = (mock_git_diff.encode("utf-8"), b"")
-        mock_exec.return_value = mock_proc
-
+    with patch(
+        "app.engines.code_sast.git_history_scanner.process_supervisor.execute",
+        new=AsyncMock(return_value=(0, mock_git_diff, "")),
+    ), patch("pathlib.Path.exists", return_value=True):
         git_findings = await audit_git_commit_history(str(tmp_path))
         assert len(git_findings) >= 1
         git_check_ids = {f.check_id for f in git_findings}
@@ -1160,8 +1158,9 @@ diff --git a/config.py b/config.py
             assert "AKIAIOSFODNN7EXAMPLE" not in gf.evidence.observed_value
             assert "SecretPass123" not in gf.evidence.observed_value
             assert "*" in gf.evidence.observed_value
-        aws_finding = next(f for f in git_findings if "AKIA" in f.title or "SAST-SEC-001" in f.evidence.observed_value)
-        assert "AKIA" in aws_finding.evidence.observed_value
+        aws_finding = next(f for f in git_findings if "SAST-SEC-001" in f.evidence.observed_value)
+        assert "AWS Access Key ID" in aws_finding.title
+        assert "AKIAIOSFODNN7EXAMPLE" not in aws_finding.evidence.observed_value
 
 
 # ==============================================================================
