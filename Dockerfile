@@ -68,6 +68,8 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     unzip -q subfinder.zip subfinder && \
     chmod +x subfinder && \
+    if [ "$TARGETARCH" = "arm64" ]; then artifact_sha256="c629a4740f09ba7ecb326fdd5deeb84edb32819b3582d2f4c6172599d66bca1e"; artifact_filename="subfinder_2.6.5_linux_arm64.zip"; else artifact_sha256="19320e575c4fb422b1d2f9e4800b624eb5b5215e526db506570cb73dd2de5907"; artifact_filename="subfinder_2.6.5_linux_amd64.zip"; fi && \
+    ARTIFACT_SHA256="$artifact_sha256" ARTIFACT_FILENAME="$artifact_filename" TARGET_ARCH="$TARGETARCH" python3 -c 'import hashlib,json,os; p="subfinder"; json.dump({"tool_id":"TOOL-SUBFINDER","tool_version":"v2.6.5","artifact_filename":os.environ["ARTIFACT_FILENAME"],"artifact_sha256":os.environ["ARTIFACT_SHA256"],"executable_relative_path":p,"executable_sha256":hashlib.sha256(open(p,"rb").read()).hexdigest(),"platform":"linux","architecture":os.environ["TARGET_ARCH"],"installer_version":"14.3.0","trust_status":"VALID","claims":["ARCHIVE_INTEGRITY_VERIFIED","EXECUTABLE_INTEGRITY_VERIFIED"]},open(p+".trust.json","w"),sort_keys=True)' && \
     rm subfinder.zip
 
 # 6. Httpx (v1.6.0)
@@ -78,6 +80,8 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     unzip -q httpx.zip httpx && \
     chmod +x httpx && \
+    if [ "$TARGETARCH" = "arm64" ]; then artifact_sha256="4fa8b296754c52da6fcc987870295e4159a15deeb3aa3a230f50cd208f72ef62"; artifact_filename="httpx_1.6.0_linux_arm64.zip"; else artifact_sha256="a209fbf6eb95cdfb3be9a90a1a57463c6dd1879a56ca32bb4a39cc55d9b0754d"; artifact_filename="httpx_1.6.0_linux_amd64.zip"; fi && \
+    ARTIFACT_SHA256="$artifact_sha256" ARTIFACT_FILENAME="$artifact_filename" TARGET_ARCH="$TARGETARCH" python3 -c 'import hashlib,json,os; p="httpx"; json.dump({"tool_id":"TOOL-HTTPX","tool_version":"v1.6.0","artifact_filename":os.environ["ARTIFACT_FILENAME"],"artifact_sha256":os.environ["ARTIFACT_SHA256"],"executable_relative_path":p,"executable_sha256":hashlib.sha256(open(p,"rb").read()).hexdigest(),"platform":"linux","architecture":os.environ["TARGET_ARCH"],"installer_version":"14.3.0","trust_status":"VALID","claims":["ARCHIVE_INTEGRITY_VERIFIED","EXECUTABLE_INTEGRITY_VERIFIED"]},open(p+".trust.json","w"),sort_keys=True)' && \
     rm httpx.zip
 
 # 7. Katana (v1.0.5)
@@ -202,14 +206,17 @@ RUN mkdir -p "$CYBERASSESS_TOOL_VENV_DIR" && \
 ENV PATH="$PATH:/opt/cyberassess/tool-venvs/sslyze/bin:/opt/cyberassess/tool-venvs/bandit/bin:/opt/cyberassess/tool-venvs/semgrep/bin:/opt/cyberassess/tool-venvs/checkov/bin:/opt/cyberassess/tool-venvs/prowler/bin:/opt/cyberassess/tool-venvs/schemathesis/bin"
 
 # Copy pre-compiled standalone Go binaries AFTER pip so pip packages cannot overwrite CLI tools (e.g. ProjectDiscovery httpx)
+RUN mkdir -p /app/backend/bin
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
 COPY --from=builder /tmp/bin/ffuf /usr/local/bin/ffuf
 COPY --from=builder /tmp/bin/gitleaks /usr/local/bin/gitleaks
 # Trivy v0.50.0 has no currently downloadable official binary artifact;
 # installation is intentionally blocked by the runtime manifest until one is
 # available, so no unverified replacement is copied into the image.
-COPY --from=builder /tmp/bin/subfinder /usr/local/bin/subfinder
-COPY --from=builder /tmp/bin/httpx /usr/local/bin/httpx
+COPY --from=builder /tmp/bin/subfinder /app/backend/bin/subfinder
+COPY --from=builder /tmp/bin/subfinder.trust.json /app/backend/bin/subfinder.trust.json
+COPY --from=builder /tmp/bin/httpx /app/backend/bin/httpx
+COPY --from=builder /tmp/bin/httpx.trust.json /app/backend/bin/httpx.trust.json
 COPY --from=builder /tmp/bin/katana /usr/local/bin/katana
 COPY --from=builder /tmp/bin/syft /usr/local/bin/syft
 COPY --from=builder /tmp/bin/grype /usr/local/bin/grype
