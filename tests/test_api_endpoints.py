@@ -39,7 +39,7 @@ def auth_headers():
 
 
 @pytest.mark.asyncio
-async def test_system_endpoints():
+async def test_system_endpoints(auth_headers):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         # 1. Health check
         resp = await ac.get("/api/system/health")
@@ -52,7 +52,8 @@ async def test_system_endpoints():
         assert data["storage"]["status"] == "OK"
 
         # 2. Engines catalog
-        resp_eng = await ac.get("/api/system/engines")
+        assert (await ac.get("/api/system/engines")).status_code == 401
+        resp_eng = await ac.get("/api/system/engines", headers=auth_headers)
         assert resp_eng.status_code == 200
         data_eng = resp_eng.json()
         assert data_eng["count"] == 5

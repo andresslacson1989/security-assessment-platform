@@ -5,7 +5,8 @@ Contract 04 & 08 System Health and Engine Metadata Endpoints.
 from __future__ import annotations
 import time
 from typing import Dict, Any, List
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.core.auth import get_current_user, UserProfile
 from app.core.models import utc_now, TargetType, Target
 from app.core.storage import list_scans
 from app.core.orchestrator import orchestrator
@@ -38,7 +39,9 @@ async def get_system_health() -> Dict[str, Any]:
 
 
 @router.get("/engines", summary="List Registered Assessment Engines")
-async def get_registered_engines() -> Dict[str, Any]:
+async def get_registered_engines(
+    current_user: UserProfile = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     Returns metadata, supported target types, and descriptions for all registered security assessment engines.
     """
@@ -64,10 +67,11 @@ async def get_registered_engines() -> Dict[str, Any]:
 
 
 @router.get("/capabilities", summary="System Tool & Engine Capabilities")
-async def get_system_capabilities() -> Any:
+async def get_system_capabilities(
+    current_user: UserProfile = Depends(get_current_user),
+) -> Any:
     """
     Returns host tool discovery status, binary paths, versions, and execution modes.
     """
     from app.adapters import discover_system_capabilities
     return await discover_system_capabilities()
-
