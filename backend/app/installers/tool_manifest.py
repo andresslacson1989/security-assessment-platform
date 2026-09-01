@@ -180,8 +180,8 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "darwin_arm64": "grype_0.74.0_darwin_arm64.tar.gz",
         }
     },
-    "osv_scanner": {
-        "tool_name": "osv_scanner",
+    "osv-scanner": {
+        "tool_name": "osv-scanner",
         "version": "1.7.0",
         "release_tag": "v1.7.0",
         "repo": "google/osv-scanner",
@@ -201,6 +201,48 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "darwin_amd64": "osv-scanner_darwin_amd64",
             "darwin_arm64": "osv-scanner_darwin_arm64",
         }
+    },
+    "trufflehog": {
+        "tool_name": "trufflehog",
+        "version": "3.63.0",
+        "release_tag": "v3.63.0",
+        "repo": "trufflesecurity/trufflehog",
+        "pinned_version": "v3.63.0",
+        "category": "Code SAST",
+        "sha256_checksums": {
+            "windows_amd64": "3122ac287e3366d61603affe2f4a3658f72d848879af0de31c737f25eb97756f",
+            "linux_amd64": "836cd48d5864a25194c2b6ed1b9dc8d68367a2ee2afb00655306b18359b3cc0d",
+            "linux_arm64": "4e3da13e733abbc1a558946357621cc19269fb32ff540ff44a04c0a8e63d4234",
+            "darwin_amd64": "7c32c3179dd16d76fb89f4699bc37177f5cfedeba19e692ce9b46c5dfad213b0",
+            "darwin_arm64": "48b5b363318ac63b32e7047475a91371bc9a0a8da9caf88e69e0890ddffe0159",
+        },
+        "asset_names": {
+            "windows_amd64": "trufflehog_3.63.0_windows_amd64.tar.gz",
+            "linux_amd64": "trufflehog_3.63.0_linux_amd64.tar.gz",
+            "linux_arm64": "trufflehog_3.63.0_linux_arm64.tar.gz",
+            "darwin_amd64": "trufflehog_3.63.0_darwin_amd64.tar.gz",
+            "darwin_arm64": "trufflehog_3.63.0_darwin_arm64.tar.gz",
+        },
+    },
+    "kube-bench": {
+        "tool_name": "kube-bench",
+        "version": "0.7.0",
+        "release_tag": "v0.7.0",
+        "repo": "aquasecurity/kube-bench",
+        "pinned_version": "v0.7.0",
+        "category": "Cluster Posture",
+        "sha256_checksums": {
+            "linux_amd64": "e9ede7c6f3570cf8e4f81925cd2523fc9c3442fb8304477637f231c7b4647e7d",
+            "linux_arm64": "53da250a3211d717378e6ef37ee541d2cd212953628b064f2f7e2ca8a5a7bb57",
+            "darwin_amd64": "12837eed1e793c7b452911c676f6ef2d49f37eab48b263c983155d4067fccd5c",
+            "darwin_arm64": "ccbe3240941ef18c8e692f00109d68abe5aa48b2a9b841dd916e31365409a3f2",
+        },
+        "asset_names": {
+            "linux_amd64": "kube-bench_0.7.0_linux_amd64.tar.gz",
+            "linux_arm64": "kube-bench_0.7.0_linux_arm64.tar.gz",
+            "darwin_amd64": "kube-bench_0.7.0_darwin_amd64.tar.gz",
+            "darwin_arm64": "kube-bench_0.7.0_darwin_arm64.tar.gz",
+        },
     },
     "dockle": {
         "tool_name": "dockle",

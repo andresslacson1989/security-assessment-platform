@@ -414,8 +414,13 @@ class GithubReleaseInstaller(BaseToolInstaller):
 
                 if archive_path.endswith(".zip"):
                     self._safe_extract_zip(archive_path, extract_dir)
-                else:
+                elif archive_path.endswith((".tar.gz", ".tgz")):
                     self._safe_extract_tar(archive_path, extract_dir)
+                else:
+                    # Some official releases (notably OSV-Scanner) publish
+                    # the platform executable directly without an archive.
+                    raw_name = f"{bin_name}.exe" if os_name == "windows" else bin_name
+                    shutil.copy2(archive_path, os.path.join(extract_dir, raw_name))
 
                 # Locate the binary executable inside extracted files (including nested subdirectories)
                 found_bin = None
