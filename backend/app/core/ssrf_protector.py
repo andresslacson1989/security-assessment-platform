@@ -408,6 +408,24 @@ def create_validated_target(
         import os
         selected_dest = os.path.abspath(canonical_val)
 
+    # The authoritative constructor performs a second DNS lookup after the
+    # initial input gate. Re-apply the address policy here so a DNS answer
+    # changing between those two points cannot become the pinned destination.
+    if t_type_str in ("URL", "DOMAIN"):
+        if not resolved_ips:
+            raise SSRFProtectionError("Target hostname did not resolve at validated-target construction time.")
+        for resolved_ip in resolved_ips:
+            try:
+                ipaddress.ip_address(resolved_ip)
+            except ValueError as exc:
+                raise SSRFProtectionError("Target hostname returned an invalid address.") from exc
+            if not allow_internal:
+                allowed, reason = is_ip_allowed(resolved_ip)
+                if not allowed:
+                    raise SSRFProtectionError(
+                        f"Resolved IP '{resolved_ip}' for target is blocked: {reason}"
+                    )
+
     # Compute cryptographic identity digests per Contract 09 §1.1
     policy_version = "14.3.0"
     target_id = hashlib.sha256(f"{canonical_val}:{selected_dest}".encode("utf-8")).hexdigest()

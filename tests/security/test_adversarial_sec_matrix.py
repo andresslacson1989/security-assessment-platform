@@ -46,7 +46,7 @@ from app.core.auth import (
     authorize_finding_access,
 )
 from app.core.db import DatabaseManager
-from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
+from app.core.ssrf_protector import assert_safe_url, create_validated_target, SSRFProtectionError
 from app.core.path_sandbox import assert_safe_path, PathSandboxViolation
 from app.installers.tool_manifest import verify_download_integrity, PINNED_TOOL_MANIFEST
 from app.core.correlator import correlator, compute_sla_info
@@ -206,6 +206,17 @@ def test_sec_009_ssrf_dns_rebinding_pre_resolution(monkeypatch):
     with pytest.raises(SSRFProtectionError) as exc_info:
         assert_safe_url("http://rebound-attack.example.com/exploit")
     assert "blocked" in str(exc_info.value).lower()
+
+
+def test_sec_009b_ssrf_dns_rebinding_during_validated_target_construction(monkeypatch):
+    """A second DNS answer is revalidated before it can become a pinned destination."""
+    from app.core import ssrf_protector
+    target = Target(name="rebinding", type=TargetType.URL, value="https://example.com")
+    answers = iter([["93.184.216.34"], ["10.0.0.5"]])
+    monkeypatch.setattr(ssrf_protector, "resolve_hostname_ips", lambda host: next(answers))
+
+    with pytest.raises(SSRFProtectionError, match="blocked"):
+        create_validated_target(target)
 
 
 # ============================================================================
