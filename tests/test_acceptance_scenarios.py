@@ -1412,7 +1412,7 @@ async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path):
     with patch("httpx.AsyncClient", return_value=mock_client), \
          patch("app.installers.tool_manifest.verify_download_integrity", return_value=(True, "fake_sha256_hash", None)), \
          patch.object(gh_inst, "get_bin_dir", return_value=str(fake_bin_dir)), \
-         patch.object(gh_inst, "get_version", AsyncMock(return_value="nuclei v3.2.0")):
+         patch.object(gh_inst, "_probe_version", AsyncMock(return_value="nuclei v3.2.0")):
         res = await gh_inst.install(lambda m: asyncio.sleep(0), lambda p, s: asyncio.sleep(0))
         assert res is True
         installed_file = fake_bin_dir / "nuclei.exe"

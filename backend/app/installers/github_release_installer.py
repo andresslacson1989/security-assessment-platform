@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+import uuid
 from typing import Optional, Dict, List, Tuple
 import httpx
 
@@ -25,6 +26,7 @@ from app.installers.base_installer import (
     LogCallback,
     ProgressCallback,
 )
+from app.core.process_supervisor import process_supervisor
 
 
 GITHUB_TOOL_CONFIGS: Dict[str, dict] = {
@@ -252,26 +254,18 @@ class GithubReleaseInstaller(BaseToolInstaller):
         path = self.resolve_binary_path()
         if not path:
             return None
-        cmd = [path] + self._cfg["version_cmd"]
+        return await self._probe_version(path)
 
-        def _check():
-            try:
-                import subprocess
-                res = subprocess.run(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    timeout=5.0,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                text = res.stdout.strip()
-                return text.splitlines()[0] if text else None
-            except Exception:
-                return None
-
-        return await asyncio.to_thread(_check)
+    async def _probe_version(self, path: str) -> Optional[str]:
+        """Probe a specific executable through the central process supervisor."""
+        code, stdout, stderr = await process_supervisor.execute(
+            [path] + self._cfg["version_cmd"],
+            timeout=5.0,
+            max_output_bytes=1024 * 1024,
+        )
+        output = stdout + (f"\n{stderr}" if stderr else "")
+        lines = output.strip().splitlines()
+        return lines[0] if code == 0 and lines else None
 
     def _safe_extract_zip(self, zip_path: str, target_dir: str) -> None:
         """Extracts zip archive with ZipSlip path traversal protection."""
@@ -329,6 +323,8 @@ class GithubReleaseInstaller(BaseToolInstaller):
         asset_filename = None
         rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{pinned_tag}" if pinned_tag else f"https://api.github.com/repos/{repo}/releases/latest"
 
+        staged_binary_path = None
+        staged_trust_path = None
         try:
             async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
                 resp = await client.get(rel_url)
@@ -412,27 +408,27 @@ class GithubReleaseInstaller(BaseToolInstaller):
                 if not found_bin:
                     raise FileNotFoundError(f"Could not find executable '{bin_name}' inside downloaded archive")
 
-                # Copy to local_bin_dir
+                # Validate the quarantined executable before it can enter the
+                # managed directory. The production resolver must never be
+                # used to validate an artifact that has not been promoted.
                 dest_filename = os.path.basename(found_bin)
                 dest_path = os.path.join(local_bin_dir, dest_filename)
-                shutil.copy2(found_bin, dest_path)
-
-                # On POSIX, ensure chmod +x
+                # On POSIX, ensure the staged executable is runnable.
+                staged_binary_path = os.path.join(local_bin_dir, f".{dest_filename}.{uuid.uuid4().hex}.staged")
+                staged_trust_path = os.path.join(local_bin_dir, f".{dest_filename}.trust.{uuid.uuid4().hex}.staged")
+                shutil.copy2(found_bin, staged_binary_path)
                 if os.name != "nt":
-                    try:
-                        os.chmod(dest_path, 0o755)
-                    except Exception:
-                        pass
+                    os.chmod(staged_binary_path, 0o755)
 
                 await emit_progress(90, "Verifying binary execution...")
-                ver = await self.get_version()
+                ver = await self._probe_version(staged_binary_path)
                 expected_version = str(pinned_tag or "").lstrip("v")
                 version_match = re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", ver or "")
                 if not version_match or version_match.group(1) != expected_version:
                     raise SecurityError(
                         f"Runtime version verification failed for {self.tool_name}: expected {pinned_tag}, found {ver or 'unavailable'}."
                     )
-                with open(dest_path, "rb") as binary_file:
+                with open(staged_binary_path, "rb") as binary_file:
                     executable_hash = hashlib.sha256(binary_file.read()).hexdigest()
                 trust_record = {
                     "tool_id": f"TOOL-{self.tool_name.upper().replace('-', '_')}",
@@ -447,8 +443,18 @@ class GithubReleaseInstaller(BaseToolInstaller):
                     "trust_status": "VALID",
                     "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
                 }
-                with open(os.path.join(local_bin_dir, f"{dest_filename}.trust.json"), "w", encoding="utf-8") as trust_file:
+                with open(staged_trust_path, "w", encoding="utf-8") as trust_file:
                     json.dump(trust_record, trust_file, sort_keys=True)
+                    trust_file.flush()
+                    os.fsync(trust_file.fileno())
+
+                # Promotion is atomic. If the process stops between these two
+                # replacements, the executable/sidecar mismatch fails trust
+                # verification rather than authorizing an ambiguous binary.
+                os.replace(staged_binary_path, dest_path)
+                staged_binary_path = None
+                os.replace(staged_trust_path, os.path.join(local_bin_dir, f"{dest_filename}.trust.json"))
+                staged_trust_path = None
                 await emit_log(f"Binary installed at: {dest_path} (version: {ver or 'unknown'})")
                 await emit_progress(100, f"Successfully installed {self.display_name} ({ver or 'ready'})")
                 return True
@@ -460,3 +466,10 @@ class GithubReleaseInstaller(BaseToolInstaller):
             await emit_log(f"Error installing {self.tool_name}: {e}")
             await emit_progress(100, f"Installation failed: {e}")
             return False
+        finally:
+            for staged_path in (staged_binary_path, staged_trust_path):
+                if staged_path:
+                    try:
+                        os.unlink(staged_path)
+                    except FileNotFoundError:
+                        pass
