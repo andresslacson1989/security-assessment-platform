@@ -55,6 +55,7 @@ def main():
     port = int(os.environ.get("PORT", "8000"))
     display_host = "localhost" if host == "0.0.0.0" else host
     dashboard_url = f"http://{display_host}:{port}"
+    reload_enabled = os.environ.get("UVICORN_RELOAD", "0").strip().lower() in {"1", "true", "yes"}
 
     from app.core.version import APP_NAME, APP_VERSION
     print("=" * 72)
@@ -78,14 +79,14 @@ def main():
     threading.Thread(target=open_browser, daemon=True).start()
 
     try:
-        # Run uvicorn server with auto-reload enabled
+        # Reload is a development opt-in; production uses a stable process.
         uvicorn.run(
             "app.main:app",
             host=host,
             port=port,
             log_level="info",
-            reload=True,
-            reload_dirs=[str(backend_dir)],
+            reload=reload_enabled,
+            **({"reload_dirs": [str(backend_dir)]} if reload_enabled else {}),
         )
     except KeyboardInterrupt:
         print("\n[!] CyberAssess Security Platform shut down successfully.")
