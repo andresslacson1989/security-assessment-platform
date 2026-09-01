@@ -31,6 +31,7 @@ from app.installers.github_release_installer import GithubReleaseInstaller
 from app.core.binary_resolver import resolve_tool_binary
 from app.installers.system_installer import SystemToolHelper
 from app.installers.manager import ToolInstallationManager
+from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
 
 @pytest.fixture
@@ -89,6 +90,22 @@ async def test_manager_get_all_tools_info(manager):
 
     assert tool_map["nmap"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
     assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
+
+
+def test_pypi_manifest_records_match_hash_locked_release_metadata():
+    expected = {
+        "sslyze": ("5.2.0", "15ecb471b251dfbd003ba81a57d36865a93f18b74c7e7883a00d8bbddd365e03"),
+        "schemathesis": ("3.20.0", "52f03b4fa694c5a5e8dd0f606e0afb98644b1989b474f526af6dfb079e501cb4"),
+        "semgrep": ("1.65.0", "f8d5e9bb4a743399646ff421f7261d19f11c02511c0398055ecf1d01d7a31c64"),
+        "bandit": ("1.7.8", "36de50f720856ab24a24dbaa5fee2c66050ed97c1477e0a1159deab1775eab6b"),
+        "checkov": ("3.2.0", "8e3aee686f76165f6d4bfcf6a8ee192ee84039a0f5f21315d8639b404a4bc06b"),
+        "prowler": ("4.1.0", "2c4e9a77750b7f3ef83b2fc80ece21dd9cf6d2a55efb6325e8d072aa80e93da3"),
+    }
+    for tool_name, (version, digest) in expected.items():
+        entry = PINNED_TOOL_MANIFEST[tool_name]
+        assert entry["version"] == version
+        assert entry["sha256_checksums"]["pypi_sdist"] == digest
+        assert entry["asset_names"]["pypi_sdist"].endswith(f"-{version}.tar.gz")
 
 
 @pytest.mark.asyncio

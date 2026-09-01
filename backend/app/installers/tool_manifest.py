@@ -264,6 +264,104 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "darwin_arm64": "dockle_0.4.14_macOS-ARM64.tar.gz",
         }
     },
+    "sslyze": {
+        "tool_name": "sslyze",
+        "version": "5.2.0",
+        "release_tag": "5.2.0",
+        "repo": "PyPI:sslyze",
+        "pinned_version": "5.2.0",
+        "category": "Network & TLS",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "pypi_sdist": "15ecb471b251dfbd003ba81a57d36865a93f18b74c7e7883a00d8bbddd365e03",
+        },
+        "asset_names": {"pypi_sdist": "sslyze-5.2.0.tar.gz"},
+    },
+    "schemathesis": {
+        "tool_name": "schemathesis",
+        "version": "3.20.0",
+        "release_tag": "3.20.0",
+        "repo": "PyPI:schemathesis",
+        "pinned_version": "3.20.0",
+        "category": "API Security",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "pypi_wheel": "cc5480e0c60ad82dd5887fa596ff820d08e620239edacb648e6eb099b6a5d2b8",
+            "pypi_sdist": "52f03b4fa694c5a5e8dd0f606e0afb98644b1989b474f526af6dfb079e501cb4",
+        },
+        "asset_names": {
+            "pypi_wheel": "schemathesis-3.20.0-py3-none-any.whl",
+            "pypi_sdist": "schemathesis-3.20.0.tar.gz",
+        },
+    },
+    "semgrep": {
+        "tool_name": "semgrep",
+        "version": "1.65.0",
+        "release_tag": "1.65.0",
+        "repo": "PyPI:semgrep",
+        "pinned_version": "1.65.0",
+        "category": "Code SAST",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "pypi_sdist": "f8d5e9bb4a743399646ff421f7261d19f11c02511c0398055ecf1d01d7a31c64",
+            "pypi_wheel": "df77ef830ef039a4e7626556dc6719d6a6221a7966e42fe9cc5a9de2effafd6d",
+        },
+        "asset_names": {
+            "pypi_sdist": "semgrep-1.65.0.tar.gz",
+            "pypi_wheel": "semgrep-1.65.0-cp38.cp39.cp310.cp311.py37.py38.py39.py310.py311-none-any.whl",
+        },
+    },
+    "bandit": {
+        "tool_name": "bandit",
+        "version": "1.7.8",
+        "release_tag": "1.7.8",
+        "repo": "PyPI:bandit",
+        "pinned_version": "1.7.8",
+        "category": "Code SAST",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "pypi_wheel": "509f7af645bc0cd8fd4587abc1a038fc795636671ee8204d502b933aee44f381",
+            "pypi_sdist": "36de50f720856ab24a24dbaa5fee2c66050ed97c1477e0a1159deab1775eab6b",
+        },
+        "asset_names": {
+            "pypi_wheel": "bandit-1.7.8-py3-none-any.whl",
+            "pypi_sdist": "bandit-1.7.8.tar.gz",
+        },
+    },
+    "checkov": {
+        "tool_name": "checkov",
+        "version": "3.2.0",
+        "release_tag": "3.2.0",
+        "repo": "PyPI:checkov",
+        "pinned_version": "3.2.0",
+        "category": "Infra IaC",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "pypi_wheel": "2719334876d0ee6a8ebe8d15ff393cbb4c13dcfe81e3cb9348ef2c1ed8372c6e",
+            "pypi_sdist": "8e3aee686f76165f6d4bfcf6a8ee192ee84039a0f5f21315d8639b404a4bc06b",
+        },
+        "asset_names": {
+            "pypi_wheel": "checkov-3.2.0-py3-none-any.whl",
+            "pypi_sdist": "checkov-3.2.0.tar.gz",
+        },
+    },
+    "prowler": {
+        "tool_name": "prowler",
+        "version": "4.1.0",
+        "release_tag": "4.1.0",
+        "repo": "PyPI:prowler",
+        "pinned_version": "4.1.0",
+        "category": "Cloud Posture",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "pypi_wheel": "f52fa978f3283da43ac2e3bc6733d67246c9a02decc757d5b699c31fe31dcd9b",
+            "pypi_sdist": "2c4e9a77750b7f3ef83b2fc80ece21dd9cf6d2a55efb6325e8d072aa80e93da3",
+        },
+        "asset_names": {
+            "pypi_wheel": "prowler-4.1.0-py3-none-any.whl",
+            "pypi_sdist": "prowler-4.1.0.tar.gz",
+        },
+    },
 }
 
 

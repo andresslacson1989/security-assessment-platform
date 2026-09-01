@@ -7,6 +7,16 @@ import pytest
 from app.core.db import _PostgresRow, _qmark_to_postgres, DatabaseManager
 
 
+def test_worker_does_not_reexecute_terminal_authoritative_scan_states():
+    from run_worker import should_process_scan
+    from app.core.models import ScanStatus
+
+    assert should_process_scan(ScanStatus.PENDING) is True
+    assert should_process_scan(ScanStatus.RUNNING) is True
+    for terminal_status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
+        assert should_process_scan(terminal_status) is False
+
+
 def test_qmark_translation_preserves_quoted_literals():
     sql = "SELECT '?' AS literal, \"?\" AS identifier, value FROM items WHERE id = ?"
 
@@ -122,6 +132,38 @@ async def test_redis_consumer_claims_new_intent_and_acknowledges_after_handler()
     assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
     assert received == [("scan-1", "org-1")]
     assert queue._redis.acked == "message-1"
+
+
+@pytest.mark.asyncio
+async def test_redis_consumer_reclaims_pending_intent_before_new_messages():
+    from app.core.queue import RedisDurableQueue
+
+    class FakeRedis:
+        async def xautoclaim(self, *args, **kwargs):
+            return ("0-0", [("reclaimed-1", {"scan_id": "scan-reclaimed", "organization_id": "org-1"})], [])
+
+        async def xreadgroup(self, *args, **kwargs):
+            raise AssertionError("new messages must not be read when a pending intent was reclaimed")
+
+        async def xack(self, *args):
+            self.acked = args[-1]
+
+        async def xadd(self, *args, **kwargs):
+            raise AssertionError("successful reclaimed intent must not enter the failure stream")
+
+    queue = object.__new__(RedisDurableQueue)
+    queue._redis = FakeRedis()
+    queue._consumer_name = "worker-test"
+    queue._group_ready = True
+    queue._group_lock = asyncio.Lock()
+    received = []
+
+    async def handler(scan_id, organization_id):
+        received.append((scan_id, organization_id))
+
+    assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
+    assert received == [("scan-reclaimed", "org-1")]
+    assert queue._redis.acked == "reclaimed-1"
 
 
 @pytest.mark.asyncio

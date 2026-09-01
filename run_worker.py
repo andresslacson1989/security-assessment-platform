@@ -17,6 +17,22 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
+def should_process_scan(status: object) -> bool:
+    """Return whether a queued intent may still execute its scan.
+
+    Redis Streams can redeliver an intent after a worker crash.  Terminal
+    authoritative states are therefore idempotent no-ops at the worker
+    boundary; only pending/running work may be handed to the executor.
+    """
+    from app.core.models import ScanStatus
+
+    return status not in {
+        ScanStatus.COMPLETED,
+        ScanStatus.FAILED,
+        ScanStatus.CANCELLED,
+    }
+
+
 async def run_worker() -> None:
     from app.core.orchestrator import ScanOrchestrator
     from app.core.queue import (
@@ -56,7 +72,7 @@ async def run_worker() -> None:
             raise RuntimeError("queued scan no longer exists in authoritative storage")
         if organization_id is not None and job.organization_id != organization_id:
             raise RuntimeError("queued scan tenant binding failed")
-        if job.status == ScanStatus.CANCELLED:
+        if not should_process_scan(job.status):
             return
 
         orchestrator._active_jobs[scan_id] = job
