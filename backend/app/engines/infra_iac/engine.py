@@ -16,6 +16,7 @@ from app.adapters.trivy_adapter import TrivyAdapter
 from app.adapters.dockle_adapter import DockleAdapter
 from app.adapters.kubebench_adapter import KubeBenchAdapter
 from app.adapters.prowler_adapter import ProwlerAdapter
+from app.adapters.gtfobins_adapter import GTFOBinsAdapter
 
 
 class InfraIacAssessmentEngine(BaseAssessmentEngine):
@@ -185,6 +186,26 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             findings.append(f)
             except Exception as e:
                 await emit_log(LogLevel.WARNING, f"Prowler adapter error: {e}")
+
+        # --- Stage 1: Dockerfile Container Hardening ---
+        if getattr(config.adapters, "enable_gtfobins", True):
+            gtfobins_adapter = GTFOBinsAdapter()
+            try:
+                gtfobins_findings = await gtfobins_adapter.run(
+                    target,
+                    config,
+                    emit_log,
+                    emit_finding,
+                    scan_id=kwargs.get("scan_id", "active"),
+                    organization_id=kwargs.get("organization_id"),
+                    host_audit_input=kwargs.get("host_audit_input"),
+                )
+                for finding in gtfobins_findings:
+                    if finding.fingerprint not in existing_fps:
+                        existing_fps.add(finding.fingerprint)
+                        findings.append(finding)
+            except Exception as exc:
+                await emit_log(LogLevel.WARNING, f"GTFOBins rule evaluation error: {exc}")
 
         # --- Stage 1: Dockerfile Container Hardening ---
         await emit_progress(25, "Auditing Dockerfiles for root user, unpinned base images, and secrets...")

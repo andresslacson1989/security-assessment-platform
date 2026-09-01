@@ -37,6 +37,7 @@ from app.adapters.osv_scanner_adapter import OSVScannerAdapter
 from app.adapters.prowler_adapter import ProwlerAdapter
 from app.adapters.kubebench_adapter import KubeBenchAdapter
 from app.adapters.dockle_adapter import DockleAdapter
+from app.adapters.gtfobins_adapter import GTFOBinsAdapter
 
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "ProwlerAdapter",
     "KubeBenchAdapter",
     "DockleAdapter",
+    "GTFOBinsAdapter",
     "get_adapter_registry",
     "discover_system_capabilities",
 ]
@@ -69,7 +71,7 @@ __all__ = [
 
 def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
     """
-    Returns an initialized registry of all 21 available modern tool adapter instances.
+    Returns an initialized registry of all 22 registered tool/native adapters.
     """
     return {
         "nmap": NmapAdapter(),
@@ -93,6 +95,7 @@ def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
         "dockle": DockleAdapter(),
         "kube-bench": KubeBenchAdapter(),
         "prowler": ProwlerAdapter(),
+        "gtfobins": GTFOBinsAdapter(),
     }
 
 
@@ -100,7 +103,7 @@ async def discover_system_capabilities(
     config: Optional[ToolAdapterConfig] = None,
 ) -> SystemCapabilities:
     """
-    Discovers installed CLI tools on the host system across all 21 adapters,
+    Discovers installed CLI tools and native evaluators across the registered adapters,
     inspects their versions and paths, and returns the structured SystemCapabilities model.
     """
     cfg = config or ToolAdapterConfig()
@@ -130,6 +133,7 @@ async def discover_system_capabilities(
         "dockle": (cfg.enable_dockle, cfg.dockle_path or cfg.custom_dockle_path),
         "kube-bench": (cfg.enable_kube_bench, cfg.kube_bench_path or cfg.custom_kube_bench_path),
         "prowler": (cfg.enable_prowler, cfg.prowler_path or cfg.custom_prowler_path),
+        "gtfobins": (cfg.enable_gtfobins, None),
     }
 
     # Tool install methods mapping
@@ -155,6 +159,7 @@ async def discover_system_capabilities(
         "kube-bench": ToolInstallMethod.STANDALONE_BINARY,
         "nmap": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
         "retire": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
+        "gtfobins": ToolInstallMethod.MANUAL,
     }
 
     for name, adapter in registry.items():

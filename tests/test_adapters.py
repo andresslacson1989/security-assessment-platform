@@ -986,17 +986,18 @@ class TestCapabilitiesAndRegistry:
             "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
             "trivy", "syft", "grype", "osv-scanner",
             "checkov", "prowler", "kube-bench", "dockle",
+            "gtfobins",
         }
         assert set(registry.keys()) == expected_tools
-        assert len(registry) == 21
+        assert len(registry) == 22
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_fallback(self):
-        # All tools missing -> NATIVE_FALLBACK for all 21 tools
+        # All external tools missing; native GTFOBins remains available as a rule engine.
         with patch.object(BaseToolAdapter, "resolve_binary_path", return_value=None):
             with patch.object(BaseToolAdapter, "is_available", return_value=False):
                 caps = await discover_system_capabilities()
-                assert len(caps.tools) == 21
+                assert len(caps.tools) == 22
                 assert caps.native_engines_ready is True
                 for t in caps.tools:
                     assert t.available is False
