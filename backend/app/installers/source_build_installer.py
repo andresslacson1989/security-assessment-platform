@@ -129,6 +129,9 @@ class SourceBuildInstaller(BaseToolInstaller):
         if manifest.get("trust_mode") != "SOURCE_BUILD_MODE" or not manifest.get("source_build"):
             await emit_log("Installation refused: source-build mode is not authorized by the manifest.")
             return False
+        if manifest.get("direct_release_artifact_available") is not False:
+            await emit_log("Installation refused: source build is not permitted while a direct release artifact is available or its availability is unproven.")
+            return False
         platform_key = self._platform_key()
         checksums = manifest.get("sha256_checksums", {})
         source_url = manifest.get("source_archive_url")

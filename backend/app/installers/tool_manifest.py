@@ -100,6 +100,7 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "category": "Infra IaC / Supply Chain",
         "trust_mode": "SOURCE_BUILD_MODE",
         "source_build": True,
+        "direct_release_artifact_available": False,
         "source_archive_url": "https://github.com/aquasecurity/trivy/archive/refs/tags/v0.50.0.tar.gz",
         "source_commit": "8ec3938e01a93855503e3400eae9831abbb5de4a",
         "build_toolchain": "go1.21.13",

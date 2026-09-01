@@ -144,6 +144,24 @@ def test_trivy_uses_the_verified_source_build_installer():
     installer = ToolInstallationManager().get_installer("trivy")
     assert isinstance(installer, SourceBuildInstaller)
     assert PINNED_TOOL_MANIFEST["trivy"]["trust_mode"] == "SOURCE_BUILD_MODE"
+    assert PINNED_TOOL_MANIFEST["trivy"]["direct_release_artifact_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_source_build_refuses_when_direct_release_availability_is_not_false():
+    installer = SourceBuildInstaller("trivy")
+    logs = []
+
+    async def log_cb(message):
+        logs.append(message)
+
+    async def progress_cb(*_args):
+        return None
+
+    with patch.dict(PINNED_TOOL_MANIFEST["trivy"], {"direct_release_artifact_available": True}):
+        assert await installer.install(log_cb, progress_cb) is False
+
+    assert any("direct release artifact" in message for message in logs)
 
 
 def test_manifest_covers_every_registered_tool_without_assuring_manual_tools():
