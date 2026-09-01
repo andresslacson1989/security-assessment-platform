@@ -182,7 +182,7 @@ async def start_security_scan(
 async def get_all_scans(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> Dict[str, Any]:
     """Returns paginated list of historical scan summaries for caller's organization."""
     scans, total = list_scans(
@@ -220,7 +220,7 @@ async def get_all_scans(
 @router.get("/{scan_id}", summary="Get Full Scan Job Details")
 async def get_scan_details(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> ScanJob:
     """Returns full ScanJob model. Enforces tenant ownership (IDOR denial)."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
@@ -240,7 +240,7 @@ async def get_scan_telemetry(
     engine: Optional[str] = Query(default=None, description="Filter logs by engine name (e.g. network, web_dast, code_sast)"),
     level: Optional[str] = Query(default=None, description="Filter logs by level (INFO, WARNING, ERROR, DEBUG)"),
     search: Optional[str] = Query(default=None, description="Search term in log messages or URLs"),
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> ScanTelemetryReport:
     """
     Returns organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface.
@@ -432,7 +432,7 @@ async def get_scan_telemetry(
 @router.post("/{scan_id}/cancel", summary="Cancel Running Scan Job")
 async def cancel_running_scan(
     scan_id: str,
-    current_user: UserProfile = Depends(require_dev_or_higher),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:cancel", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
     """Signals orchestrator to abort scan execution and forcefully terminate subprocesses."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
@@ -483,7 +483,7 @@ async def delete_scan_job(
 @router.get("/{scan_id}/events", summary="Stream Real-Time Scan Telemetry via Server-Sent Events (SSE)")
 async def stream_scan_events(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> StreamingResponse:
     """Streams real-time logs, findings, and progress updates over SSE."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))

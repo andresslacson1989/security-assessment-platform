@@ -252,7 +252,7 @@ async def update_finding_status(
 async def add_finding_comment(
     finding_id: str,
     payload: AddCommentRequest,
-    current_user: UserProfile = Depends(require_dev_or_higher),
+    current_user: UserProfile = Depends(require_permission(required_scope="finding:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> FindingComment:
     """
     Appends a collaboration or verification comment to a finding record. Enforces tenant ownership.
