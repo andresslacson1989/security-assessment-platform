@@ -20,6 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tar \
     unzip \
+    build-essential \
+    libpcap-dev \
+    libpcre2-dev \
+    liblua5.3-dev \
+    libssl-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/bin
@@ -132,6 +138,18 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     chmod +x kube-bench
 
+# 14. Nmap (7.95)
+# Debian Bookworm provides Nmap 7.93, so the contract-pinned release is
+# built from the official upstream source and verified before promotion.
+RUN curl -fsSL https://nmap.org/dist/nmap-7.95.tar.bz2 -o nmap.tar.bz2 && \
+    echo "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778  nmap.tar.bz2" | sha256sum -c - && \
+    tar -xjf nmap.tar.bz2 && \
+    cd nmap-7.95 && \
+    ./configure --prefix=/usr/local --without-zenmap && \
+    make -j2 && \
+    make DESTDIR=/tmp/nmap-root install && \
+    rm -rf /tmp/bin/nmap-7.95 /tmp/bin/nmap.tar.bz2
+
 # ------------------------------------------------------------------------------
 # Stage 2: Final Hardened Production Runtime
 # ------------------------------------------------------------------------------
@@ -157,7 +175,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     procps \
-    && npm install -g retire \
+    && npm install -g retire@4.4.3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create application directories
@@ -198,6 +216,11 @@ COPY --from=builder /tmp/bin/osv-scanner /usr/local/bin/osv-scanner
 COPY --from=builder /tmp/bin/trufflehog /usr/local/bin/trufflehog
 COPY --from=builder /tmp/bin/dockle /usr/local/bin/dockle
 COPY --from=builder /tmp/bin/kube-bench /usr/local/bin/kube-bench
+COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /usr/local/bin/nmap
+COPY --from=builder /tmp/nmap-root/usr/local/share/nmap /usr/local/share/nmap
+
+# Fail the image build if the runtime resolves a different Nmap release.
+RUN nmap --version | grep -q "^Nmap version 7.95 "
 
 # Pre-bake Nuclei community vulnerability templates into container image
 RUN nuclei -update-templates || true
