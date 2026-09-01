@@ -8,7 +8,6 @@ import asyncio
 import os
 import subprocess
 import sys
-import threading
 from typing import Optional, Dict
 
 from app.core.models import ToolInstallMethod
@@ -17,6 +16,7 @@ from app.installers.base_installer import (
     LogCallback,
     ProgressCallback,
 )
+from app.core.process_supervisor import process_supervisor
 
 
 PIP_TOOL_CONFIGS: Dict[str, dict] = {
@@ -158,70 +158,35 @@ class PipToolInstaller(BaseToolInstaller):
 
         await emit_progress(30, f"Running: {' '.join(cmd)}")
 
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-        proc_holder = [None]
-        cancelled_flag = [False]
-
-        def _worker():
-            try:
-                p = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                proc_holder[0] = p
-                for line in p.stdout:
-                    if cancelled_flag[0]:
-                        break
-                    loop.call_soon_threadsafe(queue.put_nowait, ("line", line.rstrip()))
-                ret = p.wait()
-                if ret is None and p.returncode is not None:
-                    ret = p.returncode
-                loop.call_soon_threadsafe(queue.put_nowait, ("done", ret if ret is not None else 0))
-            except Exception as ex:
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", f"{type(ex).__name__}: {str(ex)}"))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
         try:
-            while True:
-                msg_type, val = await queue.get()
-                if msg_type == "line":
-                    if val:
-                        await emit_log(val)
-                elif msg_type == "done":
-                    ret = val
-                    if ret == 0:
-                        ver = await self.get_version()
-                        expected = f"{pkg} {self._cfg['pinned_version']}"
-                        if ver != expected:
-                            await emit_progress(100, f"Pinned version verification failed for {pkg}: expected {expected}, found {ver or 'unavailable'}")
-                            await emit_log(f"Package '{pkg}' installation rejected because the exact pinned version was not verified.")
-                            return False
-                        await emit_progress(100, f"Successfully installed {expected}")
-                        await emit_log(f"Package '{pkg}' installed successfully at the pinned version.")
-                        return True
-                    else:
-                        await emit_progress(100, f"Pip installation failed with exit code {ret}")
-                        await emit_log(f"Pip installation failed with exit code {ret}.")
-                        return False
-                elif msg_type == "error":
-                    await emit_log(f"Exception during pip execution: {val}")
-                    await emit_progress(100, f"Installation error: {val}")
-                    return False
+            ret, stdout, stderr = await process_supervisor.execute(
+                cmd,
+                timeout=120.0,
+                max_output_bytes=10 * 1024 * 1024,
+            )
+            output = stdout + (f"\n{stderr}" if stderr else "")
+            for line in output.splitlines():
+                if line.strip():
+                    await emit_log(line.rstrip())
 
+            if ret == 0:
+                ver = await self.get_version()
+                expected = f"{pkg} {self._cfg['pinned_version']}"
+                if ver != expected:
+                    await emit_progress(100, f"Pinned version verification failed for {pkg}: expected {expected}, found {ver or 'unavailable'}")
+                    await emit_log(f"Package '{pkg}' installation rejected because the exact pinned version was not verified.")
+                    return False
+                await emit_progress(100, f"Successfully installed {expected}")
+                await emit_log(f"Package '{pkg}' installed successfully at the pinned version.")
+                return True
+
+            await emit_progress(100, f"Pip installation failed with exit code {ret}")
+            await emit_log(f"Pip installation failed with exit code {ret}.")
+            return False
         except asyncio.CancelledError:
-            cancelled_flag[0] = True
             await emit_log(f"Installation of {pkg} was cancelled by user.")
-            p = proc_holder[0]
-            if p and p.poll() is None:
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
             raise
+        except Exception as ex:
+            await emit_log(f"Exception during pip execution: {type(ex).__name__}: {str(ex)}")
+            await emit_progress(100, f"Installation error: {type(ex).__name__}: {str(ex)}")
+            return False

@@ -104,17 +104,11 @@ async def test_pip_tool_installer_success():
     async def prog_cb(pct, stg):
         progress_records.append((pct, stg))
 
-    # Mock subprocess
-    mock_proc = MagicMock()
-    mock_proc.stdout = [
-        "Collecting bandit\n",
-        "Installing collected packages: bandit\n",
-        "Successfully installed bandit-1.7.8\n",
-    ]
-    mock_proc.wait = MagicMock(return_value=0)
-    mock_proc.returncode = 0
-
-    with patch("subprocess.Popen", return_value=mock_proc):
+    with patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+        0,
+        "Collecting bandit\nInstalling collected packages: bandit\nSuccessfully installed bandit-1.7.8\n",
+        "",
+    ))):
         with patch.object(installer, "get_version", new=AsyncMock(return_value="bandit 1.7.8")):
             res = await installer.install(log_cb, prog_cb, force=False)
             assert res is True
@@ -129,12 +123,11 @@ async def test_pip_tool_installer_failure():
     logs = []
     prog = []
 
-    mock_proc = MagicMock()
-    mock_proc.stdout = ["ERROR: No matching distribution\n"]
-    mock_proc.wait = MagicMock(return_value=1)
-    mock_proc.returncode = 1
-
-    with patch("subprocess.Popen", return_value=mock_proc):
+    with patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+        1,
+        "",
+        "ERROR: No matching distribution\n",
+    ))):
         res = await installer.install(
             lambda m: logs.append(m) or asyncio.sleep(0),
             lambda p, s: prog.append((p, s)) or asyncio.sleep(0),

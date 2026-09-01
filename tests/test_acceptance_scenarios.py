@@ -1364,14 +1364,9 @@ async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path):
     # 1. Test PipToolInstaller
     pip_inst = PipToolInstaller("sslyze")
     assert pip_inst.install_method == ToolInstallMethod.PIP
-    mock_proc = MagicMock()
-    mock_proc.stdout = ["Successfully installed sslyze\n"]
-    mock_proc.wait = MagicMock(return_value=0)
-    mock_proc.returncode = 0
-
     logs = []
-    with patch("subprocess.Popen", return_value=mock_proc), \
-         patch.object(pip_inst, "get_version", AsyncMock(return_value="5.2.0")):
+    with patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(0, "Successfully installed sslyze\n", ""))), \
+         patch.object(pip_inst, "get_version", AsyncMock(return_value="sslyze 5.2.0")):
         res = await pip_inst.install(
             lambda m: logs.append(m) or asyncio.sleep(0),
             lambda p, s: asyncio.sleep(0),
