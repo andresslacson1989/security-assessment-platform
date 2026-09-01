@@ -400,15 +400,29 @@ async def test_per_link_assessment_dossier_structure(auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_subdomain_dns_ip_resolution():
-    """
-    Verifies that the Subfinder adapter and subdomain_recon resolve DNS A/AAAA records
-    and populate ip_addresses and dns_status.
-    """
+async def test_subfinder_discovery_remains_passive_and_unresolved():
+    """Subfinder discovery must not perform DNS resolution or claim active state."""
+    from unittest.mock import AsyncMock, patch
     from app.adapters.subfinder_adapter import SubfinderAdapter
+    from app.core.models import TargetType, ScanConfig
+
     adapter = SubfinderAdapter()
-    ips, cnames, status = await adapter._resolve_host_dns("dns.google")
-    assert len(ips) > 0
-    assert status == "ACTIVE"
+    target = Target(name="Passive discovery", type=TargetType.DOMAIN, value="dns.google")
+    config = ScanConfig()
+    discovered = []
 
+    async def capture_discovery(item):
+        discovered.append(item)
 
+    with patch.object(adapter, "resolve_binary_path", return_value="/managed/subfinder"), \
+         patch.object(adapter, "verify_managed_binary", return_value=True), \
+         patch.object(adapter, "get_version", new=AsyncMock(return_value="subfinder v2.6.5")), \
+         patch.object(adapter, "execute_command", new=AsyncMock(return_value=(
+             0, '{"host":"api.dns.google","sources":["crtsh"]}\n', ""
+         ))):
+        findings = await adapter.run(target, config, AsyncMock(), AsyncMock(), emit_subdomain=capture_discovery)
+
+    assert len(findings) == 1
+    assert discovered[0].dns_status == "UNRESOLVED"
+    assert discovered[0].ip_addresses == []
+    assert not hasattr(adapter, "_resolve_host_dns")
