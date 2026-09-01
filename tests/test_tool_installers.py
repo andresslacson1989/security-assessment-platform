@@ -313,21 +313,24 @@ async def test_system_tool_helper_instructions():
 
 def test_tool_management_api_endpoints(client, manager, auth_headers):
     """Tests tool REST endpoints: list, install single, batch install, get status."""
+    assert client.get("/api/system/tools").status_code == 401
+    assert client.get("/api/system/tools/nuclei/status").status_code == 401
+
     # 1. GET /api/system/tools
-    resp = client.get("/api/system/tools")
+    resp = client.get("/api/system/tools", headers=auth_headers)
     assert resp.status_code == 200
     tools = resp.json()
     assert len(tools) == 26
 
     # 2. GET /api/system/tools/nuclei/status
-    resp = client.get("/api/system/tools/nuclei/status")
+    resp = client.get("/api/system/tools/nuclei/status", headers=auth_headers)
     assert resp.status_code == 200
     info = resp.json()
     assert info["name"] == "nuclei"
     assert info["install_method"] == "STANDALONE_BINARY"
 
     # 3. GET unknown tool status -> 404
-    resp = client.get("/api/system/tools/unknown_tool_xyz/status")
+    resp = client.get("/api/system/tools/unknown_tool_xyz/status", headers=auth_headers)
     assert resp.status_code == 404
 
     # 4. POST /api/system/tools/bandit/install

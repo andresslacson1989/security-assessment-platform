@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
 import jwt
-from fastapi import Header, Query, HTTPException, Depends, status
+from fastapi import Header, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 
 from app.core.models import (
@@ -375,12 +375,12 @@ def authorize_internal_target(user: UserProfile, target_value: str) -> bool:
 async def get_current_user(
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-    token: Optional[str] = Query(None),
 ) -> UserProfile:
     """
     FastAPI dependency resolving authenticated UserProfile.
     Enforces strict zero-trust authentication in PRODUCTION mode.
-    Supports Bearer header, X-API-Key header, and ?token= query parameter (for SSE EventSource).
+    Supports Bearer and X-API-Key headers. Streaming clients must use the
+    Authorization header; credentials are never accepted in URLs.
     """
     # 1. API Key Authentication (Hashed Token Lookup)
     if x_api_key:
@@ -403,15 +403,12 @@ async def get_current_user(
             headers={"WWW-Authenticate": "ApiKey"},
         )
 
-    # 2. JWT Bearer Token Authentication (via Header or SSE Query Param)
+    # 2. JWT Bearer Token Authentication via header
     raw_jwt = None
     if authorization:
         parts = authorization.strip().split(" ")
         if len(parts) == 2 and parts[0].lower() == "bearer":
             raw_jwt = parts[1]
-    elif token:
-        raw_jwt = token.strip()
-
     if raw_jwt:
         payload = decode_access_token(raw_jwt)
         from app.core.db import db_manager

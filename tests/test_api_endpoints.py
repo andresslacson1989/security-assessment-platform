@@ -167,6 +167,9 @@ async def test_sse_streaming_endpoint(auth_headers):
     save_scan(job)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        query_token_resp = await ac.get(f"/api/scans/{job.id}/events?token={auth_headers['Authorization'].split(' ', 1)[1]}")
+        assert query_token_resp.status_code == 401
+
         async with ac.stream("GET", f"/api/scans/{job.id}/events", headers=auth_headers) as resp:
             assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]

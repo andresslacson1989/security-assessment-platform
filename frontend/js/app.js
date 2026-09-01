@@ -661,12 +661,7 @@ class ScanStreamManager {
       this.eventSource.close();
     }
 
-    const token = localStorage.getItem("cyberassess_token") || "";
-    const url = token
-      ? `/api/scans/${scanId}/events?token=${encodeURIComponent(token)}`
-      : `/api/scans/${scanId}/events`;
-
-    this.eventSource = new EventSource(url);
+    this.eventSource = this.openAuthenticatedEventStream(`/api/scans/${scanId}/events`);
 
     this.eventSource.addEventListener("progress", (e) => {
       const data = JSON.parse(e.data);
@@ -1627,14 +1622,75 @@ class ScanStreamManager {
     }
   }
 
+  openAuthenticatedEventStream(url) {
+    const controller = new AbortController();
+    const listeners = new Map();
+    let closed = false;
+    let source;
+
+    const dispatch = (type, event) => {
+      (listeners.get(type) || []).forEach((listener) => listener(event));
+    };
+    const parseEvent = (raw) => {
+      const fields = raw.split("\n");
+      let eventType = "message";
+      const data = [];
+      fields.forEach((line) => {
+        if (line.startsWith("event:")) eventType = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+      });
+      if (data.length) dispatch(eventType, { data: data.join("\n") });
+    };
+
+    source = {
+      readyState: 0,
+      onerror: null,
+      addEventListener: (type, listener) => {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(listener);
+      },
+      close: () => {
+        closed = true;
+        source.readyState = 2;
+        controller.abort();
+      },
+    };
+
+    (async () => {
+      try {
+        const token = localStorage.getItem("cyberassess_token") || "";
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const response = await fetch(url, { headers, signal: controller.signal });
+        if (!response.ok || !response.body) throw new Error(`SSE request failed (${response.status})`);
+        source.readyState = 1;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!closed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split("\n\n");
+          buffer = events.pop() || "";
+          events.filter(Boolean).forEach(parseEvent);
+        }
+        if (!closed) source.readyState = 2;
+      } catch (error) {
+        if (!closed) {
+          source.readyState = 2;
+          const event = { error };
+          dispatch("error", event);
+          if (typeof source.onerror === "function") source.onerror(event);
+        }
+      }
+    })();
+    return source;
+  }
+
   connectToolEventsStream() {
     if (this.toolEventsSource) return;
     try {
-      const token = localStorage.getItem("cyberassess_token") || "";
-      const url = token
-        ? `/api/system/tools/events?token=${encodeURIComponent(token)}`
-        : "/api/system/tools/events";
-      this.toolEventsSource = new EventSource(url);
+      this.toolEventsSource = this.openAuthenticatedEventStream("/api/system/tools/events");
 
       this.toolEventsSource.addEventListener("install_progress", (e) => {
         const d = JSON.parse(e.data);
