@@ -16,6 +16,7 @@ from app.core.models import (
     ScanJobSummary,
     DiscoveredEndpoint,
     DiscoveredSubdomain,
+    RejectedDiscovery,
     utc_now,
     calculate_fingerprint,
 )
@@ -231,6 +232,12 @@ class ScanOrchestrator:
 
         await self._broadcast(scan_id, "subdomain_discovered", subdomain.model_dump(mode="json"))
 
+    async def emit_rejected_discovery(self, scan_id: str, rejection: RejectedDiscovery) -> None:
+        job = self._active_jobs.get(scan_id)
+        if job:
+            job.rejected_discoveries.append(rejection)
+        await self._broadcast(scan_id, "discovery_rejected", rejection.model_dump(mode="json"))
+
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
         job = self._active_jobs.get(scan_id)
         active_adapters = getattr(job, "active_adapters", []) if job else []
@@ -361,6 +368,9 @@ class ScanOrchestrator:
                 async def _subdomain_cb(sd: DiscoveredSubdomain) -> None:
                     await self.emit_subdomain_discovered(scan_id, sd)
 
+                async def _rejected_cb(rejection: RejectedDiscovery) -> None:
+                    await self.emit_rejected_discovery(scan_id, rejection)
+
                 def _sbom_cb(sbom: SBOMReport) -> None:
                     if job:
                         job.sbom_report = sbom
@@ -374,12 +384,16 @@ class ScanOrchestrator:
                     sig = inspect.signature(engine.run)
                     run_kwargs = {}
                     accepts_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                    if accepts_var_keyword:
+                        run_kwargs["organization_id"] = job.organization_id
                     if "emit_auth_status" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_auth_status"] = _auth_cb
                     if "emit_endpoint_discovered" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_endpoint_discovered"] = _ep_cb
                     if "emit_subdomain_discovered" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_subdomain_discovered"] = _subdomain_cb
+                    if "emit_rejected_discovery" in sig.parameters or accepts_var_keyword:
+                        run_kwargs["emit_rejected_discovery"] = _rejected_cb
                     if "record_sbom_report" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_sbom_report"] = _sbom_cb
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:

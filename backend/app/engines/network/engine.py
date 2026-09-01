@@ -59,6 +59,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         findings: List[Finding] = []
         scan_id = kwargs.get("scan_id", "active")
         subdomain_cb = kwargs.get("emit_subdomain_discovered")
+        rejected_discovery_cb = kwargs.get("emit_rejected_discovery")
         endpoint_cb = kwargs.get("emit_endpoint_discovered")
 
         # --- Stage 1: TLS / SSL Audit (SSLyze Adapter First -> Native Fallback) (0% - 30%) ---
@@ -202,6 +203,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id=scan_id,
                         emit_subdomain=subdomain_cb,
+                        emit_rejected_discovery=rejected_discovery_cb,
                     )
                     findings.extend(sf_findings)
             except Exception as e:

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, DiscoveredSubdomain
+    calculate_fingerprint, DiscoveredSubdomain, RejectedDiscovery, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -133,21 +133,27 @@ class SubfinderAdapter(BaseToolAdapter):
         findings: List[Finding] = []
         scan_id = kwargs.get("scan_id", "local-scan")
         emit_subdomain: Optional[Callable[[DiscoveredSubdomain], Awaitable[None]]] = kwargs.get("emit_subdomain")
+        emit_rejected: Optional[Callable[[RejectedDiscovery], Awaitable[None]]] = kwargs.get("emit_rejected_discovery")
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
         binary = self.resolve_binary_path(config.adapters.subfinder_path or config.adapters.custom_subfinder_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Subfinder binary not found. Skipping Subfinder EASM recon.")
             return findings
         if not self.verify_managed_binary(binary):
+            self.last_execution_state = NormalizedExecutionState.BLOCKED
             await emit_log(LogLevel.ERROR, "Subfinder execution blocked: executable is not a valid managed installation.")
             return findings
 
         profile = getattr(config, "profile", None)
         if getattr(profile, "value", profile) not in self.ALLOWED_PROFILES:
+            self.last_execution_state = NormalizedExecutionState.BLOCKED
             await emit_log(LogLevel.WARNING, "Subfinder discovery blocked for unsupported assessment profile.")
             return findings
         version = await self.get_version(binary)
         if version != f"subfinder {self.APPROVED_VERSION}":
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             state = "VERSION_UNAVAILABLE" if version is None else "INVALID_VERSION"
             await emit_log(LogLevel.ERROR, f"Subfinder execution blocked: {state} (approved {self.APPROVED_VERSION}).")
             return findings
@@ -165,6 +171,7 @@ class SubfinderAdapter(BaseToolAdapter):
 
         apex_domain = self.normalize_domain(domain)
         if not apex_domain or "." not in apex_domain:
+            self.last_execution_state = NormalizedExecutionState.BLOCKED
             await emit_log(LogLevel.WARNING, "Subfinder discovery blocked: target is not a valid domain.")
             return findings
 
@@ -176,6 +183,7 @@ class SubfinderAdapter(BaseToolAdapter):
             pre_launch_check=lambda: self.verify_managed_binary(binary),
         )
         if code != 0 and not stdout:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, f"Subfinder exited with code {code}: {stderr.strip()[:200]}")
             return findings
 
@@ -204,6 +212,8 @@ class SubfinderAdapter(BaseToolAdapter):
                 continue
             if self.classify_scope(host, apex_domain) != "IN_SCOPE":
                 out_of_scope += 1
+                if emit_rejected:
+                    await emit_rejected(RejectedDiscovery(domain=host, reason="OUT_OF_SCOPE", authorized_root=apex_domain, assessment_id=scan_id, organization_id=kwargs.get("organization_id", "org-default")))
                 continue
             if host in discovered_hosts:
                 source_map[host].update(sources)
@@ -224,10 +234,12 @@ class SubfinderAdapter(BaseToolAdapter):
 
         if parser_warnings:
             await emit_log(LogLevel.WARNING, f"Subfinder parser rejected {parser_warnings} malformed JSONL records.")
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
         if out_of_scope:
             await emit_log(LogLevel.WARNING, f"Subfinder classified {out_of_scope} discoveries as OUT_OF_SCOPE; none were admitted.")
         if limit_reached:
             await emit_log(LogLevel.WARNING, "Subfinder discovery reached the per-run result limit; results are partial.")
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
 
         if discovered_hosts:
             desc = f"Subfinder discovered {len(discovered_hosts)} subdomains in the external attack surface: {', '.join(list(discovered_hosts)[:10])}"

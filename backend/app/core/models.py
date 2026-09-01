@@ -443,6 +443,17 @@ class DiscoveredSubdomain(BaseModel):
     dns_status: str = Field(default="ACTIVE", description="DNS resolution status (ACTIVE or NXDOMAIN)")
 
 
+class RejectedDiscovery(BaseModel):
+    """Auditable discovery rejected before inventory admission."""
+    domain: str
+    reason: str
+    source: str = "Subfinder"
+    authorized_root: str
+    assessment_id: str
+    organization_id: str
+    observed_at: datetime = Field(default_factory=utc_now)
+
+
 class ToolStatus(BaseModel):
     """
     Status of an external binary tool adapter.
@@ -774,6 +785,7 @@ class ScanTelemetryReport(BaseModel):
     tools_executed: List[ToolExecutionTelemetry] = Field(default_factory=list, description="Per-tool execution breakdowns")
     discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list, description="All discovered/crawled endpoints")
     discovered_subdomains: List[DiscoveredSubdomain] = Field(default_factory=list, description="Discovered subdomains via OSINT")
+    rejected_discoveries: List[RejectedDiscovery] = Field(default_factory=list)
     coverage: AssessmentCoverage = Field(default_factory=AssessmentCoverage, description="Engine coverage assessment")
     generated_at: datetime = Field(default_factory=utc_now)
 
@@ -799,6 +811,7 @@ class ScanJob(BaseModel):
     active_adapters: List[str] = Field(default_factory=list, description="Active external adapters for this scan")
     discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list)
     discovered_subdomains: List[DiscoveredSubdomain] = Field(default_factory=list)
+    rejected_discoveries: List[RejectedDiscovery] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
     sbom_report: Optional[SBOMReport] = Field(default=None, description="Software Bill of Materials generated during scan")
     cis_results: List[CISBenchmarkResult] = Field(default_factory=list, description="CIS Benchmark compliance audit results")
@@ -1135,5 +1148,4 @@ class AuditEvent(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
     previous_event_hash: Optional[str] = Field(default=None)
     event_hash: Optional[str] = Field(default=None)
-
 

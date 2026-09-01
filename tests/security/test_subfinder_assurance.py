@@ -73,6 +73,7 @@ async def test_wrong_version_fails_closed():
 async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypatch):
     adapter = SubfinderAdapter()
     emitted = []
+    rejected = []
     monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: "/bin/subfinder")
     monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
     monkeypatch.setattr(adapter, "get_version", AsyncMock(return_value="subfinder v2.6.5"))
@@ -89,5 +90,11 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
     async def subdomain(value):
         emitted.append(value)
 
-    await adapter.run(Target(name="root", type=TargetType.DOMAIN, value="example.com"), ScanConfig(), callback, callback, emit_subdomain=subdomain)
+    async def reject(value):
+        rejected.append(value)
+
+    await adapter.run(Target(name="root", type=TargetType.DOMAIN, value="example.com"), ScanConfig(), callback, callback, scan_id="scan-1", organization_id="org-a", emit_subdomain=subdomain, emit_rejected_discovery=reject)
     assert [item.domain for item in emitted] == ["admin.example.com"]
+    assert rejected[0].domain == "outside.example.net"
+    assert rejected[0].organization_id == "org-a"
+    assert adapter.last_execution_state.value == "PARTIAL_RESULTS_WITH_WARNING"
