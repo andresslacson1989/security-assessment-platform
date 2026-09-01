@@ -62,14 +62,35 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         target_path = target.value
         record_cis = kwargs.get("record_cis_result")
         tool_state_cb = kwargs.get("emit_tool_execution_state")
+        failed_primary_tools = set()
+
+        async def record_tool_failure(tool_name: str) -> None:
+            failed_primary_tools.add(tool_name)
+            if tool_state_cb:
+                await tool_state_cb(tool_name, NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
 
         async def report_tool_state(tool_name: str, adapter, finding_count: int = 0) -> None:
-            if not tool_state_cb:
-                return
             state = getattr(adapter, "last_execution_state", NormalizedExecutionState.TOOL_EXECUTION_FAILED)
             if finding_count and state == NormalizedExecutionState.COMPLETED_NO_FINDINGS:
                 state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
-            await tool_state_cb(tool_name, state.value)
+            if state in {
+                NormalizedExecutionState.TOOL_EXECUTION_FAILED,
+                NormalizedExecutionState.EXECUTION_TIMED_OUT,
+                NormalizedExecutionState.EXECUTION_CANCELLED,
+                NormalizedExecutionState.EXECUTION_BLOCKED,
+            }:
+                failed_primary_tools.add(tool_name)
+            if tool_state_cb:
+                await tool_state_cb(tool_name, state.value)
+
+        def mark_native_fallback(items: List[Finding], primary_tools: tuple[str, ...]) -> None:
+            failed = sorted(set(primary_tools) & failed_primary_tools)
+            if not failed:
+                return
+            for item in items:
+                item.source_tool = "native"
+                item.is_fallback = True
+                item.primary_tool_failed = ",".join(failed)
 
         # --- Stage 0: Primary External IaC & CIS Tool Adapters First-in-Line ---
         await emit_progress(5, "Running primary external IaC & CIS benchmark tool adapters...")
@@ -97,12 +118,10 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
-                    if tool_state_cb:
-                        await tool_state_cb("checkov", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await record_tool_failure("checkov")
                     await emit_log(LogLevel.INFO, "Checkov CLI not available - using native IaC & manifest auditors")
             except Exception as e:
-                if tool_state_cb:
-                    await tool_state_cb("checkov", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                await record_tool_failure("checkov")
                 await emit_log(LogLevel.WARNING, f"Checkov adapter error: {e}")
 
         # 0.2 Trivy Adapter (Container & Dockerfile SCA)
@@ -128,12 +147,10 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
-                    if tool_state_cb:
-                        await tool_state_cb("trivy", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await record_tool_failure("trivy")
                     await emit_log(LogLevel.INFO, "Trivy CLI not available - using native Dockerfile auditor")
             except Exception as e:
-                if tool_state_cb:
-                    await tool_state_cb("trivy", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                await record_tool_failure("trivy")
                 await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e}")
 
         # 0.3 Dockle Adapter (CIS Docker Container Hardening)
@@ -159,11 +176,10 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "dockle"
                             f.scan_id = "active"
                             findings.append(f)
-                elif tool_state_cb:
-                    await tool_state_cb("dockle", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                else:
+                    await record_tool_failure("dockle")
             except Exception as e:
-                if tool_state_cb:
-                    await tool_state_cb("dockle", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                await record_tool_failure("dockle")
                 await emit_log(LogLevel.WARNING, f"Dockle adapter error: {e}")
 
         # 0.4 Kube-bench Adapter (CIS Kubernetes Benchmark)
@@ -189,11 +205,10 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "kube_bench"
                             f.scan_id = "active"
                             findings.append(f)
-                elif tool_state_cb:
-                    await tool_state_cb("kube-bench", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                else:
+                    await record_tool_failure("kube-bench")
             except Exception as e:
-                if tool_state_cb:
-                    await tool_state_cb("kube-bench", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                await record_tool_failure("kube-bench")
                 await emit_log(LogLevel.WARNING, f"Kube-bench adapter error: {e}")
 
         # 0.5 Prowler Adapter (Multi-Cloud CIS Foundations)
@@ -219,11 +234,10 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "prowler"
                             f.scan_id = "active"
                             findings.append(f)
-                elif tool_state_cb:
-                    await tool_state_cb("prowler", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                else:
+                    await record_tool_failure("prowler")
             except Exception as e:
-                if tool_state_cb:
-                    await tool_state_cb("prowler", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                await record_tool_failure("prowler")
                 await emit_log(LogLevel.WARNING, f"Prowler adapter error: {e}")
 
         # --- Stage 1: Dockerfile Container Hardening ---
@@ -249,6 +263,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         # --- Stage 1: Dockerfile Container Hardening ---
         await emit_progress(25, "Auditing Dockerfiles for root user, unpinned base images, and secrets...")
         dock_findings = await audit_dockerfiles(target_path, emit_log=emit_log)
+        mark_native_fallback(dock_findings, ("checkov", "trivy", "dockle"))
         for f in dock_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
@@ -259,6 +274,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         # --- Stage 2: Docker Compose Security ---
         await emit_progress(50, "Evaluating Docker Compose services, socket mounts, and exposed ports...")
         cmp_findings = await audit_compose_files(target_path, emit_log=emit_log)
+        mark_native_fallback(cmp_findings, ("checkov", "trivy", "dockle"))
         for f in cmp_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
@@ -269,6 +285,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         # --- Stage 3: Kubernetes Security Standards ---
         await emit_progress(75, "Checking Kubernetes manifests against Pod Security Standards...")
         k8s_findings = await audit_k8s_manifests(target_path, emit_log=emit_log)
+        mark_native_fallback(k8s_findings, ("checkov", "trivy", "kube-bench"))
         for f in k8s_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
@@ -279,6 +296,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         # --- Stage 4: Terraform & Cloud Infrastructure ---
         await emit_progress(90, "Auditing Terraform cloud infrastructure (S3 ACLs, Security Groups, IAM)...")
         tf_findings = await audit_terraform_files(target_path, emit_log=emit_log)
+        mark_native_fallback(tf_findings, ("checkov", "trivy"))
         for f in tf_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)

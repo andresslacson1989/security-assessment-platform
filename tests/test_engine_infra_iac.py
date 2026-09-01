@@ -292,3 +292,45 @@ async def test_infra_iac_adapters_publish_failed_process_state(
     )
 
     assert adapter.last_execution_state == NormalizedExecutionState.TOOL_EXECUTION_FAILED
+
+
+@pytest.mark.asyncio
+async def test_infra_iac_native_findings_preserve_primary_failure_provenance(monkeypatch, tmp_path):
+    """Native IaC findings must identify reduced coverage after primary failures."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM alpine:latest\n", encoding="utf-8")
+    config = ScanConfig(
+        adapters={
+            "enable_checkov": True,
+            "enable_trivy": True,
+            "enable_dockle": True,
+            "enable_kube_bench": True,
+            "enable_prowler": True,
+            "enable_gtfobins": False,
+        }
+    )
+    for adapter_type in (CheckovAdapter, TrivyAdapter, DockleAdapter, KubeBenchAdapter, ProwlerAdapter):
+        monkeypatch.setattr(adapter_type, "is_available", AsyncMock(return_value=False))
+
+    async def log_cb(*_args):
+        return None
+
+    async def progress_cb(*_args):
+        return None
+
+    async def finding_cb(*_args):
+        return None
+
+    findings = await InfraIacAssessmentEngine().run(
+        Target(name="IaC Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
+        config,
+        log_cb,
+        progress_cb,
+        finding_cb,
+    )
+
+    fallback_findings = [finding for finding in findings if finding.source_tool == "native"]
+    assert fallback_findings
+    assert all(finding.is_fallback for finding in fallback_findings)
+    assert all(finding.primary_tool_failed for finding in fallback_findings)
+    assert any("checkov" in finding.primary_tool_failed and "trivy" in finding.primary_tool_failed for finding in fallback_findings)
