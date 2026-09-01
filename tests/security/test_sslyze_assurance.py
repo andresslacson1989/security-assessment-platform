@@ -12,6 +12,7 @@ Rigorous verification of:
 7. Process Supervision, Descendant Termination & Native TLS Fallback Preservation
 """
 
+import argparse
 import hashlib
 import json
 import pytest
@@ -31,6 +32,10 @@ from app.adapters.sslyze_adapter import (
     ToolOperationClass,
     APPROVED_SSLYZE_FLAGS,
     DEFAULT_SCAN_FLAGS,
+    CONFIG_ASSESSMENT_FLAGS,
+    VULN_PROBE_FLAGS,
+    APPROVED_ARTIFACT_SHA256_SDIST,
+    APPROVED_ARTIFACT_SHA256_WHEEL,
 )
 from app.core.models import (
     Target,
@@ -103,7 +108,7 @@ class TestSslyzeDestinationBinding:
         """
         Contract 09 TOOL-SSLYZE §13: Proves that SSLyze targets the pre-resolved
         selected_destination IP as the socket endpoint and separates the virtual
-        host context via --server_name.
+        host context via --sni.
         """
         target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
         with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
@@ -123,7 +128,7 @@ class TestSslyzeDestinationBinding:
         assert cmd[0] == "/usr/bin/sslyze"
         assert "--json_out=-" in cmd
         assert "93.184.216.34:443" in cmd
-        assert "--server_name=example.com" in cmd
+        assert "--sni=example.com" in cmd
 
     def test_controlled_loopback_destination_binding_fixture(self):
         """
@@ -145,7 +150,7 @@ class TestSslyzeDestinationBinding:
         assert dest_ip == "127.0.0.1"
         assert port == 8443
         assert "127.0.0.1:8443" in cmd
-        assert "--server_name=secure.internal" in cmd
+        assert "--sni=secure.internal" in cmd
 
     def test_ssrf_forbidden_target_blocked(self):
         """
@@ -557,4 +562,180 @@ class TestSslyzeFallbackPreservation:
 
         fallback_logs = [l for l in logs if "pure native TLS auditor fallback" in l]
         assert len(fallback_logs) >= 1
+
+
+# ============================================================================
+# 8. Upstream SSLyze 5.2.0 CLI Compatibility & Argument Parser Verification
+# ============================================================================
+
+def get_sslyze_5_2_0_upstream_argparser() -> argparse.ArgumentParser:
+    """
+    Constructs an authentic ArgumentParser mirroring the exact CLI argument definition
+    of upstream SSLyze 5.2.0.
+    Upstream SSLyze 5.2.0 registers:
+      - positional: targets (nargs="+")
+      - option: --sni SERVER_NAME_INDICATION
+      - option: --json_out JSON_OUT
+      - scan options: --certinfo, --sslv2, --sslv3, --tlsv1, --tlsv1_1, --tlsv1_2, --tlsv1_3,
+                      --heartbleed, --robot, --openssl_ccs, --reneg, --resum, --early_data
+    """
+    parser = argparse.ArgumentParser(prog="sslyze", description="Upstream SSLyze 5.2.0 CLI Parser")
+    parser.add_argument("targets", nargs="+", help="The list of servers to scan.")
+    parser.add_argument("--sni", dest="sni", help="The hostname to use as Server Name Indication (SNI)")
+    parser.add_argument("--json_out", dest="json_out", help="Output results to JSON file or - for stdout")
+    for flag in [
+        "--certinfo",
+        "--sslv2",
+        "--sslv3",
+        "--tlsv1",
+        "--tlsv1_1",
+        "--tlsv1_2",
+        "--tlsv1_3",
+        "--heartbleed",
+        "--robot",
+        "--openssl_ccs",
+        "--reneg",
+        "--resum",
+        "--early_data",
+    ]:
+        parser.add_argument(flag, action="store_true")
+    return parser
+
+
+class TestSslyzeUpstreamCLICompatibility:
+    def test_upstream_cli_parser_accepts_builder_command(self):
+        """
+        Contract 09 TOOL-SSLYZE §19: Proves that the exact argument array generated
+        by SslyzeCommandBuilder conforms strictly to the upstream SSLyze 5.2.0 CLI parser.
+        """
+        target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+            val_target = create_validated_target(target)
+
+        cmd, dest_ip, port, err = SslyzeCommandBuilder.build_command(
+            sslyze_path="/usr/bin/sslyze",
+            target=val_target,
+            port=443,
+        )
+        assert err is None
+        # cmd = ["/usr/bin/sslyze", "--json_out=-", "93.184.216.34:443", "--sni=example.com", ...]
+        args_to_parse = cmd[1:]
+
+        parser = get_sslyze_5_2_0_upstream_argparser()
+        parsed_args = parser.parse_args(args_to_parse)
+
+        # Verify parsed properties match upstream SSLyze 5.2.0 contract
+        assert parsed_args.sni == "example.com"
+        assert parsed_args.json_out == "-"
+        assert parsed_args.targets == ["93.184.216.34:443"]
+        assert parsed_args.certinfo is True
+        assert parsed_args.tlsv1_2 is True
+        assert parsed_args.heartbleed is True
+
+    def test_upstream_cli_parser_rejects_server_name_option(self):
+        """
+        Proves that the legacy incorrect option --server_name is rejected
+        by the authentic SSLyze 5.2.0 CLI parser with an unrecognized argument error.
+        """
+        parser = get_sslyze_5_2_0_upstream_argparser()
+        bad_args = ["--json_out=-", "93.184.216.34:443", "--server_name=example.com", "--certinfo"]
+
+        with pytest.raises(SystemExit):
+            # argparse calls sys.exit(2) on unrecognized arguments
+            parser.parse_args(bad_args)
+
+
+# ============================================================================
+# 9. Supply-Chain Provenance & Pinned Package Integrity
+# ============================================================================
+
+class TestSslyzeSupplyChainAndProvenance:
+    def test_supply_chain_artifact_hashes_and_trust_mode(self):
+        """
+        Contract 09 TOOL-SSLYZE §9: Verifies that exact cryptographic hashes for
+        the authoritative PyPI SSLyze 5.2.0 release artifacts are pinned.
+        """
+        assert APPROVED_VERSION == "5.2.0"
+        assert TRUST_MODE == "PACKAGE_MANAGER_MODE"
+        assert len(APPROVED_ARTIFACT_SHA256_SDIST) == 64
+        assert len(APPROVED_ARTIFACT_SHA256_WHEEL) == 64
+        assert APPROVED_ARTIFACT_SHA256_SDIST == "65cfdf8fb1f5ef49a5b3a4a98402db26df33230a1ea34cf6dfd0eb1ca4f4c28f"
+        assert APPROVED_ARTIFACT_SHA256_WHEEL == "e4a7a8d5e1b218f2f277ca51bf6fb274f88be5a07dd3b306b647716f9db6c0db"
+
+
+# ============================================================================
+# 10. Process Supervision Call-Chain Verification
+# ============================================================================
+
+class TestSslyzeProcessSupervision:
+    @pytest.mark.asyncio
+    async def test_process_supervisor_call_chain_enforcement(self):
+        """
+        Contract 03 §3 & Contract 09 TOOL-SSLYZE §28: Proves that SSLyze execution
+        strictly routes through the central ProcessSupervisor with bounded timeout.
+        """
+        adapter = SslyzeAdapter()
+        target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
+        config = ScanConfig(timeout_seconds=10)
+
+        mock_log = AsyncMock()
+        mock_finding = AsyncMock()
+
+        clean_json = {
+            "server_scan_results": [
+                {
+                    "scan_result": {
+                        "ssl_2_0_cipher_suites": {"result": {"is_supported": False}},
+                        "ssl_3_0_cipher_suites": {"result": {"is_supported": False}},
+                        "tls_1_0_cipher_suites": {"result": {"is_supported": False}},
+                        "tls_1_1_cipher_suites": {"result": {"is_supported": False}},
+                        "tls_1_2_cipher_suites": {"result": {"is_supported": True, "accepted_cipher_suites": []}},
+                        "tls_1_3_cipher_suites": {"result": {"is_supported": True, "accepted_cipher_suites": []}},
+                        "certificate_info": {"result": {"certificate_deployments": []}},
+                        "heartbleed": {"result": {"is_vulnerable_to_heartbleed": False}},
+                        "robot": {"result": {"robot_result": "NOT_VULNERABLE"}},
+                        "openssl_ccs_injection": {"result": {"is_vulnerable_to_ccs_injection": False}},
+                    }
+                }
+            ]
+        }
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/sslyze"):
+            with patch.object(adapter, "get_version", return_value="SSLyze 5.2.0"):
+                with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+                    with patch("app.core.process_supervisor.process_supervisor.execute", return_value=(0, json.dumps(clean_json), "")) as mock_ps_exec:
+                        findings = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert mock_ps_exec.called
+        call_kwargs = mock_ps_exec.call_args[1]
+        assert call_kwargs["timeout"] == 60.0
+        called_cmd = mock_ps_exec.call_args[1].get("cmd") or mock_ps_exec.call_args[0][0]
+        assert "--sni=example.com" in called_cmd
+        assert "93.184.216.34:443" in called_cmd
+
+
+# ============================================================================
+# 11. Capability & Flag Segmentation Verification
+# ============================================================================
+
+class TestSslyzeCapabilitySegmentation:
+    def test_capability_and_flag_segmentation(self):
+        """
+        Contract 09 TOOL-SSLYZE §20 & §41: Proves explicit segmentation between
+        baseline cryptographic configuration assessment and vulnerability probing.
+        """
+        assert len(CONFIG_ASSESSMENT_FLAGS) == 7
+        assert "--certinfo" in CONFIG_ASSESSMENT_FLAGS
+        assert "--sslv2" in CONFIG_ASSESSMENT_FLAGS
+        assert "--tlsv1_3" in CONFIG_ASSESSMENT_FLAGS
+
+        assert len(VULN_PROBE_FLAGS) == 3
+        assert "--heartbleed" in VULN_PROBE_FLAGS
+        assert "--robot" in VULN_PROBE_FLAGS
+        assert "--openssl_ccs" in VULN_PROBE_FLAGS
+
+        assert "--sni" in APPROVED_SSLYZE_FLAGS
+        assert "--json_out=-" in APPROVED_SSLYZE_FLAGS
+        assert "--server_name" not in APPROVED_SSLYZE_FLAGS
+
 

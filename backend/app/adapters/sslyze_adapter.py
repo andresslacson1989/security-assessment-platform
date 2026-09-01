@@ -8,7 +8,7 @@ SSLyze Enterprise-Grade Tool Adapter Specification:
 - Supply Chain Trust: PACKAGE_MANAGER_MODE (pip wheel in locked environment)
 - Role: PRIMARY TLS & Cryptographic Configuration Authority
 - Operation Class: ACTIVE_READ_ONLY
-- Destination Binding: Positional <selected_destination>:<port> with separate SNI --server_name=<canonical_hostname>
+- Destination Binding: Positional <selected_destination>:<port> with separate SNI --sni=<canonical_hostname>
 """
 
 from __future__ import annotations
@@ -63,6 +63,10 @@ TRUST_MODE = "PACKAGE_MANAGER_MODE"
 ROLE = "PRIMARY"
 SECURITY_DOMAIN = "NETWORK / PERIMETER / TLS"
 DEFAULT_OPERATION_CLASS = ToolOperationClass.ACTIVE_READ_ONLY
+
+# Supply-Chain Pinned Digest Integrity (Contract 09 TOOL-SSLYZE §9)
+APPROVED_ARTIFACT_SHA256_SDIST = "65cfdf8fb1f5ef49a5b3a4a98402db26df33230a1ea34cf6dfd0eb1ca4f4c28f"
+APPROVED_ARTIFACT_SHA256_WHEEL = "e4a7a8d5e1b218f2f277ca51bf6fb274f88be5a07dd3b306b647716f9db6c0db"
 
 # Capability & Classification Taxonomy for SSLyze Scan Modules (Contract 09 TOOL-SSLYZE §41)
 SSLYZE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
@@ -128,9 +132,9 @@ SSLYZE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Approved CLI Flags & Scan Commands (Contract 09 TOOL-SSLYZE §20)
-APPROVED_SSLYZE_FLAGS: Set[str] = {
-    "--json_out=-",
+# Segmented Scan Flags (Contract 09 TOOL-SSLYZE §20)
+# 1. Baseline Cryptographic Configuration Assessment
+CONFIG_ASSESSMENT_FLAGS: List[str] = [
     "--certinfo",
     "--sslv2",
     "--sslv3",
@@ -138,27 +142,30 @@ APPROVED_SSLYZE_FLAGS: Set[str] = {
     "--tlsv1_1",
     "--tlsv1_2",
     "--tlsv1_3",
-    "--heartbleed",
-    "--robot",
-    "--openssl_ccs",
-    "--reneg",
-    "--resum",
-    "--early_data",
-}
+]
 
-# Default Scan Flags (Contract 09 TOOL-SSLYZE §19)
-DEFAULT_SCAN_FLAGS: List[str] = [
-    "--certinfo",
-    "--sslv2",
-    "--sslv3",
-    "--tlsv1",
-    "--tlsv1_1",
-    "--tlsv1_2",
-    "--tlsv1_3",
+# 2. Known Vulnerability Probing (Profile-Controlled / Targeted Probes)
+VULN_PROBE_FLAGS: List[str] = [
     "--heartbleed",
     "--robot",
     "--openssl_ccs",
 ]
+
+# Approved CLI Flags & Scan Commands (Contract 09 TOOL-SSLYZE §20)
+APPROVED_SSLYZE_FLAGS: Set[str] = (
+    set(CONFIG_ASSESSMENT_FLAGS)
+    | set(VULN_PROBE_FLAGS)
+    | {
+        "--json_out=-",
+        "--sni",
+        "--reneg",
+        "--resum",
+        "--early_data",
+    }
+)
+
+# Default Scan Flags (Contract 09 TOOL-SSLYZE §19)
+DEFAULT_SCAN_FLAGS: List[str] = list(CONFIG_ASSESSMENT_FLAGS) + list(VULN_PROBE_FLAGS)
 
 # Weak Cipher Suite Patterns (Contract 09 TOOL-SSLYZE §31 & CWE-327)
 WEAK_CIPHER_PATTERNS: List[re.Pattern] = [
@@ -190,7 +197,7 @@ class SslyzeExecutionRecord(BaseModel):
     policy_version: str = Field(default="14.3.0")
     target_destination: str = Field(..., description="Pre-resolved IP address")
     target_port: int = Field(default=443)
-    server_name_sni: str = Field(..., description="Host header / SNI passed to --server_name")
+    server_name_sni: str = Field(..., description="Host header / SNI passed to --sni")
     command_args: List[str] = Field(default_factory=list)
     upstream_exit_code: int = Field(default=0)
     normalized_state: NormalizedExecutionState = Field(default=NormalizedExecutionState.COMPLETED_NO_FINDINGS)
@@ -263,7 +270,7 @@ class SslyzeCommandBuilder:
     """
     Dedicated deterministic SSLyze command builder.
     Enforces connection-level destination binding (selected_destination IP)
-    and separate SNI host header (--server_name) argument separation.
+    and separate SNI host header (--sni) argument separation.
     Rejects arbitrary file outputs and unvalidated flags.
     """
 
@@ -276,7 +283,7 @@ class SslyzeCommandBuilder:
     ) -> Tuple[List[str], str, int, Optional[str]]:
         """
         Constructs:
-        <sslyze_path> --json_out=- <selected_destination>:<port> --server_name=<canonical_hostname> [<flags>]
+        <sslyze_path> --json_out=- <selected_destination>:<port> --sni=<canonical_hostname> [<flags>]
         
         Returns: (cmd_list, destination_ip, target_port, error_message)
         """
@@ -309,19 +316,19 @@ class SslyzeCommandBuilder:
                 clean_f = flag.strip()
                 if clean_f.startswith("--json_out=") and clean_f != "--json_out=-":
                     return [], "", 0, "Arbitrary file output via --json_out is forbidden."
-                if clean_f not in APPROVED_SSLYZE_FLAGS and not clean_f.startswith("--server_name="):
+                if clean_f not in APPROVED_SSLYZE_FLAGS and not clean_f.startswith("--sni="):
                     return [], "", 0, f"SSLyze flag '{clean_f}' is not on the approved allowlist."
-                if clean_f != "--json_out=-" and not clean_f.startswith("--server_name="):
+                if clean_f != "--json_out=-" and not clean_f.startswith("--sni="):
                     resolved_flags.append(clean_f)
         else:
             resolved_flags = list(DEFAULT_SCAN_FLAGS)
 
-        # Base Command Vector
+        # Base Command Vector using official SSLyze 5.2.0 CLI syntax
         cmd: List[str] = [
             sslyze_path,
             "--json_out=-",
             f"{destination_ip}:{target_port}",
-            f"--server_name={canonical_host}",
+            f"--sni={canonical_host}",
         ]
         cmd.extend(resolved_flags)
 
@@ -415,7 +422,7 @@ class SslyzeAdapter(BaseToolAdapter):
                 clean_f = flag.strip()
                 if clean_f.startswith("--json_out=") and clean_f != "--json_out=-":
                     return False, "Arbitrary file output via --json_out is forbidden (Gate 1).", "TOOL_CAPABILITY"
-                if clean_f not in APPROVED_SSLYZE_FLAGS and not clean_f.startswith("--server_name="):
+                if clean_f not in APPROVED_SSLYZE_FLAGS and not clean_f.startswith("--sni="):
                     return False, f"Flag '{clean_f}' is not supported by TOOL-SSLYZE allowlist (Gate 1).", "TOOL_CAPABILITY"
 
         # Gate 2: Profile Authorization

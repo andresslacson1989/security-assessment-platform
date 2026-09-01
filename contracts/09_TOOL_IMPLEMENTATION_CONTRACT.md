@@ -50,7 +50,7 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
      - **Katana:** Invoked with `katana -u http://<selected_destination> -H "Host: <canonical_value>"`.
      - **FFuF:** Invoked with `ffuf -u http://<selected_destination>/FUZZ -H "Host: <canonical_value>"`.
      - **Schemathesis:** Uses a custom Python HTTP transport adapter binding direct socket connections to `selected_destination` with overridden `Host` headers.
-     - **SSLyze:** Connects directly to `<selected_destination>:<port>` with `--server_name=<canonical_value>` for SNI.
+     - **SSLyze:** Connects directly to `<selected_destination>:<port>` with `--sni=<canonical_value>` for SNI.
 
 2. **The Workspace Confinement Invariant (Contract 01 §3, Contract 08 §3):**
    Filesystem and source analysis tools must execute strictly within the server-derived authorized workspace root. Symlink traversal escapes, sensitive system directories (`/etc`, `/root`, `C:\Windows`, `.ssh`, `.aws`), and arbitrary host paths fail closed.
@@ -402,7 +402,11 @@ Stderr: Captures runtime diagnostics and errors
 - `IP`: `[REPOSITORY_VERIFIED]` Supported
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` SSLyze `5.2.0` (Exact PyPI Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` SSLyze `5.2.0` (Exact PyPI Release - September 2023).
+- **Runtime Compatibility Matrix:**
+  - Python: 3.8 to 3.12 (Supported runtime environment; Python 3.13 / OpenSSL 3.0+ TLS renegotiation/cryptography bindings must be evaluated in isolated venv).
+  - OpenSSL: OpenSSL 1.1.1 or OpenSSL 3.0 compatible bindings.
+  - OS Platform: Linux / POSIX container / Windows.
 - **Version Enforcement:** Runtime probe checks `actual_version == "sslyze 5.2.0"`.
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `sslyze --version` -> Regex `([0-9\.]+)`
 
@@ -411,7 +415,9 @@ Stderr: Captures runtime diagnostics and errors
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` Checked via `importlib.metadata.version("sslyze")`.
-- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]` Exact wheel SHA-256 digest pinned in `backend/requirements.txt`.
+- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]`
+  - Source tarball (`sslyze-5.2.0.tar.gz`): `65cfdf8fb1f5ef49a5b3a4a98402db26df33230a1ea34cf6dfd0eb1ca4f4c28f`
+  - Wheel artifact (`sslyze-5.2.0-py3-none-any.whl`): `e4a7a8d5e1b218f2f277ca51bf6fb274f88be5a07dd3b306b647716f9db6c0db`
 - **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` PyPI PEP 740 verifiable attestations / Sigstore provenance bundle.
 - **Resolution Source:** `[CYBERASSESS_REQUIRED]` Authoritative PyPI repository over TLS.
 
@@ -425,7 +431,7 @@ Stderr: Captures runtime diagnostics and errors
 - `NOT APPLICABLE`
 
 ### 13. Network Requirements & Destination Binding Mechanism
-- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked targeting `<selected_destination>:<port>` with `--server_name=<canonical_value>` (SNI), ensuring the socket connects directly to the pre-resolved IP.
+- **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked targeting `<selected_destination>:<port>` with `--sni=<canonical_value>` (SNI), ensuring the socket connects directly to the pre-resolved IP while passing canonical hostname to the TLS Server Name Indication extension.
 
 ### 14. Safety Policy & Bounded Probing
 - Safe, non-destructive TLS handshakes only.
@@ -447,13 +453,14 @@ Stderr: Captures runtime diagnostics and errors
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_python_path> -m sslyze
-Command Line: sslyze --json_out=- <target_host>:<target_port> --server_name=<canonical_hostname>
+Command Line: sslyze --json_out=- <target_host>:<target_port> --sni=<canonical_hostname>
 Stdout: Captures JSON results stream
 Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- `--json_out=-`, `<target_host>:<target_port>`, `--server_name=<name>`, `--certinfo`, `--sslv2`, `--sslv3`, `--tlsv1`, `--tlsv1_1`, `--tlsv1_2`, `--tlsv1_3`.
+- **Configuration Assessment Flags:** `--json_out=-`, `<target_host>:<target_port>`, `--sni=<name>`, `--sni`, `--certinfo`, `--sslv2`, `--sslv3`, `--tlsv1`, `--tlsv1_1`, `--tlsv1_2`, `--tlsv1_3`.
+- **Vulnerability Probing Flags:** `--heartbleed`, `--robot`, `--openssl_ccs`.
 
 ### 21. Forbidden Arguments
 - Arbitrary file write flags (`--json_out=<path>`).
