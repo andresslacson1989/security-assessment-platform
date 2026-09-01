@@ -177,7 +177,10 @@ RUN mkdir -p "$CYBERASSESS_TOOL_VENV_DIR" && \
         python -m venv "$CYBERASSESS_TOOL_VENV_DIR/$tool" && \
         "$CYBERASSESS_TOOL_VENV_DIR/$tool/bin/python" -m pip install --no-cache-dir --require-hashes --timeout 1000 --retries 10 -r "/app/backend/tool-requirements/$tool.lock"; \
     done
-ENV PATH="/opt/cyberassess/tool-venvs/sslyze/bin:/opt/cyberassess/tool-venvs/bandit/bin:/opt/cyberassess/tool-venvs/semgrep/bin:/opt/cyberassess/tool-venvs/checkov/bin:/opt/cyberassess/tool-venvs/prowler/bin:/opt/cyberassess/tool-venvs/schemathesis/bin:$PATH"
+# Keep the platform interpreter first. Adapters resolve each managed Python
+# tool from CYBERASSESS_TOOL_VENV_DIR, so tool environments never shadow the
+# control-plane runtime or its dependencies.
+ENV PATH="$PATH:/opt/cyberassess/tool-venvs/sslyze/bin:/opt/cyberassess/tool-venvs/bandit/bin:/opt/cyberassess/tool-venvs/semgrep/bin:/opt/cyberassess/tool-venvs/checkov/bin:/opt/cyberassess/tool-venvs/prowler/bin:/opt/cyberassess/tool-venvs/schemathesis/bin"
 
 # Copy pre-compiled standalone Go binaries AFTER pip so pip packages cannot overwrite CLI tools (e.g. ProjectDiscovery httpx)
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei

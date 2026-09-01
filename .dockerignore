@@ -9,6 +9,8 @@ __pycache__
 *.pyo
 *.pyd
 .pytest_cache
+**/.pytest_cache
+**/.pytest-tmp*
 .coverage
 htmlcov/
 
