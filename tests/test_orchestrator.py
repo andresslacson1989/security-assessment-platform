@@ -18,10 +18,12 @@ from app.core.models import (
     Evidence,
     Severity,
     calculate_fingerprint,
+    RejectedDiscovery,
 )
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.core.rate_limiter import TokenBucketRateLimiter, CircuitBreaker, CircuitState
 from app.core.orchestrator import ScanOrchestrator
+from app.core.storage import save_scan, get_scan
 
 
 class MockSuccessfulEngine(BaseAssessmentEngine):
@@ -252,6 +254,35 @@ async def test_invalid_version_degrades_coverage():
     assert job.tool_execution_states["subfinder"] == "INVALID_VERSION"
     assert job.summary.coverage.is_fully_assessed is False
     assert "subfinder: INVALID_VERSION" in job.summary.coverage.coverage_limitations
+
+
+def test_degraded_network_evidence_survives_authoritative_persistence():
+    job = ScanJob(
+        target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),
+        organization_id="org-a",
+    )
+    job.tool_execution_states["subfinder"] = "PARTIAL_RESULTS_WITH_WARNING"
+    job.summary.coverage.is_fully_assessed = False
+    job.summary.coverage.coverage_limitations = ["subfinder: PARTIAL_RESULTS_WITH_WARNING"]
+    job.rejected_discoveries.append(RejectedDiscovery(
+        domain="outside.example.net",
+        reason="OUT_OF_SCOPE",
+        sources=["crtsh"],
+        authorized_root="example.com",
+        assessment_id=job.id,
+        organization_id="org-a",
+    ))
+
+    save_scan(job)
+    restored = get_scan(job.id)
+
+    assert restored is not None
+    assert restored.organization_id == "org-a"
+    assert restored.tool_execution_states["subfinder"] == "PARTIAL_RESULTS_WITH_WARNING"
+    assert restored.summary.coverage.is_fully_assessed is False
+    assert restored.summary.coverage.coverage_limitations == ["subfinder: PARTIAL_RESULTS_WITH_WARNING"]
+    assert restored.rejected_discoveries[0].organization_id == "org-a"
+    assert restored.rejected_discoveries[0].sources == ["crtsh"]
 
 
 @pytest.mark.asyncio
