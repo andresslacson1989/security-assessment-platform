@@ -14,7 +14,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 |---|---|---|---|---|---|
 | **Network / EASM** | Nmap | `TOOL-NMAP` | PRIMARY | Network Port Probing & Service Fingerprinting | Compiled System Executable / WinGet |
 | **Network / TLS** | SSLyze | `TOOL-SSLYZE` | PRIMARY | Comprehensive TLS Protocol & Cipher Suite Analysis | Pure Python Package (pip) |
-| **Perimeter / EASM** | Subfinder | `TOOL-SUBFINDER` | PRIMARY | Passive Multi-Source Subdomain Enumeration | Standalone Go Binary (GitHub Release) |
+| **Perimeter / EASM** | Subfinder | `TOOL-SUBFINDER` | PRIMARY | Passive `crtsh`-only Subdomain Enumeration | Standalone Go Binary (GitHub Release) |
 | **HTTP Probing** | httpx | `TOOL-HTTPX` | VALIDATION | High-Speed HTTP Endpoint Verification & Technology Detection | Standalone Go Binary (GitHub Release) |
 | **Web DAST** | Nuclei | `TOOL-NUCLEI` | PRIMARY | Template-Driven CVE & Misconfiguration Scanning | Standalone Go Binary (GitHub Release) |
 | **Web Fuzzing** | FFuF | `TOOL-FFUF` | SPECIALIZED | Active Parameter, Directory & Header Fuzzing | Standalone Go Binary (GitHub Release) |

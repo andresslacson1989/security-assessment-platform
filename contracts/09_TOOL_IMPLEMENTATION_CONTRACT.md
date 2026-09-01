@@ -717,7 +717,7 @@ Stderr: Diagnostic logs
   - Passive CT Log Enumeration: `SUPPORTED`
   - Multi-Source Aggregator API Queries: `NOT_SUPPORTED` (Current governed baseline is public `crtsh` only; credentialed providers require a future tenant-scoped egress and secret-injection control)
   - Active DNS Brute-Forcing: `NOT_SUPPORTED` (Passive scope constraint)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/subfinder_adapter.py`); approved managed `v2.6.5` runtime execution is `UNAVAILABLE` in the current environment.
+- **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/subfinder_adapter.py`, `tests/security/test_subfinder_assurance.py`); the approved managed `v2.6.5` executable was verified and executed against `example.com` on 2026-09-01. A later run timed out at the provider boundary and was correctly recorded as `EXECUTION_TIMED_OUT`; runtime success is not inferred from that degraded run.
 
 ---
 
