@@ -74,42 +74,10 @@ class SubfinderAdapter(BaseToolAdapter):
             return None
         code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=10.0)
         output = stdout + " " + stderr
-        match = re.search(r"v\d+\.\d+\.\d+", output, re.IGNORECASE)
+        match = re.search(r"(?<![0-9A-Za-z])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z])", output, re.IGNORECASE)
         if match:
-            return f"subfinder {match.group(0)}"
+            return f"subfinder v{match.group(1)}"
         return "subfinder" if code == 0 else None
-
-    async def _resolve_host_dns(self, hostname: str) -> tuple[List[str], List[str], str]:
-        import dns.asyncresolver
-        resolver = dns.asyncresolver.Resolver()
-        resolver.lifetime = 2.0
-        ips: List[str] = []
-        cnames: List[str] = []
-        status = "NXDOMAIN"
-        try:
-            try:
-                a_ans = await resolver.resolve(hostname, "A")
-                for r in a_ans:
-                    ips.append(str(r))
-                status = "ACTIVE"
-            except Exception:
-                pass
-            try:
-                aaaa_ans = await resolver.resolve(hostname, "AAAA")
-                for r in aaaa_ans:
-                    ips.append(str(r))
-                status = "ACTIVE"
-            except Exception:
-                pass
-            try:
-                c_ans = await resolver.resolve(hostname, "CNAME")
-                for r in c_ans:
-                    cnames.append(str(r.target).rstrip(".").lower())
-            except Exception:
-                pass
-        except Exception:
-            pass
-        return ips, cnames, status
 
     async def run(
         self,
@@ -166,6 +134,7 @@ class SubfinderAdapter(BaseToolAdapter):
         source_map: Dict[str, set[str]] = {}
         parser_warnings = 0
         out_of_scope = 0
+        limit_reached = False
         for line in stdout.splitlines():
             line = line.strip()
             if not line:
@@ -191,6 +160,7 @@ class SubfinderAdapter(BaseToolAdapter):
                 source_map[host].update(sources)
                 continue
             if len(discovered_hosts) >= self.MAX_DOMAINS:
+                limit_reached = True
                 continue
             discovered_hosts.add(host)
             source_map[host] = set(sources)
@@ -207,7 +177,7 @@ class SubfinderAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, f"Subfinder parser rejected {parser_warnings} malformed JSONL records.")
         if out_of_scope:
             await emit_log(LogLevel.WARNING, f"Subfinder classified {out_of_scope} discoveries as OUT_OF_SCOPE; none were admitted.")
-        if len(discovered_hosts) >= self.MAX_DOMAINS:
+        if limit_reached:
             await emit_log(LogLevel.WARNING, "Subfinder discovery reached the per-run result limit; results are partial.")
 
         if discovered_hosts:

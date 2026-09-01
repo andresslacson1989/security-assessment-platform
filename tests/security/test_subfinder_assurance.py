@@ -42,8 +42,6 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
         "not-json\n",
         "",
     )))
-    monkeypatch.setattr(adapter, "_resolve_host_dns", AsyncMock(side_effect=AssertionError("discovery must not probe DNS")))
-
     async def callback(*_args):
         return None
 
