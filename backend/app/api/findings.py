@@ -251,7 +251,7 @@ async def add_finding_comment(
     """
     Appends a collaboration or verification comment to a finding record. Enforces tenant ownership.
     """
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",
