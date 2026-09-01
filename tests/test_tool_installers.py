@@ -119,6 +119,25 @@ async def test_pip_tool_installer_success():
 
 
 @pytest.mark.asyncio
+async def test_pip_tool_version_fallback_uses_process_supervisor():
+    """Binary version fallback must remain under centralized process governance."""
+    installer = PipToolInstaller("bandit")
+    with patch.object(installer, "resolve_binary_path", return_value="/managed/bandit"), \
+         patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+             0, "bandit 1.7.8\n", ""
+         ))) as execute_mock:
+        with patch("importlib.metadata.version", side_effect=Exception("package metadata unavailable")):
+            version = await installer.get_version()
+
+    assert version == "bandit 1.7.8"
+    execute_mock.assert_awaited_once_with(
+        ["/managed/bandit", "--version"],
+        timeout=5.0,
+        max_output_bytes=1024 * 1024,
+    )
+
+
+@pytest.mark.asyncio
 async def test_pip_tool_installer_failure():
     """Tests PipToolInstaller failure handling on non-zero exit."""
     installer = PipToolInstaller("sslyze")

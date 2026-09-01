@@ -6,7 +6,6 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 import asyncio
 import os
-import subprocess
 import sys
 from typing import Optional, Dict
 
@@ -123,23 +122,18 @@ class PipToolInstaller(BaseToolInstaller):
         if not path:
             return None
 
-        def _check():
-            try:
-                res = subprocess.run(
-                    [path, "--version"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    timeout=5.0,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                text = res.stdout.strip()
-                return text.splitlines()[0] if text else None
-            except Exception:
+        try:
+            return_code, stdout, stderr = await process_supervisor.execute(
+                [path, "--version"],
+                timeout=5.0,
+                max_output_bytes=1024 * 1024,
+            )
+            if return_code != 0:
                 return None
-
-        return await asyncio.to_thread(_check)
+            output = (stdout or stderr or "").strip()
+            return output.splitlines()[0] if output else None
+        except Exception:
+            return None
 
     async def install(
         self,
