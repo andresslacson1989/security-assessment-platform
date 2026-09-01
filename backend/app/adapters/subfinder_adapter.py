@@ -134,28 +134,38 @@ class SubfinderAdapter(BaseToolAdapter):
         scan_id = kwargs.get("scan_id", "local-scan")
         emit_subdomain: Optional[Callable[[DiscoveredSubdomain], Awaitable[None]]] = kwargs.get("emit_subdomain")
         emit_rejected: Optional[Callable[[RejectedDiscovery], Awaitable[None]]] = kwargs.get("emit_rejected_discovery")
+        emit_state: Optional[Callable[[str, str], Awaitable[None]]] = kwargs.get("emit_tool_execution_state")
         self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+        async def publish_state() -> None:
+            if emit_state:
+                state = self.last_execution_state.value.replace("EXECUTION_", "")
+                await emit_state("subfinder", state)
 
         binary = self.resolve_binary_path(config.adapters.subfinder_path or config.adapters.custom_subfinder_path)
         if not binary:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Subfinder binary not found. Skipping Subfinder EASM recon.")
+            await publish_state()
             return findings
         if not self.verify_managed_binary(binary):
             self.last_execution_state = NormalizedExecutionState.BLOCKED
             await emit_log(LogLevel.ERROR, "Subfinder execution blocked: executable is not a valid managed installation.")
+            await publish_state()
             return findings
 
         profile = getattr(config, "profile", None)
         if getattr(profile, "value", profile) not in self.ALLOWED_PROFILES:
             self.last_execution_state = NormalizedExecutionState.BLOCKED
             await emit_log(LogLevel.WARNING, "Subfinder discovery blocked for unsupported assessment profile.")
+            await publish_state()
             return findings
         version = await self.get_version(binary)
         if version != f"subfinder {self.APPROVED_VERSION}":
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             state = "VERSION_UNAVAILABLE" if version is None else "INVALID_VERSION"
             await emit_log(LogLevel.ERROR, f"Subfinder execution blocked: {state} (approved {self.APPROVED_VERSION}).")
+            await publish_state()
             return findings
 
         # Extract apex domain
@@ -173,6 +183,7 @@ class SubfinderAdapter(BaseToolAdapter):
         if not apex_domain or "." not in apex_domain:
             self.last_execution_state = NormalizedExecutionState.BLOCKED
             await emit_log(LogLevel.WARNING, "Subfinder discovery blocked: target is not a valid domain.")
+            await publish_state()
             return findings
 
         await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {apex_domain}")
@@ -183,8 +194,9 @@ class SubfinderAdapter(BaseToolAdapter):
             pre_launch_check=lambda: self.verify_managed_binary(binary),
         )
         if code != 0 and not stdout:
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = (NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED)
             await emit_log(LogLevel.WARNING, f"Subfinder exited with code {code}: {stderr.strip()[:200]}")
+            await publish_state()
             return findings
 
         discovered_hosts = set()
@@ -272,5 +284,5 @@ class SubfinderAdapter(BaseToolAdapter):
             findings.append(finding)
             await emit_finding(finding)
             await emit_log(LogLevel.INFO, f"Subfinder identified {len(discovered_hosts)} subdomains.")
-
+        await publish_state()
         return findings
