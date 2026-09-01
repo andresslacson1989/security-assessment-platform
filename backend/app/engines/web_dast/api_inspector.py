@@ -3,6 +3,7 @@ Contract 03, 06 & 08 Sensitive File Exposure & Dangerous HTTP Methods Inspector.
 """
 
 from __future__ import annotations
+import logging
 import re
 from typing import List, Optional
 import urllib.parse
@@ -10,6 +11,8 @@ import httpx
 
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.api_inspector")
 
 
 def normalize_target_url(target_value: str) -> str:
@@ -68,8 +71,8 @@ async def audit_sensitive_exposure_and_methods(
                     ),
                     fingerprint=calculate_fingerprint("DAST-EXP-001", env_url, "env_exposed"),
                 ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Environment exposure probe failed: error_type=%s", type(exc).__name__)
 
     # --- 2. Exposed Git Metadata (DAST-EXP-002) ---
     try:
@@ -100,8 +103,8 @@ async def audit_sensitive_exposure_and_methods(
                 ),
                 fingerprint=calculate_fingerprint("DAST-EXP-002", git_url, "git_head_exposed"),
             ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Git metadata exposure probe failed: error_type=%s", type(exc).__name__)
 
     # --- 3. Spring Boot Actuator Exposure (DAST-EXP-003) ---
     for act_path in ("/actuator/env", "/actuator/health", "/actuator"):
@@ -135,8 +138,8 @@ async def audit_sensitive_exposure_and_methods(
                         fingerprint=calculate_fingerprint("DAST-EXP-003", act_url, "actuator_open"),
                     ))
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Actuator exposure probe failed: error_type=%s", type(exc).__name__)
 
     # --- 4. OpenAPI / Swagger Raw Spec Exposure (DAST-EXP-004) ---
     for spec_path in ("/swagger.json", "/openapi.json", "/v2/api-docs"):
@@ -168,8 +171,8 @@ async def audit_sensitive_exposure_and_methods(
                     fingerprint=calculate_fingerprint("DAST-EXP-004", spec_url, "swagger_exposed"),
                 ))
                 break
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("OpenAPI exposure probe failed: error_type=%s", type(exc).__name__)
 
     # --- 5. Dangerous HTTP TRACE Method (DAST-METH-001) ---
     try:
@@ -199,7 +202,7 @@ async def audit_sensitive_exposure_and_methods(
                 ),
                 fingerprint=calculate_fingerprint("DAST-METH-001", base_url, "trace_enabled"),
             ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("HTTP TRACE probe failed: error_type=%s", type(exc).__name__)
 
     return findings

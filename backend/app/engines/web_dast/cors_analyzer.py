@@ -3,11 +3,14 @@ Contract 03, 06 & 08 CORS Misconfiguration Analyzer.
 """
 
 from __future__ import annotations
+import logging
 from typing import List, Optional
 import httpx
 
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.cors")
 
 
 def normalize_target_url(target_value: str) -> str:
@@ -100,8 +103,8 @@ async def audit_cors_policies(
                 ),
                 fingerprint=calculate_fingerprint("DAST-CORS-002", url, "wildcard_credentials"),
             ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("CORS wildcard probe failed: error_type=%s", type(exc).__name__)
 
     # Test 2: Trust of 'null' Origin
     try:
@@ -133,7 +136,7 @@ async def audit_cors_policies(
                 ),
                 fingerprint=calculate_fingerprint("DAST-CORS-003", url, "null_origin"),
             ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("CORS null-origin probe failed: error_type=%s", type(exc).__name__)
 
     return findings

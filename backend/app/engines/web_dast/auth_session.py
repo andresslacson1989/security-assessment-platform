@@ -5,6 +5,7 @@ and audits for authentication security (DAST-AUTH-001 to 004) and form vulnerabi
 """
 
 from __future__ import annotations
+import logging
 import re
 import urllib.parse
 from typing import List, Optional, Dict, Any, Tuple, Callable
@@ -23,6 +24,8 @@ from app.core.models import (
     LogLevel,
 )
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.auth_session")
 
 CSRF_FIELD_NAMES = {
     "csrf_token", "_csrf", "authenticity_token", "_token", "csrf-token",
@@ -277,8 +280,8 @@ class AuthSessionManager:
                                     ),
                                     fingerprint=calculate_fingerprint("DAST-AUTH-003", target_endpoint, "unauth_200"),
                                 ))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Authentication response inspection failed: error_type=%s", type(exc).__name__)
 
         # --- 4. DAST-AUTH-004: Sensitive Data in Authenticated Query Strings ---
         for ep in discovered_endpoints:

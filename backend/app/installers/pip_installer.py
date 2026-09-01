@@ -5,6 +5,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 
 from __future__ import annotations
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -17,6 +18,8 @@ from app.installers.base_installer import (
     ProgressCallback,
 )
 from app.core.process_supervisor import process_supervisor
+
+logger = logging.getLogger("cyberassess.installers.pip")
 
 
 PIP_TOOL_CONFIGS: Dict[str, dict] = {
@@ -132,8 +135,8 @@ class PipToolInstaller(BaseToolInstaller):
                     output = (stdout or stderr or "").strip()
                     if output:
                         return output.splitlines()[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Package version probe failed: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
 
         # Metadata fallback is useful for diagnostics when the executable is
         # not present, but it is never preferred over the managed executable.
@@ -142,8 +145,8 @@ class PipToolInstaller(BaseToolInstaller):
             ver = version(pkg)
             if ver:
                 return f"{pkg} {ver}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Package metadata lookup failed: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
 
         return None
 

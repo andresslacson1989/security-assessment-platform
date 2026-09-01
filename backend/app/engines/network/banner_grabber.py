@@ -5,9 +5,12 @@ Connects to open service ports, extracts daemon banners, and identifies deprecat
 
 from __future__ import annotations
 import asyncio
+import logging
 import re
 from typing import List, Tuple, Optional
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, sanitize_sensitive_text
+
+logger = logging.getLogger("cyberassess.engines.banner_grabber")
 
 # Known deprecated or vulnerable daemon version patterns
 VULNERABLE_BANNER_PATTERNS = [
@@ -48,8 +51,8 @@ async def grab_service_banner(host: str, port: int, timeout: float = 1.5) -> Opt
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Service banner read failed: host=%s port=%s error_type=%s", host, port, type(exc).__name__)
     except Exception:
         return None
 

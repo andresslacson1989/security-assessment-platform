@@ -15,6 +15,7 @@ Tier 5: Platform-Specific Auto-Discovery:
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 import os
 import shutil
@@ -22,6 +23,8 @@ import string
 import subprocess
 import sys
 from typing import Callable, Optional, List, Tuple
+
+logger = logging.getLogger("cyberassess.binary_resolver")
 
 
 def get_default_bin_dir() -> str:
@@ -57,16 +60,16 @@ def _find_in_windows_registry(tool_name: str) -> Optional[str]:
                                 icon = ""
                                 try:
                                     dname, _ = winreg.QueryValueEx(child_key, "DisplayName")
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.debug("Windows registry DisplayName lookup failed: error_type=%s", type(exc).__name__)
                                 try:
                                     loc, _ = winreg.QueryValueEx(child_key, "InstallLocation")
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.debug("Windows registry InstallLocation lookup failed: error_type=%s", type(exc).__name__)
                                 try:
                                     icon, _ = winreg.QueryValueEx(child_key, "DisplayIcon")
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.debug("Windows registry DisplayIcon lookup failed: error_type=%s", type(exc).__name__)
                                 
                                 if (
                                     tool_name.lower() in str(dname).lower()
@@ -80,12 +83,12 @@ def _find_in_windows_registry(tool_name: str) -> Optional[str]:
                                                 exe_path = os.path.join(cdir, f"{tool_name}{ext}")
                                                 if os.path.isfile(exe_path):
                                                     return os.path.abspath(exe_path)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-    except Exception:
-        pass
+                        except Exception as exc:
+                            logger.debug("Windows registry entry inspection failed: error_type=%s", type(exc).__name__)
+            except Exception as exc:
+                logger.debug("Windows registry root inspection failed: error_type=%s", type(exc).__name__)
+    except Exception as exc:
+        logger.debug("Windows registry discovery unavailable: error_type=%s", type(exc).__name__)
     return None
 
 

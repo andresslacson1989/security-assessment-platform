@@ -3,11 +3,14 @@ Contract 03, 06 & 08 GraphQL Introspection Auditor.
 """
 
 from __future__ import annotations
+import logging
 from typing import List, Optional
 import httpx
 
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.graphql")
 
 
 def normalize_target_url(target_value: str) -> str:
@@ -77,7 +80,7 @@ async def audit_graphql_endpoints(
                         fingerprint=calculate_fingerprint("DAST-GQL-001", gql_url, "introspection_open"),
                     ))
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("GraphQL introspection probe failed: error_type=%s", type(exc).__name__)
 
     return findings

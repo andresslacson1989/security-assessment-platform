@@ -61,17 +61,18 @@ class ProcessSupervisor:
                 logger.debug(f"Failed to taskkill PID +{pid}: {e}")
                 try:
                     os.kill(pid, signal.SIGTERM)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Fallback termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
         else:
             try:
                 pgid = os.getpgid(pid)
                 os.killpg(pgid, signal.SIGKILL)
-            except Exception:
+            except Exception as exc:
+                logger.debug("Process-group termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
                 try:
                     os.kill(pid, signal.SIGKILL)
-                except Exception:
-                    pass
+                except Exception as fallback_exc:
+                    logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
 
     async def execute(
         self,

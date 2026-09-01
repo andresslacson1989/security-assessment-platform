@@ -5,6 +5,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 
 from __future__ import annotations
 import asyncio
+import logging
 from datetime import datetime, timezone
 import json
 import time
@@ -22,6 +23,8 @@ from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
 from app.installers.source_build_installer import SourceBuildInstaller
 from app.installers.system_installer import SystemToolHelper
+
+logger = logging.getLogger("cyberassess.installers.manager")
 
 
 class ToolInstallationManager:
@@ -106,8 +109,8 @@ class ToolInstallationManager:
         for q in list(self._subscribers):
             try:
                 await q.put(payload)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Tool-installation SSE subscriber delivery failed: error_type=%s", type(exc).__name__)
 
     async def subscribe_events(self, ping_interval: float = 10.0) -> AsyncGenerator[dict, None]:
         """Subscribes a client to the tool installation SSE stream with keepalive pings."""

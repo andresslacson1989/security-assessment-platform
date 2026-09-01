@@ -5,6 +5,7 @@ LFI path traversal, SSTI expression evaluation, and open redirect detection with
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 import re
 import secrets
@@ -23,6 +24,8 @@ from app.core.models import (
     sanitize_reproduction_curl,
 )
 from app.engines.base import LogCallback, FindingCallback
+
+logger = logging.getLogger("cyberassess.engines.parameter_fuzzer")
 
 
 def format_curl_poc(method: str, url: str, headers: Optional[Dict[str, str]] = None, body: Optional[str] = None) -> str:
@@ -139,8 +142,8 @@ async def audit_parameter_fuzzing(
                         findings.append(f)
                         if emit_finding:
                             await emit_finding(f)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("SQL injection probe failed: error_type=%s", type(exc).__name__)
 
             # --- 2. Canary Reflected XSS (DAST-XSS-001) ---
             if fuzz_cfg.fuzz_xss:
@@ -195,8 +198,8 @@ async def audit_parameter_fuzzing(
                         findings.append(f)
                         if emit_finding:
                             await emit_finding(f)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("XSS probe failed: error_type=%s", type(exc).__name__)
 
             # --- 3. Local File Inclusion / Path Traversal (DAST-LFI-001) ---
             if fuzz_cfg.fuzz_lfi:
@@ -249,8 +252,8 @@ async def audit_parameter_fuzzing(
                         findings.append(f)
                         if emit_finding:
                             await emit_finding(f)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("LFI probe failed: error_type=%s", type(exc).__name__)
 
             # --- 4. Server-Side Template Injection (DAST-SSTI-001) ---
             if fuzz_cfg.fuzz_ssti:
@@ -304,8 +307,8 @@ async def audit_parameter_fuzzing(
                         findings.append(f)
                         if emit_finding:
                             await emit_finding(f)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("SSTI probe failed: error_type=%s", type(exc).__name__)
 
             # --- 5. Open Redirection (DAST-REDIR-001) ---
             if fuzz_cfg.fuzz_redirect:
@@ -362,7 +365,7 @@ async def audit_parameter_fuzzing(
                             findings.append(f)
                             if emit_finding:
                                 await emit_finding(f)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Open redirect probe failed: error_type=%s", type(exc).__name__)
 
     return findings

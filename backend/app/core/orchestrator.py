@@ -4,6 +4,7 @@ Contract 03 & 04 Background Scan Orchestrator and Event Dispatcher (v3.1.0).
 
 from __future__ import annotations
 import asyncio
+import logging
 from datetime import datetime, timezone
 import time
 from typing import Dict, List, Optional, Set
@@ -24,6 +25,8 @@ from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
 from app.engines.base import BaseAssessmentEngine
 from app.adapters import discover_system_capabilities, get_adapter_registry
+
+logger = logging.getLogger("cyberassess.orchestrator")
 
 
 class ScanOrchestrator:
@@ -194,8 +197,8 @@ class ScanOrchestrator:
         for q in list(self._subscribers[scan_id]):
             try:
                 q.put_nowait(message)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Scan SSE subscriber delivery failed: scan_id=%s error_type=%s", scan_id, type(exc).__name__)
 
     async def emit_progress(
         self,

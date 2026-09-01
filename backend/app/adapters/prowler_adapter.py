@@ -5,6 +5,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (Secti
 
 from __future__ import annotations
 import json
+import logging
 import os
 import re
 from typing import Optional, List, Callable, Awaitable, Dict, Any
@@ -14,6 +15,8 @@ from app.core.models import (
     calculate_fingerprint, CISBenchmarkResult, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
+
+logger = logging.getLogger("cyberassess.adapters.prowler")
 
 
 class ProwlerAdapter(BaseToolAdapter):
@@ -84,8 +87,8 @@ class ProwlerAdapter(BaseToolAdapter):
                 if line.startswith("{"):
                     try:
                         items.append(json.loads(line))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Prowler result item could not be normalized: error_type=%s", type(exc).__name__)
 
             for item in items:
                 status = item.get("Status", "FAIL").upper()

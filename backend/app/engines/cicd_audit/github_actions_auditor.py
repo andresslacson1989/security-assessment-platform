@@ -4,6 +4,7 @@ Contract 03, 06 & 08 GitHub Actions CI/CD Pipeline & Supply Chain Security Audit
 
 from __future__ import annotations
 import os
+import logging
 from pathlib import Path
 import re
 from typing import List, Optional
@@ -11,6 +12,8 @@ import yaml
 
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.github_actions")
 
 IGNORED_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
 
@@ -25,8 +28,8 @@ def audit_workflow_yaml(content: str, file_path_str: str) -> List[Finding]:
         loaded = yaml.safe_load(content)
         if isinstance(loaded, dict):
             data = loaded
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Workflow YAML parse failed: error_type=%s", type(exc).__name__)
 
     # --- 1. Insecure pull_request_target Trigger with Code Checkout (CICD-GHA-001) ---
     on_trigger = data.get("on") if "on" in data else data.get(True)

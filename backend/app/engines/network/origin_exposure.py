@@ -4,6 +4,7 @@ Identifies backend origin server IP addresses and unproxied subdomains bypassing
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 import ipaddress
 import re
@@ -23,6 +24,8 @@ from app.core.models import (
 )
 from app.core.version import APP_VERSION
 from app.engines.base import LogCallback, FindingCallback, SubdomainDiscoveredCallback
+
+logger = logging.getLogger("cyberassess.engines.origin_exposure")
 
 # ==============================================================================
 # Official Cloudflare IP CIDR Ranges (IPv4 & IPv6)
@@ -201,16 +204,16 @@ async def resolve_host_ips(
         a_records = await resolver.resolve(hostname, "A")
         for rdata in a_records:
             resolved_ips.append(str(rdata))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Certificate transparency origin query failed: error_type=%s", type(exc).__name__)
 
     # 2. AAAA records
     try:
         aaaa_records = await resolver.resolve(hostname, "AAAA")
         for rdata in aaaa_records:
             resolved_ips.append(str(rdata))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Origin exposure DNS verification failed: error_type=%s", type(exc).__name__)
 
     return resolved_ips
 

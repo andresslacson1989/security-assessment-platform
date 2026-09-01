@@ -4,6 +4,7 @@ Integrates scoped BFS web crawling, session authentication, and comprehensive vu
 """
 
 from __future__ import annotations
+import logging
 from typing import List, Optional, Dict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -44,6 +45,8 @@ from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
 from app.adapters.sqlmap_adapter import SqlmapAdapter
 from app.core.ssrf_protector import create_validated_target, ValidatedTargetTransport
+
+logger = logging.getLogger("cyberassess.engines.web_dast")
 from app.core.path_sandbox import get_default_workspace_dir
 
 
@@ -331,8 +334,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     resp = await client.get(target.value)
                     html_contents[target.value] = resp.text
                     page_responses[target.value] = resp
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Initial DAST response retrieval failed: error_type=%s", type(exc).__name__)
 
             # --- Stage 3: HTTP Security Headers & Cookies (45% - 60%) ---
             await emit_progress(50, f"Auditing HTTP security headers and cookies across {len(discovered_endpoints)} endpoints...")

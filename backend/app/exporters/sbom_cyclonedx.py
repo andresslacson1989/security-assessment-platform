@@ -6,11 +6,14 @@ Authoritative Reference: contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md (Sect
 from __future__ import annotations
 from datetime import datetime, timezone
 import json
+import logging
 import uuid
 from typing import Dict, Any
 
 from app.core.models import ScanJob, SBOMReport
 from app.core.version import APP_VERSION
+
+logger = logging.getLogger("cyberassess.exporters.cyclonedx")
 
 
 def export_cyclonedx_sbom(scan: ScanJob) -> str:
@@ -23,8 +26,8 @@ def export_cyclonedx_sbom(scan: ScanJob) -> str:
             parsed = json.loads(scan.sbom_report.raw_document)
             if parsed.get("bomFormat") == "CycloneDX":
                 return json.dumps(parsed, indent=2)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Stored CycloneDX document was invalid; synthesizing a replacement: error_type=%s", type(exc).__name__)
 
     # Otherwise synthesize CycloneDX 1.5 structure from SBOM components and findings
     components_list = []

@@ -276,8 +276,8 @@ async def execute_http_repeater(
                     tls_version = str(ext["tls_version"])
                 if "cipher_suite" in ext:
                     cipher = str(ext["cipher_suite"])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Repeater TLS metadata unavailable: error_type=%s", type(exc).__name__)
             
             if payload.url.lower().startswith("https://") and not tls_version:
                 tls_version = "TLSv1.3"

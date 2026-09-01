@@ -5,6 +5,7 @@ exclude pattern filtering, robots/sitemap seeding, and rate limiting.
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 from collections import deque
 import fnmatch
@@ -18,6 +19,8 @@ import httpx
 from app.core.models import CrawlerConfig, DiscoveredEndpoint, LogLevel
 from app.core.rate_limiter import TokenBucketRateLimiter
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.crawler")
 
 
 STATIC_ASSET_EXTENSIONS = {
@@ -145,8 +148,8 @@ class WebCrawler:
                             norm = self.normalize_url(self.target_root, path)
                             if norm and self.is_in_scope(norm):
                                 seeds.append(norm)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Robots seed retrieval failed: error_type=%s", type(exc).__name__)
 
         # 2. Probe /sitemap.xml
         sitemap_url = f"{self.target_root}/sitemap.xml"
@@ -161,8 +164,8 @@ class WebCrawler:
                     norm = self.normalize_url(self.target_root, loc.strip())
                     if norm and self.is_in_scope(norm):
                         seeds.append(norm)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Sitemap seed retrieval failed: error_type=%s", type(exc).__name__)
 
         return seeds
 

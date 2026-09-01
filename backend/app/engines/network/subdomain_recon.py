@@ -4,6 +4,7 @@ Queries Certificate Transparency logs (crt.sh), resolves subdomains, detects dan
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 import re
 import socket
@@ -22,6 +23,8 @@ from app.core.models import (
     calculate_fingerprint,
 )
 from app.engines.base import LogCallback, FindingCallback, SubdomainDiscoveredCallback
+
+logger = logging.getLogger("cyberassess.engines.subdomain_recon")
 
 # Authoritative CNAME signatures of third-party cloud services prone to dangling takeover
 TAKEOVER_CNAME_SIGNATURES = {
@@ -81,26 +84,26 @@ async def resolve_subdomain_details(
                         await resolver.resolve(target_cname, "A")
                     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
                         is_takeover_vulnerable = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("CNAME takeover target resolution failed: error_type=%s", type(exc).__name__)
                     break
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("CNAME lookup failed: error_type=%s", type(exc).__name__)
 
     # 2. Query A / AAAA records
     try:
         a_answers = await resolver.resolve(subdomain, "A")
         for rdata in a_answers:
             ip_addresses.append(str(rdata))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("A record lookup failed: error_type=%s", type(exc).__name__)
 
     try:
         aaaa_answers = await resolver.resolve(subdomain, "AAAA")
         for rdata in aaaa_answers:
             ip_addresses.append(str(rdata))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("AAAA record lookup failed: error_type=%s", type(exc).__name__)
 
     return DiscoveredSubdomain(
         domain=subdomain,

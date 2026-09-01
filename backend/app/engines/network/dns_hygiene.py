@@ -3,6 +3,7 @@ Contract 03, 06 & 08 DNS Hygiene, Email Security (SPF/DMARC/MTA-STS/BIMI), DNSSE
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 from typing import List, Optional
 import urllib.parse
@@ -14,6 +15,8 @@ import dns.exception
 
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.dns_hygiene")
 
 
 def extract_apex_domain(target_value: str) -> Optional[str]:
@@ -271,8 +274,8 @@ async def audit_dns_hygiene(
             ),
             fingerprint=calculate_fingerprint("NET-DNS-005", apex_domain, "missing_caa"),
         ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("CAA record audit failed: error_type=%s", type(exc).__name__)
 
     # --- 4. MTA-STS & TLS-RPT Record Audit (NET-DNS-006) ---
     try:
@@ -302,8 +305,8 @@ async def audit_dns_hygiene(
             ),
             fingerprint=calculate_fingerprint("NET-DNS-006", apex_domain, "missing_mta_sts"),
         ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("MTA-STS/TLS-RPT audit failed: error_type=%s", type(exc).__name__)
 
     # --- 5. DNSSEC Audit (NET-DNS-007) ---
     try:
@@ -332,8 +335,8 @@ async def audit_dns_hygiene(
             ),
             fingerprint=calculate_fingerprint("NET-DNS-007", apex_domain, "missing_dnssec"),
         ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("DNSSEC audit failed: error_type=%s", type(exc).__name__)
 
     # --- 6. DNS Zone Transfer (AXFR) Audit (NET-DNS-008) ---
     try:
@@ -381,9 +384,9 @@ async def audit_dns_hygiene(
                         source_tool="native",
                     ))
                     break
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                logger.debug("AXFR probe failed: error_type=%s", type(exc).__name__)
+    except Exception as exc:
+        logger.debug("Nameserver lookup for AXFR audit failed: error_type=%s", type(exc).__name__)
 
     return findings

@@ -3,6 +3,7 @@ Contract 03, 06 & 08 Network & TLS Assessment Engine Coordinator.
 """
 
 from __future__ import annotations
+import logging
 from typing import List
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -23,6 +24,8 @@ from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.metasploit_adapter import MetasploitAdapter
 from app.core.ssrf_protector import create_validated_target
 from app.core.path_sandbox import get_default_workspace_dir
+
+logger = logging.getLogger("cyberassess.engines.network")
 
 
 class NetworkAssessmentEngine(BaseAssessmentEngine):
@@ -245,8 +248,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 try:
                     p_str = f.evidence.location.split(":")[-1]
                     open_port_nums.append(int(p_str))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Native port result normalization failed: error_type=%s", type(exc).__name__)
             if open_port_nums:
                 banner_findings = await audit_service_banners(
                     host,

@@ -5,6 +5,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 
 from __future__ import annotations
 import json
+import logging
 import os
 import re
 import tempfile
@@ -23,6 +24,8 @@ from app.core.models import (
     sanitize_reproduction_curl,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+
+logger = logging.getLogger("cyberassess.adapters.ffuf")
 from app.core.ssrf_protector import bind_url_to_validated_target, is_url_in_validated_origin
 
 # Built-in lightweight fuzzing dictionary for non-destructive discovery
@@ -179,8 +182,8 @@ class FfufAdapter(BaseToolAdapter):
                             content_type="text/html",
                         )
                         await emit_endpoint(ep)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("FFuF JSON result item could not be normalized: error_type=%s", type(exc).__name__)
 
                 # Check if it's a sensitive exposure
                 if status == 200:
@@ -246,8 +249,8 @@ class FfufAdapter(BaseToolAdapter):
             if temp_wordlist and os.path.exists(temp_wordlist):
                 try:
                     os.remove(temp_wordlist)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("FFuF output cleanup failed: error_type=%s", type(exc).__name__)
 
         if returncode != 0:
             self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if findings else NormalizedExecutionState.TOOL_EXECUTION_FAILED

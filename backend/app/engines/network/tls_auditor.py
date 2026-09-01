@@ -3,6 +3,7 @@ Contract 03, 06 & 08 TLS/SSL Certificate, Protocols and Ciphers Auditor.
 """
 
 from __future__ import annotations
+import logging
 import asyncio
 from datetime import datetime, timezone
 import ssl
@@ -13,6 +14,8 @@ from cryptography.x509.oid import NameOID, ExtensionOID
 
 from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
 from app.engines.base import LogCallback
+
+logger = logging.getLogger("cyberassess.engines.tls_auditor")
 
 
 def extract_host_and_port(target_value: str, default_port: int = 443) -> Tuple[str, int]:
@@ -178,8 +181,8 @@ async def audit_tls_certificates(
         try:
             san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
             sans = [str(n) for n in san_ext.value.get_values_for_type(x509.DNSName)]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Certificate SAN extraction failed: error_type=%s", type(exc).__name__)
 
         if not sans:
             # Fallback to CN
@@ -187,8 +190,8 @@ async def audit_tls_certificates(
                 cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
                 if cn_attrs:
                     sans = [str(cn_attrs[0].value)]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Certificate CN fallback extraction failed: error_type=%s", type(exc).__name__)
 
         if sans and not matches_san(hostname, sans):
             findings.append(Finding(
