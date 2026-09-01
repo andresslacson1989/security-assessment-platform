@@ -276,6 +276,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 client=client,
                 scan_id="active",
                 emit_log=emit_log,
+                transport_factory=lambda: ValidatedTargetTransport(_validated_target),
             )
             auth_success = await auth_manager.authenticate()
 

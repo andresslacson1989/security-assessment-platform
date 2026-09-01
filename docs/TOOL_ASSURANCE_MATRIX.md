@@ -100,6 +100,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/nuclei).
 - **Template Trust Policy**: Uses official curated `nuclei-templates` release; arbitrary user-provided template execution is restricted to authorized admin tenants.
 - **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, concurrency/rate bounds, curated fixed template tags, and sanitized reproduction evidence. Arbitrary template execution is not enabled.
+- **Credential Handling**: Tenant credentials are not placed in CLI arguments; authenticated coverage is handled by the governed native HTTP session until secret-safe subprocess injection is implemented.
 - **Finding Normalization**: Maps `template-id` to canonical check catalog, extracts `reproduction_curl`, CVSS score, CWE mapping.
 - **Role Strategy**: **PRIMARY**. Complements native DAST engine.
 - **Runtime Evidence**: Approved managed Nuclei runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
@@ -111,6 +112,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Approved Release Version**: `v2.1.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: https://github.com/ffuf/ffuf.
 - **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, bounded rate/concurrency, fixed server-generated wordlist, and destructive-path exclusions. DELETE/PUT fuzzing is not supported.
+- **Credential Handling**: Tenant cookies/authentication headers are not placed in FFuF CLI arguments; authenticated coverage remains in the governed native session.
 - **Output Format & Parser**: JSON output (`-o out.json -of json`).
 - **Finding Normalization**: Check IDs `DAST-INJ-001` (SQLi), `DAST-XSS-001` (Reflected XSS), `DAST-PARAM-001` (Hidden Parameter Exposure).
 - **Role Strategy**: **SPECIALIZED**. Runs under active fuzzing profile.
@@ -123,6 +125,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Approved Release Version**: `v1.0.5`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/katana).
 - **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, maximum crawl depth/page bounds, explicit same-origin redirect handling, and automatic logout/destructive-path exclusions.
+- **Credential Handling**: Tenant credentials are not placed in Katana CLI arguments; authenticated coverage remains in the governed native session.
 - **Output Format & Parser**: JSON stream parsed into `DiscoveredEndpoint` objects.
 - **Role Strategy**: **PRIMARY**. Feeds endpoints to DAST and fuzzing engines.
 - **Runtime Evidence**: Approved managed Katana runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
@@ -134,6 +137,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Approved Release Version**: `3.20.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: https://github.com/schemathesis/schemathesis.
 - **Safety Controls**: Managed-process preflight, validated-destination binding with Host preservation, bounded examples/timeouts, and state-changing operation support limited to an API profile plus an explicit internal tenant authorization grant; otherwise execution is blocked.
+- **Credential Handling**: Tenant bearer tokens are not placed in Schemathesis CLI arguments; authenticated state-changing external execution remains fail-closed until secret-safe subprocess injection exists.
 - **Finding Normalization**: Check IDs `API-SPEC-001` (Schema Violation), `API-FLAW-001` (Unhandled 500 Server Error).
 - **Role Strategy**: **SPECIALIZED**. Executed during API-focused assessment profiles.
 - **Runtime Evidence**: Approved managed Schemathesis runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
@@ -141,7 +145,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 ### E12 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
 - **Managed runtime status**: `UNAVAILABLE` for all four approved managed E12 runtimes in the current environment; no unmanaged executable was substituted.
-- **Acceptance limitation**: Full repository regression remains separately reported as unavailable if the pre-existing Scenario 22 supply-chain test stalls; this is not represented as a pass.
+- **Acceptance evidence**: Full repository regression completed with `280 passed, 1 skipped`; runtime execution remains separately reported as `UNAVAILABLE` for all four approved managed E12 runtimes.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST

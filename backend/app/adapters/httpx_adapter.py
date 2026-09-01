@@ -31,11 +31,13 @@ class HttpxAdapter(BaseToolAdapter):
     def __init__(self):
         self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command(
+            [binary, "-version"], timeout=10.0, pre_launch_check=pre_launch_check,
+        )
         output = stdout + " " + stderr
         # Reject Python pip httpx CLI (which fails on -version with 'Usage: httpx')
         if "projectdiscovery" in output.lower() or "httpx" in output.lower():
@@ -75,7 +77,8 @@ class HttpxAdapter(BaseToolAdapter):
             await emit_log(LogLevel.ERROR, "Httpx execution blocked: executable is not a valid managed installation.")
             return findings
 
-        if not await self.ensure_approved_version(config.adapters.httpx_path or config.adapters.custom_httpx_path, emit_log):
+        managed_check = (lambda: self.verify_managed_binary(binary)) if require_managed else None
+        if not await self.ensure_approved_version(config.adapters.httpx_path or config.adapters.custom_httpx_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         target_url = getattr(target, "canonical_value", None) or target.value

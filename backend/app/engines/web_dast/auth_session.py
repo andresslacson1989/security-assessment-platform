@@ -7,7 +7,7 @@ and audits for authentication security (DAST-AUTH-001 to 004) and form vulnerabi
 from __future__ import annotations
 import re
 import urllib.parse
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Callable
 from bs4 import BeautifulSoup
 import httpx
 
@@ -46,12 +46,14 @@ class AuthSessionManager:
         client: httpx.AsyncClient,
         scan_id: str = "auto",
         emit_log: Optional[LogCallback] = None,
+        transport_factory: Optional[Callable[[], httpx.AsyncBaseTransport]] = None,
     ):
         self.target_url = target_url.strip()
         self.config = config
         self.client = client
         self.scan_id = scan_id
         self.emit_log = emit_log
+        self.transport_factory = transport_factory
         self.is_authenticated: bool = False
 
     async def authenticate(self) -> bool:
@@ -241,7 +243,8 @@ class AuthSessionManager:
         ]
 
         if test_candidates:
-            async with httpx.AsyncClient(timeout=8.0) as unauth_client:
+            unauth_transport = self.transport_factory() if self.transport_factory else None
+            async with httpx.AsyncClient(timeout=8.0, transport=unauth_transport) as unauth_client:
                 for target_endpoint in test_candidates[:5]:  # Limit check to first 5 sensitive endpoints
                     try:
                         unauth_resp = await unauth_client.get(target_endpoint, follow_redirects=False)

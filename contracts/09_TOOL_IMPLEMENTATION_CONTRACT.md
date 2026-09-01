@@ -923,7 +923,7 @@ Stderr: Diagnostic logs
 - Unprivileged HTTP/HTTPS network access.
 
 ### 11. Credential Requirements & Injection Method
-- Supports custom auth headers (`-H "Authorization: Bearer <token>"`) injected by orchestrator.
+- External assured mode does not inject tenant credentials into CLI arguments; authenticated coverage is handled by the governed native HTTP session until secret-safe subprocess injection is implemented.
 
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
@@ -1083,7 +1083,7 @@ Stderr: Diagnostic logs
 - Unprivileged HTTP/HTTPS network access.
 
 ### 11. Credential Requirements & Injection Method
-- Optional session cookies / auth headers passed via `-H`.
+- Tenant session cookies/auth headers are not passed to FFuF CLI arguments; authenticated coverage remains in the governed native session until secret-safe subprocess injection is implemented.
 
 ### 12. Workspace Requirements & Confinement
 - Temporary wordlist files created in sandboxed temp directory.
@@ -1240,7 +1240,7 @@ Stderr: Diagnostic logs
 - Unprivileged HTTP/HTTPS network access.
 
 ### 11. Credential Requirements & Injection Method
-- Optional cookie header passed via `-H`.
+- Tenant cookies are not passed to Katana CLI arguments; authenticated coverage remains in the governed native session until secret-safe subprocess injection is implemented.
 
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
@@ -1395,7 +1395,7 @@ Stderr: Diagnostic logs
 - Unprivileged HTTP/HTTPS network access.
 
 ### 11. Credential Requirements & Injection Method
-- Supports API bearer tokens or custom headers passed via `--header`.
+- External Schemathesis execution does not receive tenant bearer tokens in CLI arguments; state-changing authenticated coverage requires a future secret-safe injection path and is fail-closed until then.
 
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`

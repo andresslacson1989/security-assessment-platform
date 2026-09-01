@@ -118,6 +118,27 @@ def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, 
     return bound_url, host
 
 
+def is_url_in_validated_origin(url: str, validated_target: Any) -> bool:
+    """Return whether an observed URL remains within the validated web origin."""
+    try:
+        candidate = urllib.parse.urlsplit(str(url).strip())
+        canonical_raw = str(getattr(validated_target, "canonical_value", ""))
+        canonical = urllib.parse.urlsplit(
+            canonical_raw if "://" in canonical_raw else f"https://{canonical_raw}"
+        )
+        candidate_host = (candidate.hostname or "").lower().strip("[]")
+        canonical_host = (canonical.hostname or "").lower().strip("[]")
+        if not candidate_host or candidate_host != canonical_host:
+            return False
+        if "://" in canonical_raw and candidate.scheme.lower() != canonical.scheme.lower():
+            return False
+        expected_port = getattr(validated_target, "port", None) or canonical.port or (443 if canonical.scheme == "https" else 80)
+        actual_port = candidate.port or (443 if candidate.scheme.lower() == "https" else 80)
+        return actual_port == expected_port
+    except (TypeError, ValueError):
+        return False
+
+
 def is_ip_allowed(ip_str: str) -> Tuple[bool, Optional[str]]:
     """
     Evaluates whether an IPv4 or IPv6 address is safe for outbound scanning.

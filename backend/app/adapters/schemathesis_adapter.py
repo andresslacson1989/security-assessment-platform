@@ -10,7 +10,7 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, NormalizedExecutionState
+    calculate_fingerprint, NormalizedExecutionState, sanitize_reproduction_curl
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
@@ -32,11 +32,13 @@ class SchemathesisAdapter(BaseToolAdapter):
     def tool_name(self) -> str:
         return "schemathesis"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command(
+            [binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check,
+        )
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -62,11 +64,12 @@ class SchemathesisAdapter(BaseToolAdapter):
             return findings
 
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Schemathesis execution blocked: executable is not a trusted managed installation.")
             return findings
 
-        if not await self.ensure_approved_version(config.adapters.schemathesis_path or config.adapters.custom_schemathesis_path, emit_log):
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if not await self.ensure_approved_version(config.adapters.schemathesis_path or config.adapters.custom_schemathesis_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         target_url = target.value
@@ -92,7 +95,12 @@ class SchemathesisAdapter(BaseToolAdapter):
         if host_header:
             cmd.extend(["--header", f"Host: {host_header}"])
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(
+            cmd,
+            timeout=60.0,
+            emit_log=emit_log,
+            pre_launch_check=(lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None,
+        )
 
         # Parse JSON report if available, or regex parse stdout
         try:
@@ -103,7 +111,7 @@ class SchemathesisAdapter(BaseToolAdapter):
                     title = err.get("message") or err.get("title") or "API Schema Contract Violation"
                     endpoint = err.get("endpoint") or target_url
                     method = err.get("method", "GET")
-                    reproduction = err.get("code_sample") or f"curl -X {method} '{endpoint}'"
+                    reproduction = sanitize_reproduction_curl(err.get("code_sample") or f"curl -X {method} '{endpoint}'")
 
                     evidence = Evidence(
                         location=f"{method} {endpoint}",
@@ -160,7 +168,7 @@ class SchemathesisAdapter(BaseToolAdapter):
                     remediation="Add strict schema validation and sanitization for all input parameters.",
                     references=["https://schemathesis.readthedocs.io/"],
                     evidence=evidence,
-                    reproduction_curl=f"curl -X {method} '{target_url.rstrip('/')}{path}'",
+                    reproduction_curl=sanitize_reproduction_curl(f"curl -X {method} '{target_url.rstrip('/')}{path}'"),
                     fingerprint=calculate_fingerprint("API-SCHEMA-001", f"{method} {path}", detail),
                 )
                 findings.append(finding)

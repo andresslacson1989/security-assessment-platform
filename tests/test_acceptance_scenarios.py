@@ -1576,7 +1576,7 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
 
     mock_sf_stdout = '{"host":"vpn.corp.example.com","sources":["crtsh"]}\n{"host":"api.corp.example.com","sources":["virustotal"]}\n'
     mock_hx_stdout = '{"url":"https://api.corp.example.com","status_code":200,"title":"API Gateway","tech":["FastAPI","Uvicorn"]}\n'
-    mock_katana_stdout = '{"request":{"endpoint":"https://corp.example.com/app/dashboard","method":"GET"},"response":{"status_code":200}}\n'
+    mock_katana_stdout = '{"request":{"endpoint":"https://example.com/app/dashboard","method":"GET"},"response":{"status_code":200}}\n'
 
     from contextlib import ExitStack
 

@@ -17,6 +17,7 @@ from app.core.models import (
     LogLevel,
     calculate_fingerprint,
     NormalizedExecutionState,
+    sanitize_reproduction_curl,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
@@ -91,7 +92,7 @@ class NucleiAdapter(BaseToolAdapter):
     def tool_name(self) -> str:
         return "nuclei"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves Nuclei version string via `nuclei -version`.
         """
@@ -99,7 +100,9 @@ class NucleiAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "-version"], timeout=5.0)
+        returncode, stdout, stderr = await self.execute_command(
+            [path, "-version"], timeout=5.0, pre_launch_check=pre_launch_check,
+        )
         output = stdout or stderr
         if output:
             for line in output.splitlines():
@@ -134,11 +137,12 @@ class NucleiAdapter(BaseToolAdapter):
             return findings
 
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(nuclei_path):
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Nuclei execution blocked: executable is not a trusted managed installation.")
             return findings
 
-        if not await self.ensure_approved_version(custom_path, emit_log):
+        managed_check = (lambda: self.verify_managed_binary(nuclei_path)) if kwargs.get("require_managed_binary") else None
+        if not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         target_url = normalize_target_url(target.value)
@@ -161,6 +165,7 @@ class NucleiAdapter(BaseToolAdapter):
             cmd,
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
+            pre_launch_check=(lambda: self.verify_managed_binary(nuclei_path)) if kwargs.get("require_managed_binary") else None,
         )
 
         if not stdout.strip():
@@ -213,7 +218,7 @@ class NucleiAdapter(BaseToolAdapter):
             check_id, category, owasp_cat, nist_ctl = map_nuclei_check_id(template_id, name, tags)
 
             matched_at = data.get("matched-at") or data.get("host") or target_url
-            curl_cmd = data.get("curl-command")
+            curl_cmd = sanitize_reproduction_curl(data.get("curl-command"))
             extracted_results = data.get("extracted-results", [])
             extracted_snippet = "\n".join(str(e) for e in extracted_results) if extracted_results else None
 

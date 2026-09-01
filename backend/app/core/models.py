@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import re
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, model_validator
 import uuid
@@ -678,6 +679,41 @@ def mask_secret(secret: str) -> str:
     if len(secret) <= 8:
         return "*" * len(secret)
     return secret[:4] + "*" * (len(secret) - 7) + secret[-3:]
+
+
+_SENSITIVE_REPRODUCTION_NAME = r"(?:authorization|proxy-authorization|cookie|set-cookie|token|password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|jwt)"
+
+
+def sanitize_reproduction_curl(command: Optional[str]) -> Optional[str]:
+    """Redact credentials from tool-generated reproduction commands before storage."""
+    if not command:
+        return None
+    sanitized = str(command)[:4096]
+    sanitized = re.sub(
+        rf"((?:-H|--header)\s+['\"]?\s*[A-Za-z0-9_-]*{_SENSITIVE_REPRODUCTION_NAME}[A-Za-z0-9_-]*\s*:\s*)[^'\"]+",
+        r"\1[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        rf"((?:['\"]{_SENSITIVE_REPRODUCTION_NAME}['\"]|['\"][A-Za-z0-9_-]*{_SENSITIVE_REPRODUCTION_NAME}[A-Za-z0-9_-]*['\"])\s*[:=]\s*['\"])[^'\"]+",
+        r"\1[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        rf"([?&]{_SENSITIVE_REPRODUCTION_NAME}=)[^&\s'\"]+",
+        r"\1[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        rf"(\b{_SENSITIVE_REPRODUCTION_NAME}\s*=\s*)[^\s&'\"]+",
+        r"\1[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    return sanitized
 
 
 class Finding(BaseModel):

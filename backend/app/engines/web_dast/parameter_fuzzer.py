@@ -20,6 +20,7 @@ from app.core.models import (
     ScanConfig,
     DiscoveredEndpoint,
     calculate_fingerprint,
+    sanitize_reproduction_curl,
 )
 from app.engines.base import LogCallback, FindingCallback
 
@@ -37,7 +38,7 @@ def format_curl_poc(method: str, url: str, headers: Optional[Dict[str, str]] = N
         # Escape double quotes
         escaped_body = body.replace('"', '\\"')
         cmd += f' -d "{escaped_body}"'
-    return cmd
+    return sanitize_reproduction_curl(cmd) or cmd
 
 
 async def audit_parameter_fuzzing(

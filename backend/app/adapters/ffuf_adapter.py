@@ -20,9 +20,10 @@ from app.core.models import (
     DiscoveredEndpoint,
     calculate_fingerprint,
     NormalizedExecutionState,
+    sanitize_reproduction_curl,
 )
 from app.adapters.base_adapter import BaseToolAdapter
-from app.core.ssrf_protector import bind_url_to_validated_target
+from app.core.ssrf_protector import bind_url_to_validated_target, is_url_in_validated_origin
 
 # Built-in lightweight fuzzing dictionary for non-destructive discovery
 DEFAULT_FUZZ_PATHS = [
@@ -61,7 +62,7 @@ class FfufAdapter(BaseToolAdapter):
     def tool_name(self) -> str:
         return "ffuf"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves FFuF version string via `ffuf -V`.
         """
@@ -69,7 +70,9 @@ class FfufAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "-V"], timeout=5.0)
+        returncode, stdout, stderr = await self.execute_command(
+            [path, "-V"], timeout=5.0, pre_launch_check=pre_launch_check,
+        )
         output = stdout.strip() or stderr.strip()
         if output:
             match = re.search(r"(\d+\.\d+(\.\d+)?)", output)
@@ -100,19 +103,21 @@ class FfufAdapter(BaseToolAdapter):
             return findings
 
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(ffuf_path):
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "FFuF execution blocked: executable is not a trusted managed installation.")
             return findings
 
-        if not await self.ensure_approved_version(custom_path, emit_log):
+        managed_check = (lambda: self.verify_managed_binary(ffuf_path)) if kwargs.get("require_managed_binary") else None
+        if not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         target_url = target.value.strip()
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"http://{target_url}"
         host_header = None
-        if kwargs.get("validated_target") is not None:
-            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
+        validated_target = kwargs.get("validated_target")
+        if validated_target is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
 
         emit_endpoint = kwargs.get("emit_endpoint")
 
@@ -142,6 +147,7 @@ class FfufAdapter(BaseToolAdapter):
                 cmd,
                 timeout=float(min(60.0, config.timeout_seconds * 6)),
                 emit_log=emit_log,
+                pre_launch_check=(lambda: self.verify_managed_binary(ffuf_path)) if kwargs.get("require_managed_binary") else None,
             )
 
             if not stdout.strip():
@@ -158,6 +164,10 @@ class FfufAdapter(BaseToolAdapter):
                 status = item.get("status", 0)
                 length = item.get("length", 0)
                 url = item.get("url", f"{target_url}/{fuzz_path}")
+
+                if validated_target is not None and not is_url_in_validated_origin(url, validated_target):
+                    await emit_log(LogLevel.WARNING, f"Blocked out-of-origin FFuF endpoint observation: '{url}'.")
+                    continue
 
                 if emit_endpoint and callable(emit_endpoint):
                     try:
@@ -223,7 +233,7 @@ class FfufAdapter(BaseToolAdapter):
                         remediation_code_snippet=f"location /{fuzz_path} {{\n    deny all;\n    return 404;\n}}",
                         references=["https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/05-Enumerate_Infrastructure_and_Application_Admin_Interfaces"],
                         evidence=evidence,
-                        reproduction_curl=f"curl -s -i '{url}'",
+                        reproduction_curl=sanitize_reproduction_curl(f"curl -s -i '{url}'"),
                         fingerprint=calculate_fingerprint(check_id, url, str(status)),
                     )
                     findings.append(f)

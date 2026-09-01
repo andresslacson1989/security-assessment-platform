@@ -11,10 +11,10 @@ from urllib.parse import urlparse
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, DiscoveredEndpoint, NormalizedExecutionState
+    calculate_fingerprint, DiscoveredEndpoint, NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
-from app.core.ssrf_protector import bind_url_to_validated_target
+from app.core.ssrf_protector import bind_url_to_validated_target, is_url_in_validated_origin
 
 APPROVED_VERSION = "1.0.5"
 
@@ -33,11 +33,13 @@ class KatanaAdapter(BaseToolAdapter):
     def tool_name(self) -> str:
         return "katana"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command(
+            [binary, "-version"], timeout=10.0, pre_launch_check=pre_launch_check,
+        )
         output = stdout + " " + stderr
         match = re.search(r"v\d+\.\d+\.\d+", output, re.IGNORECASE)
         if match:
@@ -64,19 +66,21 @@ class KatanaAdapter(BaseToolAdapter):
             return findings
 
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Katana execution blocked: executable is not a trusted managed installation.")
             return findings
 
-        if not await self.ensure_approved_version(config.adapters.katana_path or config.adapters.custom_katana_path, emit_log):
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if not await self.ensure_approved_version(config.adapters.katana_path or config.adapters.custom_katana_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         target_url = target.value
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"https://{target_url}"
         host_header = None
-        if kwargs.get("validated_target") is not None:
-            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
+        validated_target = kwargs.get("validated_target")
+        if validated_target is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
 
         await emit_log(LogLevel.INFO, f"Executing Katana dynamic crawler on: {target_url}")
         # Standard fast crawl command
@@ -84,7 +88,12 @@ class KatanaAdapter(BaseToolAdapter):
         if host_header:
             cmd.extend(["-H", f"Host: {host_header}"])
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(
+            cmd,
+            timeout=60.0,
+            emit_log=emit_log,
+            pre_launch_check=(lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None,
+        )
         if code != 0 and not stdout:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, f"Katana exited with code {code}: {stderr.strip()[:200]}")
@@ -105,6 +114,9 @@ class KatanaAdapter(BaseToolAdapter):
                 elif "url" in data:
                     endpoint_url = data["url"]
 
+                if endpoint_url and validated_target is not None and not is_url_in_validated_origin(endpoint_url, validated_target):
+                    await emit_log(LogLevel.WARNING, f"Blocked out-of-origin Katana endpoint observation: '{endpoint_url}'.")
+                    continue
                 if endpoint_url and endpoint_url not in discovered_urls:
                     discovered_urls.add(endpoint_url)
                     if emit_endpoint:
@@ -118,6 +130,9 @@ class KatanaAdapter(BaseToolAdapter):
             except Exception:
                 # Handle raw URL strings
                 if line.startswith("http://") or line.startswith("https://"):
+                    if validated_target is not None and not is_url_in_validated_origin(line, validated_target):
+                        await emit_log(LogLevel.WARNING, f"Blocked out-of-origin Katana endpoint observation: '{line}'.")
+                        continue
                     if line not in discovered_urls:
                         discovered_urls.add(line)
                         if emit_endpoint:

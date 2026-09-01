@@ -61,12 +61,13 @@ class BaseToolAdapter(ABC):
         self,
         custom_path: Optional[str] = None,
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
+        pre_launch_check: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Fail closed unless the resolved executable reports its exact approved version."""
         expected = getattr(self, "approved_version", None)
         if not expected:
             return True
-        version_output = await self.get_version(custom_path)
+        version_output = await self.get_version(custom_path, pre_launch_check=pre_launch_check)
         match = re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", version_output or "")
         actual = match.group(1) if match else None
         expected_clean = str(expected).lstrip("v")
@@ -93,7 +94,15 @@ class BaseToolAdapter(ABC):
                 os.path.abspath(os.path.dirname(sys.executable)),
                 os.path.abspath(sys.prefix),
             }
-            if not any(os.path.commonpath([path, root]) == root for root in python_roots):
+            in_python_root = False
+            for root in python_roots:
+                try:
+                    if os.path.commonpath([path, root]) == root:
+                        in_python_root = True
+                        break
+                except ValueError:
+                    continue
+            if not in_python_root:
                 return False
             try:
                 from importlib.metadata import version
@@ -123,7 +132,11 @@ class BaseToolAdapter(ABC):
             return False
 
     @abstractmethod
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(
+        self,
+        custom_path: Optional[str] = None,
+        pre_launch_check: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
         """
         Retrieves CLI tool version string (e.g. 'Nmap 7.94', 'nuclei v3.2.0').
         """

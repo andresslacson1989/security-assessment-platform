@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
-from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType
+from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType, sanitize_reproduction_curl
 from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.katana_adapter import KatanaAdapter
@@ -71,6 +71,63 @@ async def test_e12_nonzero_output_is_partial_not_success():
     assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
 
 
+def test_e12_reproduction_commands_redact_headers_and_query_secrets():
+    command = 'curl -H "Authorization: Bearer super-secret-token" -H "X-Auth-Token: header-secret" "https://example.com/?access_token=another-secret&safe=1"'
+    sanitized = sanitize_reproduction_curl(command)
+    assert sanitized is not None
+    assert "super-secret-token" not in sanitized
+    assert "header-secret" not in sanitized
+    assert "another-secret" not in sanitized
+    assert "[REDACTED]" in sanitized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_cls, path_attr", [
+    (NucleiAdapter, "nuclei_path"),
+    (FfufAdapter, "ffuf_path"),
+    (KatanaAdapter, "katana_path"),
+    (SchemathesisAdapter, "schemathesis_path"),
+])
+async def test_e12_unmanaged_binary_is_policy_blocked(adapter_cls, path_attr):
+    adapter = adapter_cls()
+    config = ScanConfig()
+    setattr(config.adapters, path_attr, None)
+    with patch.object(adapter, "resolve_binary_path", return_value="/managed/tool"), \
+         patch.object(adapter, "verify_managed_binary", return_value=False), \
+         patch.object(adapter, "execute_command", new=AsyncMock()) as execute:
+        await adapter.run(TARGET, config, AsyncMock(), AsyncMock(), require_managed_binary=True)
+
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_cls, path_attr, version", [
+    (NucleiAdapter, "nuclei_path", "nuclei v3.2.0"),
+    (FfufAdapter, "ffuf_path", "FFuF 2.1.0"),
+    (KatanaAdapter, "katana_path", "katana v1.0.5"),
+    (SchemathesisAdapter, "schemathesis_path", "schemathesis 3.20.0"),
+])
+async def test_e12_managed_execution_passes_prelaunch_check_to_process_boundary(adapter_cls, path_attr, version):
+    adapter = adapter_cls()
+    config = ScanConfig()
+    setattr(config.adapters, path_attr, None)
+    launches = []
+
+    async def capture(command, **kwargs):
+        launches.append((command, kwargs))
+        return 0, "", ""
+
+    with patch.object(adapter, "resolve_binary_path", return_value="/managed/tool"), \
+         patch.object(adapter, "verify_managed_binary", return_value=True), \
+         patch.object(adapter, "get_version", new=AsyncMock(return_value=version)), \
+         patch.object(adapter, "execute_command", new=capture):
+        await adapter.run(TARGET, config, AsyncMock(), AsyncMock(), require_managed_binary=True)
+        assert len(launches) >= 1
+        assert callable(launches[-1][1]["pre_launch_check"])
+        assert launches[-1][1]["pre_launch_check"]() is True
+
+
 @pytest.mark.asyncio
 async def test_nuclei_command_binds_validated_destination_and_preserves_host():
     adapter = NucleiAdapter()
@@ -88,6 +145,37 @@ async def test_nuclei_command_binds_validated_destination_and_preserves_host():
 
     assert "https://93.184.216.34" in captured[-1]
     assert "Host: example.com" in captured[-1]
+
+
+@pytest.mark.asyncio
+async def test_katana_discards_out_of_origin_endpoint_observations():
+    adapter = KatanaAdapter()
+    validated = SimpleNamespace(
+        canonical_value="https://example.com",
+        selected_destination="93.184.216.34",
+    )
+    endpoints = []
+    output = (
+        '{"request":{"endpoint":"https://example.com/account"}}\n'
+        '{"request":{"endpoint":"https://attacker.example/exfil"}}\n'
+    )
+
+    async def capture_endpoint(endpoint):
+        endpoints.append(endpoint)
+
+    with patch.object(adapter, "resolve_binary_path", return_value="/bin/katana"), \
+         patch.object(adapter, "get_version", new=AsyncMock(return_value="katana v1.0.5")), \
+         patch.object(adapter, "execute_command", new=AsyncMock(return_value=(0, output, ""))):
+        await adapter.run(
+            TARGET,
+            ScanConfig(),
+            AsyncMock(),
+            AsyncMock(),
+            validated_target=validated,
+            emit_endpoint=capture_endpoint,
+        )
+
+    assert [endpoint.url for endpoint in endpoints] == ["https://example.com/account"]
 
 
 @pytest.mark.asyncio
