@@ -232,6 +232,7 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
         status=ScanStatus.COMPLETED,
         progress_percent=100,
         active_adapters=["nmap", "nuclei", "katana"],
+        tool_execution_states={"schemathesis": "TOOL_EXECUTION_FAILED"},
         logs=[
             LogEntry(level=LogLevel.INFO, engine="network", tool="nmap", message="Nmap detected open port 443"),
             LogEntry(level=LogLevel.WARNING, engine="web_dast", tool="nuclei", message="Nuclei detected CVE-2024-9999"),
@@ -278,6 +279,9 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
         assert len(data["discovered_endpoints"]) == 1
         assert len(data["discovered_subdomains"]) == 1
         assert len(data["tools_executed"]) >= 3
+        schemathesis = next(item for item in data["tools_executed"] if item["tool_name"] == "schemathesis")
+        assert schemathesis["status"] == "FAILED"
+        assert schemathesis["normalized_state"] == "TOOL_EXECUTION_FAILED"
 
         # 3. Filter by tool=nuclei
         res_tool = await ac.get(f"/api/scans/{job.id}/telemetry?tool=nuclei", headers=auth_headers)
@@ -406,6 +410,5 @@ async def test_subdomain_dns_ip_resolution():
     ips, cnames, status = await adapter._resolve_host_dns("dns.google")
     assert len(ips) > 0
     assert status == "ACTIVE"
-
 
 

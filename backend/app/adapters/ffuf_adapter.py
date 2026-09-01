@@ -22,6 +22,7 @@ from app.core.models import (
     NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.ssrf_protector import bind_url_to_validated_target
 
 # Built-in lightweight fuzzing dictionary for non-destructive discovery
 DEFAULT_FUZZ_PATHS = [
@@ -98,6 +99,9 @@ class FfufAdapter(BaseToolAdapter):
         target_url = target.value.strip()
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"http://{target_url}"
+        host_header = None
+        if kwargs.get("validated_target") is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
 
         emit_endpoint = kwargs.get("emit_endpoint")
 
@@ -119,6 +123,8 @@ class FfufAdapter(BaseToolAdapter):
                 "-rate", str(min(10, config.rate_limit_rps * 2)),
                 "-s",
             ]
+            if host_header:
+                cmd.extend(["-H", f"Host: {host_header}"])
 
             await emit_log(LogLevel.INFO, f"Starting FFuF content discovery on '{target_url}'...")
             returncode, stdout, stderr = await self.execute_command(

@@ -139,6 +139,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         emit_endpoint=emit_endpoint_discovered,
                         scan_id="active",
+                        validated_target=_validated_target,
                     )
                     for f in ffuf_findings:
                         if f.fingerprint not in existing_fps:
@@ -167,6 +168,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        validated_target=_validated_target,
                     )
                     for f in nuclei_findings:
                         if f.fingerprint not in existing_fps:
@@ -196,6 +198,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         emit_endpoint=emit_endpoint_discovered,
                         scan_id="active",
+                        validated_target=_validated_target,
                     )
                     for f in katana_findings:
                         if f.fingerprint not in existing_fps:
@@ -223,6 +226,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        validated_target=_validated_target,
                     )
                     for f in schema_findings:
                         if f.fingerprint not in existing_fps:

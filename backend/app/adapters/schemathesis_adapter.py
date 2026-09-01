@@ -10,10 +10,10 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint
-    , NormalizedExecutionState
+    calculate_fingerprint, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.ssrf_protector import bind_url_to_validated_target
 
 
 class SchemathesisAdapter(BaseToolAdapter):
@@ -61,6 +61,9 @@ class SchemathesisAdapter(BaseToolAdapter):
         target_url = target.value
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"https://{target_url}"
+        host_header = None
+        if kwargs.get("validated_target") is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
 
         # Schema detection (e.g. /openapi.json, /swagger.json, /api-docs)
         schema_url = target_url
@@ -75,6 +78,8 @@ class SchemathesisAdapter(BaseToolAdapter):
             "--checks=not_a_server_error,status_code_conformance,content_type_conformance",
             "--report-format=json"
         ]
+        if host_header:
+            cmd.extend(["--header", f"Host: {host_header}"])
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
 

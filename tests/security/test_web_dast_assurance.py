@@ -1,6 +1,7 @@
 """Focused E12 execution-state assurance for the four external DAST adapters."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType
@@ -42,6 +43,24 @@ async def test_e12_nonzero_output_is_partial_not_success():
         await adapter.run(TARGET, config, AsyncMock(), AsyncMock())
 
     assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
+
+@pytest.mark.asyncio
+async def test_nuclei_command_binds_validated_destination_and_preserves_host():
+    adapter = NucleiAdapter()
+    captured = {}
+
+    async def capture_command(command, **kwargs):
+        captured["command"] = command
+        return 0, "", ""
+
+    validated = SimpleNamespace(selected_destination="93.184.216.34")
+    with patch.object(adapter, "resolve_binary_path", return_value="/managed/nuclei"), \
+         patch.object(adapter, "execute_command", new=capture_command):
+        await adapter.run(TARGET, ScanConfig(), AsyncMock(), AsyncMock(), validated_target=validated)
+
+    assert "https://93.184.216.34" in captured["command"]
+    assert "Host: example.com" in captured["command"]
 
 
 @pytest.mark.asyncio

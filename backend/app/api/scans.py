@@ -272,17 +272,28 @@ async def get_scan_telemetry(
 
     # Build per-tool execution telemetry
     tool_telemetry_map: Dict[str, ToolExecutionTelemetry] = {}
-    for t_name in job.active_adapters or []:
+    recorded_states = getattr(job, "tool_execution_states", {})
+    telemetry_tools = list(dict.fromkeys([*(job.active_adapters or []), *recorded_states.keys()]))
+    degraded_states = {
+        "PARTIAL_RESULTS_WITH_WARNING": EngineExecutionStatus.PARTIAL,
+        "TOOL_EXECUTION_FAILED": EngineExecutionStatus.FAILED,
+        "BLOCKED": EngineExecutionStatus.BLOCKED,
+        "TIMED_OUT": EngineExecutionStatus.TIMED_OUT,
+        "CANCELLED": EngineExecutionStatus.CANCELLED,
+        "INVALID_VERSION": EngineExecutionStatus.FAILED,
+    }
+    for t_name in telemetry_tools:
+        normalized_state = recorded_states.get(t_name)
         tool_telemetry_map[t_name] = ToolExecutionTelemetry(
             tool_name=t_name,
             engine="adapter",
-            status=EngineExecutionStatus.PASS,
+            status=degraded_states.get(normalized_state, EngineExecutionStatus.PASS),
             duration_seconds=0.0,
             command_executed=f"{t_name} --automated",
             findings_count=0,
             log_count=0,
             endpoints_tested=[],
-            normalized_state=getattr(job, "tool_execution_states", {}).get(t_name),
+            normalized_state=normalized_state,
         )
 
     for f in job.findings:

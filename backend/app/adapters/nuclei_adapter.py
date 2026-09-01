@@ -19,6 +19,7 @@ from app.core.models import (
     NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.ssrf_protector import bind_url_to_validated_target
 
 
 SEVERITY_MAP = {
@@ -130,6 +131,9 @@ class NucleiAdapter(BaseToolAdapter):
             return findings
 
         target_url = normalize_target_url(target.value)
+        host_header = None
+        if kwargs.get("validated_target") is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
         cmd = [
             nuclei_path,
             "-u", target_url,
@@ -138,6 +142,8 @@ class NucleiAdapter(BaseToolAdapter):
             "-tags", "cve,misconfig",
             "-severity", "low,medium,high,critical",
         ]
+        if host_header:
+            cmd.extend(["-H", f"Host: {host_header}"])
 
         await emit_log(LogLevel.INFO, f"Starting Nuclei DAST vulnerability scan on target '{target_url}'...")
         returncode, stdout, stderr = await self.execute_command(

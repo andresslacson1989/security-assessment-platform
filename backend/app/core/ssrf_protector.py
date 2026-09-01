@@ -7,7 +7,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import urllib.parse
-from typing import List, Tuple, Optional
+from typing import Any, List, Tuple, Optional
 
 
 # Blocked IPv4 and IPv6 Networks
@@ -50,6 +50,24 @@ BLOCKED_HOSTNAMES = {
 class SSRFProtectionError(ValueError):
     """Raised when a target URL or resolved IP violates SSRF protection policy."""
     pass
+
+
+def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, str]:
+    """Bind an HTTP URL to the gateway-selected address and retain its Host name."""
+    parsed = urllib.parse.urlsplit(url.strip())
+    host = parsed.hostname
+    selected = getattr(validated_target, "selected_destination", None)
+    if not host or not selected:
+        raise SSRFProtectionError("Validated target is missing a selected destination or hostname.")
+
+    port = parsed.port
+    if ":" in selected and not selected.startswith("["):
+        selected = f"[{selected}]"
+    bound_netloc = selected
+    if port:
+        bound_netloc = f"{bound_netloc}:{port}"
+    bound_url = urllib.parse.urlunsplit((parsed.scheme, bound_netloc, parsed.path, parsed.query, parsed.fragment))
+    return bound_url, host
 
 
 def is_ip_allowed(ip_str: str) -> Tuple[bool, Optional[str]]:

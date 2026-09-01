@@ -11,10 +11,10 @@ from urllib.parse import urlparse
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, DiscoveredEndpoint
-    , NormalizedExecutionState
+    calculate_fingerprint, DiscoveredEndpoint, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.ssrf_protector import bind_url_to_validated_target
 
 
 class KatanaAdapter(BaseToolAdapter):
@@ -63,10 +63,15 @@ class KatanaAdapter(BaseToolAdapter):
         target_url = target.value
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"https://{target_url}"
+        host_header = None
+        if kwargs.get("validated_target") is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
 
         await emit_log(LogLevel.INFO, f"Executing Katana dynamic crawler on: {target_url}")
         # Standard fast crawl command
         cmd = [binary, "-u", target_url, "-jsonl", "-silent", "-d", str(min(config.crawler.max_depth, 3)), "-c", "5"]
+        if host_header:
+            cmd.extend(["-H", f"Host: {host_header}"])
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
         if code != 0 and not stdout:
