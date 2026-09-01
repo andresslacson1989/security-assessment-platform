@@ -609,7 +609,7 @@ Stderr: Diagnostic logs
 - Unprivileged user network access.
 
 ### 11. Credential Requirements & Injection Method
-- Supports optional passive provider API keys configured in tenant settings (e.g. VirusTotal, SecurityTrails, Chaos).
+- Baseline integration uses public `crtsh` only and accepts no provider credentials. Credentialed providers are disabled until tenant-scoped secret injection and provider-egress policy are implemented.
 
 ### 12. Workspace Requirements & Confinement
 - `NOT APPLICABLE`
@@ -641,7 +641,7 @@ Stderr: Diagnostic logs
 ```
 
 ### 20. Allowed Arguments
-- Server-generated `-d <authorized_root>`, `-silent`, `-json`, `-timeout 10`, and `-max-time 1`. Client-supplied providers, resolvers, active mode, paths, and extra arguments are prohibited.
+- Server-generated `-d <authorized_root>`, `-s crtsh`, `-silent`, `-json`, `-timeout 10`, and `-max-time 1`. Only the public `crtsh` source is enabled by the baseline policy; client-supplied providers, credentials, resolvers, active mode, paths, and extra arguments are prohibited.
 
 ### 21. Forbidden Arguments
 - Arbitrary file write (`-o <path>`), execution wrappers.

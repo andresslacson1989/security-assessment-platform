@@ -32,6 +32,7 @@ class SubfinderAdapter(BaseToolAdapter):
     APPROVED_VERSION = "v2.6.5"
     MAX_DOMAINS = 10_000
     ALLOWED_PROFILES = {"FULL_STACK", "NETWORK_ONLY", "PASSIVE_OSINT", "DAST_ONLY"}
+    ALLOWED_PROVIDERS = ("crtsh",)
 
     @staticmethod
     def normalize_domain(value: str) -> Optional[str]:
@@ -69,7 +70,7 @@ class SubfinderAdapter(BaseToolAdapter):
         root = cls.normalize_domain(authorized_root)
         if not root:
             raise ValueError("Invalid authorized discovery domain")
-        return [binary, "-d", root, "-silent", "-json", "-timeout", "10", "-max-time", "1"]
+        return [binary, "-d", root, "-s", ",".join(cls.ALLOWED_PROVIDERS), "-silent", "-json", "-timeout", "10", "-max-time", "1"]
 
     def verify_managed_binary(self, binary: str) -> bool:
         """Verify the exact managed executable and its installer-created identity record."""

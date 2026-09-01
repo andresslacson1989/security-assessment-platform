@@ -22,9 +22,11 @@ def test_normalization_and_scope_are_deterministic():
 
 def test_command_is_structured_and_has_no_client_flags():
     command = SubfinderAdapter.build_command("/opt/subfinder", "Example.com")
-    assert command == ["/opt/subfinder", "-d", "example.com", "-silent", "-json", "-timeout", "10", "-max-time", "1"]
+    assert command == ["/opt/subfinder", "-d", "example.com", "-s", "crtsh", "-silent", "-json", "-timeout", "10", "-max-time", "1"]
     with pytest.raises(ValueError):
         SubfinderAdapter.build_command("/opt/subfinder", "example.com; -all")
+    assert SubfinderAdapter.ALLOWED_PROVIDERS == ("crtsh",)
+    assert "virustotal" not in SubfinderAdapter.ALLOWED_PROVIDERS
 
 
 def test_unmanaged_binary_cannot_satisfy_assured_execution():

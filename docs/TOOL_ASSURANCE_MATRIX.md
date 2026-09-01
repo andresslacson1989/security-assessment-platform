@@ -73,7 +73,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Enterprise Maturity**: Implementation in progress; repository controls are partially verified.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/subfinder).
 - **Version Pinning & Integrity**: Pinned in `PINNED_TOOL_MANIFEST` with exact SHA-256 binary digests.
-- **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, and no automatic DNS probing or inventory admission. Provider egress policy/credential injection remains unimplemented.
+- **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, no credential injection, and no automatic DNS probing or inventory admission. Broader provider egress policy/credential injection remains unimplemented.
 - **Output Format & Parser**: Line-by-line JSON output (`-json -silent`).
 - **Finding Normalization**: Emits discovery observations and `NET-OSINT-001` informational findings; out-of-scope and malformed records are rejected with warnings and are not emitted as candidates.
 - **Role Strategy**: **PRIMARY**. Complemented by native `crt.sh` client. Discovery is not authorization and does not itself create an active scan target.
