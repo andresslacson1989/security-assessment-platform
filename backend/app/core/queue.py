@@ -7,11 +7,79 @@ Guarantees resource isolation, preventing server resource exhaustion or unconstr
 from __future__ import annotations
 import asyncio
 import os
-from typing import Optional, Dict, Any, Callable, Awaitable
+import uuid
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, Callable, Awaitable, Protocol
 
 MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "5"))
 MAX_CONCURRENT_SCANS_PER_TENANT = int(os.getenv("MAX_CONCURRENT_SCANS_PER_TENANT", "2"))
 GLOBAL_SCAN_TIMEOUT_SECONDS = float(os.getenv("GLOBAL_SCAN_TIMEOUT_SECONDS", "300.0"))
+EXECUTION_QUEUE_URL = os.getenv("EXECUTION_QUEUE_URL", "").strip()
+
+
+class DurableQueueBackend(Protocol):
+    async def enqueue(self, scan_id: str, organization_id: Optional[str]) -> str: ...
+    async def complete(self, message_id: str) -> None: ...
+    async def fail(self, message_id: str, error_code: str) -> None: ...
+
+
+class RedisDurableQueue:
+    """Redis Streams-backed execution intent queue for enterprise deployments."""
+
+    stream_name = "cyberassess:scan-execution"
+    consumer_group = "cyberassess-workers"
+
+    def __init__(self, redis_url: str):
+        try:
+            import redis.asyncio as redis
+        except ImportError as exc:
+            raise RuntimeError("EXECUTION_QUEUE_URL requires the redis package") from exc
+        self._redis = redis.from_url(redis_url, decode_responses=True)
+        self._consumer_name = f"worker-{uuid.uuid4().hex}"
+        self._group_ready = False
+        self._group_lock = asyncio.Lock()
+
+    async def _ensure_group(self) -> None:
+        if self._group_ready:
+            return
+        async with self._group_lock:
+            if self._group_ready:
+                return
+            try:
+                await self._redis.xgroup_create(
+                    self.stream_name, self.consumer_group, id="0", mkstream=True
+                )
+            except Exception as exc:
+                if "BUSYGROUP" not in str(exc):
+                    raise
+            self._group_ready = True
+
+    async def enqueue(self, scan_id: str, organization_id: Optional[str]) -> str:
+        await self._ensure_group()
+        message_id = await self._redis.xadd(
+            self.stream_name,
+            {
+                "scan_id": scan_id,
+                "organization_id": organization_id or "",
+                "enqueued_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return str(message_id)
+
+    async def complete(self, message_id: str) -> None:
+        await self._ensure_group()
+        await self._redis.xack(self.stream_name, self.consumer_group, message_id)
+
+    async def fail(self, message_id: str, error_code: str) -> None:
+        await self._ensure_group()
+        await self._redis.xadd(
+            f"{self.stream_name}:failures",
+            {"message_id": message_id, "error_code": error_code},
+        )
+        await self._redis.xack(self.stream_name, self.consumer_group, message_id)
+
+    async def close(self) -> None:
+        await self._redis.aclose()
 
 
 class ScanQueueManager:
@@ -21,13 +89,14 @@ class ScanQueueManager:
 
     _instance: Optional[ScanQueueManager] = None
 
-    def __init__(self, max_concurrent: int = MAX_CONCURRENT_SCANS, max_concurrent_per_tenant: int = MAX_CONCURRENT_SCANS_PER_TENANT):
+    def __init__(self, max_concurrent: int = MAX_CONCURRENT_SCANS, max_concurrent_per_tenant: int = MAX_CONCURRENT_SCANS_PER_TENANT, durable_backend: Optional[DurableQueueBackend] = None):
         self._max_concurrent = max_concurrent
         self._max_concurrent_per_tenant = max_concurrent_per_tenant
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._tenant_semaphores: Dict[str, asyncio.Semaphore] = {}
         self._tenant_lock = asyncio.Lock()
         self._active_count = 0
+        self._durable_backend = durable_backend
 
     @classmethod
     def get_instance(cls) -> ScanQueueManager:
@@ -69,11 +138,23 @@ class ScanQueueManager:
         Executes a scan job task within the concurrency semaphore and execution timeout boundary.
         """
         tenant_semaphore = await self._tenant_semaphore(organization_id)
-        async with self._semaphore:
-            if tenant_semaphore is None:
-                return await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
-            async with tenant_semaphore:
-                return await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
+        message_id = None
+        if self._durable_backend is not None:
+            message_id = await self._durable_backend.enqueue(scan_id, organization_id)
+        try:
+            async with self._semaphore:
+                if tenant_semaphore is None:
+                    result = await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
+                else:
+                    async with tenant_semaphore:
+                        result = await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
+            if message_id is not None:
+                await self._durable_backend.complete(message_id)
+            return result
+        except Exception as exc:
+            if message_id is not None:
+                await self._durable_backend.fail(message_id, type(exc).__name__)
+            raise
 
     async def _execute_with_accounting(self, task_fn, args, kwargs, timeout_seconds):
         self._active_count += 1
@@ -83,4 +164,9 @@ class ScanQueueManager:
             self._active_count = max(0, self._active_count - 1)
 
 
-queue_manager = ScanQueueManager.get_instance()
+if EXECUTION_QUEUE_URL and not EXECUTION_QUEUE_URL.lower().startswith("redis://"):
+    raise RuntimeError("EXECUTION_QUEUE_URL must use redis:// for the enterprise queue backend")
+
+queue_manager = ScanQueueManager(
+    durable_backend=RedisDurableQueue(EXECUTION_QUEUE_URL) if EXECUTION_QUEUE_URL else None
+)

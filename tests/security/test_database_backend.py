@@ -1,5 +1,7 @@
 """Contract 01 database backend compatibility and selection tests."""
 
+import pytest
+
 from app.core.db import _PostgresRow, _qmark_to_postgres, DatabaseManager
 
 
@@ -36,3 +38,33 @@ def test_database_manager_selects_postgres_for_enterprise_url(monkeypatch):
     finally:
         DatabaseManager._instance = original_instance
 
+
+@pytest.mark.asyncio
+async def test_queue_records_and_acknowledges_durable_execution_intent():
+    from app.core.queue import ScanQueueManager
+
+    class FakeDurableBackend:
+        def __init__(self):
+            self.events = []
+
+        async def enqueue(self, scan_id, organization_id):
+            self.events.append(("enqueue", scan_id, organization_id))
+            return "message-1"
+
+        async def complete(self, message_id):
+            self.events.append(("complete", message_id))
+
+        async def fail(self, message_id, error_code):
+            self.events.append(("fail", message_id, error_code))
+
+    backend = FakeDurableBackend()
+    manager = ScanQueueManager(max_concurrent=1, durable_backend=backend)
+
+    async def work():
+        return "done"
+
+    assert await manager.execute_bounded("scan-1", work, organization_id="org-1") == "done"
+    assert backend.events == [
+        ("enqueue", "scan-1", "org-1"),
+        ("complete", "message-1"),
+    ]
