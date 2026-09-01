@@ -431,7 +431,9 @@ class NmapAdapter(BaseToolAdapter):
         path_dir = os.path.dirname(path)
         for allowed_dir in allowed_dirs:
             try:
-                if os.path.commonpath([path_dir, allowed_dir]) == allowed_dir:
+                if os.name != "nt" and path_dir == allowed_dir:
+                    return True
+                if os.name == "nt" and os.path.commonpath([path_dir, allowed_dir]) == allowed_dir:
                     return True
             except ValueError:
                 continue
