@@ -325,6 +325,13 @@ def test_sec_016_revocation_does_not_claim_success_on_database_failure():
     assert token not in auth_module.REVOKED_TOKENS_REGISTRY
 
 
+def test_database_connections_enable_foreign_keys(tmp_path):
+    """Database connections must fail closed if integrity enforcement cannot be enabled."""
+    db = DatabaseManager(db_path=tmp_path / "integrity.db")
+    with db._get_connection() as conn:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
 # ============================================================================
 # SEC-017 to SEC-019: Tool Supply Chain Integrity & Verification
 # ============================================================================

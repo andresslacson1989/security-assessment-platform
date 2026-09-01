@@ -79,8 +79,9 @@ class DatabaseManager:
                     raise
             try:
                 conn.execute("PRAGMA foreign_keys=ON;")
-            except Exception:
-                pass
+            except sqlite3.DatabaseError:
+                conn.close()
+                raise
             return conn
         except Exception:
             # Never silently switch databases: doing so can mix tenants or
