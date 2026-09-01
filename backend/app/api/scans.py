@@ -466,7 +466,7 @@ async def cancel_running_scan(
 @router.delete("/{scan_id}", summary="Delete Scan Job Record")
 async def delete_scan_job(
     scan_id: str,
-    current_user: UserProfile = Depends(get_current_user),
+    current_user: UserProfile = Depends(require_permission(required_scope="scan:delete")),
 ) -> Dict[str, Any]:
     """Deletes a scan job from storage. Enforces tenant ownership."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))

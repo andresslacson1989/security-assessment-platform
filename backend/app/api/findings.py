@@ -192,12 +192,18 @@ async def list_finding_occurrences(
 async def update_finding_status(
     finding_id: str,
     payload: FindingTriageUpdate,
-    current_user: UserProfile = Depends(require_permission(required_scope="finding:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
+    current_user: UserProfile = Depends(require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
     """
     Updates the lifecycle triage status of a vulnerability finding (OPEN, IN_PROGRESS, FIXED, RISK_ACCEPTED).
     Enforces tenant ownership.
     """
+    required_scope = "finding:risk_accept" if payload.status == FindingLifecycleStatus.RISK_ACCEPTED else "finding:triage"
+    if "*" not in (current_user.scopes or []) and required_scope not in (current_user.scopes or []):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access forbidden: Credentials lack required scope '{required_scope}'.",
+        )
     with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         cur.execute(
