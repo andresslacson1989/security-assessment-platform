@@ -114,6 +114,23 @@ class GovernedExtendedAdapter(BaseToolAdapter):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, f"{self.tool_name} execution blocked: no authoritative managed artifact is available.")
             return None
+        manifest = PINNED_TOOL_MANIFEST.get(self.manifest_name, {})
+        expected_version = str(manifest.get("pinned_version", manifest.get("version", ""))).lstrip("v")
+        try:
+            reported_version = await self.get_version(binary)
+        except Exception as exc:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, f"{self.tool_name} execution blocked: runtime version verification failed ({type(exc).__name__}).")
+            return None
+        reported_match = re.search(r"(?<![0-9])v?([0-9]+(?:\.[0-9]+)+)(?![0-9])", reported_version or "")
+        if not reported_match or reported_match.group(1) != expected_version:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(
+                LogLevel.ERROR,
+                f"{self.tool_name} execution blocked: expected managed version {expected_version}, "
+                f"reported {reported_version or 'unavailable'}.",
+            )
+            return None
         return binary
 
     def _finding(

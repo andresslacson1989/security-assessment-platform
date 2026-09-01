@@ -8,6 +8,7 @@ from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.hydra_adapter import HydraAdapter
 from app.adapters.metasploit_adapter import MetasploitAdapter
 from app.adapters.sqlmap_adapter import SqlmapAdapter
+from app.core.models import ScanConfig
 
 
 def test_metasploit_command_is_fixed_to_non_destructive_auxiliary_scanner():
@@ -37,3 +38,25 @@ def test_hydra_command_is_rate_limited_and_rejects_unsafe_inputs():
     assert command[command.index("-W") + 1] == "1"
     with pytest.raises(ValueError):
         HydraAdapter.build_command("hydra", "C:\\workspace\\users", "C:\\workspace\\passwords", "telnet", "192.0.2.10", 23, "C:\\workspace\\hydra.json")
+
+
+@pytest.mark.asyncio
+async def test_managed_extended_adapter_blocks_runtime_version_mismatch(monkeypatch):
+    adapter = MetasploitAdapter()
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda _path=None: "C:\\managed\\msfconsole.exe")
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda _binary: True)
+
+    async def wrong_version(_path=None, pre_launch_check=None):
+        return "metasploit 7.0.0"
+
+    monkeypatch.setattr(adapter, "get_version", wrong_version)
+    messages = []
+
+    async def emit_log(_level, message):
+        messages.append(message)
+
+    result = await adapter._binary_or_block(ScanConfig(), None, emit_log)
+
+    assert result is None
+    assert adapter.last_execution_state.value == "EXECUTION_BLOCKED"
+    assert any("runtime version" in message or "expected managed version" in message for message in messages)
