@@ -7,6 +7,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import urllib.parse
+import httpx
 from typing import Any, List, Tuple, Optional
 
 
@@ -50,6 +51,34 @@ BLOCKED_HOSTNAMES = {
 class SSRFProtectionError(ValueError):
     """Raised when a target URL or resolved IP violates SSRF protection policy."""
     pass
+
+
+class ValidatedTargetTransport(httpx.AsyncBaseTransport):
+    """httpx transport that pins same-origin requests to a gateway-selected address."""
+
+    def __init__(self, validated_target: Any):
+        self._validated_target = validated_target
+        self._transport = httpx.AsyncHTTPTransport(retries=0, verify=True)
+        raw_value = str(getattr(validated_target, "canonical_value", ""))
+        parsed = urllib.parse.urlsplit(raw_value if "://" in raw_value else f"https://{raw_value}")
+        self._authorized_host = (parsed.hostname or "").lower().strip("[]")
+
+    async def handle_async_request(self, request: Any) -> Any:
+        request_host = request.url.host.lower().strip("[]")
+        if request_host != self._authorized_host and request_host != str(
+            getattr(self._validated_target, "selected_destination", "")
+        ).lower().strip("[]"):
+            raise SSRFProtectionError(f"Redirect or request escaped validated origin: {request.url}")
+
+        destination = str(getattr(self._validated_target, "selected_destination", ""))
+        if not destination:
+            raise SSRFProtectionError("Validated target has no selected destination.")
+        request.url = request.url.copy_with(host=destination)
+        request.headers["host"] = self._authorized_host
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
 
 
 def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, str]:

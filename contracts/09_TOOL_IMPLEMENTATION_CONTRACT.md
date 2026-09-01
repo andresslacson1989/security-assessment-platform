@@ -1035,7 +1035,7 @@ Stderr: Diagnostic logs
   - Curated CVE Scanning: `SUPPORTED`
   - Misconfiguration Detection: `SUPPORTED`
   - Custom Remote Templates: `DEFERRED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nuclei_adapter.py`).
+- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/nuclei_adapter.py`).
 
 ---
 
@@ -1192,7 +1192,7 @@ Stderr: Diagnostic logs
   - Route / Directory Fuzzing: `SUPPORTED`
   - Query Parameter Fuzzing: `SUPPORTED`
   - Destructive Method Fuzzing (DELETE/PUT): `NOT_SUPPORTED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/ffuf_adapter.py`).
+- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/ffuf_adapter.py`).
 
 ---
 
@@ -1348,7 +1348,7 @@ Stderr: Diagnostic logs
   - Standard DOM Crawling: `SUPPORTED`
   - JavaScript Endpoint Extraction: `SUPPORTED`
   - Headless Browser Rendering: `LIMITED` (Requires system Chromium)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/katana_adapter.py`).
+- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/katana_adapter.py`).
 
 ---
 
@@ -1502,7 +1502,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - OpenAPI Schema Fuzzing: `SUPPORTED`
   - GraphQL Schema Fuzzing: `DEFERRED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/schemathesis_adapter.py`).
+- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/schemathesis_adapter.py`).
 
 ---
 

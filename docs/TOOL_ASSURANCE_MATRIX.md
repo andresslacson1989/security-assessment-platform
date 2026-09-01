@@ -93,39 +93,52 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Security Domain**: Web DAST
 - **Purpose**: Fast, template-based vulnerability assessment covering CVEs, default credentials, security misconfigurations, and exposed panels.
 - **Enterprise Maturity**: Production-Mature.
+- **Approved Release Version**: `v3.2.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/nuclei).
 - **Template Trust Policy**: Uses official curated `nuclei-templates` release; arbitrary user-provided template execution is restricted to authorized admin tenants.
-- **Safety Controls**: Concurrency capped at 10 requests/sec, rate limiting enforced, reproduction curl commands sanitized.
+- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, concurrency/rate bounds, curated fixed template tags, and sanitized reproduction evidence. Arbitrary template execution is not enabled.
 - **Finding Normalization**: Maps `template-id` to canonical check catalog, extracts `reproduction_curl`, CVSS score, CWE mapping.
 - **Role Strategy**: **PRIMARY**. Complements native DAST engine.
+- **Runtime Evidence**: Approved managed Nuclei runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
 
 ### 6. FFuF (Fast Web Parameter & Endpoint Fuzzer)
 - **Security Domain**: Web Fuzzing
 - **Purpose**: Active fuzzing of hidden GET/POST parameters, endpoints, and authentication headers.
 - **Enterprise Maturity**: Production-Mature.
+- **Approved Release Version**: `v2.1.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: https://github.com/ffuf/ffuf.
-- **Safety Controls**: Explicit assessment profiles (Safe/Standard/Aggressive), bounded rate limiting, exclude destructive keywords (`logout`, `delete`, `reset`).
+- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, bounded rate/concurrency, fixed server-generated wordlist, and destructive-path exclusions. DELETE/PUT fuzzing is not supported.
 - **Output Format & Parser**: JSON output (`-o out.json -of json`).
 - **Finding Normalization**: Check IDs `DAST-INJ-001` (SQLi), `DAST-XSS-001` (Reflected XSS), `DAST-PARAM-001` (Hidden Parameter Exposure).
 - **Role Strategy**: **SPECIALIZED**. Runs under active fuzzing profile.
+- **Runtime Evidence**: Approved managed FFuF runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
 
 ### 7. Katana (Next-Gen Headless & DOM Web Crawler)
 - **Security Domain**: Web Crawling & Discovery
 - **Purpose**: Crawls modern JavaScript Single-Page Applications (SPAs) and traditional HTML sites to map attack surface.
 - **Enterprise Maturity**: Production-Mature.
+- **Approved Release Version**: `v1.0.5`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/katana).
-- **Safety Controls**: Maximum crawl depth (ge=1, le=5), page limit bounding (max 50), same-origin scope confinement, automatic logout pattern exclusions.
+- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, maximum crawl depth/page bounds, explicit same-origin redirect handling, and automatic logout/destructive-path exclusions.
 - **Output Format & Parser**: JSON stream parsed into `DiscoveredEndpoint` objects.
 - **Role Strategy**: **PRIMARY**. Feeds endpoints to DAST and fuzzing engines.
+- **Runtime Evidence**: Approved managed Katana runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
 
 ### 8. Schemathesis (Property-Based API Contract Security)
 - **Security Domain**: API Security
 - **Purpose**: Property-based contract testing against OpenAPI (Swagger) 2.0/3.0 and GraphQL schemas to detect server crashes, 500 errors, and schema violations.
 - **Enterprise Maturity**: Production-Mature.
+- **Approved Release Version**: `3.20.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: https://github.com/schemathesis/schemathesis.
-- **Safety Controls**: Rate-limited, bounded execution timeout, schema sandboxing.
+- **Safety Controls**: Managed-process preflight, validated-destination binding with Host preservation, bounded examples/timeouts, and state-changing operation support limited to the explicitly governed adapter profile.
 - **Finding Normalization**: Check IDs `API-SPEC-001` (Schema Violation), `API-FLAW-001` (Unhandled 500 Server Error).
 - **Role Strategy**: **SPECIALIZED**. Executed during API-focused assessment profiles.
+- **Runtime Evidence**: Approved managed Schemathesis runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
+
+### E12 Section Evidence Status
+- **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
+- **Managed runtime status**: `UNAVAILABLE` for all four approved managed E12 runtimes in the current environment; no unmanaged executable was substituted.
+- **Acceptance limitation**: Full repository regression remains separately reported as unavailable if the pre-existing Scenario 22 supply-chain test stalls; this is not represented as a pass.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST

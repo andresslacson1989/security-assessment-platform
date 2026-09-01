@@ -30,6 +30,8 @@ SEVERITY_MAP = {
     "info": (Severity.INFO, 0.0),
 }
 
+APPROVED_VERSION = "3.2.0"
+
 
 def normalize_target_url(target_value: str) -> str:
     """
@@ -82,6 +84,7 @@ class NucleiAdapter(BaseToolAdapter):
 
     def __init__(self):
         super().__init__()
+        self.approved_version = APPROVED_VERSION
         self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
@@ -130,6 +133,9 @@ class NucleiAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Nuclei binary not found on host. Skipping Nuclei execution.")
             return findings
 
+        if not await self.ensure_approved_version(custom_path, emit_log):
+            return findings
+
         target_url = normalize_target_url(target.value)
         host_header = None
         if kwargs.get("validated_target") is not None:
@@ -143,7 +149,7 @@ class NucleiAdapter(BaseToolAdapter):
             "-severity", "low,medium,high,critical",
         ]
         if host_header:
-            cmd.extend(["-H", f"Host: {host_header}"])
+            cmd.extend(["-H", f"Host: {host_header}", "-sni", host_header])
 
         await emit_log(LogLevel.INFO, f"Starting Nuclei DAST vulnerability scan on target '{target_url}'...")
         returncode, stdout, stderr = await self.execute_command(

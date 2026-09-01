@@ -16,6 +16,8 @@ from app.core.models import (
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
 
+APPROVED_VERSION = "1.0.5"
+
 
 class KatanaAdapter(BaseToolAdapter):
     """
@@ -24,6 +26,7 @@ class KatanaAdapter(BaseToolAdapter):
 
     def __init__(self):
         super().__init__()
+        self.approved_version = APPROVED_VERSION
         self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
@@ -58,6 +61,9 @@ class KatanaAdapter(BaseToolAdapter):
         if not binary:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Katana binary not found. Skipping Katana SPA crawler.")
+            return findings
+
+        if not await self.ensure_approved_version(config.adapters.katana_path or config.adapters.custom_katana_path, emit_log):
             return findings
 
         target_url = target.value

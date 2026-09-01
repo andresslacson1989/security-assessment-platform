@@ -43,6 +43,8 @@ DEFAULT_FUZZ_PATHS = [
     "console",
 ]
 
+APPROVED_VERSION = "2.1.0"
+
 
 class FfufAdapter(BaseToolAdapter):
     """
@@ -52,6 +54,7 @@ class FfufAdapter(BaseToolAdapter):
 
     def __init__(self):
         super().__init__()
+        self.approved_version = APPROVED_VERSION
         self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
@@ -94,6 +97,9 @@ class FfufAdapter(BaseToolAdapter):
         if not ffuf_path:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "FFuF binary not found on host. Skipping FFuF execution.")
+            return findings
+
+        if not await self.ensure_approved_version(custom_path, emit_log):
             return findings
 
         target_url = target.value.strip()

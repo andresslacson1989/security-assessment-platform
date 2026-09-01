@@ -15,6 +15,8 @@ from app.core.models import (
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
 
+APPROVED_VERSION = "3.20.0"
+
 
 class SchemathesisAdapter(BaseToolAdapter):
     """
@@ -23,6 +25,7 @@ class SchemathesisAdapter(BaseToolAdapter):
 
     def __init__(self):
         super().__init__()
+        self.approved_version = APPROVED_VERSION
         self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
@@ -56,6 +59,9 @@ class SchemathesisAdapter(BaseToolAdapter):
         if not binary:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Schemathesis binary not found. Skipping API contract fuzzing.")
+            return findings
+
+        if not await self.ensure_approved_version(config.adapters.schemathesis_path or config.adapters.custom_schemathesis_path, emit_log):
             return findings
 
         target_url = target.value

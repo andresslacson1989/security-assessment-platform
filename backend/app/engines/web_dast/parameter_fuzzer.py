@@ -315,7 +315,7 @@ async def audit_parameter_fuzzing(
                     fuzzed_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(fuzzed_params), parsed.fragment))
 
                     # Do not follow redirects for open redirect check
-                    async with httpx.AsyncClient(verify=False, follow_redirects=False, timeout=config.timeout_seconds) as redir_client:
+                    async with httpx.AsyncClient(verify=True, follow_redirects=False, timeout=config.timeout_seconds) as redir_client:
                         resp = await redir_client.get(fuzzed_url)
                         if resp.status_code in (301, 302, 303, 307, 308):
                             location_hdr = resp.headers.get("location", "")

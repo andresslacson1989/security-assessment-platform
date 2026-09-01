@@ -96,3 +96,9 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 
 ## 3. Final Verification Assertion
 Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime verification and complete repository regression remain unavailable as environmental evidence conditions; this document records those limitations explicitly and does not represent them as runtime passes.
+
+### E12 Web DAST Execution Boundary
+- **Implementation:** `backend/app/engines/web_dast/engine.py`, `backend/app/core/ssrf_protector.py`, `backend/app/adapters/base_adapter.py`, and the four E12 adapters.
+- **Controls:** validated-target transport pinning, same-origin redirect revalidation, Host preservation, exact approved-version gates, centralized supervised launches, normalized failure states, and API telemetry retention for tools absent from `active_adapters`.
+- **Tests:** `tests/security/test_web_dast_assurance.py`, `tests/test_engine_web_dast.py`, `tests/test_api_endpoints.py::test_telemetry_endpoint_structure_and_filters`, and the four E12 adapter test classes.
+- **Status:** Repository controls verified. Approved managed E12 binaries/packages were unavailable in this environment; real-runtime verification is `UNAVAILABLE`, and no unmanaged runtime is treated as evidence.

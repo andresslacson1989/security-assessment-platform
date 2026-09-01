@@ -192,7 +192,19 @@ class WebCrawler:
                 await self.rate_limiter.acquire()
 
             try:
-                resp = await self.client.get(current_url, follow_redirects=self.config.follow_redirects)
+                # Never delegate redirect decisions to httpx: every Location must
+                # pass the crawler's same-origin policy before it is queued.
+                resp = await self.client.get(current_url, follow_redirects=False)
+                if self.config.follow_redirects and 300 <= resp.status_code < 400:
+                    location = resp.headers.get("location")
+                    redirected = self.normalize_url(current_url, location or "")
+                    if redirected and self.is_in_scope(redirected):
+                        redirect_hash = self._hash_url(redirected)
+                        if redirect_hash not in self.visited_hashes and current_depth < self.config.max_depth:
+                            self.visited_hashes.add(redirect_hash)
+                            queue.append((redirected, current_depth + 1))
+                    elif location and self.emit_log:
+                        await self.emit_log(LogLevel.WARNING, f"Blocked out-of-scope redirect from '{current_url}' to '{location}'.")
                 self.page_responses[current_url] = resp
                 status_code = resp.status_code
                 content_type = resp.headers.get("content-type", "")

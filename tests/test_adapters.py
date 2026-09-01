@@ -444,7 +444,8 @@ class TestNucleiAdapter:
         async def mock_finding(f): findings.append(f)
 
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nuclei"):
-            with patch.object(adapter, "execute_command", return_value=(0, NUCLEI_SAMPLE_JSONL.strip(), "")):
+            with patch.object(adapter, "get_version", new=AsyncMock(return_value="nuclei v3.2.0")), \
+                 patch.object(adapter, "execute_command", return_value=(0, NUCLEI_SAMPLE_JSONL.strip(), "")):
                 res = await adapter.run(target, config, mock_log, mock_finding)
 
         assert len(res) == 4
@@ -762,7 +763,8 @@ class TestFfufAdapter:
         config = ScanConfig()
 
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/ffuf"):
-            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
+            with patch.object(adapter, "get_version", new=AsyncMock(return_value="ffuf 2.1.0")), \
+                 patch.object(adapter, "execute_command", return_value=(0, json.dumps(sample_json), "")):
                 findings = await adapter.run(target, config, mock_log, mock_finding, emit_endpoint=mock_endpoint)
 
         assert len(findings) == 2
@@ -1230,6 +1232,7 @@ class TestKatanaAdapter:
         )
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/katana"), \
+             patch.object(adapter, "get_version", new=AsyncMock(return_value="katana v1.0.5")), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
             assert len(findings) == 1
@@ -1269,6 +1272,7 @@ class TestSchemathesisAdapter:
         }
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/schemathesis"), \
+             patch.object(adapter, "get_version", new=AsyncMock(return_value="schemathesis 3.20.0")), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding)
             assert len(findings) == 1
@@ -1596,4 +1600,3 @@ class TestCISBenchmarkAdapters:
             assert len(findings) == 1
             assert findings[0].check_id == "CLOUD-CIS-001"
             assert len(recorded_cis) == 1
-

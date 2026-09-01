@@ -7,6 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
 import os
+import re
 import shutil
 import sys
 from typing import Optional, List, Callable, Awaitable, Tuple
@@ -52,6 +53,31 @@ class BaseToolAdapter(ABC):
         if not path:
             return False
         return os.path.isfile(path) or os.path.exists(path)
+
+    async def ensure_approved_version(
+        self,
+        custom_path: Optional[str] = None,
+        emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
+    ) -> bool:
+        """Fail closed unless the resolved executable reports its exact approved version."""
+        expected = getattr(self, "approved_version", None)
+        if not expected:
+            return True
+        version_output = await self.get_version(custom_path)
+        match = re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", version_output or "")
+        actual = match.group(1) if match else None
+        expected_clean = str(expected).lstrip("v")
+        if actual != expected_clean:
+            if hasattr(self, "last_execution_state"):
+                from app.core.models import NormalizedExecutionState
+                self.last_execution_state = NormalizedExecutionState.INVALID_VERSION
+            if emit_log:
+                await emit_log(
+                    LogLevel.ERROR,
+                    f"{self.tool_name} execution blocked: approved version {expected_clean}, found {actual or 'unavailable'}.",
+                )
+            return False
+        return True
 
     @abstractmethod
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:

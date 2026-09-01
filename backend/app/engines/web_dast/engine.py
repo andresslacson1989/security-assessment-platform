@@ -39,7 +39,7 @@ from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
-from app.core.ssrf_protector import create_validated_target
+from app.core.ssrf_protector import create_validated_target, ValidatedTargetTransport
 
 
 class WebDastAssessmentEngine(BaseAssessmentEngine):
@@ -241,7 +241,11 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 await publish_tool_state("schemathesis")
                 await emit_log(LogLevel.WARNING, f"Schemathesis adapter error: {e}")
 
-        async with httpx.AsyncClient(headers=headers, timeout=timeout, verify=False) as client:
+        async with httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            transport=ValidatedTargetTransport(_validated_target),
+        ) as client:
             # --- Stage 1: Authentication & Session Initialization (15% - 25%) ---
             await emit_progress(15, "Initializing authentication and session manager...")
             auth_manager = AuthSessionManager(
