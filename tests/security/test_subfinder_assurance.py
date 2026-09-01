@@ -137,6 +137,28 @@ async def test_orchestrator_discovery_callback_does_not_authorize_or_queue_targe
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_rejected_discovery_callback_rebinds_authoritative_identity():
+    orchestrator = ScanOrchestrator()
+    job = ScanJob(target=Target(name="root", type=TargetType.DOMAIN, value="example.com"), organization_id="org-a")
+    orchestrator._active_jobs[job.id] = job
+    rejection = RejectedDiscovery(
+        domain="outside.example.net",
+        reason="OUT_OF_SCOPE",
+        sources=["crtsh"],
+        authorized_root="example.com",
+        assessment_id="assessment-attacker",
+        organization_id="org-attacker",
+    )
+
+    await orchestrator.emit_rejected_discovery(job.id, rejection)
+
+    assert len(job.rejected_discoveries) == 1
+    assert job.rejected_discoveries[0].organization_id == "org-a"
+    assert job.rejected_discoveries[0].assessment_id == job.id
+    assert job.rejected_discoveries[0].sources == ["crtsh"]
+
+
+@pytest.mark.asyncio
 async def test_network_engine_propagates_authoritative_tenant_and_provider_evidence():
     rejected = []
     states = []

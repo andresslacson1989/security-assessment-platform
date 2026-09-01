@@ -306,6 +306,13 @@ class ScanOrchestrator:
     async def emit_rejected_discovery(self, scan_id: str, rejection: RejectedDiscovery) -> None:
         job = self._active_jobs.get(scan_id)
         if job:
+            # Rejected discoveries are observations too.  Their tenant and
+            # assessment identity must come from the authoritative job rather
+            # than from adapter-controlled callback data.
+            rejection = rejection.model_copy(update={
+                "organization_id": job.organization_id,
+                "assessment_id": scan_id,
+            })
             job.rejected_discoveries.append(rejection)
         await self._broadcast(scan_id, "discovery_rejected", rejection.model_dump(mode="json"))
 
