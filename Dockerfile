@@ -206,13 +206,14 @@ RUN nuclei -update-templates || true
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY run_platform.py /app/
+COPY run_worker.py /app/
 
 # Run the control plane as an unprivileged service account. Tool execution,
 # scan workspaces, and runtime data remain writable only where explicitly
 # provisioned above; the application never needs container-root privileges.
 RUN groupadd --system cyberassess && \
     useradd --system --gid cyberassess --home-dir /nonexistent --shell /usr/sbin/nologin cyberassess && \
-    chown -R cyberassess:cyberassess /app/data /app/backend /app/frontend /app/run_platform.py
+    chown -R cyberassess:cyberassess /app/data /app/backend /app/frontend /app/run_platform.py /app/run_worker.py
 USER cyberassess
 
 # Expose Web SOC HUD port

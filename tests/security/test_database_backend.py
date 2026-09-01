@@ -1,5 +1,7 @@
 """Contract 01 database backend compatibility and selection tests."""
 
+import asyncio
+
 import pytest
 
 from app.core.db import _PostgresRow, _qmark_to_postgres, DatabaseManager
@@ -68,3 +70,87 @@ async def test_queue_records_and_acknowledges_durable_execution_intent():
         ("enqueue", "scan-1", "org-1"),
         ("complete", "message-1"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_queue_manager_enqueue_only_requires_and_uses_durable_backend():
+    from app.core.queue import ScanQueueManager
+
+    class Backend:
+        async def enqueue(self, scan_id, organization_id):
+            self.received = (scan_id, organization_id)
+            return "message-queue-only"
+
+    backend = Backend()
+    manager = ScanQueueManager(durable_backend=backend)
+    assert manager.durable_enabled is True
+    assert await manager.enqueue_only("scan-queue-only", "org-queue-only") == "message-queue-only"
+    assert backend.received == ("scan-queue-only", "org-queue-only")
+
+    local_manager = ScanQueueManager()
+    with pytest.raises(RuntimeError, match="durable execution backend"):
+        await local_manager.enqueue_only("scan-local", None)
+
+
+@pytest.mark.asyncio
+async def test_redis_consumer_claims_new_intent_and_acknowledges_after_handler():
+    from app.core.queue import RedisDurableQueue
+
+    class FakeRedis:
+        async def xautoclaim(self, *args, **kwargs):
+            return ("0-0", [], [])
+
+        async def xreadgroup(self, *args, **kwargs):
+            return [("stream", [("message-1", {"scan_id": "scan-1", "organization_id": "org-1"})])]
+
+        async def xack(self, *args):
+            self.acked = args[-1]
+
+        async def xadd(self, *args, **kwargs):
+            self.failed = (args[0], kwargs)
+
+    queue = object.__new__(RedisDurableQueue)
+    queue._redis = FakeRedis()
+    queue._consumer_name = "worker-test"
+    queue._group_ready = True
+    queue._group_lock = asyncio.Lock()
+    received = []
+
+    async def handler(scan_id, organization_id):
+        received.append((scan_id, organization_id))
+
+    assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
+    assert received == [("scan-1", "org-1")]
+    assert queue._redis.acked == "message-1"
+
+
+@pytest.mark.asyncio
+async def test_redis_consumer_moves_handler_failure_to_failure_stream():
+    from app.core.queue import RedisDurableQueue
+
+    class FakeRedis:
+        async def xautoclaim(self, *args, **kwargs):
+            return ("0-0", [], [])
+
+        async def xreadgroup(self, *args, **kwargs):
+            return [("stream", [("message-2", {"scan_id": "scan-2", "organization_id": "org-2"})])]
+
+        async def xack(self, *args):
+            self.acked = args[-1]
+
+        async def xadd(self, *args, **kwargs):
+            self.failure = (args, kwargs)
+
+    queue = object.__new__(RedisDurableQueue)
+    queue._redis = FakeRedis()
+    queue._consumer_name = "worker-test"
+    queue._group_ready = True
+    queue._group_lock = asyncio.Lock()
+
+    async def handler(scan_id, organization_id):
+        raise ValueError("synthetic failure")
+
+    assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
+    assert queue._redis.failure[0][0] == "cyberassess:scan-execution:failures"
+    assert queue._redis.failure[0][1]["message_id"] == "message-2"
+    assert queue._redis.acked == "message-2"

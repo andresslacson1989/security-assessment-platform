@@ -63,6 +63,29 @@ services:
       retries: 3
       start_period: 10s
 
+  cyberassess-worker:
+    profiles: ["enterprise"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    container_name: cyberassess-worker
+    restart: unless-stopped
+    command: ["python", "/app/run_worker.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must reference the enterprise PostgreSQL service}"
+      EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
+      ENVIRONMENT: production
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     profiles: ["enterprise"]
     image: postgres:16-alpine

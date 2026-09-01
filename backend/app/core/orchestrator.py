@@ -113,14 +113,21 @@ class ScanOrchestrator:
             save_scan(scan_job)
 
         from app.core.queue import queue_manager
-        task = asyncio.create_task(
-            queue_manager.execute_bounded(
-                scan_job.id,
-                self._execute_scan,
-                scan_job.id,
-                organization_id=scan_job.organization_id,
+        if queue_manager.durable_enabled:
+            # In enterprise mode the API is control-plane only. A dedicated
+            # worker claims the durable intent and performs the scan.
+            task = asyncio.create_task(
+                queue_manager.enqueue_only(scan_job.id, scan_job.organization_id)
             )
-        )
+        else:
+            task = asyncio.create_task(
+                queue_manager.execute_bounded(
+                    scan_job.id,
+                    self._execute_scan,
+                    scan_job.id,
+                    organization_id=scan_job.organization_id,
+                )
+            )
         self._tasks[scan_job.id] = task
         return task
 
@@ -140,6 +147,19 @@ class ScanOrchestrator:
                 await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", "Scan job cancelled by user.")
                 await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
                 await self.emit_cancelled(scan_id, "Scan job cancelled by user.")
+            return True
+        # In enterprise mode the control-plane enqueue task can finish before
+        # the worker claims the intent. Persisted state is authoritative, so a
+        # queued scan remains cancellable even after that short-lived task ends.
+        job = self.get_active_job(scan_id)
+        if job and job.status in {ScanStatus.PENDING, ScanStatus.RUNNING}:
+            job.status = ScanStatus.CANCELLED
+            job.completed_at = utc_now()
+            job.current_stage = "Scan job cancelled by user."
+            save_scan(job)
+            await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", "Scan job cancelled by user.")
+            await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
+            await self.emit_cancelled(scan_id, "Scan job cancelled by user.")
             return True
         return False
 

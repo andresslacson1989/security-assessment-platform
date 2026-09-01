@@ -23,6 +23,16 @@ class DurableQueueBackend(Protocol):
     async def fail(self, message_id: str, error_code: str) -> None: ...
 
 
+class DurableQueueConsumer(Protocol):
+    async def consume_once(
+        self,
+        handler: Callable[[str, Optional[str]], Awaitable[None]],
+        *,
+        block_ms: int = 5000,
+        reclaim_idle_ms: int = 60000,
+    ) -> bool: ...
+
+
 class RedisDurableQueue:
     """Redis Streams-backed execution intent queue for enterprise deployments."""
 
@@ -78,6 +88,59 @@ class RedisDurableQueue:
         )
         await self._redis.xack(self.stream_name, self.consumer_group, message_id)
 
+    async def consume_once(
+        self,
+        handler: Callable[[str, Optional[str]], Awaitable[None]],
+        *,
+        block_ms: int = 5000,
+        reclaim_idle_ms: int = 60000,
+    ) -> bool:
+        """Claim one pending/new execution intent and settle it after handling.
+
+        Pending messages are reclaimed before reading new messages so a worker
+        that dies mid-scan does not leave the execution intent permanently
+        stranded in the consumer group's pending entries list.
+        """
+        await self._ensure_group()
+        messages = []
+        claimed = await self._redis.xautoclaim(
+            self.stream_name,
+            self.consumer_group,
+            self._consumer_name,
+            min_idle_time=reclaim_idle_ms,
+            start_id="0-0",
+            count=1,
+        )
+        if claimed and len(claimed) >= 2:
+            messages = claimed[1] or []
+
+        if not messages:
+            response = await self._redis.xreadgroup(
+                self.consumer_group,
+                self._consumer_name,
+                {self.stream_name: ">"},
+                count=1,
+                block=block_ms,
+            )
+            if response:
+                messages = response[0][1] or []
+
+        if not messages:
+            return False
+
+        message_id, fields = messages[0]
+        scan_id = str(fields.get("scan_id", "")).strip()
+        organization_id = str(fields.get("organization_id", "")).strip() or None
+        try:
+            if not scan_id:
+                raise ValueError("execution intent is missing scan_id")
+            await handler(scan_id, organization_id)
+        except Exception as exc:
+            await self.fail(str(message_id), type(exc).__name__)
+        else:
+            await self.complete(str(message_id))
+        return True
+
     async def close(self) -> None:
         await self._redis.aclose()
 
@@ -115,6 +178,16 @@ class ScanQueueManager:
     @property
     def max_concurrent_per_tenant(self) -> int:
         return self._max_concurrent_per_tenant
+
+    @property
+    def durable_enabled(self) -> bool:
+        return self._durable_backend is not None
+
+    async def enqueue_only(self, scan_id: str, organization_id: Optional[str]) -> str:
+        """Persist an enterprise execution intent without running it locally."""
+        if self._durable_backend is None:
+            raise RuntimeError("enqueue_only requires a durable execution backend")
+        return await self._durable_backend.enqueue(scan_id, organization_id)
 
     async def _tenant_semaphore(self, organization_id: Optional[str]) -> Optional[asyncio.Semaphore]:
         if not organization_id:
