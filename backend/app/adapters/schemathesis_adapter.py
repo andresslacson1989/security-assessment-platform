@@ -11,6 +11,7 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
     calculate_fingerprint
+    , NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -19,6 +20,10 @@ class SchemathesisAdapter(BaseToolAdapter):
     """
     Adapter for Schemathesis property-based OpenAPI/GraphQL contract fuzzer.
     """
+
+    def __init__(self):
+        super().__init__()
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
     def tool_name(self) -> str:
@@ -44,10 +49,12 @@ class SchemathesisAdapter(BaseToolAdapter):
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         scan_id = kwargs.get("scan_id", "local-scan")
 
         binary = self.resolve_binary_path(config.adapters.schemathesis_path or config.adapters.custom_schemathesis_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Schemathesis binary not found. Skipping API contract fuzzing.")
             return findings
 
@@ -109,6 +116,7 @@ class SchemathesisAdapter(BaseToolAdapter):
                     findings.append(finding)
                     await emit_finding(finding)
         except Exception:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
             pass
 
         # Regex fallback for text output
@@ -143,4 +151,8 @@ class SchemathesisAdapter(BaseToolAdapter):
                 await emit_finding(finding)
 
         await emit_log(LogLevel.INFO, f"Schemathesis finished: {len(findings)} contract issues identified.")
+        if code != 0:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if stdout.strip() else (NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED)
+        elif findings:
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
         return findings

@@ -16,6 +16,7 @@ from app.core.models import (
     DiscoveredEndpoint,
     EndpointTestRecord,
     EndpointTestStatus,
+    NormalizedExecutionState,
 )
 from app.core.rate_limiter import TokenBucketRateLimiter
 from app.engines.base import (
@@ -82,6 +83,13 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
     ) -> List[Finding]:
         findings: List[Finding] = []
         existing_fps = set()
+        tool_state_cb = kwargs.get("emit_tool_execution_state")
+
+        async def publish_tool_state(tool_name: str, adapter=None, fallback: str = "TOOL_EXECUTION_FAILED") -> None:
+            if not tool_state_cb:
+                return
+            state = getattr(adapter, "last_execution_state", None) if adapter is not None else None
+            await tool_state_cb(tool_name, (state.value if state else fallback))
         rate_limiter = TokenBucketRateLimiter(rate_rps=config.rate_limit_rps)
 
         headers = {
@@ -120,9 +128,12 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "ffuf"
                             f.scan_id = "active"
                             findings.append(f)
+                    await publish_tool_state("ffuf", ffuf_adapter)
                 else:
+                    await publish_tool_state("ffuf")
                     await emit_log(LogLevel.INFO, "FFuF CLI not available - using native crawler and API inspector")
             except Exception as e:
+                await publish_tool_state("ffuf")
                 await emit_log(LogLevel.WARNING, f"FFuF adapter error: {e}")
 
         # 0.2 Nuclei Adapter (Community CVE and Template Scanning)
@@ -145,9 +156,12 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "nuclei"
                             f.scan_id = "active"
                             findings.append(f)
+                    await publish_tool_state("nuclei", nuclei_adapter)
                 else:
+                    await publish_tool_state("nuclei")
                     await emit_log(LogLevel.INFO, "Nuclei CLI not available - using native parameter fuzzer fallback")
             except Exception as e:
+                await publish_tool_state("nuclei")
                 await emit_log(LogLevel.WARNING, f"Nuclei adapter error: {e}")
 
         # 0.4 Katana Adapter (Headless SPA Dynamic Crawler)
@@ -171,7 +185,11 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "katana"
                             f.scan_id = "active"
                             findings.append(f)
+                    await publish_tool_state("katana", katana_adapter)
+                else:
+                    await publish_tool_state("katana")
             except Exception as e:
+                await publish_tool_state("katana")
                 await emit_log(LogLevel.WARNING, f"Katana adapter error: {e}")
 
         # 0.5 Schemathesis Adapter (API Contract & Fuzz Testing)
@@ -194,7 +212,11 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             f.source_tool = "schemathesis"
                             f.scan_id = "active"
                             findings.append(f)
+                    await publish_tool_state("schemathesis", schemathesis_adapter)
+                else:
+                    await publish_tool_state("schemathesis")
             except Exception as e:
+                await publish_tool_state("schemathesis")
                 await emit_log(LogLevel.WARNING, f"Schemathesis adapter error: {e}")
 
         async with httpx.AsyncClient(headers=headers, timeout=timeout, verify=False) as client:

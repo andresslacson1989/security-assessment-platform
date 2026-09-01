@@ -19,6 +19,7 @@ from app.core.models import (
     LogLevel,
     DiscoveredEndpoint,
     calculate_fingerprint,
+    NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -47,6 +48,10 @@ class FfufAdapter(BaseToolAdapter):
     Hybrid tool adapter for FFuF high-speed content and endpoint discovery.
     Normalizes JSON output into canonical DAST-EXP-xxx findings and DiscoveredEndpoints.
     """
+
+    def __init__(self):
+        super().__init__()
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
     def tool_name(self) -> str:
@@ -81,10 +86,12 @@ class FfufAdapter(BaseToolAdapter):
         Executes FFuF against target URL using rate-limited non-destructive parameters.
         """
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         custom_path = getattr(config.adapters, "ffuf_path", None) or getattr(config.adapters, "custom_ffuf_path", None)
         ffuf_path = self.resolve_binary_path(custom_path)
 
         if not ffuf_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "FFuF binary not found on host. Skipping FFuF execution.")
             return findings
 
@@ -121,6 +128,7 @@ class FfufAdapter(BaseToolAdapter):
             )
 
             if not stdout.strip():
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else (NormalizedExecutionState.TOOL_EXECUTION_FAILED if returncode != 0 else NormalizedExecutionState.COMPLETED_NO_FINDINGS)
                 if returncode != 0:
                     await emit_log(LogLevel.WARNING, f"FFuF completed with code {returncode}: {stderr[:200]}")
                 return findings
@@ -205,6 +213,7 @@ class FfufAdapter(BaseToolAdapter):
                     await emit_finding(f)
 
         except Exception as e:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
             await emit_log(LogLevel.WARNING, f"Failed to parse FFuF results: {str(e)}")
         finally:
             if temp_wordlist and os.path.exists(temp_wordlist):
@@ -213,4 +222,8 @@ class FfufAdapter(BaseToolAdapter):
                 except Exception:
                     pass
 
+        if returncode != 0:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if findings else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+        elif findings:
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
         return findings

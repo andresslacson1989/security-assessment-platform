@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
     calculate_fingerprint, DiscoveredEndpoint
+    , NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -20,6 +21,10 @@ class KatanaAdapter(BaseToolAdapter):
     """
     Adapter for ProjectDiscovery's Katana next-generation crawling engine.
     """
+
+    def __init__(self):
+        super().__init__()
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
     def tool_name(self) -> str:
@@ -45,11 +50,13 @@ class KatanaAdapter(BaseToolAdapter):
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         scan_id = kwargs.get("scan_id", "local-scan")
         emit_endpoint: Optional[Callable[[DiscoveredEndpoint], Awaitable[None]]] = kwargs.get("emit_endpoint")
 
         binary = self.resolve_binary_path(config.adapters.katana_path or config.adapters.custom_katana_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Katana binary not found. Skipping Katana SPA crawler.")
             return findings
 
@@ -63,6 +70,7 @@ class KatanaAdapter(BaseToolAdapter):
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
         if code != 0 and not stdout:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, f"Katana exited with code {code}: {stderr.strip()[:200]}")
             return findings
 
@@ -127,4 +135,8 @@ class KatanaAdapter(BaseToolAdapter):
             await emit_finding(finding)
             await emit_log(LogLevel.INFO, f"Katana crawler discovered {len(discovered_urls)} unique routes.")
 
+        if code != 0:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if discovered_urls else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+        elif findings:
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
         return findings

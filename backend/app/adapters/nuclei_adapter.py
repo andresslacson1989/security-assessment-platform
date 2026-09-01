@@ -16,6 +16,7 @@ from app.core.models import (
     ScanConfig,
     LogLevel,
     calculate_fingerprint,
+    NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -78,6 +79,10 @@ class NucleiAdapter(BaseToolAdapter):
     Normalizes JSON Lines output into canonical DAST-xxx findings.
     """
 
+    def __init__(self):
+        super().__init__()
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
     @property
     def tool_name(self) -> str:
         return "nuclei"
@@ -115,10 +120,12 @@ class NucleiAdapter(BaseToolAdapter):
         Parses streaming JSON line-by-line and creates normalized Finding objects.
         """
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         custom_path = getattr(config.adapters, "nuclei_path", None) or getattr(config.adapters, "custom_nuclei_path", None)
         nuclei_path = self.resolve_binary_path(custom_path)
 
         if not nuclei_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Nuclei binary not found on host. Skipping Nuclei execution.")
             return findings
 
@@ -140,6 +147,7 @@ class NucleiAdapter(BaseToolAdapter):
         )
 
         if not stdout.strip():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else (NormalizedExecutionState.TOOL_EXECUTION_FAILED if returncode != 0 else NormalizedExecutionState.COMPLETED_NO_FINDINGS)
             if returncode != 0 and stderr:
                 await emit_log(LogLevel.WARNING, f"Nuclei exited with code {returncode}: {stderr.strip()}")
             else:
@@ -156,6 +164,7 @@ class NucleiAdapter(BaseToolAdapter):
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
+                self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
                 continue
 
             template_id = data.get("template-id") or data.get("templateID") or "nuclei-check"
@@ -227,4 +236,8 @@ class NucleiAdapter(BaseToolAdapter):
             await emit_finding(finding)
 
         await emit_log(LogLevel.INFO, f"Nuclei scan completed. Generated {len(findings)} findings.")
+        if returncode != 0 or self.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+        elif findings:
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
         return findings
