@@ -1176,7 +1176,7 @@ class TestHttpxAdapter:
             endpoints.append(ep)
 
         mock_json_lines = (
-            '{"url":"https://example.com","status_code":200,"title":"Example","webserver":"nginx/1.24.0","tech":["Nginx","Cloudflare"]}\n'
+            '{"url":"https://example.com","status_code":200,"title":"Example","webserver":"nginx/1.24.0","tech":["Nginx","Cloudflare"],"headers":{"Authorization":"Bearer super-secret-token"}}\n'
         )
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
@@ -1189,6 +1189,8 @@ class TestHttpxAdapter:
             assert len(endpoints) == 1
             assert endpoints[0].url == "https://example.com"
             assert findings[0].check_id == "EASM-EXPOSURE-001"
+            assert "super-secret-token" not in (findings[0].evidence.raw_response_snippet or "")
+            assert "[REDACTED]" in (findings[0].evidence.raw_response_snippet or "")
             from app.core.models import NormalizedExecutionState
             assert adapter.last_execution_state == NormalizedExecutionState.COMPLETED_WITH_FINDINGS
 

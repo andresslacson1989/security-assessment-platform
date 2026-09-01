@@ -691,6 +691,7 @@ def sanitize_sensitive_text(value: Optional[str], max_length: int = 4096) -> Opt
         (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED_AWS_KEY]"),
         (r"\b(?:ghp|github_pat)_[A-Za-z0-9_]+\b", "[REDACTED_GITHUB_TOKEN]"),
         (r"\b(?:sk|pk)_(?:test|live)_[A-Za-z0-9]+\b", "[REDACTED_STRIPE_KEY]"),
+        (r"(?i)\b(password|passwd|pwd|secret|api[_-]?key|token|auth[_-]?token)\s*[:=]\s*([^\s,;]+)", r"\1=[REDACTED]"),
         (r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]"),
         (r"(?i)(https?://[^\s/:]+):[^@\s]+@", r"\1:[REDACTED]@"),
         (r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]"),

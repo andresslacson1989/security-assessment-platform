@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import List, Tuple, Optional
-from app.core.models import Finding, Evidence, Severity, calculate_fingerprint
+from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, sanitize_sensitive_text
 
 # Known deprecated or vulnerable daemon version patterns
 VULNERABLE_BANNER_PATTERNS = [
@@ -73,7 +73,8 @@ async def audit_service_banners(
         for pattern, daemon_name, reason in VULNERABLE_BANNER_PATTERNS:
             if re.search(pattern, banner, re.IGNORECASE):
                 loc = f"tcp://{host}:{port}"
-                obs = f"Port {port} Banner: '{banner}' ({daemon_name})"
+                safe_banner = sanitize_sensitive_text(banner) or "[REDACTED]"
+                obs = f"Port {port} Banner: '{safe_banner}' ({daemon_name})"
                 findings.append(
                     Finding(
                         scan_id=scan_id,
@@ -103,7 +104,7 @@ async def audit_service_banners(
                             location=loc,
                             observed_value=obs,
                             expected_value="Current, actively supported daemon version without public CVEs",
-                            raw_response_snippet=banner,
+                            raw_response_snippet=safe_banner,
                         ),
                         fingerprint=calculate_fingerprint("NET-SVC-001", loc, obs),
                         source_tool="native",

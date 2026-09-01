@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, DiscoveredEndpoint, NormalizedExecutionState
+    calculate_fingerprint, DiscoveredEndpoint, NormalizedExecutionState, sanitize_sensitive_text
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
@@ -143,7 +143,7 @@ class HttpxAdapter(BaseToolAdapter):
                         location=url,
                         observed_value=" | ".join(observed_info),
                         expected_value="Server banners and framework fingerprints minimized or masked",
-                        raw_response_snippet=json.dumps(data, indent=2),
+                        raw_response_snippet=sanitize_sensitive_text(json.dumps(data, indent=2)),
                     )
                     finding = Finding(
                         scan_id=scan_id,

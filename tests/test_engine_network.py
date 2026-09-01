@@ -25,6 +25,7 @@ from app.engines.network.port_checker import (
     audit_exposed_ports,
 )
 from app.engines.network.engine import NetworkAssessmentEngine
+from app.engines.network.banner_grabber import audit_service_banners
 
 
 def test_tls_helpers():
@@ -32,6 +33,20 @@ def test_tls_helpers():
     assert extract_host_and_port("http://192.168.1.1:8080") == ("192.168.1.1", 8080)
     assert extract_host_and_port("example.com:8443") == ("example.com", 8443)
     assert extract_host_and_port("example.com") == ("example.com", 443)
+
+
+@pytest.mark.asyncio
+async def test_service_banner_evidence_masks_credentials():
+    with patch(
+        "app.engines.network.banner_grabber.grab_service_banner",
+        new=AsyncMock(return_value="vsftpd 2.3.4 password=super-secret-token"),
+    ):
+        findings = await audit_service_banners("example.com", [21], scan_id="scan-banner")
+
+    assert len(findings) == 1
+    assert "super-secret-token" not in findings[0].evidence.observed_value
+    assert "super-secret-token" not in (findings[0].evidence.raw_response_snippet or "")
+    assert "[REDACTED]" in findings[0].evidence.raw_response_snippet
 
 
 @pytest.mark.asyncio
