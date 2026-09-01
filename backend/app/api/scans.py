@@ -31,6 +31,7 @@ from app.core.models import (
     DiscoveredEndpoint,
     EndpointTestRecord,
     EndpointTestStatus,
+    PrincipalType,
 )
 from app.core.storage import get_scan, list_scans, delete_scan
 from app.core.orchestrator import orchestrator
@@ -48,6 +49,12 @@ from app.core.auth import (
 from app.core.db import db_manager
 
 router = APIRouter()
+
+
+def _organization_scope(user: UserProfile) -> Optional[str]:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
+        return None
+    return user.organization_id
 
 
 class StartScanRequest(BaseModel):
@@ -181,7 +188,7 @@ async def get_all_scans(
     scans, total = list_scans(
         limit=limit,
         offset=offset,
-        organization_id=current_user.organization_id,
+        organization_id=_organization_scope(current_user),
     )
 
     return {
@@ -216,7 +223,7 @@ async def get_scan_details(
     current_user: UserProfile = Depends(get_current_user),
 ) -> ScanJob:
     """Returns full ScanJob model. Enforces tenant ownership (IDOR denial)."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -239,7 +246,7 @@ async def get_scan_telemetry(
     Returns organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface.
     Enforces strict multi-tenant authorization and IDOR defense.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -462,14 +469,14 @@ async def delete_scan_job(
     current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Deletes a scan job from storage. Enforces tenant ownership."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
     if not authorize_scan_access(current_user, job, action="delete"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to delete scan job '{scan_id}'.")
 
-    deleted = delete_scan(scan_id, organization_id=current_user.organization_id)
+    deleted = delete_scan(scan_id, organization_id=_organization_scope(current_user))
     return {"scan_id": scan_id, "deleted": deleted, "message": "Scan record deleted."}
 
 
@@ -479,7 +486,7 @@ async def stream_scan_events(
     current_user: UserProfile = Depends(get_current_user),
 ) -> StreamingResponse:
     """Streams real-time logs, findings, and progress updates over SSE."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 

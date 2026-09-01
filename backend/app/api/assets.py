@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel, Field
 
-from app.core.models import Asset, AssetType, AssetCriticality, AssetLifecycleStatus, AuditEvent, AuditAction, utc_now
+from app.core.models import Asset, AssetType, AssetCriticality, AssetLifecycleStatus, AuditEvent, AuditAction, PrincipalType, utc_now
 from app.core.auth import (
     get_current_user,
     require_dev_or_higher,
@@ -22,6 +22,12 @@ from app.core.auth import (
 from app.core.db import db_manager
 
 router = APIRouter()
+
+
+def _organization_scope(user: UserProfile) -> Optional[str]:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
+        return None
+    return user.organization_id
 
 
 class CreateAssetRequest(BaseModel):
@@ -51,7 +57,7 @@ async def list_assets(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:read")),
 ) -> Dict[str, Any]:
     """Lists assets belonging strictly to the caller's organization."""
-    org_id = current_user.organization_id if current_user.role != "ADMIN" or current_user.organization_id else None
+    org_id = _organization_scope(current_user)
     assets, total = db_manager.list_assets(organization_id=org_id, limit=limit, offset=offset)
     return {
         "total": total,
@@ -113,7 +119,7 @@ async def get_asset(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:read")),
 ) -> Asset:
     """Retrieves asset details. Enforces strict tenant ownership (IDOR denial)."""
-    asset = db_manager.get_asset(asset_id, organization_id=current_user.organization_id)
+    asset = db_manager.get_asset(asset_id, organization_id=_organization_scope(current_user))
     if not asset or not authorize_asset_access(current_user, asset, action="read"):
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
     return asset
@@ -126,7 +132,7 @@ async def update_asset(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Asset:
     """Updates asset metadata. Enforces tenant ownership."""
-    asset = db_manager.get_asset(asset_id, organization_id=current_user.organization_id)
+    asset = db_manager.get_asset(asset_id, organization_id=_organization_scope(current_user))
     if not asset or not authorize_asset_access(current_user, asset, action="write"):
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
 
@@ -165,11 +171,11 @@ async def delete_asset(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:delete", allowed_roles=[UserRole.ADMIN])),
 ) -> Dict[str, Any]:
     """Deletes an asset from the inventory. Enforces tenant ownership."""
-    asset = db_manager.get_asset(asset_id, organization_id=current_user.organization_id)
+    asset = db_manager.get_asset(asset_id, organization_id=_organization_scope(current_user))
     if not asset or not authorize_asset_access(current_user, asset, action="delete"):
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
 
-    deleted = db_manager.delete_asset(asset_id, organization_id=current_user.organization_id)
+    deleted = db_manager.delete_asset(asset_id, organization_id=_organization_scope(current_user))
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
 

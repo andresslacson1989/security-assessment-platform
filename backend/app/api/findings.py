@@ -27,6 +27,12 @@ from app.core.db import db_manager
 router = APIRouter()
 
 
+def _organization_scope(user: UserProfile) -> Optional[str]:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
+        return None
+    return user.organization_id
+
+
 class AddCommentRequest(BaseModel):
     comment: str = Field(..., min_length=1, max_length=2000)
 
@@ -111,8 +117,8 @@ async def get_finding_detail(
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM findings WHERE id = ? AND organization_id = ?",
-            (finding_id, current_user.organization_id),
+            "SELECT * FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",
+            (finding_id, _organization_scope(current_user), _organization_scope(current_user)),
         )
         row = cur.fetchone()
         if not row:
@@ -139,8 +145,8 @@ async def update_finding_status(
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM findings WHERE id = ? AND organization_id = ?",
-            (finding_id, current_user.organization_id),
+            "SELECT * FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",
+            (finding_id, _organization_scope(current_user), _organization_scope(current_user)),
         )
         row = cur.fetchone()
         if not row:
@@ -148,8 +154,8 @@ async def update_finding_status(
 
         now_str = utc_now().isoformat()
         conn.execute(
-            "UPDATE findings SET status = ?, assigned_to = ?, last_seen = ? WHERE id = ? AND organization_id = ?",
-            (payload.status.value, payload.assigned_to, now_str, finding_id, current_user.organization_id),
+            "UPDATE findings SET status = ?, assigned_to = ?, last_seen = ? WHERE id = ? AND (? IS NULL OR organization_id = ?)",
+            (payload.status.value, payload.assigned_to, now_str, finding_id, _organization_scope(current_user), _organization_scope(current_user)),
         )
 
         if payload.comment:
@@ -192,8 +198,8 @@ async def add_finding_comment(
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM findings WHERE id = ? AND organization_id = ?",
-            (finding_id, current_user.organization_id),
+            "SELECT * FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",
+            (finding_id, _organization_scope(current_user), _organization_scope(current_user)),
         )
         row = cur.fetchone()
         if not row:

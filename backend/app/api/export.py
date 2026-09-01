@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from app.core.storage import get_scan
 from app.core.orchestrator import orchestrator
 from app.core.auth import get_current_user, UserProfile, authorize_scan_access
-from app.core.models import AuditEvent, AuditAction
+from app.core.models import AuditEvent, AuditAction, PrincipalType
 from app.core.db import db_manager
 from app.exporters.html_exporter import export_scan_to_html
 from app.exporters.sarif_exporter import export_scan_to_sarif
@@ -20,6 +20,12 @@ from app.exporters.sbom_cyclonedx import export_cyclonedx_sbom
 from app.exporters.sbom_spdx import export_spdx_sbom
 
 router = APIRouter()
+
+
+def _organization_scope(user: UserProfile) -> str | None:
+    if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role.value == "ADMIN":
+        return None
+    return user.organization_id
 
 
 @router.get("/{scan_id}/export/html", summary="Export Standalone Interactive HTML Report")
@@ -31,7 +37,7 @@ async def export_html_report(
     Downloads a self-contained, standalone single-file HTML report with zero external dependencies.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -68,7 +74,7 @@ async def export_sarif_report(
     Downloads an OASIS SARIF v2.1.0 standardized security report for GitHub/GitLab Code Scanning.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -104,7 +110,7 @@ async def export_raw_json_report(
     Downloads the complete serialized ScanJob data model in JSON format.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -141,7 +147,7 @@ async def export_cyclonedx_sbom_report(
     Downloads a CycloneDX 1.5 standardized Software Bill of Materials (SBOM) JSON.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
