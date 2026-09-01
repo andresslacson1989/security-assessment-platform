@@ -403,7 +403,7 @@ class NmapAdapter(BaseToolAdapter):
         if not isinstance(binary, str) or not binary.strip():
             return False
         path = os.path.abspath(binary)
-        if not os.path.isfile(path):
+        if not os.path.isfile(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
             return False
         if os.path.realpath(path) != path:
             return False

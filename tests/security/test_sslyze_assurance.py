@@ -80,6 +80,8 @@ class TestSslyzeIdentityAndVersion:
         executable = bin_dir / "sslyze"
         executable.write_text("managed executable")
         (bin_dir / ("python.exe" if os.name == "nt" else "python")).write_text("managed interpreter")
+        if os.name != "nt":
+            executable.chmod(0o755)
         monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(venv_root))
 
         assert adapter.verify_managed_binary(str(executable)) is True

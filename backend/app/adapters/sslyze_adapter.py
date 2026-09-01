@@ -392,7 +392,11 @@ class SslyzeAdapter(BaseToolAdapter):
         if not isinstance(binary, str) or not binary.strip():
             return False
         path = os.path.abspath(binary)
-        if not os.path.isfile(path) or os.path.realpath(path) != path:
+        if (
+            not os.path.isfile(path)
+            or (os.name != "nt" and not os.access(path, os.X_OK))
+            or os.path.realpath(path) != path
+        ):
             return False
         if os.path.basename(path).lower() not in {"sslyze", "sslyze.exe"}:
             return False

@@ -55,6 +55,8 @@ def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):
         managed_dir.mkdir(parents=True)
         binary = managed_dir / "subfinder"
         binary.write_bytes(b"approved-binary")
+        if os.name != "nt":
+            binary.chmod(0o755)
         record = managed_dir / "subfinder.trust.json"
         monkeypatch.setattr(module, "__file__", str(adapter_dir / "subfinder_adapter.py"))
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()

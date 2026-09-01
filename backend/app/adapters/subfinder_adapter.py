@@ -76,6 +76,8 @@ class SubfinderAdapter(BaseToolAdapter):
         """Verify the exact managed executable and its installer-created identity record."""
         managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
         path = os.path.abspath(binary)
+        if not os.path.isfile(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
+            return False
         if os.path.realpath(path) != path:
             return False
         if os.path.dirname(path) != managed_dir or os.path.basename(path).lower() not in {"subfinder", "subfinder.exe"}:
