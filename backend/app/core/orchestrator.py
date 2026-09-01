@@ -242,6 +242,11 @@ class ScanOrchestrator:
         job = self._active_jobs.get(scan_id)
         if job:
             job.tool_execution_states[tool_name] = state
+            if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}:
+                job.summary.coverage.is_fully_assessed = False
+                limitation = f"{tool_name}: {state}"
+                if limitation not in job.summary.coverage.coverage_limitations:
+                    job.summary.coverage.coverage_limitations.append(limitation)
         await self._broadcast(scan_id, "tool_execution_state", {"tool_name": tool_name, "state": state})
 
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:

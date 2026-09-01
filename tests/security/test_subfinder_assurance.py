@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import uuid
+from pathlib import Path
 
 from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredSubdomain
 from app.core.orchestrator import ScanOrchestrator
@@ -32,6 +33,13 @@ def test_command_is_structured_and_has_no_client_flags():
 
 def test_unmanaged_binary_cannot_satisfy_assured_execution():
     assert SubfinderAdapter().verify_managed_binary("/usr/local/bin/subfinder") is False
+
+
+def test_runtime_harness_is_explicitly_unavailable_without_approved_binary():
+    managed_dir = Path("backend/bin")
+    candidates = [managed_dir / "subfinder", managed_dir / "subfinder.exe"]
+    if not any(path.exists() for path in candidates):
+        pytest.skip("UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed")
 
 
 def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):

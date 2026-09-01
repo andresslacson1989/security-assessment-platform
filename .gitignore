@@ -56,4 +56,4 @@ Thumbs.db
 # In-App downloaded binaries
 backend/bin/*
 !backend/bin/.gitkeep
-
+.pytest-tmp/
