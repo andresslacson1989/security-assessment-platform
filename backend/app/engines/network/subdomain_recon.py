@@ -169,7 +169,11 @@ async def audit_subdomain_osint(
                             cand = line.strip().lower()
                             if cand.startswith("*."):
                                 cand = cand[2:]
-                            if cand and cand.endswith(apex_domain) and cand != apex_domain:
+                            # Require a DNS-label boundary. A plain suffix
+                            # check would treat attacker-controlled names such
+                            # as ``notexample.com`` as children of
+                            # ``example.com`` and then resolve/assess them.
+                            if cand and cand.endswith(f".{apex_domain}") and cand != apex_domain:
                                 discovered_names.add(cand)
     except Exception as exc:
         if emit_log:

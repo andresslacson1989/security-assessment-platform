@@ -7,7 +7,7 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from app.core.models import ScanConfig, Severity
+from app.core.models import ScanConfig, Severity, DiscoveredSubdomain
 from app.engines.network.origin_exposure import (
     is_cloudflare_ip,
     is_private_or_loopback_ip,
@@ -15,6 +15,7 @@ from app.engines.network.origin_exposure import (
     fetch_ct_logs,
     safe_probe_exposed_ip,
 )
+from app.engines.network.subdomain_recon import audit_subdomain_osint
 
 
 def test_is_cloudflare_ip_ipv4_and_ipv6():
@@ -180,3 +181,33 @@ async def test_external_ct_and_origin_clients_require_verified_tls_without_redir
     for call in calls:
         assert call.kwargs["verify"] is True
         assert call.kwargs["follow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_ct_subdomain_scope_requires_label_boundary():
+    """A look-alike suffix must not be treated as an authorized child domain."""
+    response = MagicMock(status_code=200)
+    response.json.return_value = [{
+        "name_value": "api.example.com\nnotexample.com\nexample.com.evil.test"
+    }]
+    client = AsyncMock()
+    client.get.return_value = response
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=None)
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    async def details(host, _resolver):
+        return DiscoveredSubdomain(domain=host, dns_status="NXDOMAIN")
+
+    with patch("app.engines.network.subdomain_recon.httpx.AsyncClient", return_value=context), \
+         patch("app.engines.network.subdomain_recon.resolve_subdomain_details", side_effect=details):
+        await audit_subdomain_osint(
+            "example.com", ScanConfig(), "scan-scope", "org-scope",
+            emit_subdomain=emit,
+        )
+
+    assert [item.domain for item in emitted] == ["api.example.com"]
