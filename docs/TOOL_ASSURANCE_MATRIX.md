@@ -77,6 +77,8 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Output Format & Parser**: Line-by-line JSON output (`-json -silent`).
 - **Finding Normalization**: Emits discovery observations and `NET-OSINT-001` informational findings; out-of-scope and malformed records are rejected with warnings and are not emitted as candidates.
 - **Role Strategy**: **PRIMARY**. Complemented by native `crt.sh` client. Discovery is not authorization and does not itself create an active scan target.
+- **Runtime Evidence**: Approved managed Subfinder `v2.6.5` executable was unavailable in the verification environment; real binary execution and runtime command acceptance remain `UNAVAILABLE` / `UNVERIFIED`.
+- **Architectural Limitation**: Explicit inventory admission and active-target authorization are broader product capabilities and are not implemented by this adapter.
 
 ### 4. httpx (High-Speed Multi-Purpose HTTP Prober)
 - **Security Domain**: HTTP Probing & Discovery

@@ -88,6 +88,10 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 - **Tests:** `tests/security/test_subfinder_assurance.py::test_discovery_never_promotes_out_of_scope_or_resolves_hosts`.
 - **Status:** PARTIALLY VERIFIED; provider egress governance, credential injection, and persistent inventory-admission workflow require further implementation.
 
+### E11.3 Runtime Verification Limitation
+- **Evidence:** No approved managed Subfinder `v2.6.5` executable was present in the verification environment.
+- **Status:** UNAVAILABLE / UNVERIFIED. Repository command and parser tests pass, but real v2.6.5 process execution has not been demonstrated.
+
 ---
 
 ## 3. Final Verification Assertion
