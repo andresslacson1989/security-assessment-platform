@@ -87,7 +87,9 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=True,
                     )
+                    await report_tool_state("checkov", checkov_adapter, len(checkov_findings))
                     for f in checkov_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -95,8 +97,12 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("checkov", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Checkov CLI not available - using native IaC & manifest auditors")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("checkov", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Checkov adapter error: {e}")
 
         # 0.2 Trivy Adapter (Container & Dockerfile SCA)
@@ -144,14 +150,20 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id="active",
                         record_cis_result=record_cis,
+                        require_managed_binary=True,
                     )
+                    await report_tool_state("dockle", dockle_adapter, len(dockle_findings))
                     for f in dockle_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "dockle"
                             f.scan_id = "active"
                             findings.append(f)
+                elif tool_state_cb:
+                    await tool_state_cb("dockle", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("dockle", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Dockle adapter error: {e}")
 
         # 0.4 Kube-bench Adapter (CIS Kubernetes Benchmark)
@@ -168,14 +180,20 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id="active",
                         record_cis_result=record_cis,
+                        require_managed_binary=True,
                     )
+                    await report_tool_state("kube-bench", kb_adapter, len(kb_findings))
                     for f in kb_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "kube_bench"
                             f.scan_id = "active"
                             findings.append(f)
+                elif tool_state_cb:
+                    await tool_state_cb("kube-bench", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("kube-bench", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Kube-bench adapter error: {e}")
 
         # 0.5 Prowler Adapter (Multi-Cloud CIS Foundations)
@@ -192,14 +210,20 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id="active",
                         record_cis_result=record_cis,
+                        require_managed_binary=True,
                     )
+                    await report_tool_state("prowler", prowler_adapter, len(prowler_findings))
                     for f in prowler_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "prowler"
                             f.scan_id = "active"
                             findings.append(f)
+                elif tool_state_cb:
+                    await tool_state_cb("prowler", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("prowler", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Prowler adapter error: {e}")
 
         # --- Stage 1: Dockerfile Container Hardening ---

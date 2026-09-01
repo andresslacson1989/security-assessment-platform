@@ -11,7 +11,7 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, CISBenchmarkResult
+    calculate_fingerprint, CISBenchmarkResult, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -20,16 +20,17 @@ class DockleAdapter(BaseToolAdapter):
     """
     Adapter for Goodwithtech Dockle container image linter for CIS Docker Benchmark compliance.
     """
+    approved_version = "0.4.14"
 
     @property
     def tool_name(self) -> str:
         return "dockle"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check)
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -53,11 +54,23 @@ class DockleAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Dockle binary not found. Skipping CIS Docker image audit.")
             return findings
 
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Dockle execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(
+            config.adapters.dockle_path or config.adapters.custom_dockle_path,
+            emit_log,
+            pre_launch_check=managed_check,
+        ):
+            return findings
+
         target_image = target.value
         await emit_log(LogLevel.INFO, f"Executing Dockle CIS container security linter on: {target_image}")
         cmd = [binary, "-f", "json", "--exit-code", "0", target_image]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
         try:
             data = json.loads(stdout)

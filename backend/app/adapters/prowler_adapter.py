@@ -11,7 +11,7 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, CISBenchmarkResult
+    calculate_fingerprint, CISBenchmarkResult, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -20,16 +20,18 @@ class ProwlerAdapter(BaseToolAdapter):
     """
     Adapter for Prowler multi-cloud security assessment, audit, and CIS benchmark engine.
     """
+    approved_version = "4.1.0"
+    package_name = "prowler"
 
     @property
     def tool_name(self) -> str:
         return "prowler"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-v"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command([binary, "-v"], timeout=10.0, pre_launch_check=pre_launch_check)
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -53,10 +55,22 @@ class ProwlerAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Prowler binary not found. Skipping multi-cloud CIS benchmark audit.")
             return findings
 
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Prowler execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(
+            config.adapters.prowler_path or config.adapters.custom_prowler_path,
+            emit_log,
+            pre_launch_check=managed_check,
+        ):
+            return findings
+
         await emit_log(LogLevel.INFO, "Executing Prowler CIS Cloud Foundations compliance assessment...")
         cmd = [binary, "aws", "-M", "json", "--quiet"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
         try:
             items = []

@@ -16,6 +16,7 @@ from app.core.models import (
     Severity,
     ScanConfig,
     LogLevel,
+    NormalizedExecutionState,
     calculate_fingerprint,
 )
 from app.adapters.base_adapter import BaseToolAdapter
@@ -26,12 +27,14 @@ class CheckovAdapter(BaseToolAdapter):
     Hybrid tool adapter for Checkov Infrastructure-as-Code (IaC) policy scanner.
     Normalizes JSON findings for Terraform, Kubernetes, Dockerfile, and Compose into canonical IAC-xxx findings.
     """
+    approved_version = "3.2.0"
+    package_name = "checkov"
 
     @property
     def tool_name(self) -> str:
         return "checkov"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves Checkov version string via `checkov -v`.
         """
@@ -39,7 +42,7 @@ class CheckovAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "-v"], timeout=5.0)
+        returncode, stdout, stderr = await self.execute_command([path, "-v"], timeout=5.0, pre_launch_check=pre_launch_check)
         output = stdout.strip() or stderr.strip()
         if output:
             match = re.search(r"(\d+\.\d+(\.\d+)?)", output)
@@ -67,6 +70,14 @@ class CheckovAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Checkov binary not found on host. Skipping Checkov execution.")
             return findings
 
+        managed_check = (lambda: self.verify_managed_binary(checkov_path)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Checkov execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
+            return findings
+
         repo_path = target.value.strip()
         if not os.path.exists(repo_path):
             await emit_log(LogLevel.WARNING, f"Target path '{repo_path}' does not exist for Checkov scan.")
@@ -85,6 +96,7 @@ class CheckovAdapter(BaseToolAdapter):
             cmd,
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
+            pre_launch_check=managed_check,
         )
 
         if not stdout.strip():

@@ -8,13 +8,17 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 import pytest
 
-from app.core.models import Target, TargetType, ScanConfig, Severity
+from app.core.models import Target, TargetType, ScanConfig, Severity, NormalizedExecutionState
 from app.engines.infra_iac.dockerfile_auditor import audit_dockerfile_content, audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_yaml, audit_compose_files
 from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_yaml, audit_k8s_manifests
 from app.engines.infra_iac.terraform_auditor import audit_terraform_file, audit_terraform_files
 from app.engines.infra_iac.engine import InfraIacAssessmentEngine
 from app.adapters.trivy_adapter import TrivyAdapter
+from app.adapters.checkov_adapter import CheckovAdapter
+from app.adapters.dockle_adapter import DockleAdapter
+from app.adapters.kubebench_adapter import KubeBenchAdapter
+from app.adapters.prowler_adapter import ProwlerAdapter
 
 
 def test_dockerfile_auditor_rules():
@@ -210,3 +214,42 @@ async def test_infra_iac_trivy_uses_managed_execution_boundary(monkeypatch, tmp_
     assert run_mock.await_count == 1
     assert run_mock.await_args.kwargs["require_managed_binary"] is True
     assert tool_states == [("trivy", "COMPLETED_NO_FINDINGS")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_type", "binary_name"),
+    [
+        (CheckovAdapter, "checkov"),
+        (DockleAdapter, "dockle"),
+        (KubeBenchAdapter, "kube-bench"),
+        (ProwlerAdapter, "prowler"),
+    ],
+)
+async def test_infra_iac_adapters_fail_closed_without_managed_identity(
+    monkeypatch, tmp_path, adapter_type, binary_name
+):
+    """IaC tools must not execute an unmanaged host binary."""
+    adapter = adapter_type()
+    fake_binary = tmp_path / binary_name
+    fake_binary.write_bytes(b"untrusted executable")
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: str(fake_binary))
+    execute_mock = AsyncMock()
+    monkeypatch.setattr(adapter, "execute_command", execute_mock)
+
+    async def log_cb(*_args):
+        return None
+
+    async def finding_cb(*_args):
+        return None
+
+    await adapter.run(
+        Target(name="IaC Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
+        ScanConfig(),
+        log_cb,
+        finding_cb,
+        require_managed_binary=True,
+    )
+
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    execute_mock.assert_not_awaited()
