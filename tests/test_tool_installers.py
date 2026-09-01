@@ -144,6 +144,25 @@ async def test_pip_tool_installer_failure():
         assert any("failed with exit code 1" in l for l in logs)
 
 
+def test_pip_installer_uses_exact_contract_version():
+    installer = PipToolInstaller("bandit")
+    assert installer.install_command_hint.endswith("bandit==1.7.8")
+
+
+@pytest.mark.asyncio
+async def test_github_installer_rejects_unmanifested_tool():
+    installer = GithubReleaseInstaller("nuclei")
+    logs = []
+    progress = []
+    with patch("app.installers.tool_manifest.PINNED_TOOL_MANIFEST", {}):
+        result = await installer.install(
+            lambda message: logs.append(message) or asyncio.sleep(0),
+            lambda percent, stage: progress.append((percent, stage)) or asyncio.sleep(0),
+        )
+    assert result is False
+    assert any("no authoritative release tag" in message for message in logs)
+
+
 @pytest.mark.asyncio
 async def test_github_release_installer_zip_slip_prevention():
     """Tests that ZipSlip traversal attempts in archives are detected and rejected."""

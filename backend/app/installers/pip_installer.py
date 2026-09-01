@@ -26,6 +26,7 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "package_name": "sslyze",
         "binary_name": "sslyze",
         "command_hint": "pip install --upgrade sslyze",
+        "pinned_version": "5.2.0",
     },
     "bandit": {
         "display_name": "Bandit Python AST Security Linter",
@@ -33,6 +34,7 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "package_name": "bandit",
         "binary_name": "bandit",
         "command_hint": "pip install --upgrade bandit",
+        "pinned_version": "1.7.8",
     },
     "semgrep": {
         "display_name": "Semgrep Semantic SAST Engine",
@@ -40,6 +42,7 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "package_name": "semgrep",
         "binary_name": "semgrep",
         "command_hint": "pip install --upgrade semgrep",
+        "pinned_version": "1.65.0",
     },
     "checkov": {
         "display_name": "Checkov Infrastructure-as-Code Policy Auditor",
@@ -47,6 +50,7 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "package_name": "checkov",
         "binary_name": "checkov",
         "command_hint": "pip install --upgrade checkov",
+        "pinned_version": "3.2.0",
     },
     "prowler": {
         "display_name": "Prowler Multi-Cloud CIS Benchmark & Posture Auditor",
@@ -54,6 +58,7 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "package_name": "prowler",
         "binary_name": "prowler",
         "command_hint": "pip install --upgrade prowler",
+        "pinned_version": "4.1.0",
     },
     "schemathesis": {
         "display_name": "Schemathesis Property-Based API Contract Fuzzer",
@@ -61,6 +66,7 @@ PIP_TOOL_CONFIGS: Dict[str, dict] = {
         "package_name": "schemathesis",
         "binary_name": "schemathesis",
         "command_hint": "pip install --upgrade schemathesis",
+        "pinned_version": "3.20.0",
     },
 }
 
@@ -95,7 +101,7 @@ class PipToolInstaller(BaseToolInstaller):
 
     @property
     def install_command_hint(self) -> str:
-        return self._cfg["command_hint"]
+        return f"python -m pip install {self._cfg['package_name']}=={self._cfg['pinned_version']}"
 
     @property
     def download_url(self) -> Optional[str]:
@@ -148,7 +154,7 @@ class PipToolInstaller(BaseToolInstaller):
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
         if force:
             cmd.append("--force-reinstall")
-        cmd.append(pkg)
+        cmd.append(f"{pkg}=={self._cfg['pinned_version']}")
 
         await emit_progress(30, f"Running: {' '.join(cmd)}")
 
@@ -192,8 +198,13 @@ class PipToolInstaller(BaseToolInstaller):
                     ret = val
                     if ret == 0:
                         ver = await self.get_version()
-                        await emit_progress(100, f"Successfully installed {pkg} (version: {ver or 'latest'})")
-                        await emit_log(f"Package '{pkg}' installed successfully.")
+                        expected = f"{pkg} {self._cfg['pinned_version']}"
+                        if ver != expected:
+                            await emit_progress(100, f"Pinned version verification failed for {pkg}: expected {expected}, found {ver or 'unavailable'}")
+                            await emit_log(f"Package '{pkg}' installation rejected because the exact pinned version was not verified.")
+                            return False
+                        await emit_progress(100, f"Successfully installed {expected}")
+                        await emit_log(f"Package '{pkg}' installed successfully at the pinned version.")
                         return True
                     else:
                         await emit_progress(100, f"Pip installation failed with exit code {ret}")

@@ -306,6 +306,15 @@ class GithubReleaseInstaller(BaseToolInstaller):
         from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, verify_download_integrity
         manifest_entry = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
         pinned_tag = manifest_entry.get("pinned_version")
+        checksums = manifest_entry.get("sha256_checksums", {})
+        if not pinned_tag or not checksums:
+            message = (
+                f"Installation refused for '{self.tool_name}': no authoritative release tag and platform digest "
+                "are registered in PINNED_TOOL_MANIFEST."
+            )
+            await emit_log(message)
+            await emit_progress(100, message)
+            return False
         
         rel_label = pinned_tag or "pinned release"
         await emit_log(f"Querying GitHub release metadata for {repo} ({rel_label})...")
