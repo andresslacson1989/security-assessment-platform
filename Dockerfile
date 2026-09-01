@@ -164,11 +164,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 RUN mkdir -p /app/data/scans /app/backend /app/frontend
 
-# Install Python requirements (Bandit, SSLyze, Semgrep, Checkov, Prowler, Schemathesis, FastAPI, etc.)
-COPY backend/requirements.txt /app/backend/
+# Install application requirements from the hash-locked dependency set.
+COPY backend/requirements.lock /app/backend/
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir --timeout 1000 --retries 10 -r /app/backend/requirements.txt && \
-    pip install --no-cache-dir --timeout 1000 --retries 10 bandit sslyze semgrep checkov prowler schemathesis
+    pip install --no-cache-dir --require-hashes --timeout 1000 --retries 10 -r /app/backend/requirements.lock
+
+# Install each contract-pinned Python tool into its own hash-locked venv.
+COPY backend/tool-requirements /app/backend/tool-requirements
+ENV CYBERASSESS_TOOL_VENV_DIR=/opt/cyberassess/tool-venvs
+RUN mkdir -p "$CYBERASSESS_TOOL_VENV_DIR" && \
+    for tool in sslyze bandit semgrep checkov prowler schemathesis; do \
+        python -m venv "$CYBERASSESS_TOOL_VENV_DIR/$tool" && \
+        "$CYBERASSESS_TOOL_VENV_DIR/$tool/bin/python" -m pip install --no-cache-dir --require-hashes --timeout 1000 --retries 10 -r "/app/backend/tool-requirements/$tool.lock"; \
+    done
+ENV PATH="/opt/cyberassess/tool-venvs/sslyze/bin:/opt/cyberassess/tool-venvs/bandit/bin:/opt/cyberassess/tool-venvs/semgrep/bin:/opt/cyberassess/tool-venvs/checkov/bin:/opt/cyberassess/tool-venvs/prowler/bin:/opt/cyberassess/tool-venvs/schemathesis/bin:$PATH"
 
 # Copy pre-compiled standalone Go binaries AFTER pip so pip packages cannot overwrite CLI tools (e.g. ProjectDiscovery httpx)
 COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei

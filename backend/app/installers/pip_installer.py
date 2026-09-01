@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Optional, Dict
 
 from app.core.models import ToolInstallMethod
@@ -100,15 +101,42 @@ class PipToolInstaller(BaseToolInstaller):
 
     @property
     def install_command_hint(self) -> str:
-        return f"python -m pip install {self._cfg['package_name']}=={self._cfg['pinned_version']}"
+        return f"python -m pip install --require-hashes -r tool-requirements/{self._tool_name}.lock"
 
     @property
     def download_url(self) -> Optional[str]:
         pkg = self._cfg["package_name"]
         return f"https://pypi.org/project/{pkg}/"
 
+    def resolve_binary_path(self) -> Optional[str]:
+        """Resolve only the managed per-tool venv before diagnostic fallbacks."""
+        venv_root = Path(os.environ.get(
+            "CYBERASSESS_TOOL_VENV_DIR",
+            str(Path(__file__).resolve().parents[2] / ".tool-venvs"),
+        )).resolve()
+        venv_bin = venv_root / self._tool_name / ("Scripts" if os.name == "nt" else "bin")
+        for candidate in (venv_bin / f"{self._cfg['binary_name']}.exe", venv_bin / self._cfg["binary_name"]):
+            if candidate.is_file():
+                return str(candidate)
+        return super().resolve_binary_path()
+
     async def get_version(self) -> Optional[str]:
         pkg = self._cfg["package_name"]
+        path = self.resolve_binary_path()
+        if path:
+            try:
+                return_code, stdout, stderr = await process_supervisor.execute(
+                    [path, "--version"], timeout=5.0, max_output_bytes=1024 * 1024,
+                )
+                if return_code == 0:
+                    output = (stdout or stderr or "").strip()
+                    if output:
+                        return output.splitlines()[0]
+            except Exception:
+                pass
+
+        # Metadata fallback is useful for diagnostics when the executable is
+        # not present, but it is never preferred over the managed executable.
         try:
             from importlib.metadata import version
             ver = version(pkg)
@@ -117,23 +145,7 @@ class PipToolInstaller(BaseToolInstaller):
         except Exception:
             pass
 
-        # Fallback: check binary directly via thread
-        path = self.resolve_binary_path()
-        if not path:
-            return None
-
-        try:
-            return_code, stdout, stderr = await process_supervisor.execute(
-                [path, "--version"],
-                timeout=5.0,
-                max_output_bytes=1024 * 1024,
-            )
-            if return_code != 0:
-                return None
-            output = (stdout or stderr or "").strip()
-            return output.splitlines()[0] if output else None
-        except Exception:
-            return None
+        return None
 
     async def install(
         self,
@@ -142,20 +154,43 @@ class PipToolInstaller(BaseToolInstaller):
         force: bool = False,
     ) -> bool:
         pkg = self._cfg["package_name"]
+        lock_path = Path(__file__).resolve().parents[2] / "tool-requirements" / f"{self._tool_name}.lock"
+        if not lock_path.is_file():
+            await emit_log(f"Package '{pkg}' installation rejected: its hash-locked requirements file is missing.")
+            await emit_progress(100, f"Missing locked requirements for {pkg}")
+            return False
+
+        venv_root = Path(os.environ.get(
+            "CYBERASSESS_TOOL_VENV_DIR",
+            str(Path(__file__).resolve().parents[2] / ".tool-venvs"),
+        )).resolve()
+        venv_dir = venv_root / self._tool_name
+        venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         await emit_log(f"Starting pip installation for package '{pkg}'...")
         await emit_progress(10, f"Initializing pip install for {pkg}...")
 
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
+        if not venv_python.is_file() or force:
+            await emit_progress(20, f"Creating isolated environment for {pkg}...")
+            create_ret, _, create_err = await process_supervisor.execute(
+                [sys.executable, "-m", "venv", str(venv_dir)],
+                timeout=120.0,
+                max_output_bytes=10 * 1024 * 1024,
+            )
+            if create_ret != 0:
+                await emit_log(f"Virtual environment creation failed with exit code {create_ret}: {create_err}")
+                await emit_progress(100, f"Environment creation failed for {pkg}")
+                return False
+
+        cmd = [str(venv_python), "-m", "pip", "install", "--require-hashes", "-r", str(lock_path)]
         if force:
-            cmd.append("--force-reinstall")
-        cmd.append(f"{pkg}=={self._cfg['pinned_version']}")
+            cmd.insert(5, "--force-reinstall")
 
         await emit_progress(30, f"Running: {' '.join(cmd)}")
 
         try:
             ret, stdout, stderr = await process_supervisor.execute(
                 cmd,
-                timeout=120.0,
+                timeout=600.0,
                 max_output_bytes=10 * 1024 * 1024,
             )
             output = stdout + (f"\n{stderr}" if stderr else "")

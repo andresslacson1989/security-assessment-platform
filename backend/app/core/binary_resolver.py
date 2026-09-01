@@ -176,6 +176,14 @@ def resolve_tool_binary(
             return os.path.abspath(candidate)
 
     # Tier 3: Python environment Scripts / bin directory (for pip-installed tools)
+    tool_venv_root = os.environ.get("CYBERASSESS_TOOL_VENV_DIR")
+    if tool_venv_root:
+        venv_dir = os.path.join(os.path.abspath(tool_venv_root), tool_name)
+        venv_bin_dir = os.path.join(venv_dir, "Scripts") if sys.platform == "win32" else os.path.join(venv_dir, "bin")
+        for candidate in (os.path.join(venv_bin_dir, f"{tool_name}.exe"), os.path.join(venv_bin_dir, tool_name)):
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+
     py_dir = os.path.dirname(sys.executable)
     py_candidates = [
         os.path.join(py_dir, "Scripts", f"{tool_name}.exe"),

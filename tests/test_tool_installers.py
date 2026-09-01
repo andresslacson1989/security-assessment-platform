@@ -28,6 +28,7 @@ from app.core.auth import create_access_token
 from app.installers.base_installer import BaseToolInstaller, SecurityError
 from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
+from app.core.binary_resolver import resolve_tool_binary
 from app.installers.system_installer import SystemToolHelper
 from app.installers.manager import ToolInstallationManager
 
@@ -116,7 +117,7 @@ async def test_pip_tool_installer_success():
             assert res is True
             assert any("Successfully installed" in l for l in logs)
             assert progress_records[-1][0] == 100
-    assert execute_mock.await_args.kwargs["timeout"] == 120.0
+    assert execute_mock.await_args.kwargs["timeout"] == 600.0
     assert execute_mock.await_args.kwargs["max_output_bytes"] == 10 * 1024 * 1024
 
 
@@ -162,7 +163,17 @@ async def test_pip_tool_installer_failure():
 
 def test_pip_installer_uses_exact_contract_version():
     installer = PipToolInstaller("bandit")
-    assert installer.install_command_hint.endswith("bandit==1.7.8")
+    assert installer.install_command_hint == "python -m pip install --require-hashes -r tool-requirements/bandit.lock"
+
+
+def test_pip_tool_resolves_managed_virtualenv_binary_first(monkeypatch, tmp_path):
+    venv_bin = tmp_path / "bandit" / ("Scripts" if os.name == "nt" else "bin")
+    venv_bin.mkdir(parents=True)
+    binary = venv_bin / ("bandit.exe" if os.name == "nt" else "bandit")
+    binary.write_text("managed", encoding="utf-8")
+    monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(tmp_path))
+
+    assert resolve_tool_binary("bandit") == str(binary.resolve())
 
 
 @pytest.mark.asyncio
