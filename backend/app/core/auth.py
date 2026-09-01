@@ -66,9 +66,17 @@ def rotate_signing_key(new_kid: str, new_secret: str) -> None:
     Contract 01 §3 & Contract 08 §1: Rotates active JWT signing key.
     Allows seamless token transition by preserving previous verification keys.
     """
+    if not isinstance(new_kid, str) or not new_kid.strip() or len(new_kid) > 128:
+        raise ValueError("JWT key identifier must be a non-empty string of at most 128 characters.")
+    normalized_secret = new_secret.strip() if isinstance(new_secret, str) else ""
+    if (
+        len(normalized_secret) < 32
+        or normalized_secret.lower() in _invalid_secret_values
+    ):
+        raise ValueError("JWT signing keys must contain at least 32 non-trivial characters.")
     global ACTIVE_KEY_ID
-    JWT_KEY_ROTATION_STORE[new_kid] = new_secret
-    ACTIVE_KEY_ID = new_kid
+    JWT_KEY_ROTATION_STORE[new_kid] = normalized_secret
+    ACTIVE_KEY_ID = new_kid.strip()
 
 
 def retire_signing_key(old_kid: str) -> None:

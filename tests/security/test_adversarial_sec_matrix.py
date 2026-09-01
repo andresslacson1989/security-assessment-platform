@@ -327,7 +327,7 @@ def test_sec_014_jwt_algorithm_confusion_rejection():
     assert decoded["sub"] == "usr-1"
 
     # Test key rotation: tokens signed with previous active keys remain valid while new keys take effect
-    rotate_signing_key("k-rotated-v13", "secret-rotated-256bit-key-here!!")
+    rotate_signing_key("k-rotated-v13", "secret-rotated-256bit-key-here!!!")
     new_token = create_access_token(user)
     assert decode_access_token(new_token)["sub"] == "usr-1"
     assert decode_access_token(token)["sub"] == "usr-1"
@@ -341,6 +341,12 @@ def test_sec_014_jwt_algorithm_confusion_rejection():
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
         decode_access_token(fake_token)
+
+
+def test_jwt_key_rotation_rejects_weak_replacement_keys():
+    """Key rotation must preserve the production signing-key strength policy."""
+    with pytest.raises(ValueError, match="at least 32"):
+        rotate_signing_key("weak-key", "too-short")
 
 
 def test_jwt_unknown_key_identifier_is_rejected():
