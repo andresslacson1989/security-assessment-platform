@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -660,8 +661,10 @@ class TestSslyzeAdapter:
     @pytest.mark.asyncio
     async def test_get_version(self):
         adapter = SslyzeAdapter()
-        with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/sslyze"):
-            with patch.object(adapter, "execute_command", return_value=(0, "SSLyze v5.2.0\n", "")):
+        managed_python = os.path.join(os.path.dirname(sys.executable), "python.exe" if os.name == "nt" else "python")
+        managed_binary = os.path.join(os.path.dirname(managed_python), "sslyze")
+        with patch.object(adapter, "resolve_binary_path", return_value=managed_binary):
+            with patch.object(adapter, "execute_command", return_value=(0, "5.2.0\n", "")):
                 ver = await adapter.get_version()
                 assert "5.2.0" in ver
 

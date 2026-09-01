@@ -14,9 +14,11 @@ SSLyze Enterprise-Grade Tool Adapter Specification:
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 import urllib.parse
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Dict, Set, Tuple, Any, Callable, Awaitable
 from pydantic import BaseModel, Field
 
@@ -387,20 +389,38 @@ class SslyzeAdapter(BaseToolAdapter):
 
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
         """
-        Contract 09 TOOL-SSLYZE §7: Retrieves SSLyze version via `sslyze --version`.
-        Strict regex extraction; rejects malformed output.
+        Contract 09 TOOL-SSLYZE §7: Retrieves SSLyze's exact package version from
+        the Python environment that owns the resolved executable.
+
+        SSLyze 5.2.0 does not implement a ``--version`` CLI flag; invoking it
+        would produce usage failure rather than an identity claim.  Deriving
+        the interpreter from the executable's own venv keeps the version probe
+        bound to the environment that will execute SSLyze and avoids trusting
+        the application's unrelated Python environment.
         """
         path = self.resolve_binary_path(custom_path)
         if not path:
             return None
 
-        returncode, stdout, _ = await self.execute_command([path, "--version"], timeout=5.0)
+        executable = Path(path).resolve()
+        python_name = "python.exe" if os.name == "nt" else "python"
+        interpreter = executable.parent / python_name
+        if not interpreter.is_file():
+            return None
+
+        version_probe = (
+            "import importlib.metadata as metadata; "
+            "print(metadata.version('sslyze'))"
+        )
+        returncode, stdout, _ = await self.execute_command(
+            [str(interpreter), "-c", version_probe],
+            timeout=5.0,
+            max_output_bytes=1024,
+        )
         if returncode == 0 and stdout:
             first_line = stdout.splitlines()[0].strip()
-            match = re.search(r"(\d+\.\d+(\.\d+)?)", first_line)
-            if match:
-                return f"SSLyze {match.group(1)}"
-            return first_line
+            if re.fullmatch(r"\d+\.\d+\.\d+", first_line):
+                return f"SSLyze {first_line}"
         return None
 
     def verify_version(self, version_str: Optional[str]) -> Tuple[bool, Optional[str]]:

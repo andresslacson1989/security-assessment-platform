@@ -15,6 +15,7 @@ Rigorous verification of:
 import argparse
 import hashlib
 import json
+import os
 import pytest
 import unittest.mock as mock
 from unittest.mock import AsyncMock, patch
@@ -97,6 +98,29 @@ class TestSslyzeIdentityAndVersion:
         ok, err = adapter.verify_version(None)
         assert ok is False
         assert "empty" in err.lower()
+
+    @pytest.mark.asyncio
+    async def test_version_probe_uses_own_venv_metadata(self, tmp_path):
+        """SSLyze 5.2.0 has no --version flag; probe its owning venv instead."""
+        adapter = SslyzeAdapter()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        executable = bin_dir / "sslyze"
+        interpreter = bin_dir / ("python.exe" if os.name == "nt" else "python")
+        executable.touch()
+        interpreter.touch()
+
+        with patch.object(adapter, "resolve_binary_path", return_value=str(executable)):
+            with patch.object(
+                adapter,
+                "execute_command",
+                return_value=(0, "5.2.0\n", ""),
+            ) as execute:
+                assert await adapter.get_version() == "SSLyze 5.2.0"
+
+        assert execute.call_args.args[0][0] == str(interpreter.resolve())
+        assert execute.call_args.args[0][1] == "-c"
+        assert "metadata.version('sslyze')" in execute.call_args.args[0][2]
 
 
 # ============================================================================
@@ -776,4 +800,3 @@ class TestSslyzeCapabilitySegmentation:
         assert "--heartbleed" not in DEFAULT_SCAN_FLAGS
         assert "--robot" not in DEFAULT_SCAN_FLAGS
         assert "--openssl_ccs" not in DEFAULT_SCAN_FLAGS
-
