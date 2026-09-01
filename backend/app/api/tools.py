@@ -6,6 +6,7 @@ Pentester Workbench, HTTP Repeater, and In-App Tool Installation API Router.
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import time
 from typing import Optional, List, Any
 from fastapi import APIRouter, HTTPException, status, Request, Depends
@@ -23,6 +24,7 @@ from app.core.models import (
     ToolBatchInstallRequest,
     AuditEvent,
     AuditAction,
+    sanitize_sensitive_text,
 )
 from app.installers.manager import ToolInstallationManager
 from app.core.ssrf_protector import (
@@ -35,6 +37,7 @@ from app.core.auth import get_current_user, require_admin, require_analyst_or_ad
 from app.core.db import db_manager
 
 router = APIRouter()
+logger = logging.getLogger("cyberassess.api.tools")
 
 
 # ============================================================================
@@ -271,13 +274,18 @@ async def execute_http_repeater(
                 tls_version = "TLSv1.3"
 
             # Enforce response body truncation at 10 MB if huge
-            body_text = resp.text
+            body_text = sanitize_sensitive_text(resp.text)
             if len(body_text) > 10 * 1024 * 1024:
                 body_text = body_text[:10 * 1024 * 1024] + "\n\n[... Response Truncated at 10 MB ...]"
 
+            safe_headers = {
+                str(name): sanitize_sensitive_text(str(value))
+                for name, value in resp.headers.items()
+            }
+
             return RepeaterResponse(
                 status_code=resp.status_code,
-                headers=dict(resp.headers),
+                headers=safe_headers,
                 body=body_text,
                 duration_ms=duration_ms,
                 content_length=len(resp.content),
@@ -293,15 +301,16 @@ async def execute_http_repeater(
     except httpx.TimeoutException:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"Request to '{payload.url}' timed out after {payload.timeout_seconds} seconds.",
+            detail="The repeater request exceeded its configured timeout.",
         )
-    except httpx.RequestError as exc:
+    except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to connect to target URL '{payload.url}': {str(exc)}",
+            detail="The repeater could not complete the outbound request.",
         )
     except Exception as exc:
+        logger.exception("Repeater execution failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Repeater execution error: {str(exc)}",
+            detail="The repeater request could not be completed.",
         )

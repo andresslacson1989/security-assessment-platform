@@ -824,9 +824,9 @@ async def test_scenario_14_interactive_http_repeater():
             mock_client = AsyncMock()
             mock_response = MagicMock()
             mock_response.status_code = 200
-            mock_response.headers = {"content-type": "application/json", "server": "test-nginx"}
-            mock_response.text = '{"status": "ok", "message": "repeater response"}'
-            mock_response.content = b'{"status": "ok", "message": "repeater response"}'
+            mock_response.headers = {"content-type": "application/json", "server": "test-nginx", "x-token": "Bearer response-secret"}
+            mock_response.text = '{"status": "ok", "token": "response-secret"}'
+            mock_response.content = b'{"status": "ok", "token": "response-secret"}'
             mock_response.extensions = {"tls_version": "TLSv1.3", "cipher_suite": "TLS_AES_256_GCM_SHA384"}
             mock_client.request.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
@@ -845,7 +845,8 @@ async def test_scenario_14_interactive_http_repeater():
             data = resp.json()
             assert data["status_code"] == 200
             assert data["headers"]["server"] == "test-nginx"
-            assert data["body"] == '{"status": "ok", "message": "repeater response"}'
+            assert data["headers"]["x-token"] == "Bearer [REDACTED]"
+            assert data["body"] == '{"status": "ok", "token": "[REDACTED]"}'
             assert data["duration_ms"] >= 0.0
             assert data["content_length"] == len(mock_response.content)
             assert data["tls_version"] == "TLSv1.3"
@@ -869,7 +870,7 @@ async def test_scenario_14_interactive_http_repeater():
                     headers=auth_headers,
                 )
                 assert resp.status_code == 504
-                assert "timed out" in resp.json()["detail"]
+                assert resp.json()["detail"] == "The repeater request exceeded its configured timeout."
 
         # Verify network/connection error handling
         with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
@@ -888,7 +889,7 @@ async def test_scenario_14_interactive_http_repeater():
                 headers=auth_headers,
             )
             assert resp.status_code == 502
-            assert "Failed to connect" in resp.json()["detail"]
+            assert resp.json()["detail"] == "The repeater could not complete the outbound request."
 
     # Verify Finding reproduction_curl PoC synthesis conformance
     test_finding = Finding(
