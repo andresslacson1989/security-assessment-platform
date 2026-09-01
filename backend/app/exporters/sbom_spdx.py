@@ -10,6 +10,7 @@ import uuid
 from typing import Dict, Any
 
 from app.core.models import ScanJob, SBOMReport
+from app.core.version import APP_VERSION
 
 
 def export_spdx_sbom(scan: ScanJob) -> str:
@@ -95,7 +96,7 @@ def export_spdx_sbom(scan: ScanJob) -> str:
         "documentNamespace": f"https://spdx.org/spdxdocs/{scan.id}",
         "creationInfo": {
             "created": datetime.now(timezone.utc).isoformat(),
-            "creators": ["Tool: CyberAssess-8.0.0", "Organization: Security Assessment Platform"],
+            "creators": [f"Tool: CyberAssess-{APP_VERSION}", "Organization: Security Assessment Platform"],
         },
         "packages": packages_list,
         "relationships": relationships,

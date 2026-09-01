@@ -10,6 +10,7 @@ import uuid
 from typing import Dict, Any
 
 from app.core.models import ScanJob, SBOMReport
+from app.core.version import APP_VERSION
 
 
 def export_cyclonedx_sbom(scan: ScanJob) -> str:
@@ -72,7 +73,7 @@ def export_cyclonedx_sbom(scan: ScanJob) -> str:
                 {
                     "vendor": "CyberAssess",
                     "name": "Security Assessment Platform",
-                    "version": "8.0.0",
+                    "version": APP_VERSION,
                 }
             ],
             "component": {

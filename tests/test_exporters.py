@@ -16,6 +16,7 @@ from app.core.models import (
     Severity,
     calculate_fingerprint,
 )
+from app.core.version import APP_VERSION
 from app.core.grading import calculate_scan_grade
 from app.exporters.html_exporter import export_scan_to_html
 from app.exporters.sarif_exporter import export_scan_to_sarif, severity_to_sarif_level
@@ -161,6 +162,7 @@ def test_cyclonedx_sbom_exporter():
     parsed = json.loads(cdx_str)
 
     assert parsed["bomFormat"] == "CycloneDX"
+    assert parsed["metadata"]["tools"][0]["version"] == APP_VERSION
     assert parsed["specVersion"] == "1.5"
     assert len(parsed["components"]) == 2
     assert parsed["components"][0]["name"] == "express"
@@ -184,6 +186,7 @@ def test_spdx_sbom_exporter():
     parsed = json.loads(spdx_str)
 
     assert parsed["spdxVersion"] == "SPDX-2.3"
+    assert f"Tool: CyberAssess-{APP_VERSION}" in parsed["creationInfo"]["creators"]
     assert parsed["dataLicense"] == "CC0-1.0"
     # Root package + 2 component packages = 3 packages
     assert len(parsed["packages"]) == 3
