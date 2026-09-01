@@ -15,6 +15,8 @@ import httpx
 from app.core.models import (
     RepeaterRequest,
     RepeaterResponse,
+    Target,
+    TargetType,
     ToolInstallationInfo,
     ToolInstallRequest,
     ToolInstallResponse,
@@ -23,7 +25,12 @@ from app.core.models import (
     AuditAction,
 )
 from app.installers.manager import ToolInstallationManager
-from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
+from app.core.ssrf_protector import (
+    assert_safe_url,
+    create_validated_target,
+    SSRFProtectionError,
+    ValidatedTargetTransport,
+)
 from app.core.auth import get_current_user, require_admin, require_analyst_or_admin, require_permission, UserProfile, UserRole
 from app.core.db import db_manager
 
@@ -193,6 +200,11 @@ async def execute_http_repeater(
     allow_internal = (current_user.role == UserRole.ADMIN)
     try:
         assert_safe_url(payload.url, allow_internal=allow_internal)
+        validated_target = create_validated_target(
+            Target(name="repeater-target", type=TargetType.URL, value=payload.url),
+            organization_id=current_user.organization_id,
+            allow_internal=allow_internal,
+        )
     except SSRFProtectionError as ssrf_err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -220,6 +232,7 @@ async def execute_http_repeater(
     try:
         async with httpx.AsyncClient(
             verify=True,
+            transport=ValidatedTargetTransport(validated_target),
             follow_redirects=payload.follow_redirects,
             timeout=payload.timeout_seconds,
             event_hooks={"response": [on_redirect_response]} if payload.follow_redirects else None,

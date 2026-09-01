@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
@@ -31,6 +32,7 @@ from app.core.models import (
 )
 from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
+from app.core.ssrf_protector import ValidatedTargetTransport
 from app.core.orchestrator import ScanOrchestrator
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.engines.network.dns_hygiene import audit_dns_hygiene
@@ -847,25 +849,35 @@ async def test_scenario_14_interactive_http_repeater():
             assert data["duration_ms"] >= 0.0
             assert data["content_length"] == len(mock_response.content)
             assert data["tls_version"] == "TLSv1.3"
+            client_kwargs = mock_client_cls.call_args.kwargs
+            assert isinstance(client_kwargs["transport"], ValidatedTargetTransport)
 
-        # Verify timeout error handling
-        with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
-             patch("app.api.tools.assert_safe_url"):
-            mock_client = AsyncMock()
-            mock_client.request.side_effect = httpx.TimeoutException("Connection timed out")
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            # Verify timeout error handling
+            with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
+                 patch("app.api.tools.assert_safe_url"), \
+                 patch("app.api.tools.create_validated_target", return_value=SimpleNamespace(
+                     canonical_value="https://slow.example.com",
+                     selected_destination="203.0.113.10",
+                 )):
+                mock_client = AsyncMock()
+                mock_client.request.side_effect = httpx.TimeoutException("Connection timed out")
+                mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            resp = await client.post(
-                "/api/tools/repeater",
-                json={"url": "https://slow.example.com", "method": "GET", "timeout_seconds": 1.0},
-                headers=auth_headers,
-            )
-            assert resp.status_code == 504
-            assert "timed out" in resp.json()["detail"]
+                resp = await client.post(
+                    "/api/tools/repeater",
+                    json={"url": "https://slow.example.com", "method": "GET", "timeout_seconds": 1.0},
+                    headers=auth_headers,
+                )
+                assert resp.status_code == 504
+                assert "timed out" in resp.json()["detail"]
 
         # Verify network/connection error handling
         with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
-             patch("app.api.tools.assert_safe_url"):
+             patch("app.api.tools.assert_safe_url"), \
+             patch("app.api.tools.create_validated_target", return_value=SimpleNamespace(
+                 canonical_value="https://unreachable.example.com",
+                 selected_destination="203.0.113.11",
+             )):
             mock_client = AsyncMock()
             mock_client.request.side_effect = httpx.ConnectError("Connection refused")
             mock_client_cls.return_value.__aenter__.return_value = mock_client
