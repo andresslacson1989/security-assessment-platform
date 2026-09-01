@@ -139,7 +139,17 @@ class SubfinderAdapter(BaseToolAdapter):
 
         async def publish_state() -> None:
             if emit_state:
-                state = self.last_execution_state.value.replace("EXECUTION_", "")
+                state_map = {
+                    NormalizedExecutionState.EXECUTION_BLOCKED: "BLOCKED",
+                    NormalizedExecutionState.EXECUTION_TIMED_OUT: "TIMED_OUT",
+                    NormalizedExecutionState.EXECUTION_CANCELLED: "CANCELLED",
+                    NormalizedExecutionState.COMPLETED_WITH_FINDINGS: "COMPLETED_WITH_FINDINGS",
+                    NormalizedExecutionState.COMPLETED_NO_FINDINGS: "COMPLETED_NO_FINDINGS",
+                    NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING: "PARTIAL_RESULTS_WITH_WARNING",
+                    NormalizedExecutionState.TOOL_EXECUTION_FAILED: "TOOL_EXECUTION_FAILED",
+                    NormalizedExecutionState.INVALID_VERSION: "INVALID_VERSION",
+                }
+                state = state_map[self.last_execution_state]
                 await emit_state("subfinder", state)
 
         binary = self.resolve_binary_path(config.adapters.subfinder_path or config.adapters.custom_subfinder_path)

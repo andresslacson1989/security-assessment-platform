@@ -85,6 +85,7 @@ async def test_audit_origin_exposure_with_mock_dataset():
         domain=target_domain,
         config=config,
         scan_id="test_scan_001",
+        organization_id="org-origin-test",
         emit_subdomain=subdomain_cb,
         mock_ct_results=mock_ct_results,
     )
@@ -96,6 +97,7 @@ async def test_audit_origin_exposure_with_mock_dataset():
     assert len(high_findings) == 4
     assert len(info_findings) == 1
     assert len(findings) == 5
+    assert {finding.organization_id for finding in findings} == {"org-origin-test"}
 
     # Check high findings check_id and CVSS
     for hf in high_findings:

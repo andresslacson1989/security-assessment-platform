@@ -117,6 +117,7 @@ async def audit_subdomain_osint(
     domain: str,
     config: ScanConfig,
     scan_id: str,
+    organization_id: Optional[str] = None,
     emit_subdomain: Optional[SubdomainDiscoveredCallback] = None,
     emit_finding: Optional[FindingCallback] = None,
     emit_log: Optional[LogCallback] = None,
@@ -192,6 +193,7 @@ async def audit_subdomain_osint(
             findings.append(
                 Finding(
                     scan_id=scan_id,
+                    organization_id=organization_id or "org-default",
                     engine="network",
                     check_id="NET-OSINT-001",
                     category="OSINT & Attack Surface",
@@ -232,6 +234,7 @@ async def audit_subdomain_osint(
             findings.append(
                 Finding(
                     scan_id=scan_id,
+                    organization_id=organization_id or "org-default",
                     engine="network",
                     check_id="NET-OSINT-002",
                     category="OSINT & Reconnaissance",

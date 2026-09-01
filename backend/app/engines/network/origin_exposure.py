@@ -248,6 +248,7 @@ async def audit_origin_exposure(
     domain: str,
     config: ScanConfig,
     scan_id: str = "active",
+    organization_id: Optional[str] = None,
     emit_subdomain: Optional[SubdomainDiscoveredCallback] = None,
     emit_finding: Optional[FindingCallback] = None,
     emit_log: Optional[LogCallback] = None,
@@ -306,6 +307,7 @@ async def audit_origin_exposure(
         obs = f"Wildcard certificate found in CT logs covering all subdomains for '{apex_domain}'"
         finding = Finding(
             scan_id=scan_id,
+            organization_id=organization_id or "org-default",
             engine="network",
             check_id="NET-CERT-004",
             category="Cryptographic & Infrastructure",
@@ -383,6 +385,7 @@ async def audit_origin_exposure(
 
             finding = Finding(
                 scan_id=scan_id,
+                organization_id=organization_id or "org-default",
                 engine="network",
                 check_id="NET-ORIGIN-001",
                 category="OSINT & Attack Surface Exposure",

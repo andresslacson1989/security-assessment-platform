@@ -977,6 +977,7 @@ async def test_scenario_12_passive_osint_subdomain_recon_and_cname_takeover():
                 "example.com",
                 config=config,
                 scan_id="test-osint",
+                organization_id="org-osint-test",
                 emit_subdomain=mock_sub_cb,
             )
 
@@ -984,6 +985,7 @@ async def test_scenario_12_passive_osint_subdomain_recon_and_cname_takeover():
             assert "NET-OSINT-001" in check_ids, "Expected dangling CNAME takeover finding (NET-OSINT-001)"
             assert "NET-OSINT-002" in check_ids, "Expected sensitive subdomain finding (NET-OSINT-002)"
             assert len(discovered_subdomains_list) >= 4
+            assert {finding.organization_id for finding in findings} == {"org-osint-test"}
 
     # 2. Test Service Banner Grabbing (NET-SVC-001)
     with patch("app.engines.network.banner_grabber.grab_service_banner", AsyncMock(return_value="220 (vsFTPd 2.3.4)")):
