@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock
+from unittest.mock import patch
 import json
 import hashlib
 import os
@@ -11,6 +12,8 @@ from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredS
 from app.core.orchestrator import ScanOrchestrator
 
 from app.adapters.subfinder_adapter import SubfinderAdapter
+from app.engines.network.engine import NetworkAssessmentEngine
+from app.core.models import RejectedDiscovery
 
 
 def test_normalization_and_scope_are_deterministic():
@@ -123,3 +126,63 @@ async def test_orchestrator_discovery_callback_does_not_authorize_or_queue_targe
     assert not hasattr(job, "validated_targets")
     assert not hasattr(orchestrator, "active_target_queue")
     assert job.discovered_subdomains[0].dns_status == "UNRESOLVED"
+
+
+@pytest.mark.asyncio
+async def test_network_engine_propagates_authoritative_tenant_and_provider_evidence():
+    rejected = []
+    states = []
+
+    class FakeSubfinder:
+        class _State:
+            value = "PARTIAL_RESULTS_WITH_WARNING"
+
+        last_execution_state = _State()
+
+        async def is_available(self, _path=None):
+            return True
+
+        async def run(self, _target, _config, _log, _finding, **kwargs):
+            await kwargs["emit_rejected_discovery"](RejectedDiscovery(
+                domain="outside.example.net", reason="OUT_OF_SCOPE", sources=["crtsh"],
+                authorized_root="example.com", assessment_id="scan-1",
+                organization_id=kwargs["organization_id"],
+            ))
+            await kwargs["emit_tool_execution_state"]("subfinder", "PARTIAL_RESULTS_WITH_WARNING")
+            return []
+
+    async def noop(*_args, **_kwargs):
+        return []
+
+    async def capture_rejection(value):
+        rejected.append(value)
+
+    async def capture_state(tool, state):
+        states.append((tool, state))
+
+    config = ScanConfig()
+    config.adapters.enable_subfinder = True
+    with patch("app.engines.network.engine.SubfinderAdapter", FakeSubfinder), \
+         patch("app.engines.network.engine.SslyzeAdapter") as sslyze, \
+         patch("app.engines.network.engine.NmapAdapter") as nmap, \
+         patch("app.engines.network.engine.HttpxAdapter") as httpx, \
+         patch("app.engines.network.engine.audit_tls_certificates", noop), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", noop), \
+         patch("app.engines.network.engine.audit_dns_hygiene", noop), \
+         patch("app.engines.network.engine.audit_exposed_ports", noop), \
+         patch("app.engines.network.engine.audit_origin_exposure", noop), \
+         patch("app.engines.network.engine.audit_subdomain_osint", noop):
+        sslyze.return_value.is_available = AsyncMock(return_value=False)
+        nmap.return_value.is_available = AsyncMock(return_value=False)
+        httpx.return_value.is_available = AsyncMock(return_value=False)
+        await NetworkAssessmentEngine().run(
+            Target(name="root", type=TargetType.DOMAIN, value="example.com"), config,
+            AsyncMock(), AsyncMock(), AsyncMock(), scan_id="scan-1",
+            organization_id="org-a", emit_rejected_discovery=capture_rejection,
+            emit_tool_execution_state=capture_state,
+        )
+
+    assert rejected[0].organization_id == "org-a"
+    assert rejected[0].organization_id != "org-default"
+    assert rejected[0].sources == ["crtsh"]
+    assert states == [("subfinder", "PARTIAL_RESULTS_WITH_WARNING")]

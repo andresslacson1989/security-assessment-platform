@@ -203,6 +203,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        organization_id=kwargs.get("organization_id"),
                         emit_subdomain=subdomain_cb,
                         emit_rejected_discovery=rejected_discovery_cb,
                     )
