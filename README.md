@@ -5,9 +5,24 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Tests](https://img.shields.io/badge/tests-199%20passed%20(100%25)-10b981.svg)](https://pytest.org/)
 [![Standards](https://img.shields.io/badge/standards-ASVS%20v5.0.0%20%7C%20NIST%20SSDF%20v1.1%20%7C%20NIST%20800--53-purple.svg)](https://github.com/andresslacson1989/security-assessment-platform)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Proprietary%20Non--Commercial-red.svg)](LICENSE)
 
 CyberAssess is an enterprise-grade automated security assessment and vulnerability management platform conforming to **OWASP ASVS v5.0.0**, **NIST SP 800-218 SSDF v1.1**, and **NIST SP 800-53 Rev 5**. Point it at a URL, domain, IP address, container manifest, or local repository workspace, and the engine automatically conducts a comprehensive battery of vulnerability tests, scores posture deterministically, clusters findings with preserved SLA clocks, and streams live telemetry to an interactive SOC HUD.
+
+## License
+
+CyberAssess is proprietary source-available software. Personal, educational,
+research, and other genuinely non-commercial use is permitted under the
+[CyberAssess Proprietary Non-Commercial License](LICENSE). Commercial use,
+including paid services, commercial internal deployment, SaaS, hosting, resale,
+and incorporation into a commercial product or service, requires a separate
+written commercial license from the copyright owner. The source code remains
+copyrighted; ownership is not transferred. CyberAssess names, logos, branding,
+and product identity are not licensed as trademarks.
+
+The repository may remain publicly viewable and forkable on GitHub. That public
+hosting does not change the rights granted by the license or make CyberAssess
+open source.
 
 ---
 

@@ -1,0 +1,127 @@
+CyberAssess Proprietary Non-Commercial License
+Version 1.0
+
+Copyright (c) 2026 Andress Lacson. All rights reserved.
+
+This license applies only to the original software, documentation, and other
+materials created by or for the CyberAssess project (collectively, the
+"Software") that are owned by Andress Lacson (the "Owner"). It does not apply
+to Third-Party Components described below.
+
+1. Ownership
+
+The Software is proprietary and source-available. The Owner retains all right,
+title, and interest in and to the Software, including all copyright and other
+intellectual-property rights. This license grants limited permission to use
+the Software; it does not sell, assign, transfer, or otherwise convey ownership
+of the Software to you. No rights are granted except those expressly stated in
+this license.
+
+2. Non-Commercial Permission
+
+Subject to this license, the Owner grants you a worldwide, non-exclusive,
+non-transferable, royalty-free license to:
+
+* download and run the Software for personal use;
+* use the Software for education, teaching, or academic or scientific research;
+* inspect and study the source code;
+* modify the Software and create derivative versions for personal,
+  educational, academic, research, or other genuinely non-commercial use; and
+* run those modifications privately for such non-commercial use.
+
+"Non-Commercial Use" means use that is not intended to generate revenue,
+commercial advantage, or monetary compensation, whether directly or
+indirectly. Use by a business, government contractor, or other organization in
+its operations is Commercial Use when it supports, enables, or substitutes for
+the organization's revenue-generating, customer-facing, billable, or
+profit-seeking activities. Nonprofit status alone does not make use
+non-commercial if the use generates revenue or commercial advantage.
+
+3. Commercial Restrictions
+
+Without the Owner's prior written authorization, you may not use, reproduce,
+modify, distribute, publish, display, perform, sell, sublicense, lease, rent,
+or otherwise exploit the Software for Commercial Use. Commercial Use includes,
+without limitation:
+
+* providing paid services, consulting, assessments, scanning, monitoring,
+  managed security, or support based on the Software;
+* offering the Software or its functionality as paid SaaS, a hosted service,
+  API, managed service, or other service for customers;
+* incorporating the Software into a commercial product or service or deploying
+  it for a commercial organization's internal business operations;
+* redistributing it in a paid or commercial package, or using it to support
+  advertising, sponsorship, subscriptions, or other monetization; and
+* representing the Software as your own proprietary software.
+
+You may not remove, obscure, or alter copyright, license, or attribution
+notices, or attach terms that weaken or contradict this license.
+
+4. Non-Commercial Redistribution
+
+You may redistribute unmodified or modified source or binary copies solely for
+Non-Commercial Use, provided that you include this license and all applicable
+copyright notices, identify material modifications, preserve the restrictions
+in this license for recipients, do not charge or attach a commercial
+transaction to the distribution, and do not imply ownership, endorsement, or
+affiliation with the Owner or CyberAssess. A recipient receives no greater
+rights than those granted by this license.
+
+5. Derivative Works and Forks
+
+Non-commercial modifications and forks are permitted under Section 2. Any
+distributed derivative must clearly identify that it has been modified, retain
+the notices and this license, and remain subject to the same non-commercial
+restrictions. You retain copyright in your original additions to the extent
+the law permits, but you do not acquire ownership or commercial rights in the
+Software. By distributing an addition that incorporates the Software, you
+grant the Owner a perpetual, worldwide, royalty-free license to use,
+reproduce, modify, and distribute that addition as part of the Software or a
+derivative, while this license remains applicable to the Software.
+
+6. Commercial Licensing
+
+Commercial rights are reserved exclusively to the Owner. Commercial Use
+requires a separate written license signed by the Owner before it begins. The
+Owner alone may grant such permissions unless that right is separately
+assigned in writing. No payment, contribution, distribution, or use creates an
+automatic commercial license.
+
+7. Trademarks and Branding
+
+This license grants no rights to the names, trademarks, service marks, logos,
+branding, product identity, or documentation branding of CyberAssess. You may
+refer to CyberAssess factually to identify the Software, but may not use its
+branding to imply endorsement, sponsorship, origin, or affiliation, or to name
+a modified product without the Owner's prior written permission.
+
+8. Third-Party Components
+
+Third-Party Components, including dependency packages, bundled tools, and
+upstream source code, remain the property of their respective owners and are
+subject to their respective licenses. This license does not claim ownership of
+or supersede those licenses. See THIRD_PARTY_NOTICES.md and the component
+documentation for available notices and obligations. You are responsible for
+reviewing those licenses before redistribution or Commercial Use.
+
+9. Disclaimer and Limitation of Liability
+
+THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTIES OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE OWNER WILL NOT
+BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY
+DAMAGES ARISING FROM OR RELATING TO THE SOFTWARE OR THIS LICENSE.
+
+10. Termination
+
+This license terminates automatically if you breach it. Upon termination, you
+must stop using and distributing the Software and destroy copies in your
+possession or control. Permissions that were properly exercised before
+termination do not cure the breach or grant continuing rights.
+
+11. Governing Terms
+
+If any provision is unenforceable, it will be limited to the minimum extent
+necessary and the remaining provisions will remain in effect. This license is
+the complete agreement governing the Software's use and may be changed only by
+the Owner in writing.
