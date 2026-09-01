@@ -114,12 +114,23 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
 
     hashed_pw = hash_password(payload.admin_password)
-    user, org = db_manager.bootstrap_system(
-        admin_username=payload.admin_username.strip(),
-        admin_email=payload.admin_email.strip(),
-        hashed_password=hashed_pw,
-        org_name=payload.organization_name.strip(),
-    )
+    try:
+        user, org = db_manager.bootstrap_system(
+            admin_username=payload.admin_username.strip(),
+            admin_email=payload.admin_email.strip(),
+            hashed_password=hashed_pw,
+            org_name=payload.organization_name.strip(),
+        )
+    except ValueError as exc:
+        # The database transaction is authoritative for the one-time race;
+        # translate a losing concurrent bootstrap into the documented API
+        # response rather than leaking an internal error.
+        if "already been initialized" not in str(exc):
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform is already initialized with an administrator. Bootstrap is closed.",
+        ) from exc
 
     token = create_access_token(user)
     return BootstrapResponse(
@@ -168,11 +179,23 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
                 detail="User account has been deactivated.",
             )
 
+        principal_type_value = row["principal_type"] if "principal_type" in row.keys() else PrincipalType.TENANT_PRINCIPAL.value
+        try:
+            principal_type = PrincipalType(principal_type_value)
+        except ValueError as exc:
+            # Never silently downgrade or elevate an identity when durable
+            # principal metadata is malformed.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="User identity metadata is invalid.",
+            ) from exc
+
         user = UserProfile(
             id=row["id"],
             username=row["username"],
             email=row["email"],
             role=UserRole(row["role"]),
+            principal_type=principal_type,
             organization_id=row["organization_id"],
             is_active=bool(row["is_active"]),
             created_at=utc_now(),
@@ -359,17 +382,30 @@ async def create_api_key(
 async def list_api_keys(
     current_user: UserProfile = Depends(require_analyst_or_admin),
 ) -> List[Dict[str, Any]]:
-    """Lists registered API keys for the caller's organization (excluding hashes)."""
+    """Lists only currently usable API keys for the caller's organization."""
     with db_manager._connection_scope() as conn:
         cur = conn.cursor()
+        now_str = utc_now().isoformat()
+        active_predicate = (
+            "status = 'ACTIVE' AND revoked_at IS NULL "
+            "AND (expires_at IS NULL OR expires_at > ?)"
+        )
         is_system_admin = (
             current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
             and current_user.role == UserRole.ADMIN
         )
         if is_system_admin:
-            cur.execute("SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at FROM api_keys")
+            cur.execute(
+                "SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at "
+                f"FROM api_keys WHERE {active_predicate}",
+                (now_str,),
+            )
         else:
-            cur.execute("SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at FROM api_keys WHERE organization_id = ?", (current_user.organization_id,))
+            cur.execute(
+                "SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at "
+                f"FROM api_keys WHERE organization_id = ? AND {active_predicate}",
+                (current_user.organization_id, now_str),
+            )
         rows = cur.fetchall()
 
         return [
@@ -381,7 +417,7 @@ async def list_api_keys(
                 "expires_at": r["expires_at"],
                 "revoked_at": r["revoked_at"],
                 "last_used_at": r["last_used_at"],
-                "is_active": r["revoked_at"] is None,
+                "is_active": True,
             }
             for r in rows
         ]

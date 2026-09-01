@@ -505,14 +505,28 @@ class DatabaseManager:
         Creates initial Organization and Administrator account.
         Raises ValueError if already initialized.
         """
-        if self.is_initialized():
-            raise ValueError("System has already been initialized with an administrator.")
-
         org_id = f"org-{uuid.uuid4().hex[:8]}"
         user_id = f"usr-{uuid.uuid4().hex[:8]}"
         now_str = utc_now().isoformat()
 
         with self._connection_scope() as conn:
+            # Serialize the check and the first writes in one transaction.
+            # The API-level status check is only an optimization; this lock is
+            # the authoritative one-time-bootstrap boundary across threads,
+            # processes, and pooled PostgreSQL connections.
+            if isinstance(conn, sqlite3.Connection):
+                conn.execute("BEGIN IMMEDIATE")
+            elif isinstance(conn, _PostgresConnection):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(?))",
+                    ("cyberassess:bootstrap",),
+                )
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE role = 'ADMIN'")
+            row = cur.fetchone()
+            if row and row["cnt"] > 0:
+                raise ValueError("System has already been initialized with an administrator.")
+
             # 1. Create Default Organization
             conn.execute(
                 "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
@@ -566,7 +580,7 @@ class DatabaseManager:
             # Check expiration
             if row["expires_at"]:
                 exp_dt = datetime.fromisoformat(row["expires_at"])
-                if utc_now() > exp_dt:
+                if utc_now() >= exp_dt:
                     return None, None
 
             key_record = APIKeyRecord(

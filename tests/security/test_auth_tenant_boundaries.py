@@ -8,7 +8,7 @@ import pytest
 
 from app.core.auth import create_access_token, get_current_user
 from app.core.db import DatabaseManager
-from app.core.models import AuditAction, AuditEvent, OperatingMode, PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole
+from app.core.models import AuditAction, AuditEvent, OperatingMode, PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole, utc_now
 from app.core.orchestrator import ScanOrchestrator
 
 
@@ -36,6 +36,131 @@ async def test_api_key_revocation_is_checked_against_database_each_request(tmp_p
     with pytest.raises(HTTPException) as exc_info:
         await get_current_user(x_api_key=raw_key)
     assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_api_key_listing_returns_only_active_unexpired_keys_in_callers_tenant(tmp_path, monkeypatch):
+    """The active-key inventory must not expose revoked, expired, disabled, or cross-tenant keys."""
+    from datetime import timedelta
+
+    import app.api.auth as auth_module
+
+    db = DatabaseManager(db_path=tmp_path / "api-key-listing.db")
+    now = utc_now()
+    rows = [
+        ("active", "org-one", "ACTIVE", None, (now + timedelta(days=1)).isoformat()),
+        ("revoked", "org-one", "REVOKED", now.isoformat(), (now + timedelta(days=1)).isoformat()),
+        ("expired", "org-one", "ACTIVE", None, (now - timedelta(seconds=1)).isoformat()),
+        ("disabled", "org-one", "DISABLED", None, (now + timedelta(days=1)).isoformat()),
+        ("other-tenant", "org-two", "ACTIVE", None, (now + timedelta(days=1)).isoformat()),
+    ]
+    with db._get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO api_keys "
+            "(key_id, key_hash, organization_id, name, scopes_json, status, created_at, revoked_at, expires_at) "
+            "VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?)",
+            [
+                (key_id, f"hash-{key_id}", organization_id, key_id, status, now.isoformat(), revoked_at, expires_at)
+                for key_id, organization_id, status, revoked_at, expires_at in rows
+            ],
+        )
+
+    monkeypatch.setattr(auth_module, "db_manager", db)
+    caller = UserProfile(
+        id="usr-listing",
+        username="listing-user",
+        email="listing@example.test",
+        role=UserRole.SECURITY_ANALYST,
+        organization_id="org-one",
+    )
+
+    listed = await auth_module.list_api_keys(current_user=caller)
+
+    assert [key["key_id"] for key in listed] == ["active"]
+    assert listed[0]["is_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_password_login_preserves_authoritative_principal_type(tmp_path, monkeypatch):
+    """Password login must not downgrade a durable system principal to a tenant principal."""
+    from types import SimpleNamespace
+
+    import app.api.auth as auth_module
+    from app.api.auth import LoginRequest
+    from app.core.auth import hash_password
+
+    db = DatabaseManager(db_path=tmp_path / "login-principal.db")
+    with db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO users "
+            "(id, username, email, hashed_password, role, principal_type, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, ?, 'ADMIN', 'SYSTEM_PRINCIPAL', ?, 1, ?)",
+            (
+                "usr-system-login",
+                "system-login",
+                "system@example.test",
+                hash_password("ValidPassword123!"),
+                "org-system",
+                utc_now().isoformat(),
+            ),
+        )
+    monkeypatch.setattr(auth_module, "db_manager", db)
+
+    response = await auth_module.login(
+        LoginRequest(username="system-login", password="ValidPassword123!"),
+        SimpleNamespace(client=None),
+    )
+
+    assert response.user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+
+
+def test_api_key_expiring_now_is_rejected_at_the_boundary(tmp_path, monkeypatch):
+    """Credential expiry is inclusive: a key is unusable at its exact expiry instant."""
+    from datetime import datetime, timezone
+
+    import app.core.db as db_module
+
+    db = DatabaseManager(db_path=tmp_path / "api-key-expiry-boundary.db")
+    fixed_now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+    key_hash = "expiry-boundary-hash"
+    with db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (key_id, key_hash, organization_id, name, scopes_json, status, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, '[]', 'ACTIVE', ?, ?)",
+            (
+                "key-expiry-boundary",
+                key_hash,
+                "org-expiry",
+                "expiry-boundary",
+                fixed_now.isoformat(),
+                fixed_now.isoformat(),
+            ),
+        )
+    monkeypatch.setattr(db_module, "utc_now", lambda: fixed_now)
+
+    record, user = db.verify_api_key_hash(key_hash)
+
+    assert record is None
+    assert user is None
+
+
+def test_bootstrap_authoritative_check_and_write_share_one_transaction(tmp_path):
+    """A second bootstrap is rejected by the transactional database boundary."""
+    from app.core.auth import hash_password
+
+    db = DatabaseManager(db_path=tmp_path / "bootstrap-race.db")
+    db.bootstrap_system(
+        admin_username="first-admin",
+        admin_email="first@example.test",
+        hashed_password=hash_password("ValidPassword123!"),
+    )
+
+    with pytest.raises(ValueError, match="already been initialized"):
+        db.bootstrap_system(
+            admin_username="second-admin",
+            admin_email="second@example.test",
+            hashed_password=hash_password("ValidPassword123!"),
+        )
 
 
 def test_bootstrap_audit_event_is_chained_and_correlated(tmp_path):
