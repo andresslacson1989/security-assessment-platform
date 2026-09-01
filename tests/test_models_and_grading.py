@@ -511,3 +511,17 @@ def test_storage_lifecycle(monkeypatch):
         monkeypatch.setattr(storage_module, "db_manager", original_db_manager)
         del temporary_db_manager
         shutil.rmtree(temp_dir)
+
+
+def test_storage_delete_does_not_report_cache_only_deletion(monkeypatch, tmp_path):
+    """JSON export artifacts cannot make an absent authoritative row appear deleted."""
+    class FakeDatabase:
+        def delete_scan_record(self, scan_id, organization_id=None):
+            return False
+
+    cache_file = tmp_path / "scan-cache-only.json"
+    cache_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(storage_module, "db_manager", FakeDatabase())
+
+    assert storage_module.delete_scan("scan-cache-only", storage_dir=tmp_path) is False
+    assert not cache_file.exists()
