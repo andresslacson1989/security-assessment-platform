@@ -411,14 +411,16 @@ Stderr: Captures runtime diagnostics and errors
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `sslyze --version` -> Regex `([0-9\.]+)`
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
-- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip_installer.py` in isolated venv).
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (Installed via `pip` into isolated virtualenv with hash-checking mode `--require-hashes`).
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` Checked via `importlib.metadata.version("sslyze")`.
-- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]`
-  - Source tarball (`sslyze-5.2.0.tar.gz`): `65cfdf8fb1f5ef49a5b3a4a98402db26df33230a1ea34cf6dfd0eb1ca4f4c28f`
-  - Wheel artifact (`sslyze-5.2.0-py3-none-any.whl`): `e4a7a8d5e1b218f2f277ca51bf6fb274f88be5a07dd3b306b647716f9db6c0db`
-- **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` PyPI PEP 740 verifiable attestations / Sigstore provenance bundle.
+- **Authoritative Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]`
+  - Source tarball (`sslyze-5.2.0.tar.gz`): `15ecb471b251dfbd003ba81a57d36865a93f18b74c7e7883a00d8bbddd365e03` (Size: 968,952 bytes; authoritative PyPI release artifact).
+  - Wheel artifact: `NOT_APPLICABLE` (SSLyze 5.2.0 release on PyPI is distributed exclusively as an sdist tarball).
+- **Provenance / Attestation:**
+  - Attestation Status: `NOT_AVAILABLE` (Legacy upload via Twine 4.0.2 / CPython 3.8.10 on 2023-09-24 without PEP 740 attestations).
+  - Provenance Enforcement: Cryptographic SHA-256 pinning against authoritative PyPI TLS distribution channel.
 - **Resolution Source:** `[CYBERASSESS_REQUIRED]` Authoritative PyPI repository over TLS.
 
 ### 10. Required Permissions & Privileges
@@ -434,7 +436,7 @@ Stderr: Captures runtime diagnostics and errors
 - **Destination Binding Mechanism:** `[CYBERASSESS_REQUIRED]` Invoked targeting `<selected_destination>:<port>` with `--sni=<canonical_value>` (SNI), ensuring the socket connects directly to the pre-resolved IP while passing canonical hostname to the TLS Server Name Indication extension.
 
 ### 14. Safety Policy & Bounded Probing
-- Safe, non-destructive TLS handshakes only.
+- Safe, non-destructive TLS handshakes and capability-segmented probes.
 
 ### 15. Rate Limit vs Timing Profile
 - **Tool Timing Profile:** Internal handshake timeout (5s per probe).
@@ -453,14 +455,15 @@ Stderr: Captures runtime diagnostics and errors
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_python_path> -m sslyze
-Command Line: sslyze --json_out=- <target_host>:<target_port> --sni=<canonical_hostname>
+Command Line: sslyze --json_out=- <target_host>:<target_port> --sni=<canonical_hostname> [<config_flags>]
 Stdout: Captures JSON results stream
 Stderr: Diagnostic logs
 ```
 
-### 20. Allowed Arguments
-- **Configuration Assessment Flags:** `--json_out=-`, `<target_host>:<target_port>`, `--sni=<name>`, `--sni`, `--certinfo`, `--sslv2`, `--sslv3`, `--tlsv1`, `--tlsv1_1`, `--tlsv1_2`, `--tlsv1_3`.
-- **Vulnerability Probing Flags:** `--heartbleed`, `--robot`, `--openssl_ccs`.
+### 20. Allowed Arguments & Capability Segmentation
+- **Baseline Configuration Assessment Flags (Default Least-Privilege):** `--json_out=-`, `<target_host>:<target_port>`, `--sni=<name>`, `--sni`, `--certinfo`, `--sslv2`, `--sslv3`, `--tlsv1`, `--tlsv1_1`, `--tlsv1_2`, `--tlsv1_3`, `--reneg`, `--resum`, `--early_data`.
+- **Targeted Vulnerability Probing Flags (Profile / Explicit Override Only):** `--heartbleed`, `--robot`, `--openssl_ccs`.
+- **Least-Privilege Policy:** Default baseline TLS sweeps execute exclusively Configuration Assessment modules. Vulnerability probing flags require explicit authorization (`FULL_STACK` or configuration request).
 
 ### 21. Forbidden Arguments
 - Arbitrary file write flags (`--json_out=<path>`).

@@ -65,10 +65,11 @@ SECURITY_DOMAIN = "NETWORK / PERIMETER / TLS"
 DEFAULT_OPERATION_CLASS = ToolOperationClass.ACTIVE_READ_ONLY
 
 # Supply-Chain Pinned Digest Integrity (Contract 09 TOOL-SSLYZE §9)
-APPROVED_ARTIFACT_SHA256_SDIST = "65cfdf8fb1f5ef49a5b3a4a98402db26df33230a1ea34cf6dfd0eb1ca4f4c28f"
-APPROVED_ARTIFACT_SHA256_WHEEL = "e4a7a8d5e1b218f2f277ca51bf6fb274f88be5a07dd3b306b647716f9db6c0db"
+# Authoritative PyPI sdist release archive hash for SSLyze 5.2.0 (Size: 968,952 bytes)
+APPROVED_ARTIFACT_SHA256_SDIST = "15ecb471b251dfbd003ba81a57d36865a93f18b74c7e7883a00d8bbddd365e03"
+APPROVED_ARTIFACT_SHA256_WHEEL = None  # PyPI 5.2.0 release is distributed exclusively as an sdist tarball
 
-# Capability & Classification Taxonomy for SSLyze Scan Modules (Contract 09 TOOL-SSLYZE §41)
+# Capability & Classification Taxonomy for SSLyze Scan Modules (Contract 09 TOOL-SSLYZE §20 & §41)
 SSLYZE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "certinfo": {
         "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
@@ -112,6 +113,24 @@ SSLYZE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "intrusive": False,
         "category": "protocol_cipher",
     },
+    "reneg": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "Insecure TLS session renegotiation probe (CVE-2009-3555)",
+        "intrusive": False,
+        "category": "session",
+    },
+    "resum": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "TLS session resumption probe (Session IDs / TLS Tickets)",
+        "intrusive": False,
+        "category": "session",
+    },
+    "early_data": {
+        "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
+        "description": "TLS 1.3 0-RTT early data / replay vulnerability test",
+        "intrusive": False,
+        "category": "protocol_cipher",
+    },
     "heartbleed": {
         "operation_class": ToolOperationClass.ACTIVE_READ_ONLY,
         "description": "OpenSSL Heartbleed TLS extension probe (CVE-2014-0160)",
@@ -142,9 +161,12 @@ CONFIG_ASSESSMENT_FLAGS: List[str] = [
     "--tlsv1_1",
     "--tlsv1_2",
     "--tlsv1_3",
+    "--reneg",
+    "--resum",
+    "--early_data",
 ]
 
-# 2. Known Vulnerability Probing (Profile-Controlled / Targeted Probes)
+# 2. Targeted Vulnerability Probing (Profile-Controlled / Explicit Probes)
 VULN_PROBE_FLAGS: List[str] = [
     "--heartbleed",
     "--robot",
@@ -158,14 +180,11 @@ APPROVED_SSLYZE_FLAGS: Set[str] = (
     | {
         "--json_out=-",
         "--sni",
-        "--reneg",
-        "--resum",
-        "--early_data",
     }
 )
 
-# Default Scan Flags (Contract 09 TOOL-SSLYZE §19)
-DEFAULT_SCAN_FLAGS: List[str] = list(CONFIG_ASSESSMENT_FLAGS) + list(VULN_PROBE_FLAGS)
+# Default Scan Flags: Baseline Configuration Assessment (Least-Privilege Default)
+DEFAULT_SCAN_FLAGS: List[str] = list(CONFIG_ASSESSMENT_FLAGS)
 
 # Weak Cipher Suite Patterns (Contract 09 TOOL-SSLYZE §31 & CWE-327)
 WEAK_CIPHER_PATTERNS: List[re.Pattern] = [
@@ -280,10 +299,15 @@ class SslyzeCommandBuilder:
         target: ValidatedTarget,
         port: Optional[int] = None,
         custom_flags: Optional[List[str]] = None,
+        include_vuln_probes: bool = False,
     ) -> Tuple[List[str], str, int, Optional[str]]:
         """
         Constructs:
         <sslyze_path> --json_out=- <selected_destination>:<port> --sni=<canonical_hostname> [<flags>]
+        
+        Policy: Default scan includes only CONFIG_ASSESSMENT_FLAGS (least-privilege baseline).
+        VULN_PROBE_FLAGS (--heartbleed, --robot, --openssl_ccs) are appended only when
+        include_vuln_probes is True (e.g. FULL_STACK scan profile or explicit configuration).
         
         Returns: (cmd_list, destination_ip, target_port, error_message)
         """
@@ -322,6 +346,8 @@ class SslyzeCommandBuilder:
                     resolved_flags.append(clean_f)
         else:
             resolved_flags = list(DEFAULT_SCAN_FLAGS)
+            if include_vuln_probes:
+                resolved_flags.extend(VULN_PROBE_FLAGS)
 
         # Base Command Vector using official SSLyze 5.2.0 CLI syntax
         cmd: List[str] = [
@@ -857,11 +883,20 @@ class SslyzeAdapter(BaseToolAdapter):
             return findings
 
         # 5. Build Command via Command Builder
+        # Determine whether vulnerability probes should be included based on scan profile or caller argument
+        include_vuln_probes = kwargs.get("include_vuln_probes", False)
+        if not include_vuln_probes:
+            # Enable vulnerability probes if explicit scan profile is FULL_STACK
+            profile_val = getattr(config, "profile", None)
+            if profile_val and getattr(profile_val, "value", str(profile_val)) == "FULL_STACK":
+                include_vuln_probes = True
+
         cmd, target_dest, target_port, cmd_err = SslyzeCommandBuilder.build_command(
             sslyze_path=sslyze_path,
             target=val_target,
             port=kwargs.get("port"),
             custom_flags=custom_flags,
+            include_vuln_probes=include_vuln_probes,
         )
         if cmd_err:
             await emit_log(LogLevel.ERROR, f"Failed to build SSLyze command: {cmd_err}")

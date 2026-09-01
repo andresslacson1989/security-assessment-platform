@@ -606,31 +606,49 @@ class TestSslyzeUpstreamCLICompatibility:
     def test_upstream_cli_parser_accepts_builder_command(self):
         """
         Contract 09 TOOL-SSLYZE §19: Proves that the exact argument array generated
-        by SslyzeCommandBuilder conforms strictly to the upstream SSLyze 5.2.0 CLI parser.
+        by SslyzeCommandBuilder conforms strictly to the upstream SSLyze 5.2.0 CLI parser
+        under both baseline and vulnerability-probing modes.
         """
         target = Target(name="Domain Target", type=TargetType.DOMAIN, value="example.com")
         with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
             val_target = create_validated_target(target)
 
-        cmd, dest_ip, port, err = SslyzeCommandBuilder.build_command(
+        # 1. Baseline Least-Privilege Invocation (Default: configuration assessment only)
+        cmd_baseline, dest_ip, port, err = SslyzeCommandBuilder.build_command(
             sslyze_path="/usr/bin/sslyze",
             target=val_target,
             port=443,
+            include_vuln_probes=False,
         )
         assert err is None
-        # cmd = ["/usr/bin/sslyze", "--json_out=-", "93.184.216.34:443", "--sni=example.com", ...]
-        args_to_parse = cmd[1:]
-
         parser = get_sslyze_5_2_0_upstream_argparser()
-        parsed_args = parser.parse_args(args_to_parse)
+        parsed_baseline = parser.parse_args(cmd_baseline[1:])
 
         # Verify parsed properties match upstream SSLyze 5.2.0 contract
-        assert parsed_args.sni == "example.com"
-        assert parsed_args.json_out == "-"
-        assert parsed_args.targets == ["93.184.216.34:443"]
-        assert parsed_args.certinfo is True
-        assert parsed_args.tlsv1_2 is True
-        assert parsed_args.heartbleed is True
+        assert parsed_baseline.sni == "example.com"
+        assert parsed_baseline.json_out == "-"
+        assert parsed_baseline.targets == ["93.184.216.34:443"]
+        assert parsed_baseline.certinfo is True
+        assert parsed_baseline.tlsv1_2 is True
+        assert parsed_baseline.reneg is True
+        assert parsed_baseline.resum is True
+        # Vulnerability probes MUST be False in baseline mode
+        assert parsed_baseline.heartbleed is False
+        assert parsed_baseline.robot is False
+        assert parsed_baseline.openssl_ccs is False
+
+        # 2. Targeted Vulnerability-Probing Invocation (Explicit FULL_STACK / override)
+        cmd_vuln, _, _, err_v = SslyzeCommandBuilder.build_command(
+            sslyze_path="/usr/bin/sslyze",
+            target=val_target,
+            port=443,
+            include_vuln_probes=True,
+        )
+        assert err_v is None
+        parsed_vuln = parser.parse_args(cmd_vuln[1:])
+        assert parsed_vuln.heartbleed is True
+        assert parsed_vuln.robot is True
+        assert parsed_vuln.openssl_ccs is True
 
     def test_upstream_cli_parser_rejects_server_name_option(self):
         """
@@ -653,14 +671,13 @@ class TestSslyzeSupplyChainAndProvenance:
     def test_supply_chain_artifact_hashes_and_trust_mode(self):
         """
         Contract 09 TOOL-SSLYZE §9: Verifies that exact cryptographic hashes for
-        the authoritative PyPI SSLyze 5.2.0 release artifacts are pinned.
+        the authoritative PyPI SSLyze 5.2.0 release artifacts are pinned and authentic.
         """
         assert APPROVED_VERSION == "5.2.0"
         assert TRUST_MODE == "PACKAGE_MANAGER_MODE"
         assert len(APPROVED_ARTIFACT_SHA256_SDIST) == 64
-        assert len(APPROVED_ARTIFACT_SHA256_WHEEL) == 64
-        assert APPROVED_ARTIFACT_SHA256_SDIST == "65cfdf8fb1f5ef49a5b3a4a98402db26df33230a1ea34cf6dfd0eb1ca4f4c28f"
-        assert APPROVED_ARTIFACT_SHA256_WHEEL == "e4a7a8d5e1b218f2f277ca51bf6fb274f88be5a07dd3b306b647716f9db6c0db"
+        assert APPROVED_ARTIFACT_SHA256_SDIST == "15ecb471b251dfbd003ba81a57d36865a93f18b74c7e7883a00d8bbddd365e03"
+        assert APPROVED_ARTIFACT_SHA256_WHEEL is None  # sdist-only PyPI release
 
 
 # ============================================================================
@@ -722,20 +739,41 @@ class TestSslyzeCapabilitySegmentation:
     def test_capability_and_flag_segmentation(self):
         """
         Contract 09 TOOL-SSLYZE §20 & §41: Proves explicit segmentation between
-        baseline cryptographic configuration assessment and vulnerability probing.
+        baseline cryptographic configuration assessment and vulnerability probing,
+        and ensures complete coverage of all approved flags in the capability taxonomy.
         """
-        assert len(CONFIG_ASSESSMENT_FLAGS) == 7
-        assert "--certinfo" in CONFIG_ASSESSMENT_FLAGS
-        assert "--sslv2" in CONFIG_ASSESSMENT_FLAGS
-        assert "--tlsv1_3" in CONFIG_ASSESSMENT_FLAGS
+        from app.adapters.sslyze_adapter import SSLYZE_CAPABILITIES
 
+        # 1. Configuration Assessment Flags (10 flags)
+        assert len(CONFIG_ASSESSMENT_FLAGS) == 10
+        for flag in ["--certinfo", "--sslv2", "--sslv3", "--tlsv1", "--tlsv1_1", "--tlsv1_2", "--tlsv1_3", "--reneg", "--resum", "--early_data"]:
+            assert flag in CONFIG_ASSESSMENT_FLAGS
+
+        # 2. Targeted Vulnerability Probing Flags (3 flags)
         assert len(VULN_PROBE_FLAGS) == 3
-        assert "--heartbleed" in VULN_PROBE_FLAGS
-        assert "--robot" in VULN_PROBE_FLAGS
-        assert "--openssl_ccs" in VULN_PROBE_FLAGS
+        for flag in ["--heartbleed", "--robot", "--openssl_ccs"]:
+            assert flag in VULN_PROBE_FLAGS
 
+        # 3. Complete Capability Taxonomy (13 capabilities)
+        assert len(SSLYZE_CAPABILITIES) == 13
+        for cap_key in [
+            "certinfo", "sslv2", "sslv3", "tlsv1", "tlsv1_1", "tlsv1_2", "tlsv1_3",
+            "reneg", "resum", "early_data", "heartbleed", "robot", "openssl_ccs"
+        ]:
+            assert cap_key in SSLYZE_CAPABILITIES
+            assert "operation_class" in SSLYZE_CAPABILITIES[cap_key]
+            assert "description" in SSLYZE_CAPABILITIES[cap_key]
+            assert "category" in SSLYZE_CAPABILITIES[cap_key]
+
+        # 4. Allowlist Integrity
         assert "--sni" in APPROVED_SSLYZE_FLAGS
         assert "--json_out=-" in APPROVED_SSLYZE_FLAGS
         assert "--server_name" not in APPROVED_SSLYZE_FLAGS
+
+        # 5. Default Scan Profile Least Privilege
+        assert DEFAULT_SCAN_FLAGS == CONFIG_ASSESSMENT_FLAGS
+        assert "--heartbleed" not in DEFAULT_SCAN_FLAGS
+        assert "--robot" not in DEFAULT_SCAN_FLAGS
+        assert "--openssl_ccs" not in DEFAULT_SCAN_FLAGS
 
 
