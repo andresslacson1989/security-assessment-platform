@@ -386,3 +386,47 @@ async def test_orchestrator_cancellation():
 
     job = orch.get_active_job(scan_job.id)
     assert job.status == ScanStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_worker_execution_honors_authoritative_cancellation_before_completion():
+    class CancellingEngine(BaseAssessmentEngine):
+        @property
+        def name(self) -> str:
+            return "cancelling_engine"
+
+        @property
+        def display_name(self) -> str:
+            return "Cancelling Engine"
+
+        @property
+        def description(self) -> str:
+            return "Persists cancellation while execution is in flight"
+
+        def is_applicable(self, target: Target) -> bool:
+            return True
+
+        async def run(self, target, config, emit_log, emit_progress, emit_finding, **kwargs):
+            from app.core.storage import get_scan, save_scan
+
+            authoritative = get_scan(scan_job.id, organization_id=scan_job.organization_id)
+            assert authoritative is not None
+            authoritative.status = ScanStatus.CANCELLED
+            save_scan(authoritative)
+            return []
+
+    orch = ScanOrchestrator()
+    orch.register_engine(CancellingEngine())
+    target = Target(name="Authoritative Cancel Test", type=TargetType.URL, value="https://example.com")
+    scan_job = ScanJob(
+        target=target,
+        profile=ScanProfile.CUSTOM,
+        enabled_engines=["cancelling_engine"],
+    )
+
+    task = await orch.start_scan(scan_job)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    job = orch.get_active_job(scan_job.id)
+    assert job.status == ScanStatus.CANCELLED

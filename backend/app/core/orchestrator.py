@@ -369,7 +369,13 @@ class ScanOrchestrator:
         if not job:
             return
 
+        async def _raise_if_authoritatively_cancelled() -> None:
+            latest = get_scan(scan_id, organization_id=job.organization_id)
+            if latest and latest.status == ScanStatus.CANCELLED:
+                raise asyncio.CancelledError
+
         start_time = time.monotonic()
+        await _raise_if_authoritatively_cancelled()
         job.started_at = utc_now()
         job.status = ScanStatus.RUNNING
 
@@ -447,6 +453,7 @@ class ScanOrchestrator:
 
         try:
             for idx, engine in enumerate(applicable_engines):
+                await _raise_if_authoritatively_cancelled()
                 engine_base_progress = int(5 + idx * progress_per_engine)
                 stage_desc = f"Running {engine.display_name}..."
                 await self.emit_progress(scan_id, engine_base_progress, stage_desc)
@@ -516,6 +523,7 @@ class ScanOrchestrator:
                         _find_cb,
                         **run_kwargs,
                     )
+                    await _raise_if_authoritatively_cancelled()
                     # Deduplicate and append
                     for finding in engine_findings:
                         existing_fps = {f.fingerprint for f in job.findings}
@@ -537,6 +545,7 @@ class ScanOrchestrator:
                         job.summary.coverage.coverage_limitations.append(limitation)
                     await self.emit_log(scan_id, LogLevel.ERROR, engine.name, f"Engine failed with error: {str(e)}")
 
+            await _raise_if_authoritatively_cancelled()
             # Finalize scan
             duration = time.monotonic() - start_time
             job.status = ScanStatus.COMPLETED
