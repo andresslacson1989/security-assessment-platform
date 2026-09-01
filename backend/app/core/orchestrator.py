@@ -281,7 +281,7 @@ class ScanOrchestrator:
                     job.summary.coverage.coverage_limitations.append(limitation)
         if job:
             job.tool_execution_states[tool_name] = state
-            if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}:
+            if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED", "INVALID_VERSION"}:
                 job.summary.coverage.is_fully_assessed = False
                 limitation = f"{tool_name}: {state}"
                 if limitation not in job.summary.coverage.coverage_limitations:

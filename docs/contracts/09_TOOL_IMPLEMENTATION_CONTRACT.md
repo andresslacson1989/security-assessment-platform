@@ -585,7 +585,7 @@ Stderr: Diagnostic logs
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Subfinder `v2.6.5` (Exact GitHub Release).
 - **Version Enforcement:** Runtime probe checks `actual_version == "subfinder v2.6.5"`.
-- **Version Detection:** `[REPOSITORY_VERIFIED]` `subfinder -version` -> Regex `v?([0-9\.]+)`
+- **Version Detection:** `[REPOSITORY_VERIFIED]` `subfinder -version` -> boundary-aware exact semantic-version parsing; substring versions such as `v2.6.50` are rejected.
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
 - **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone binary downloaded via `github_release_installer.py`).
@@ -635,7 +635,7 @@ Stderr: Diagnostic logs
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_subfinder_path>
-Command Line: subfinder -d <authorized_root> -silent -json -timeout 10 -max-time 1
+Command Line: subfinder -d <authorized_root> -s crtsh -silent -json -timeout 10 -max-time 1
 Stdout: Captures JSON Lines stream
 Stderr: Diagnostic logs
 ```
@@ -665,7 +665,7 @@ Stderr: Diagnostic logs
   - Exit non-zero -> `TOOL_EXECUTION_FAILED`
 
 ### 26. Failure Semantics & Coverage Impact
-- Failure sets `COVERAGE_DEGRADED` and activates native Certificate Transparency log queries.
+- Failure sets `COVERAGE_DEGRADED` and records the failed Subfinder state. The later native Certificate Transparency component is an independent enrichment path, not a claim that Subfinder fallback executed.
 
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native `crt.sh` client.

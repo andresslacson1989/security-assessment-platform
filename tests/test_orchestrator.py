@@ -242,6 +242,19 @@ async def test_unknown_tool_state_fails_closed():
 
 
 @pytest.mark.asyncio
+async def test_invalid_version_degrades_coverage():
+    orch = ScanOrchestrator()
+    job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
+    orch._active_jobs[job.id] = job
+
+    await orch.emit_tool_execution_state(job.id, "subfinder", "INVALID_VERSION")
+
+    assert job.tool_execution_states["subfinder"] == "INVALID_VERSION"
+    assert job.summary.coverage.is_fully_assessed is False
+    assert "subfinder: INVALID_VERSION" in job.summary.coverage.coverage_limitations
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_error_isolation():
     orch = ScanOrchestrator()
     orch.register_engine(MockFailingEngine())
