@@ -32,10 +32,6 @@ The repository may remain publicly viewable and technically forkable on GitHub.
 Public hosting does not transfer ownership or expand the limited permissions
 granted by the license.
 
-The repository may remain publicly viewable and forkable on GitHub. That public
-hosting does not change the rights granted by the license or make CyberAssess
-open source.
-
 ---
 
 ## ⚡ Quickstart (One Command)
