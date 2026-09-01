@@ -99,6 +99,11 @@ class FfufAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "FFuF binary not found on host. Skipping FFuF execution.")
             return findings
 
+        if kwargs.get("require_managed_binary") and not self.verify_managed_binary(ffuf_path):
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            await emit_log(LogLevel.ERROR, "FFuF execution blocked: executable is not a trusted managed installation.")
+            return findings
+
         if not await self.ensure_approved_version(custom_path, emit_log):
             return findings
 

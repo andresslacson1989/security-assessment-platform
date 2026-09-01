@@ -88,10 +88,18 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
 
         # Gate every E12 operation through the authoritative target validator before
         # any external adapter or native HTTP client can be invoked.
+        organization_id = kwargs.get("organization_id")
+        if not organization_id:
+            await emit_log(LogLevel.WARNING, "Web DAST execution blocked: authoritative organization context is required.")
+            if tool_state_cb:
+                for tool_name in ("ffuf", "nuclei", "katana", "schemathesis"):
+                    if getattr(config.adapters, f"enable_{tool_name}", True):
+                        await tool_state_cb(tool_name, "EXECUTION_BLOCKED")
+            return findings
         try:
             _validated_target = create_validated_target(
                 target,
-                organization_id=kwargs.get("organization_id") or "org-default",
+                organization_id=organization_id,
                 project_id=kwargs.get("project_id"),
                 asset_id=kwargs.get("asset_id"),
             )
@@ -140,6 +148,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_endpoint=emit_endpoint_discovered,
                         scan_id="active",
                         validated_target=_validated_target,
+                        require_managed_binary=True,
                     )
                     for f in ffuf_findings:
                         if f.fingerprint not in existing_fps:
@@ -169,6 +178,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id="active",
                         validated_target=_validated_target,
+                        require_managed_binary=True,
                     )
                     for f in nuclei_findings:
                         if f.fingerprint not in existing_fps:
@@ -199,6 +209,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_endpoint=emit_endpoint_discovered,
                         scan_id="active",
                         validated_target=_validated_target,
+                        require_managed_binary=True,
                     )
                     for f in katana_findings:
                         if f.fingerprint not in existing_fps:
@@ -227,6 +238,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id="active",
                         validated_target=_validated_target,
+                        require_managed_binary=True,
                     )
                     for f in schema_findings:
                         if f.fingerprint not in existing_fps:

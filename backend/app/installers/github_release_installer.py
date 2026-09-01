@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import sys
 import tarfile
@@ -416,24 +417,29 @@ class GithubReleaseInstaller(BaseToolInstaller):
 
                 await emit_progress(90, "Verifying binary execution...")
                 ver = await self.get_version()
-                if self.tool_name == "subfinder" and ver == "subfinder v2.6.5":
-                    with open(dest_path, "rb") as binary_file:
-                        executable_hash = hashlib.sha256(binary_file.read()).hexdigest()
-                    trust_record = {
-                        "tool_id": "TOOL-SUBFINDER",
-                        "tool_version": "v2.6.5",
-                        "artifact_filename": asset_filename,
-                        "artifact_sha256": computed_hash,
-                        "executable_relative_path": dest_filename,
-                        "executable_sha256": executable_hash,
-                        "platform": os_prefix,
-                        "architecture": arch_suffix,
-                        "installer_version": "13.0.0",
-                        "trust_status": "VALID",
-                        "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
-                    }
-                    with open(os.path.join(local_bin_dir, f"{dest_filename}.trust.json"), "w", encoding="utf-8") as trust_file:
-                        json.dump(trust_record, trust_file, sort_keys=True)
+                expected_version = str(pinned_tag or "").lstrip("v")
+                version_match = re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", ver or "")
+                if not version_match or version_match.group(1) != expected_version:
+                    raise SecurityError(
+                        f"Runtime version verification failed for {self.tool_name}: expected {pinned_tag}, found {ver or 'unavailable'}."
+                    )
+                with open(dest_path, "rb") as binary_file:
+                    executable_hash = hashlib.sha256(binary_file.read()).hexdigest()
+                trust_record = {
+                    "tool_id": f"TOOL-{self.tool_name.upper().replace('-', '_')}",
+                    "tool_version": pinned_tag,
+                    "artifact_filename": asset_filename,
+                    "artifact_sha256": computed_hash,
+                    "executable_relative_path": dest_filename,
+                    "executable_sha256": executable_hash,
+                    "platform": os_prefix,
+                    "architecture": arch_suffix,
+                    "installer_version": "13.0.0",
+                    "trust_status": "VALID",
+                    "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
+                }
+                with open(os.path.join(local_bin_dir, f"{dest_filename}.trust.json"), "w", encoding="utf-8") as trust_file:
+                    json.dump(trust_record, trust_file, sort_keys=True)
                 await emit_log(f"Binary installed at: {dest_path} (version: {ver or 'unknown'})")
                 await emit_progress(100, f"Successfully installed {self.display_name} ({ver or 'ready'})")
                 return True

@@ -1593,6 +1593,8 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
         stack.enter_context(patch.object(HttpxAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_hx_stdout, ""))))
         stack.enter_context(patch.object(KatanaAdapter, "is_available", AsyncMock(return_value=True)))
         stack.enter_context(patch.object(KatanaAdapter, "resolve_binary_path", return_value="/bin/katana"))
+        stack.enter_context(patch.object(KatanaAdapter, "verify_managed_binary", return_value=True))
+        stack.enter_context(patch.object(KatanaAdapter, "get_version", AsyncMock(return_value="katana v1.0.5")))
         stack.enter_context(patch.object(KatanaAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_katana_stdout, ""))))
         stack.enter_context(patch("app.engines.network.engine.audit_tls_certificates", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new=AsyncMock(return_value=[])))
@@ -1616,15 +1618,17 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
             target, config, emit_log, emit_prog, emit_find,
             emit_subdomain_discovered=emit_sub,
             emit_endpoint_discovered=emit_ep,
+            organization_id="org-test",
         )
         assert len(discovered_subs) >= 2
         assert any(f.source_tool == "subfinder" for f in net_findings)
         assert any(f.source_tool == "httpx" for f in net_findings)
 
-        dast_target = Target(name="Web App", type=TargetType.URL, value="https://corp.example.com")
+        dast_target = Target(name="Web App", type=TargetType.URL, value="https://example.com")
         dast_findings = await dast_engine.run(
             dast_target, config, emit_log, emit_prog, emit_find,
             emit_endpoint_discovered=emit_ep,
+            organization_id="org-test",
         )
         assert len(discovered_eps) >= 1
         assert any(f.source_tool == "katana" for f in dast_findings)
@@ -1768,7 +1772,7 @@ async def test_scenario_23_live_verified_secret_auditing(tmp_path):
          patch.object(TruffleHogAdapter, "resolve_binary_path", return_value="/bin/trufflehog"), \
          patch.object(TruffleHogAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_th_stdout, ""))):
 
-        findings = await engine.run(target, config, emit_log, emit_prog, emit_find)
+        findings = await engine.run(target, config, emit_log, emit_prog, emit_find, organization_id="org-test")
         verified_findings = [f for f in findings if f.source_tool == "trufflehog" and f.verified_secret and f.verified_secret.is_live]
 
         assert len(verified_findings) == 1
@@ -1850,7 +1854,7 @@ async def test_scenario_25_property_based_api_contract_security():
     from app.adapters.schemathesis_adapter import SchemathesisAdapter
 
     engine = WebDastAssessmentEngine()
-    target = Target(name="REST API", type=TargetType.URL, value="https://api.example.com/openapi.json")
+    target = Target(name="REST API", type=TargetType.URL, value="https://example.com/openapi.json")
     config = ScanConfig()
     config.crawler.enabled = False
 
@@ -1878,6 +1882,8 @@ async def test_scenario_25_property_based_api_contract_security():
 
     with patch.object(SchemathesisAdapter, "is_available", AsyncMock(return_value=True)), \
          patch.object(SchemathesisAdapter, "resolve_binary_path", return_value="/bin/schemathesis"), \
+         patch.object(SchemathesisAdapter, "verify_managed_binary", return_value=True), \
+         patch.object(SchemathesisAdapter, "get_version", new=AsyncMock(return_value="schemathesis 3.20.0")), \
          patch.object(SchemathesisAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_schema_report), ""))), \
          patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])), \
          patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])), \
@@ -1886,7 +1892,7 @@ async def test_scenario_25_property_based_api_contract_security():
          patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])), \
          patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])):
 
-        findings = await engine.run(target, config, emit_log, emit_prog, emit_find)
+        findings = await engine.run(target, config, emit_log, emit_prog, emit_find, organization_id="org-test")
         schema_findings = [f for f in findings if f.source_tool == "schemathesis"]
 
         assert len(schema_findings) >= 1

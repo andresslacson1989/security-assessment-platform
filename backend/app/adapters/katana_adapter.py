@@ -63,6 +63,11 @@ class KatanaAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Katana binary not found. Skipping Katana SPA crawler.")
             return findings
 
+        if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            await emit_log(LogLevel.ERROR, "Katana execution blocked: executable is not a trusted managed installation.")
+            return findings
+
         if not await self.ensure_approved_version(config.adapters.katana_path or config.adapters.custom_katana_path, emit_log):
             return findings
 

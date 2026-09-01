@@ -236,6 +236,7 @@ async def test_web_dast_engine_full_run():
             find_cb,
             emit_auth_status=auth_cb,
             emit_endpoint_discovered=ep_cb,
+            organization_id="org-test",
         )
         assert res == []
         assert len(progress_updates) >= 4
@@ -313,6 +314,7 @@ async def test_web_dast_engine_audits_all_crawled_pages():
             log_cb,
             prog_cb,
             find_cb,
+            organization_id="org-test",
         )
 
     check_ids = {f.check_id for f in res}
@@ -322,4 +324,3 @@ async def test_web_dast_engine_audits_all_crawled_pages():
     assert "DAST-SRI-001" in check_ids  # Script from insecure cdn lacking integrity
     assert "DAST-FORM-001" in check_ids  # Form action http:// on https site
     assert "DAST-FORM-002" in check_ids  # Missing CSRF token on POST form
-

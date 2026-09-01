@@ -6,7 +6,10 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
+import hashlib
+import json
 import os
+import platform
 import re
 import shutil
 import sys
@@ -78,6 +81,46 @@ class BaseToolAdapter(ABC):
                 )
             return False
         return True
+
+    def verify_managed_binary(self, binary: str) -> bool:
+        """Verify the installer-created identity record for direct managed binaries."""
+        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+        path = os.path.abspath(binary)
+        if self.tool_name == "schemathesis":
+            # Schemathesis is governed as a package-manager tool. Accept only
+            # the active interpreter's executable and exact installed metadata.
+            python_roots = {
+                os.path.abspath(os.path.dirname(sys.executable)),
+                os.path.abspath(sys.prefix),
+            }
+            if not any(os.path.commonpath([path, root]) == root for root in python_roots):
+                return False
+            try:
+                from importlib.metadata import version
+                return version("schemathesis") == str(getattr(self, "approved_version", ""))
+            except Exception:
+                return False
+        if os.path.realpath(path) != path or os.path.dirname(path) != managed_dir:
+            return False
+        if os.path.basename(path).lower() not in {self.tool_name.lower(), f"{self.tool_name.lower()}.exe"}:
+            return False
+        try:
+            with open(f"{path}.trust.json", "r", encoding="utf-8") as record_file:
+                record = json.load(record_file)
+            expected = str(getattr(self, "approved_version", "")).lstrip("v")
+            if record.get("tool_id") != f"TOOL-{self.tool_name.upper()}":
+                return False
+            if record.get("trust_status") != "VALID" or str(record.get("tool_version", "")).lstrip("v") != expected:
+                return False
+            if record.get("executable_relative_path") != os.path.basename(path):
+                return False
+            if "ARCHIVE_INTEGRITY_VERIFIED" not in record.get("claims", []) or "EXECUTABLE_INTEGRITY_VERIFIED" not in record.get("claims", []):
+                return False
+            with open(path, "rb") as binary_file:
+                digest = hashlib.sha256(binary_file.read()).hexdigest()
+            return digest == record.get("executable_sha256")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
 
     @abstractmethod
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:

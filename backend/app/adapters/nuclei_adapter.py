@@ -133,6 +133,11 @@ class NucleiAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Nuclei binary not found on host. Skipping Nuclei execution.")
             return findings
 
+        if kwargs.get("require_managed_binary") and not self.verify_managed_binary(nuclei_path):
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            await emit_log(LogLevel.ERROR, "Nuclei execution blocked: executable is not a trusted managed installation.")
+            return findings
+
         if not await self.ensure_approved_version(custom_path, emit_log):
             return findings
 
