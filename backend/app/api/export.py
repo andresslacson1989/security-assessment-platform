@@ -37,7 +37,7 @@ async def export_html_report(
     Downloads a self-contained, standalone single-file HTML report with zero external dependencies.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -74,7 +74,7 @@ async def export_sarif_report(
     Downloads an OASIS SARIF v2.1.0 standardized security report for GitHub/GitLab Code Scanning.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -110,7 +110,7 @@ async def export_raw_json_report(
     Downloads the complete serialized ScanJob data model in JSON format.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -147,7 +147,7 @@ async def export_cyclonedx_sbom_report(
     Downloads a CycloneDX 1.5 standardized Software Bill of Materials (SBOM) JSON.
     Enforces tenant authorization.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 

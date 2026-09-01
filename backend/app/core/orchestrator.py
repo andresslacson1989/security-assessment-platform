@@ -91,13 +91,18 @@ class ScanOrchestrator:
 
     # --- Active Scan Management ---
 
-    def get_active_job(self, scan_id: str) -> Optional[ScanJob]:
-        """
-        Returns the in-memory active ScanJob or attempts to fetch it from disk.
-        """
+    def get_active_job(
+        self,
+        scan_id: str,
+        organization_id: Optional[str] = None,
+    ) -> Optional[ScanJob]:
+        """Return an active or persisted scan within the requested tenant scope."""
         if scan_id in self._active_jobs:
-            return self._active_jobs[scan_id]
-        return get_scan(scan_id)
+            job = self._active_jobs[scan_id]
+            if organization_id is not None and job.organization_id != organization_id:
+                return None
+            return job
+        return get_scan(scan_id, organization_id=organization_id)
 
     async def start_scan(self, scan_job: ScanJob) -> asyncio.Task:
         """

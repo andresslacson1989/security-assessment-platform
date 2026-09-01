@@ -223,7 +223,7 @@ async def get_scan_details(
     current_user: UserProfile = Depends(get_current_user),
 ) -> ScanJob:
     """Returns full ScanJob model. Enforces tenant ownership (IDOR denial)."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -246,7 +246,7 @@ async def get_scan_telemetry(
     Returns organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface.
     Enforces strict multi-tenant authorization and IDOR defense.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -435,7 +435,7 @@ async def cancel_running_scan(
     current_user: UserProfile = Depends(require_dev_or_higher),
 ) -> Dict[str, Any]:
     """Signals orchestrator to abort scan execution and forcefully terminate subprocesses."""
-    job = orchestrator.get_active_job(scan_id)
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -469,7 +469,7 @@ async def delete_scan_job(
     current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Deletes a scan job from storage. Enforces tenant ownership."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -486,7 +486,7 @@ async def stream_scan_events(
     current_user: UserProfile = Depends(get_current_user),
 ) -> StreamingResponse:
     """Streams real-time logs, findings, and progress updates over SSE."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=_organization_scope(current_user))
+    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 

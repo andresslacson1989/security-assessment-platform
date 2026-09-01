@@ -8,7 +8,8 @@ import pytest
 
 from app.core.auth import get_current_user
 from app.core.db import DatabaseManager
-from app.core.models import PrincipalType, UserRole
+from app.core.models import PrincipalType, ScanJob, Target, TargetType, UserRole
+from app.core.orchestrator import ScanOrchestrator
 
 
 @pytest.mark.asyncio
@@ -50,3 +51,18 @@ def test_principal_type_is_explicit_for_system_scope():
         principal_type=PrincipalType.SYSTEM_PRINCIPAL, organization_id="org-system",
     )
     assert tenant_admin.principal_type != system_admin.principal_type
+
+
+def test_active_job_lookup_enforces_requested_tenant_scope():
+    """In-memory active jobs must obey the same tenant boundary as persisted scans."""
+    orchestrator = ScanOrchestrator()
+    job = ScanJob(
+        id="scan-tenant-one",
+        organization_id="org-one",
+        target=Target(name="example", type=TargetType.DOMAIN, value="example.com"),
+    )
+    orchestrator._active_jobs[job.id] = job
+
+    assert orchestrator.get_active_job(job.id, organization_id="org-one") is job
+    assert orchestrator.get_active_job(job.id, organization_id="org-two") is None
+    assert orchestrator.get_active_job(job.id) is job
