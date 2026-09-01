@@ -209,7 +209,12 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                     findings.extend(sf_findings)
                     if tool_state_cb:
                         await tool_state_cb("subfinder", subfinder_adapter.last_execution_state.value)
+                elif tool_state_cb:
+                    await tool_state_cb("subfinder", "TOOL_EXECUTION_FAILED")
+                    await emit_log(LogLevel.WARNING, "Subfinder unavailable: passive discovery was not assessed.")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("subfinder", "TOOL_EXECUTION_FAILED")
                 await emit_log(LogLevel.WARNING, f"Subfinder adapter error: {e}")
 
         if getattr(config.adapters, "enable_httpx", True):

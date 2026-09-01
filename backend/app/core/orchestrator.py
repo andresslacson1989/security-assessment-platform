@@ -39,6 +39,18 @@ class ScanOrchestrator:
         self._subscribers: Dict[str, Set[asyncio.Queue]] = {}
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _recalculate_summary(job: ScanJob, duration_seconds: float) -> None:
+        """Refresh calculated metrics without discarding execution coverage evidence."""
+        previous = job.summary
+        summary = calculate_scan_grade(job.findings, duration_seconds=duration_seconds)
+        summary.pages_crawled = previous.pages_crawled
+        summary.subdomains_discovered = previous.subdomains_discovered
+        summary.active_adapters = list(previous.active_adapters)
+        summary.authenticated_session_active = previous.authenticated_session_active
+        summary.coverage = previous.coverage.model_copy(deep=True)
+        job.summary = summary
+
     # --- Engine Registry ---
 
     def register_engine(self, engine: BaseAssessmentEngine) -> None:
@@ -189,9 +201,9 @@ class ScanOrchestrator:
                 return
             job.findings.append(finding)
             # Recompute intermediate summary
-            job.summary = calculate_scan_grade(
-                job.findings,
-                duration_seconds=(utc_now() - (job.started_at or utc_now())).total_seconds()
+            self._recalculate_summary(
+                job,
+                (utc_now() - (job.started_at or utc_now())).total_seconds(),
             )
 
         await self._broadcast(scan_id, "finding", finding.model_dump(mode="json"))
@@ -240,6 +252,7 @@ class ScanOrchestrator:
 
     async def emit_tool_execution_state(self, scan_id: str, tool_name: str, state: str) -> None:
         job = self._active_jobs.get(scan_id)
+        state = state.replace("EXECUTION_", "")
         if job:
             job.tool_execution_states[tool_name] = state
             if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}:
@@ -442,7 +455,7 @@ class ScanOrchestrator:
             job.progress_percent = 100
             job.current_stage = "Assessment complete."
             job.completed_at = utc_now()
-            job.summary = calculate_scan_grade(job.findings, duration_seconds=duration)
+            self._recalculate_summary(job, duration)
             job.summary.pages_crawled = max(1, len(job.discovered_endpoints))
 
             save_scan(job)

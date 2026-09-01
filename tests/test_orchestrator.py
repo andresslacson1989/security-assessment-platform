@@ -100,6 +100,27 @@ class MockFailingEngine(BaseAssessmentEngine):
         raise ConnectionResetError("Simulated connection reset")
 
 
+class MockPartialToolEngine(BaseAssessmentEngine):
+    @property
+    def name(self) -> str:
+        return "mock_partial_tool"
+
+    @property
+    def display_name(self) -> str:
+        return "Mock Partial Tool Engine"
+
+    @property
+    def description(self) -> str:
+        return "Emits a degraded external-tool state"
+
+    def is_applicable(self, target: Target) -> bool:
+        return True
+
+    async def run(self, target, config, emit_log, emit_progress, emit_finding, **kwargs):
+        await kwargs["emit_tool_execution_state"]("subfinder", "PARTIAL_RESULTS_WITH_WARNING")
+        return []
+
+
 @pytest.mark.asyncio
 async def test_token_bucket_rate_limiter():
     limiter = TokenBucketRateLimiter(rate_rps=10.0, burst_capacity=5.0)
@@ -184,6 +205,27 @@ async def test_orchestrator_full_scan_lifecycle():
     assert "completed" in event_types
 
     orch.unsubscribe_events(scan_job.id, queue)
+
+
+@pytest.mark.asyncio
+async def test_final_grading_preserves_subfinder_coverage_degradation():
+    orch = ScanOrchestrator()
+    orch.register_engine(MockPartialToolEngine())
+    job = ScanJob(
+        target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),
+        profile=ScanProfile.CUSTOM,
+        enabled_engines=["mock_partial_tool"],
+    )
+
+    task = await orch.start_scan(job)
+    await task
+
+    completed = orch.get_active_job(job.id)
+    assert completed is not None
+    assert completed.status == ScanStatus.COMPLETED
+    assert completed.tool_execution_states["subfinder"] == "PARTIAL_RESULTS_WITH_WARNING"
+    assert completed.summary.coverage.is_fully_assessed is False
+    assert "subfinder: PARTIAL_RESULTS_WITH_WARNING" in completed.summary.coverage.coverage_limitations
 
 
 @pytest.mark.asyncio

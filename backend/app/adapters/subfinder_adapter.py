@@ -149,14 +149,14 @@ class SubfinderAdapter(BaseToolAdapter):
             await publish_state()
             return findings
         if not self.verify_managed_binary(binary):
-            self.last_execution_state = NormalizedExecutionState.BLOCKED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Subfinder execution blocked: executable is not a valid managed installation.")
             await publish_state()
             return findings
 
         profile = getattr(config, "profile", None)
         if getattr(profile, "value", profile) not in self.ALLOWED_PROFILES:
-            self.last_execution_state = NormalizedExecutionState.BLOCKED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, "Subfinder discovery blocked for unsupported assessment profile.")
             await publish_state()
             return findings
@@ -181,7 +181,7 @@ class SubfinderAdapter(BaseToolAdapter):
 
         apex_domain = self.normalize_domain(domain)
         if not apex_domain or "." not in apex_domain:
-            self.last_execution_state = NormalizedExecutionState.BLOCKED
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, "Subfinder discovery blocked: target is not a valid domain.")
             await publish_state()
             return findings
