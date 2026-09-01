@@ -72,7 +72,7 @@ class TestSslyzeIdentityAndVersion:
         assert adapter.security_domain == "NETWORK / PERIMETER / TLS"
         assert adapter.default_operation_class == ToolOperationClass.ACTIVE_READ_ONLY
 
-    def test_assured_execution_requires_isolated_tool_venv(self, tmp_path, monkeypatch):
+    def test_assured_execution_requires_installer_trust_record(self, tmp_path, monkeypatch):
         adapter = SslyzeAdapter()
         venv_root = tmp_path / "tool-venvs"
         bin_dir = venv_root / "sslyze" / ("Scripts" if os.name == "nt" else "bin")
@@ -84,7 +84,9 @@ class TestSslyzeIdentityAndVersion:
             executable.chmod(0o755)
         monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(venv_root))
 
-        assert adapter.verify_managed_binary(str(executable)) is True
+        # An isolated path and matching interpreter are insufficient.  The
+        # pip installer must first create the durable package trust record.
+        assert adapter.verify_managed_binary(str(executable)) is False
         assert adapter.verify_managed_binary(str(tmp_path / "sslyze")) is False
 
     def test_version_authority_hierarchy(self):

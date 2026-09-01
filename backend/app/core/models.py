@@ -493,7 +493,7 @@ class ToolInstallationInfo(BaseModel):
     progress_percent: int = Field(default=0, ge=0, le=100, description="Real-time installation progress percentage")
     assurance_status: str = Field(
         default="UNASSURED",
-        description="Supply-chain assurance: ASSURED, DELEGATED, INCOMPLETE, INVALID, or UNREGISTERED",
+        description="Supply-chain assurance: ASSURED, UNASSURED, DELEGATED, INCOMPLETE, INVALID, or UNREGISTERED",
     )
 
 

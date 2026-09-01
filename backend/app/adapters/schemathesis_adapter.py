@@ -5,6 +5,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (Secti
 
 from __future__ import annotations
 import json
+import logging
 import re
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 
@@ -16,12 +17,15 @@ from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
 
 APPROVED_VERSION = "3.20.0"
+logger = logging.getLogger("cyberassess.adapters.schemathesis")
 
 
 class SchemathesisAdapter(BaseToolAdapter):
     """
     Adapter for Schemathesis property-based OpenAPI/GraphQL contract fuzzer.
     """
+
+    package_name = "schemathesis"
 
     def __init__(self):
         super().__init__()
@@ -139,9 +143,9 @@ class SchemathesisAdapter(BaseToolAdapter):
                     )
                     findings.append(finding)
                     await emit_finding(finding)
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
-            pass
+            logger.warning("Schemathesis JSON result parsing degraded: error_type=%s", type(exc).__name__)
 
         # Regex fallback for text output
         if "FAILED" in stdout or "ServerError" in stdout:

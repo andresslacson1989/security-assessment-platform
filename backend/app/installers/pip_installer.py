@@ -18,6 +18,16 @@ from app.installers.base_installer import (
     ProgressCallback,
 )
 from app.core.process_supervisor import process_supervisor
+from app.core.package_trust import (
+    PackageTrustError,
+    build_package_trust_record,
+    get_lock_path,
+    get_tool_venv_dir,
+    invalidate_package_trust_record,
+    verify_package_trust,
+    write_package_trust_record,
+)
+from app.core.version import APP_VERSION
 
 logger = logging.getLogger("cyberassess.installers.pip")
 
@@ -113,15 +123,22 @@ class PipToolInstaller(BaseToolInstaller):
 
     def resolve_binary_path(self) -> Optional[str]:
         """Resolve only the managed per-tool venv before diagnostic fallbacks."""
-        venv_root = Path(os.environ.get(
-            "CYBERASSESS_TOOL_VENV_DIR",
-            str(Path(__file__).resolve().parents[2] / ".tool-venvs"),
-        )).resolve()
-        venv_bin = venv_root / self._tool_name / ("Scripts" if os.name == "nt" else "bin")
+        venv_bin = get_tool_venv_dir(self._tool_name) / ("Scripts" if os.name == "nt" else "bin")
         for candidate in (venv_bin / f"{self._cfg['binary_name']}.exe", venv_bin / self._cfg["binary_name"]):
             if candidate.is_file():
                 return str(candidate)
         return super().resolve_binary_path()
+
+    def is_assured_installation(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
+        return verify_package_trust(
+            tool_name=self._tool_name,
+            package_name=self._cfg["package_name"],
+            binary_name=self._cfg["binary_name"],
+            approved_version=self._cfg["pinned_version"],
+            binary=path,
+        )
 
     async def get_version(self) -> Optional[str]:
         pkg = self._cfg["package_name"]
@@ -157,18 +174,30 @@ class PipToolInstaller(BaseToolInstaller):
         force: bool = False,
     ) -> bool:
         pkg = self._cfg["package_name"]
-        lock_path = Path(__file__).resolve().parents[2] / "tool-requirements" / f"{self._tool_name}.lock"
+        lock_path = get_lock_path(self._tool_name)
         if not lock_path.is_file():
             await emit_log(f"Package '{pkg}' installation rejected: its hash-locked requirements file is missing.")
             await emit_progress(100, f"Missing locked requirements for {pkg}")
             return False
 
-        venv_root = Path(os.environ.get(
-            "CYBERASSESS_TOOL_VENV_DIR",
-            str(Path(__file__).resolve().parents[2] / ".tool-venvs"),
-        )).resolve()
-        venv_dir = venv_root / self._tool_name
+        venv_dir = get_tool_venv_dir(self._tool_name)
         venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        binary_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+        binary_candidates = (
+            binary_dir / f"{self._cfg['binary_name']}.exe",
+            binary_dir / self._cfg["binary_name"],
+        )
+
+        # A reinstall invalidates the previous assertion before any package
+        # files are changed.  A failed or interrupted install therefore
+        # cannot continue to satisfy the assured execution gate.
+        try:
+            for candidate in binary_candidates:
+                invalidate_package_trust_record(str(candidate))
+        except (OSError, PackageTrustError) as exc:
+            await emit_log(f"Package '{pkg}' installation rejected: stale trust record could not be invalidated ({type(exc).__name__}).")
+            await emit_progress(100, f"Trust state invalidation failed for {pkg}")
+            return False
         await emit_log(f"Starting pip installation for package '{pkg}'...")
         await emit_progress(10, f"Initializing pip install for {pkg}...")
 
@@ -202,16 +231,46 @@ class PipToolInstaller(BaseToolInstaller):
                     await emit_log(line.rstrip())
 
             if ret == 0:
+                binary_path = next((candidate for candidate in binary_candidates if candidate.is_file()), None)
+                if binary_path is None:
+                    await emit_log(f"Package '{pkg}' installation rejected: managed console executable was not created.")
+                    await emit_progress(100, f"Executable registration failed for {pkg}")
+                    return False
                 ver = await self.get_version()
                 expected = f"{pkg} {self._cfg['pinned_version']}"
                 if ver != expected:
+                    try:
+                        invalidate_package_trust_record(str(binary_path))
+                    except (OSError, PackageTrustError) as exc:
+                        logger.warning("Failed to invalidate package trust after version rejection: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
                     await emit_progress(100, f"Pinned version verification failed for {pkg}: expected {expected}, found {ver or 'unavailable'}")
                     await emit_log(f"Package '{pkg}' installation rejected because the exact pinned version was not verified.")
+                    return False
+                try:
+                    record = build_package_trust_record(
+                        tool_name=self._tool_name,
+                        package_name=pkg,
+                        binary_name=self._cfg["binary_name"],
+                        binary=str(binary_path),
+                        installer_version=APP_VERSION,
+                    )
+                    write_package_trust_record(record, str(binary_path))
+                except (OSError, PackageTrustError, ValueError, TypeError) as exc:
+                    try:
+                        invalidate_package_trust_record(str(binary_path))
+                    except (OSError, PackageTrustError) as cleanup_exc:
+                        logger.warning("Failed to invalidate package trust after trust registration failure: tool=%s error_type=%s", self._tool_name, type(cleanup_exc).__name__)
+                    await emit_log(f"Package '{pkg}' installation rejected: managed trust registration failed ({type(exc).__name__}).")
+                    await emit_progress(100, f"Trust registration failed for {pkg}")
                     return False
                 await emit_progress(100, f"Successfully installed {expected}")
                 await emit_log(f"Package '{pkg}' installed successfully at the pinned version.")
                 return True
 
+            try:
+                invalidate_package_trust_record(str(binary_path))
+            except (OSError, PackageTrustError) as exc:
+                logger.warning("Failed to invalidate package trust after pip failure: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
             await emit_progress(100, f"Pip installation failed with exit code {ret}")
             await emit_log(f"Pip installation failed with exit code {ret}.")
             return False
@@ -219,6 +278,10 @@ class PipToolInstaller(BaseToolInstaller):
             await emit_log(f"Installation of {pkg} was cancelled by user.")
             raise
         except Exception as ex:
+            try:
+                invalidate_package_trust_record(str(binary_path))
+            except (OSError, PackageTrustError) as cleanup_exc:
+                logger.warning("Failed to invalidate package trust after installer exception: tool=%s error_type=%s", self._tool_name, type(cleanup_exc).__name__)
             await emit_log(f"Exception during pip execution: {type(ex).__name__}: {str(ex)}")
             await emit_progress(100, f"Installation error: {type(ex).__name__}: {str(ex)}")
             return False

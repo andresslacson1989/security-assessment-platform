@@ -5,6 +5,7 @@ Verifies complete system functionality against formal contract deliverables and 
 
 from datetime import datetime, timezone, timedelta
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -1349,7 +1350,7 @@ async def test_scenario_17_expanded_enterprise_tool_adapters(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path):
+async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path, monkeypatch):
     """
     Scenario 18: In-App Tool Installation Lifecycle for Pip & Standalone Binaries (Contract 05 v6.0.0)
     - Verifies 1-click execution for PipToolInstaller (sys.executable -m pip).
@@ -1368,8 +1369,15 @@ async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path):
     pip_inst = PipToolInstaller("sslyze")
     assert pip_inst.install_method == ToolInstallMethod.PIP
     logs = []
+    venv_bin = tmp_path / "tool-venvs" / "sslyze" / ("Scripts" if os.name == "nt" else "bin")
+    venv_bin.mkdir(parents=True)
+    (venv_bin / ("python.exe" if os.name == "nt" else "python")).write_bytes(b"test interpreter")
+    (venv_bin / ("sslyze.exe" if os.name == "nt" else "sslyze")).write_bytes(b"test executable")
+    monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(tmp_path / "tool-venvs"))
     with patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(0, "Successfully installed sslyze\n", ""))), \
-         patch.object(pip_inst, "get_version", AsyncMock(return_value="sslyze 5.2.0")):
+         patch.object(pip_inst, "get_version", AsyncMock(return_value="sslyze 5.2.0")), \
+         patch("app.installers.pip_installer.build_package_trust_record", return_value={}), \
+         patch("app.installers.pip_installer.write_package_trust_record"):
         res = await pip_inst.install(
             lambda m: logs.append(m) or asyncio.sleep(0),
             lambda p, s: asyncio.sleep(0),

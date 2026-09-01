@@ -375,6 +375,8 @@ class SslyzeAdapter(BaseToolAdapter):
     findings into canonical NET-TLS-xxx security records with zero CVSS inflation.
     """
 
+    package_name = "sslyze"
+
     def __init__(self):
         super().__init__()
         self.approved_version = APPROVED_VERSION
@@ -389,26 +391,16 @@ class SslyzeAdapter(BaseToolAdapter):
         return TOOL_NAME
 
     def verify_managed_binary(self, binary: str) -> bool:
-        """Require SSLyze to resolve from CyberAssess's isolated tool venv."""
-        if not isinstance(binary, str) or not binary.strip():
-            return False
-        path = os.path.abspath(binary)
-        if (
-            not os.path.isfile(path)
-            or (os.name != "nt" and not os.access(path, os.X_OK))
-            or os.path.realpath(path) != path
-        ):
-            return False
-        if os.path.basename(path).lower() not in {"sslyze", "sslyze.exe"}:
-            return False
+        """Require the installer-created package identity and file hashes."""
+        from app.core.package_trust import verify_package_trust
 
-        venv_root = Path(os.environ.get(
-            "CYBERASSESS_TOOL_VENV_DIR",
-            str(Path(__file__).resolve().parents[2] / ".tool-venvs"),
-        )).resolve() / self.tool_name
-        expected_bin = venv_root / ("Scripts" if os.name == "nt" else "bin")
-        interpreter = expected_bin / ("python.exe" if os.name == "nt" else "python")
-        return Path(path).parent == expected_bin and interpreter.is_file()
+        return verify_package_trust(
+            tool_name=self.tool_name,
+            package_name=self.package_name,
+            binary_name=self.tool_name,
+            approved_version=self.approved_version,
+            binary=binary,
+        )
 
     async def get_version(
         self,

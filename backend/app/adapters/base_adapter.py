@@ -12,7 +12,6 @@ import os
 import platform
 import re
 import shutil
-import sys
 from typing import Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
@@ -112,44 +111,22 @@ class BaseToolAdapter(ABC):
         return True
 
     def verify_managed_binary(self, binary: str) -> bool:
-        """Verify the installer-created identity record for direct managed binaries."""
-        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
-        path = os.path.abspath(binary)
+        """Verify the installer-created identity record for a managed tool."""
         package_name = getattr(self, "package_name", None)
         if package_name:
-            python_roots = {
-                os.path.abspath(os.path.dirname(sys.executable)),
-                os.path.abspath(sys.prefix),
-            }
-            try:
-                if not any(os.path.commonpath([path, root]) == root for root in python_roots):
-                    return False
-                from importlib.metadata import version
-                return version(package_name) == str(getattr(self, "approved_version", "")).lstrip("v")
-            except Exception:
-                return False
-        if self.tool_name == "schemathesis":
-            # Schemathesis is governed as a package-manager tool. Accept only
-            # the active interpreter's executable and exact installed metadata.
-            python_roots = {
-                os.path.abspath(os.path.dirname(sys.executable)),
-                os.path.abspath(sys.prefix),
-            }
-            in_python_root = False
-            for root in python_roots:
-                try:
-                    if os.path.commonpath([path, root]) == root:
-                        in_python_root = True
-                        break
-                except ValueError:
-                    continue
-            if not in_python_root:
-                return False
-            try:
-                from importlib.metadata import version
-                return version("schemathesis") == str(getattr(self, "approved_version", ""))
-            except Exception:
-                return False
+            from app.core.package_trust import verify_package_trust
+
+            return verify_package_trust(
+                tool_name=self.tool_name,
+                package_name=package_name,
+                binary_name=getattr(self, "binary_name", self.tool_name),
+                approved_version=str(getattr(self, "approved_version", "")),
+                binary=binary,
+            )
+        if not isinstance(binary, str) or not binary.strip() or "\x00" in binary:
+            return False
+        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+        path = os.path.abspath(binary)
         if os.path.realpath(path) != path or os.path.dirname(path) != managed_dir:
             return False
         if os.path.basename(path).lower() not in {self.tool_name.lower(), f"{self.tool_name.lower()}.exe"}:

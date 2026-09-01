@@ -217,7 +217,7 @@ def test_manifest_audit_rejects_malformed_digest_metadata():
 
 
 @pytest.mark.asyncio
-async def test_pip_tool_installer_success():
+async def test_pip_tool_installer_success(monkeypatch, tmp_path):
     """Tests PipToolInstaller with mocked subprocess output."""
     installer = PipToolInstaller("bandit")
     assert installer.tool_name == "bandit"
@@ -232,14 +232,28 @@ async def test_pip_tool_installer_success():
     async def prog_cb(pct, stg):
         progress_records.append((pct, stg))
 
+    venv_bin = tmp_path / "bandit" / ("Scripts" if os.name == "nt" else "bin")
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / ("python.exe" if os.name == "nt" else "python")
+    venv_python.write_bytes(b"test interpreter")
+    binary = venv_bin / ("bandit.exe" if os.name == "nt" else "bandit")
+    binary.write_bytes(b"test bandit executable")
+    if os.name != "nt":
+        binary.chmod(0o755)
+    monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(tmp_path))
+
     with patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(
         0,
         "Collecting bandit\nInstalling collected packages: bandit\nSuccessfully installed bandit-1.7.8\n",
         "",
     ))) as execute_mock:
-        with patch.object(installer, "get_version", new=AsyncMock(return_value="bandit 1.7.8")):
+        with patch.object(installer, "get_version", new=AsyncMock(return_value="bandit 1.7.8")), \
+             patch("app.installers.pip_installer.build_package_trust_record", return_value={}) as build_record, \
+             patch("app.installers.pip_installer.write_package_trust_record") as write_record:
             res = await installer.install(log_cb, prog_cb, force=False)
             assert res is True
+            build_record.assert_called_once()
+            write_record.assert_called_once()
             assert any("Successfully installed" in l for l in logs)
             assert progress_records[-1][0] == 100
     assert execute_mock.await_args.kwargs["timeout"] == 600.0
@@ -313,7 +327,10 @@ async def test_tool_installation_info_exposes_manifest_assurance_status():
     delegated = await SystemToolHelper("nmap").get_info()
     unregistered = await SystemToolHelper("sqlmap").get_info()
 
-    assert assured.assurance_status == "ASSURED"
+    # A complete manifest makes the package eligible for assurance, but a
+    # host installation is not assured until the installer-created trust
+    # record and runtime file verification pass.
+    assert assured.assurance_status == "UNASSURED"
     assert delegated.assurance_status == "DELEGATED"
     assert unregistered.assurance_status == "INCOMPLETE"
 

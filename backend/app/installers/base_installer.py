@@ -73,6 +73,16 @@ class BaseToolInstaller(ABC):
         """Returns the local user-space bin directory: backend/bin/."""
         return get_default_bin_dir()
 
+    def is_assured_installation(self, path: Optional[str]) -> bool:
+        """Return whether the resolved installation has a verified trust record.
+
+        Registry metadata alone establishes eligibility, not trust in the
+        executable currently present on disk. Installers that can verify a
+        concrete installation override this hook; the fail-closed default
+        prevents status reporting from overstating assurance.
+        """
+        return False
+
     def resolve_binary_path(self) -> Optional[str]:
         """
         Deterministic 5-Tier Binary Resolution Order:
@@ -105,7 +115,7 @@ class BaseToolInstaller(ABC):
         status = ToolInstallStatus.INSTALLED if is_installed else ToolInstallStatus.NOT_INSTALLED
         manifest_status = audit_tool_manifest([self.tool_name])
         if self.tool_name in manifest_status["assured"]:
-            assurance_status = "ASSURED"
+            assurance_status = "ASSURED" if self.is_assured_installation(path) else "UNASSURED"
         elif self.tool_name in manifest_status["incomplete"]:
             assurance_status = "DELEGATED" if self.tool_name == "nmap" else "INCOMPLETE"
         elif self.tool_name in manifest_status["invalid"]:
