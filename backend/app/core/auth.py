@@ -293,9 +293,8 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     return payload
 
 
-def revoke_token(token: str) -> None:
-    """Adds a token to the active revocation registry and authoritative database."""
-    REVOKED_TOKENS_REGISTRY.add(token)
+def revoke_token(token: str) -> bool:
+    """Durably revoke a JWT before updating the process-local acceleration cache."""
     try:
         payload = jwt.decode(token, options={"verify_signature": False})
         jti = payload.get("jti")
@@ -305,8 +304,11 @@ def revoke_token(token: str) -> None:
             exp_str = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat() if exp else None
             token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
             db_manager.revoke_token(jti, token_hash=token_hash, expires_at=exp_str)
-    except Exception:
-        pass
+            REVOKED_TOKENS_REGISTRY.add(token)
+            return True
+    except jwt.PyJWTError:
+        return False
+    return False
 
 
 # ============================================================================

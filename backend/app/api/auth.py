@@ -207,7 +207,8 @@ async def logout(
     if authorization:
         parts = authorization.strip().split(" ")
         if len(parts) == 2 and parts[0].lower() == "bearer":
-            revoke_token(parts[1])
+            if not revoke_token(parts[1]):
+                raise HTTPException(status_code=400, detail="The session token could not be revoked.")
 
     db_manager.record_audit_event(
         AuditEvent(

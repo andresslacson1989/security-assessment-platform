@@ -8,6 +8,7 @@ import asyncio
 import os
 import json
 import pytest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
@@ -309,6 +310,19 @@ def test_sec_016_jwt_token_revocation():
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
         decode_access_token(token)
+
+
+def test_sec_016_revocation_does_not_claim_success_on_database_failure():
+    """JWT revocation must fail closed when durable persistence is unavailable."""
+    import app.core.auth as auth_module
+
+    user = UserProfile(id="usr-db-failure", username="testuser", email="test@local", role=UserRole.VIEWER)
+    token = create_access_token(user)
+    with patch("app.core.db.db_manager.revoke_token", side_effect=RuntimeError("database unavailable")):
+        with pytest.raises(RuntimeError):
+            revoke_token(token)
+
+    assert token not in auth_module.REVOKED_TOKENS_REGISTRY
 
 
 # ============================================================================
