@@ -38,6 +38,10 @@ from app.adapters.prowler_adapter import ProwlerAdapter
 from app.adapters.kubebench_adapter import KubeBenchAdapter
 from app.adapters.dockle_adapter import DockleAdapter
 from app.adapters.gtfobins_adapter import GTFOBinsAdapter
+from app.adapters.metasploit_adapter import MetasploitAdapter
+from app.adapters.sqlmap_adapter import SqlmapAdapter
+from app.adapters.amass_adapter import AmassAdapter
+from app.adapters.hydra_adapter import HydraAdapter
 
 
 __all__ = [
@@ -64,6 +68,10 @@ __all__ = [
     "KubeBenchAdapter",
     "DockleAdapter",
     "GTFOBinsAdapter",
+    "MetasploitAdapter",
+    "SqlmapAdapter",
+    "AmassAdapter",
+    "HydraAdapter",
     "get_adapter_registry",
     "discover_system_capabilities",
 ]
@@ -96,6 +104,10 @@ def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
         "kube-bench": KubeBenchAdapter(),
         "prowler": ProwlerAdapter(),
         "gtfobins": GTFOBinsAdapter(),
+        "metasploit": MetasploitAdapter(),
+        "sqlmap": SqlmapAdapter(),
+        "amass": AmassAdapter(),
+        "hydra": HydraAdapter(),
     }
 
 
@@ -134,6 +146,10 @@ async def discover_system_capabilities(
         "kube-bench": (cfg.enable_kube_bench, cfg.kube_bench_path or cfg.custom_kube_bench_path),
         "prowler": (cfg.enable_prowler, cfg.prowler_path or cfg.custom_prowler_path),
         "gtfobins": (cfg.enable_gtfobins, None),
+        "metasploit": (cfg.enable_metasploit, cfg.metasploit_path or cfg.custom_metasploit_path),
+        "sqlmap": (cfg.enable_sqlmap, cfg.sqlmap_path or cfg.custom_sqlmap_path),
+        "amass": (cfg.enable_amass, cfg.amass_path or cfg.custom_amass_path),
+        "hydra": (cfg.enable_hydra, cfg.hydra_path or cfg.custom_hydra_path),
     }
 
     # Tool install methods mapping
@@ -160,6 +176,10 @@ async def discover_system_capabilities(
         "nmap": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
         "retire": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
         "gtfobins": ToolInstallMethod.MANUAL,
+        "metasploit": ToolInstallMethod.MANUAL,
+        "sqlmap": ToolInstallMethod.MANUAL,
+        "amass": ToolInstallMethod.MANUAL,
+        "hydra": ToolInstallMethod.MANUAL,
     }
 
     for name, adapter in registry.items():

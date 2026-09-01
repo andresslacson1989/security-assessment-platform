@@ -986,10 +986,10 @@ class TestCapabilitiesAndRegistry:
             "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
             "trivy", "syft", "grype", "osv-scanner",
             "checkov", "prowler", "kube-bench", "dockle",
-            "gtfobins",
+            "gtfobins", "metasploit", "sqlmap", "amass", "hydra",
         }
         assert set(registry.keys()) == expected_tools
-        assert len(registry) == 22
+        assert len(registry) == 26
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_fallback(self):
@@ -997,7 +997,7 @@ class TestCapabilitiesAndRegistry:
         with patch.object(BaseToolAdapter, "resolve_binary_path", return_value=None):
             with patch.object(BaseToolAdapter, "is_available", return_value=False):
                 caps = await discover_system_capabilities()
-                assert len(caps.tools) == 22
+                assert len(caps.tools) == 26
                 assert caps.native_engines_ready is True
                 for t in caps.tools:
                     assert t.available is False
@@ -1024,6 +1024,7 @@ class TestCapabilitiesAndRegistry:
             "semgrep", "bandit", "gitleaks", "trufflehog", "retire",
             "trivy", "syft", "grype", "osv-scanner",
             "checkov", "prowler", "kube-bench", "dockle",
+            "gtfobins", "metasploit", "sqlmap", "amass", "hydra",
         ]
         mock_registry = {
             tool: MagicMock(
