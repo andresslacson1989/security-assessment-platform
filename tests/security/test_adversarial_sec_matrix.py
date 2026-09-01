@@ -534,6 +534,32 @@ async def test_sec_021_resource_exhaustion_concurrency_governance():
     assert mgr.active_scans_count == 0
 
 
+@pytest.mark.asyncio
+async def test_sec_021_per_tenant_concurrency_is_bounded():
+    """A tenant-specific semaphore limits scans without reducing other tenants' capacity."""
+    from app.core.queue import ScanQueueManager
+
+    mgr = ScanQueueManager(max_concurrent=4, max_concurrent_per_tenant=1)
+    active_by_tenant = {"org-a": 0, "org-b": 0}
+    peak_by_tenant = {"org-a": 0, "org-b": 0}
+
+    async def fake_scan(tenant):
+        active_by_tenant[tenant] += 1
+        peak_by_tenant[tenant] = max(peak_by_tenant[tenant], active_by_tenant[tenant])
+        await asyncio.sleep(0.05)
+        active_by_tenant[tenant] -= 1
+
+    tasks = [
+        asyncio.create_task(mgr.execute_bounded(f"a-{i}", fake_scan, "org-a", organization_id="org-a"))
+        for i in range(3)
+    ] + [
+        asyncio.create_task(mgr.execute_bounded("b-1", fake_scan, "org-b", organization_id="org-b"))
+    ]
+    await asyncio.gather(*tasks)
+    assert peak_by_tenant["org-a"] == 1
+    assert peak_by_tenant["org-b"] == 1
+
+
 def test_sec_028_report_secret_leakage_sanitization():
     """SEC-028: Exported reports sanitize sensitive credentials."""
     from app.exporters.json_exporter import export_scan_to_json
@@ -615,4 +641,3 @@ def test_sec_030_development_mode_privilege_isolation():
     from app.core.auth import ANONYMOUS_DEV_USER
     assert ANONYMOUS_DEV_USER.role == UserRole.VIEWER
     assert ANONYMOUS_DEV_USER.role != UserRole.ADMIN
-

@@ -109,7 +109,12 @@ class ScanOrchestrator:
 
         from app.core.queue import queue_manager
         task = asyncio.create_task(
-            queue_manager.execute_bounded(scan_job.id, self._execute_scan, scan_job.id)
+            queue_manager.execute_bounded(
+                scan_job.id,
+                self._execute_scan,
+                scan_job.id,
+                organization_id=scan_job.organization_id,
+            )
         )
         self._tasks[scan_job.id] = task
         return task
