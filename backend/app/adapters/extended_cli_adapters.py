@@ -30,7 +30,7 @@ from app.core.models import (
     calculate_fingerprint,
     sanitize_sensitive_text,
 )
-from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, audit_tool_manifest
 from app.core.binary_resolver import resolve_tool_binary
 
 
@@ -67,11 +67,10 @@ class GovernedExtendedAdapter(BaseToolAdapter):
         )
 
     def verify_managed_binary(self, binary: str) -> bool:
-        # The current authoritative manifest has no entries for this extended
-        # set. Refuse execution rather than accepting a PATH binary or invented
-        # digest. Once a real entry is installed, the inherited trust-record
-        # checks are applied by the concrete adapter.
-        if self.manifest_name not in PINNED_TOOL_MANIFEST:
+        # An entry is not sufficient by itself: manual or incomplete metadata
+        # must never become enterprise assurance merely because a local sidecar
+        # claims that an executable is valid.
+        if self.manifest_name not in audit_tool_manifest([self.manifest_name])["assured"]:
             return False
         path = os.path.abspath(binary)
         managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))

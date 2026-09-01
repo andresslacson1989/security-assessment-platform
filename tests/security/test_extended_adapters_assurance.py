@@ -11,6 +11,25 @@ from app.adapters.sqlmap_adapter import SqlmapAdapter
 from app.core.models import ScanConfig
 
 
+def test_incomplete_manifest_cannot_be_promoted_by_a_fabricated_sidecar(monkeypatch, tmp_path):
+    """Manual/incomplete tool metadata must fail closed at the trust boundary."""
+    import app.adapters.extended_cli_adapters as module
+    managed_dir = tmp_path / "backend" / "bin"
+    managed_dir.mkdir(parents=True)
+    binary = managed_dir / "msfconsole.exe"
+    binary.write_bytes(b"not-an-approved-artifact")
+    (managed_dir / "msfconsole.exe.trust.json").write_text(
+        '{"tool_id":"TOOL-METASPLOIT","tool_version":"","trust_status":"VALID",'
+        '"executable_relative_path":"msfconsole.exe",'
+        '"executable_sha256":"' + ("0" * 64) + '",'
+        '"claims":["ARCHIVE_INTEGRITY_VERIFIED","EXECUTABLE_INTEGRITY_VERIFIED"]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "__file__", str(tmp_path / "backend" / "app" / "adapters" / "extended_cli_adapters.py"))
+
+    assert MetasploitAdapter().verify_managed_binary(str(binary)) is False
+
+
 def test_metasploit_command_is_fixed_to_non_destructive_auxiliary_scanner():
     command = MetasploitAdapter.build_command("msfconsole", "https://example.test", 443)
     script = command[-1]
