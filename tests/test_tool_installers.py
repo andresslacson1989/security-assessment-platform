@@ -156,6 +156,24 @@ def test_github_release_installer_requires_exact_release_tag():
 
 
 @pytest.mark.asyncio
+async def test_source_build_requires_pinned_tag_to_resolve_to_pinned_commit():
+    installer = SourceBuildInstaller("trivy")
+    manifest = PINNED_TOOL_MANIFEST["trivy"]
+    response = MagicMock()
+    response.json.return_value = {"object": {"type": "commit", "sha": manifest["source_commit"]}}
+    response.raise_for_status.return_value = None
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+
+    await installer._verify_source_tag(client, manifest)
+    client.get.assert_awaited_once()
+
+    response.json.return_value = {"object": {"type": "commit", "sha": "0" * 40}}
+    with pytest.raises(SecurityError, match="resolves"):
+        await installer._verify_source_tag(client, manifest)
+
+
+@pytest.mark.asyncio
 async def test_source_build_refuses_when_direct_release_availability_is_not_false():
     installer = SourceBuildInstaller("trivy")
     logs = []

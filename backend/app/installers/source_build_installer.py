@@ -96,6 +96,38 @@ class SourceBuildInstaller(BaseToolInstaller):
                     output.write(chunk)
         return digest.hexdigest()
 
+    async def _verify_source_tag(self, client: httpx.AsyncClient, manifest: dict) -> None:
+        """Verify the pinned Git tag resolves to the pinned immutable commit."""
+        repo = str(manifest.get("repo", "")).strip()
+        tag = str(manifest.get("release_tag", "")).strip()
+        expected_commit = str(manifest.get("source_commit", "")).strip().lower()
+        if not repo or not tag or not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+            raise SecurityError("Incomplete source tag identity in the pinned manifest")
+        ref_url = f"https://api.github.com/repos/{repo}/git/ref/tags/{tag}"
+        response = await client.get(
+            ref_url,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": f"CyberAssess/{APP_VERSION}"},
+        )
+        response.raise_for_status()
+        ref = response.json()
+        obj = ref.get("object") if isinstance(ref, dict) else None
+        if not isinstance(obj, dict) or not obj.get("sha"):
+            raise SecurityError("Pinned source tag did not resolve to a Git object")
+        resolved_commit = str(obj["sha"]).lower()
+        if obj.get("type") == "tag":
+            tag_response = await client.get(
+                f"https://api.github.com/repos/{repo}/git/tags/{resolved_commit}",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": f"CyberAssess/{APP_VERSION}"},
+            )
+            tag_response.raise_for_status()
+            tag_data = tag_response.json()
+            target = tag_data.get("object") if isinstance(tag_data, dict) else None
+            resolved_commit = str(target.get("sha", "")).lower() if isinstance(target, dict) else ""
+        if resolved_commit != expected_commit:
+            raise SecurityError(
+                f"Pinned source tag {tag} resolves to {resolved_commit or 'unknown'}, expected {expected_commit}"
+            )
+
     @staticmethod
     def _safe_extract_tar(archive: str, target: str) -> None:
         root = Path(target).resolve()
@@ -150,6 +182,7 @@ class SourceBuildInstaller(BaseToolInstaller):
         try:
             await emit_progress(10, "Downloading verified Go toolchain and Trivy source archive...")
             async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client, tempfile.TemporaryDirectory() as temp:
+                await self._verify_source_tag(client, manifest)
                 source_archive = os.path.join(temp, "trivy-source.tar.gz")
                 go_archive = os.path.join(temp, go_name)
                 source_actual = await self._download(client, source_url, source_archive)
