@@ -71,11 +71,12 @@ class DatabaseManager:
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("PRAGMA journal_mode=WAL;")
-            except Exception:
+            except sqlite3.DatabaseError:
                 try:
                     conn.execute("PRAGMA journal_mode=DELETE;")
-                except Exception:
-                    pass
+                except sqlite3.DatabaseError:
+                    conn.close()
+                    raise
             try:
                 conn.execute("PRAGMA foreign_keys=ON;")
             except Exception:
@@ -300,8 +301,9 @@ class DatabaseManager:
             for mig in migrations:
                 try:
                     conn.execute(mig)
-                except Exception:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
@@ -842,8 +844,8 @@ class DatabaseManager:
             try:
                 data = json.loads(row["data_json"])
                 return ScanJob.model_validate(data)
-            except Exception:
-                return None
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise RuntimeError(f"Authoritative scan record '{scan_id}' is corrupt.") from exc
 
     def list_scans_records(
         self,
@@ -874,8 +876,8 @@ class DatabaseManager:
                 try:
                     data = json.loads(r["data_json"])
                     scans.append(ScanJob.model_validate(data))
-                except Exception:
-                    continue
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    raise RuntimeError("Authoritative scan listing contains a corrupt record.") from exc
             return scans, total
 
     def delete_scan_record(self, scan_id: str, organization_id: Optional[str] = None) -> bool:
