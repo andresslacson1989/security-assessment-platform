@@ -38,6 +38,32 @@ async def test_api_key_revocation_is_checked_against_database_each_request(tmp_p
     assert exc_info.value.status_code == 401
 
 
+def test_bootstrap_audit_event_is_chained_and_correlated(tmp_path):
+    """Bootstrap must use the authoritative tamper-evident audit writer."""
+    import app.core.correlation as correlation_module
+
+    db = DatabaseManager(db_path=tmp_path / "bootstrap-audit.db")
+    token = correlation_module.set_correlation_id("corr-bootstrap")
+    try:
+        user, _ = db.bootstrap_system(
+            admin_username="bootstrap-admin",
+            admin_email="bootstrap@example.test",
+            hashed_password="stored-test-hash",
+            org_name="Bootstrap Organization",
+        )
+    finally:
+        correlation_module.reset_correlation_id(token)
+
+    events, total = db.list_audit_events(organization_id=user.organization_id)
+    assert total == 1
+    assert len(events) == 1
+    assert events[0].event_hash
+    assert events[0].correlation_id == "corr-bootstrap"
+    valid, bad_id = db.verify_audit_log_integrity(user.organization_id)
+    assert valid is True
+    assert bad_id is None
+
+
 @pytest.mark.asyncio
 async def test_bearer_identity_rechecks_authoritative_user_status(tmp_path, monkeypatch):
     """A signed token cannot keep a database-backed account active after deactivation."""

@@ -525,19 +525,21 @@ class DatabaseManager:
                 (user_id, admin_username, admin_email, hashed_password, org_id, now_str),
             )
 
-            # 3. Record Audit Event
-            conn.execute(
-                "INSERT INTO audit_events (id, timestamp, actor, organization_id, action, object_type, object_id, result, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    f"aud-{uuid.uuid4().hex[:12]}",
-                    now_str,
-                    admin_username,
-                    org_id,
-                    AuditAction.BOOTSTRAP_COMPLETE.value,
-                    "system",
-                    user_id,
-                    "SUCCESS",
-                    json.dumps({"initial_admin": admin_username, "org_name": org_name}),
+            # 3. Record the bootstrap event through the same chained audit
+            # writer used by every later privileged operation.  Raw insertion
+            # would omit sequence/hash fields and bypass request correlation.
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}",
+                    timestamp=utc_now(),
+                    actor=admin_username,
+                    organization_id=org_id,
+                    action=AuditAction.BOOTSTRAP_COMPLETE,
+                    object_type="system",
+                    object_id=user_id,
+                    result="SUCCESS",
+                    details={"initial_admin": admin_username, "org_name": org_name},
                 ),
             )
 
