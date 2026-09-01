@@ -1137,6 +1137,7 @@ class TestSubfinderAdapter:
         )
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/subfinder"), \
+             patch.object(adapter, "verify_managed_binary", return_value=True), \
              patch.object(adapter, "get_version", new=AsyncMock(return_value="subfinder v2.6.5")), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding, emit_subdomain=emit_subdomain)
@@ -1578,6 +1579,5 @@ class TestCISBenchmarkAdapters:
             assert len(findings) == 1
             assert findings[0].check_id == "CLOUD-CIS-001"
             assert len(recorded_cis) == 1
-
 
 

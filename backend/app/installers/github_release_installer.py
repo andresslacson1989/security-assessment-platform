@@ -5,6 +5,8 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 
 from __future__ import annotations
 import asyncio
+import hashlib
+import json
 import os
 import platform
 import shutil
@@ -414,6 +416,24 @@ class GithubReleaseInstaller(BaseToolInstaller):
 
                 await emit_progress(90, "Verifying binary execution...")
                 ver = await self.get_version()
+                if self.tool_name == "subfinder" and ver == "subfinder v2.6.5":
+                    with open(dest_path, "rb") as binary_file:
+                        executable_hash = hashlib.sha256(binary_file.read()).hexdigest()
+                    trust_record = {
+                        "tool_id": "TOOL-SUBFINDER",
+                        "tool_version": "v2.6.5",
+                        "artifact_filename": asset_filename,
+                        "artifact_sha256": computed_hash,
+                        "executable_relative_path": dest_filename,
+                        "executable_sha256": executable_hash,
+                        "platform": os_prefix,
+                        "architecture": arch_suffix,
+                        "installer_version": "13.0.0",
+                        "trust_status": "VALID",
+                        "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
+                    }
+                    with open(os.path.join(local_bin_dir, f"{dest_filename}.trust.json"), "w", encoding="utf-8") as trust_file:
+                        json.dump(trust_record, trust_file, sort_keys=True)
                 await emit_log(f"Binary installed at: {dest_path} (version: {ver or 'unknown'})")
                 await emit_progress(100, f"Successfully installed {self.display_name} ({ver or 'ready'})")
                 return True

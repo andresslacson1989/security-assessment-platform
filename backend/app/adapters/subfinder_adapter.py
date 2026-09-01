@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import re
 import ipaddress
+import hashlib
+import os
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 from urllib.parse import urlparse
 
@@ -68,6 +70,26 @@ class SubfinderAdapter(BaseToolAdapter):
             raise ValueError("Invalid authorized discovery domain")
         return [binary, "-d", root, "-silent", "-json", "-timeout", "10", "-max-time", "1"]
 
+    def verify_managed_binary(self, binary: str) -> bool:
+        """Verify the exact managed executable and its installer-created identity record."""
+        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+        path = os.path.abspath(binary)
+        if os.path.dirname(path) != managed_dir or os.path.basename(path).lower() not in {"subfinder", "subfinder.exe"}:
+            return False
+        record_path = f"{path}.trust.json"
+        try:
+            with open(record_path, "r", encoding="utf-8") as record_file:
+                record = json.load(record_file)
+            if record.get("tool_id") != "TOOL-SUBFINDER" or record.get("trust_status") != "VALID":
+                return False
+            if record.get("executable_relative_path") != os.path.basename(path):
+                return False
+            with open(path, "rb") as binary_file:
+                digest = hashlib.sha256(binary_file.read()).hexdigest()
+            return digest == record.get("executable_sha256")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
@@ -94,6 +116,9 @@ class SubfinderAdapter(BaseToolAdapter):
         binary = self.resolve_binary_path(config.adapters.subfinder_path or config.adapters.custom_subfinder_path)
         if not binary:
             await emit_log(LogLevel.WARNING, "Subfinder binary not found. Skipping Subfinder EASM recon.")
+            return findings
+        if not self.verify_managed_binary(binary):
+            await emit_log(LogLevel.ERROR, "Subfinder execution blocked: executable is not a valid managed installation.")
             return findings
 
         profile = getattr(config, "profile", None)

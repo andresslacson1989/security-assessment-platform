@@ -22,6 +22,10 @@ def test_command_is_structured_and_has_no_client_flags():
         SubfinderAdapter.build_command("/opt/subfinder", "example.com; -all")
 
 
+def test_unmanaged_binary_cannot_satisfy_assured_execution():
+    assert SubfinderAdapter().verify_managed_binary("/usr/local/bin/subfinder") is False
+
+
 @pytest.mark.asyncio
 async def test_wrong_version_fails_closed():
     adapter = SubfinderAdapter()
@@ -34,6 +38,7 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
     adapter = SubfinderAdapter()
     emitted = []
     monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: "/bin/subfinder")
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
     monkeypatch.setattr(adapter, "get_version", AsyncMock(return_value="subfinder v2.6.5"))
     monkeypatch.setattr(adapter, "safe_execute_subprocess", AsyncMock(return_value=(
         0,
