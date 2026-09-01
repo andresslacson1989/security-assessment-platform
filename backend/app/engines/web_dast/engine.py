@@ -11,6 +11,7 @@ from app.core.models import (
     Target,
     Finding,
     ScanConfig,
+    ScanProfile,
     TargetType,
     LogLevel,
     DiscoveredEndpoint,
@@ -102,6 +103,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 organization_id=organization_id,
                 project_id=kwargs.get("project_id"),
                 asset_id=kwargs.get("asset_id"),
+                state_changing_granted=kwargs.get("state_changing_granted", False),
             )
         except Exception as exc:
             await emit_log(LogLevel.WARNING, f"Web DAST target blocked by security policy: {exc}")
@@ -229,26 +231,34 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             schemathesis_adapter = SchemathesisAdapter()
             custom_path = getattr(config.adapters, "schemathesis_path", None) or getattr(config.adapters, "custom_schemathesis_path", None)
             try:
-                if await schemathesis_adapter.is_available(custom_path):
-                    await emit_log(LogLevel.INFO, "Executing Schemathesis API contract fuzzer...")
-                    schema_findings = await schemathesis_adapter.run(
-                        target,
-                        config,
-                        emit_log,
-                        emit_finding,
-                        scan_id="active",
-                        validated_target=_validated_target,
-                        require_managed_binary=True,
-                    )
-                    for f in schema_findings:
-                        if f.fingerprint not in existing_fps:
-                            existing_fps.add(f.fingerprint)
-                            f.source_tool = "schemathesis"
-                            f.scan_id = "active"
-                            findings.append(f)
-                    await publish_tool_state("schemathesis", schemathesis_adapter)
+                state_change_authorized = (
+                    config.profile in (ScanProfile.API_FOCUSED, ScanProfile.API_CONTRACT_AUDIT)
+                    and _validated_target.authorization_context.get("state_changing_granted", False)
+                )
+                if not state_change_authorized:
+                    await publish_tool_state("schemathesis", adapter=None, fallback="EXECUTION_BLOCKED")
+                    await emit_log(LogLevel.WARNING, "Schemathesis blocked: API profile and explicit state-changing authorization are required.")
                 else:
-                    await publish_tool_state("schemathesis")
+                    if await schemathesis_adapter.is_available(custom_path):
+                        await emit_log(LogLevel.INFO, "Executing Schemathesis API contract fuzzer...")
+                        schema_findings = await schemathesis_adapter.run(
+                            target,
+                            config,
+                            emit_log,
+                            emit_finding,
+                            scan_id="active",
+                            validated_target=_validated_target,
+                            require_managed_binary=True,
+                        )
+                        for f in schema_findings:
+                            if f.fingerprint not in existing_fps:
+                                existing_fps.add(f.fingerprint)
+                                f.source_tool = "schemathesis"
+                                f.scan_id = "active"
+                                findings.append(f)
+                        await publish_tool_state("schemathesis", schemathesis_adapter)
+                    else:
+                        await publish_tool_state("schemathesis")
             except Exception as e:
                 await publish_tool_state("schemathesis")
                 await emit_log(LogLevel.WARNING, f"Schemathesis adapter error: {e}")

@@ -130,7 +130,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Enterprise Maturity**: Production-Mature.
 - **Approved Release Version**: `3.20.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: https://github.com/schemathesis/schemathesis.
-- **Safety Controls**: Managed-process preflight, validated-destination binding with Host preservation, bounded examples/timeouts, and state-changing operation support limited to the explicitly governed adapter profile.
+- **Safety Controls**: Managed-process preflight, validated-destination binding with Host preservation, bounded examples/timeouts, and state-changing operation support limited to an API profile plus an explicit internal tenant authorization grant; otherwise execution is blocked.
 - **Finding Normalization**: Check IDs `API-SPEC-001` (Schema Violation), `API-FLAW-001` (Unhandled 500 Server Error).
 - **Role Strategy**: **SPECIALIZED**. Executed during API-focused assessment profiles.
 - **Runtime Evidence**: Approved managed Schemathesis runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.

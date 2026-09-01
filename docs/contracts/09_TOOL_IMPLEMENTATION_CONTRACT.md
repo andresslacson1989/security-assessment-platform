@@ -1503,6 +1503,7 @@ Stderr: Diagnostic logs
   - OpenAPI Schema Fuzzing: `SUPPORTED`
   - GraphQL Schema Fuzzing: `DEFERRED`
 - **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/schemathesis_adapter.py`).
+- **State-Changing Gate:** State-changing execution requires an API-focused profile and an explicit tenant authorization grant in the validated target context; absent either gate, the adapter records `EXECUTION_BLOCKED` and does not launch.
 
 ---
 

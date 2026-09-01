@@ -1855,7 +1855,7 @@ async def test_scenario_25_property_based_api_contract_security():
 
     engine = WebDastAssessmentEngine()
     target = Target(name="REST API", type=TargetType.URL, value="https://example.com/openapi.json")
-    config = ScanConfig()
+    config = ScanConfig(profile=ScanProfile.API_FOCUSED)
     config.crawler.enabled = False
 
     emitted_logs = []
@@ -1892,7 +1892,10 @@ async def test_scenario_25_property_based_api_contract_security():
          patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])), \
          patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])):
 
-        findings = await engine.run(target, config, emit_log, emit_prog, emit_find, organization_id="org-test")
+        findings = await engine.run(
+            target, config, emit_log, emit_prog, emit_find,
+            organization_id="org-test", state_changing_granted=True,
+        )
         schema_findings = [f for f in findings if f.source_tool == "schemathesis"]
 
         assert len(schema_findings) >= 1

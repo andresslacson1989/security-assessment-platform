@@ -2,7 +2,7 @@
 
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType
@@ -134,3 +134,39 @@ async def test_web_dast_blocks_private_target_before_adapter_execution():
         ("katana", "EXECUTION_BLOCKED"),
         ("schemathesis", "EXECUTION_BLOCKED"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_schemathesis_state_changing_probe_requires_explicit_grant():
+    config = ScanConfig()
+    config.crawler.enabled = False
+    config.adapters.enable_ffuf = False
+    config.adapters.enable_nuclei = False
+    config.adapters.enable_katana = False
+    states = []
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=httpx.Response(200, text="<html></html>"))
+
+    async def capture_state(tool, state):
+        states.append((tool, state))
+
+    with patch.object(SchemathesisAdapter, "is_available", new=AsyncMock(return_value=True)), \
+         patch.object(SchemathesisAdapter, "run", new=AsyncMock()) as run_mock, \
+         patch("app.engines.web_dast.engine.httpx.AsyncClient", return_value=mock_client), \
+         patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_browser_posture", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_graphql_endpoints", new=AsyncMock(return_value=[])), \
+         patch("app.engines.web_dast.engine.audit_parameter_fuzzing", new=AsyncMock(return_value=[])):
+        await WebDastAssessmentEngine().run(
+            Target(name="API", type=TargetType.URL, value="https://example.com"),
+            config, AsyncMock(), AsyncMock(), AsyncMock(),
+            organization_id="org-test", emit_tool_execution_state=capture_state,
+        )
+
+    run_mock.assert_not_awaited()
+    assert ("schemathesis", "EXECUTION_BLOCKED") in states
