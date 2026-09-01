@@ -25,7 +25,7 @@ from app.core.auth import (
     API_KEYS_CACHE,
 )
 from app.core.db import db_manager
-from app.core.models import AuditEvent, AuditAction, APIKeyRecord, Organization, utc_now
+from app.core.models import AuditEvent, AuditAction, APIKeyRecord, Organization, PrincipalType, utc_now
 
 router = APIRouter()
 
@@ -234,6 +234,12 @@ async def create_user(
 
     user_id = f"usr-{secrets.token_hex(6)}"
     hashed = hash_password(payload.password)
+    is_system_admin = (
+        current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+        and current_user.role == UserRole.ADMIN
+    )
+    if payload.organization_id and not is_system_admin and payload.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=403, detail="Tenant administrators may only create users in their own organization.")
     org_id = payload.organization_id or current_user.organization_id
 
     with db_manager._get_connection() as conn:
@@ -336,10 +342,14 @@ async def list_api_keys(
     """Lists registered API keys for the caller's organization (excluding hashes)."""
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
-        if current_user.organization_id:
-            cur.execute("SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at FROM api_keys WHERE organization_id = ?", (current_user.organization_id,))
-        else:
+        is_system_admin = (
+            current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+            and current_user.role == UserRole.ADMIN
+        )
+        if is_system_admin:
             cur.execute("SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at FROM api_keys")
+        else:
+            cur.execute("SELECT key_id, name, scopes_json, created_at, expires_at, revoked_at, last_used_at FROM api_keys WHERE organization_id = ?", (current_user.organization_id,))
         rows = cur.fetchall()
 
         return [
@@ -365,10 +375,14 @@ async def revoke_api_key(
     """Revokes an active API key immediately."""
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
-        if current_user.role == UserRole.ADMIN and not current_user.organization_id:
-            cur.execute("UPDATE api_keys SET revoked_at = ? WHERE key_id = ?", (utc_now().isoformat(), key_id))
+        is_system_admin = (
+            current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+            and current_user.role == UserRole.ADMIN
+        )
+        if is_system_admin:
+            cur.execute("UPDATE api_keys SET revoked_at = ?, status = 'REVOKED' WHERE key_id = ?", (utc_now().isoformat(), key_id))
         else:
-            cur.execute("UPDATE api_keys SET revoked_at = ? WHERE key_id = ? AND organization_id = ?", (utc_now().isoformat(), key_id, current_user.organization_id))
+            cur.execute("UPDATE api_keys SET revoked_at = ?, status = 'REVOKED' WHERE key_id = ? AND organization_id = ?", (utc_now().isoformat(), key_id, current_user.organization_id))
 
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"API key '{key_id}' not found.")
