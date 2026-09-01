@@ -108,12 +108,14 @@ async def test_pip_tool_installer_success():
         0,
         "Collecting bandit\nInstalling collected packages: bandit\nSuccessfully installed bandit-1.7.8\n",
         "",
-    ))):
+    ))) as execute_mock:
         with patch.object(installer, "get_version", new=AsyncMock(return_value="bandit 1.7.8")):
             res = await installer.install(log_cb, prog_cb, force=False)
             assert res is True
             assert any("Successfully installed" in l for l in logs)
             assert progress_records[-1][0] == 100
+    assert execute_mock.await_args.kwargs["timeout"] == 120.0
+    assert execute_mock.await_args.kwargs["max_output_bytes"] == 10 * 1024 * 1024
 
 
 @pytest.mark.asyncio
