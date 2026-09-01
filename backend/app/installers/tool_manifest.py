@@ -232,7 +232,7 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v0.7.0",
         "category": "Cluster Posture",
         "sha256_checksums": {
-            "linux_amd64": "e9ede7c6f3570cf8e4f81925cd2523fc9c3442fb8304477637f231c7b4647e7d",
+            "linux_amd64": "e9ede7c6f3570cf8f4e81925cd2523fc9c3442fb8304477637f231c7b4647e7d",
             "linux_arm64": "53da250a3211d717378e6ef37ee541d2cd212953628b064f2f7e2ca8a5a7bb57",
             "darwin_amd64": "12837eed1e793c7b452911c676f6ef2d49f37eab48b263c983155d4067fccd5c",
             "darwin_arm64": "ccbe3240941ef18c8e692f00109d68abe5aa48b2a9b841dd916e31365409a3f2",
