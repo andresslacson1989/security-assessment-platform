@@ -20,6 +20,7 @@ from app.core.models import (
 from app.installers.base_installer import BaseToolInstaller
 from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
+from app.installers.source_build_installer import SourceBuildInstaller
 from app.installers.system_installer import SystemToolHelper
 
 
@@ -45,7 +46,7 @@ class ToolInstallationManager:
             "nuclei": GithubReleaseInstaller("nuclei"),
             "ffuf": GithubReleaseInstaller("ffuf"),
             "gitleaks": GithubReleaseInstaller("gitleaks"),
-            "trivy": GithubReleaseInstaller("trivy"),
+            "trivy": SourceBuildInstaller("trivy"),
             "subfinder": GithubReleaseInstaller("subfinder"),
             "httpx": GithubReleaseInstaller("httpx"),
             "katana": GithubReleaseInstaller("katana"),

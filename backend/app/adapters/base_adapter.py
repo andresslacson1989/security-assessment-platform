@@ -164,8 +164,20 @@ class BaseToolAdapter(ABC):
                 return False
             if record.get("executable_relative_path") != os.path.basename(path):
                 return False
-            if "ARCHIVE_INTEGRITY_VERIFIED" not in record.get("claims", []) or "EXECUTABLE_INTEGRITY_VERIFIED" not in record.get("claims", []):
+            claims = record.get("claims", [])
+            archive_claim = "ARCHIVE_INTEGRITY_VERIFIED" in claims or "SOURCE_ARCHIVE_INTEGRITY_VERIFIED" in claims
+            if not archive_claim or "EXECUTABLE_INTEGRITY_VERIFIED" not in claims:
                 return False
+            from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+            manifest = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
+            if manifest.get("trust_mode") == "SOURCE_BUILD_MODE":
+                if "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED" not in claims:
+                    return False
+                expected_source = manifest.get("sha256_checksums", {}).get("source_archive")
+                if expected_source and record.get("artifact_sha256") != expected_source:
+                    return False
+                if not record.get("source_commit") or not record.get("build_toolchain_sha256"):
+                    return False
             with open(path, "rb") as binary_file:
                 digest = hashlib.sha256(binary_file.read()).hexdigest()
             return digest == record.get("executable_sha256")

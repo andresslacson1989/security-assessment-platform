@@ -69,6 +69,9 @@ Every tool manifest entry MUST define:
 - `architecture`: `amd64`, `arm64`.
 - `asset_name`: Exact archive filename.
 - `sha256`: Authentic 64-character lowercase hexadecimal cryptographic SHA-256 checksum.
+- `source_build`: For an explicitly approved `SOURCE_BUILD_MODE` exception, the immutable source archive,
+  compiler/toolchain archive, build inputs, and resulting executable MUST each be pinned and verified before
+  promotion. This mode MUST NOT replace an available direct release artifact.
 
 **Registry Parity Invariant:**
 $$\text{Tool Registry} \equiv \text{Installer Registry} \equiv \text{Integrity Manifest} \equiv \text{Supported 26 Tools}$$
@@ -89,6 +92,11 @@ Binary installation must follow this strict 8-step lifecycle:
 
 ### 2.3 Strict Verification Invariants
 - **No Silent Bypass:** If `expected_sha256` is missing or invalid, installation MUST FAIL CLOSED.
+- **Approved source-build exception:** Trivy `v0.50.0` may use `SOURCE_BUILD_MODE` because its upstream source
+  tag exists while its release binary assets are unavailable. The build MUST use the source archive and Go
+  toolchain declared in Contract 09, `go mod download` with the committed `go.sum`, reproducible build flags,
+  and a generated executable trust record. Exact runtime version and pre-launch integrity verification remain
+  mandatory.
 - **Atomic Replacement:** Production executables are never overwritten in-place during download; promotion occurs only after 100% verification passes.
 
 ---

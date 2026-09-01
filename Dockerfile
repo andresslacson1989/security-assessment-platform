@@ -56,9 +56,25 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     chmod +x gitleaks
 
-# 4. Trivy (v0.50.0)
-# The official trivy v0.50.0 release currently has no downloadable binary archive;
-# it is intentionally omitted until an authentic pinned artifact is available.
+# 4. Trivy (v0.50.0, approved SOURCE_BUILD_MODE)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      curl -fsSL https://go.dev/dl/go1.21.13.linux-arm64.tar.gz -o go.tar.gz && echo "2ca2d70dc9c84feef959eb31f2a5aac33eefd8c97fe48f1548886d737bffabd4  go.tar.gz" | sha256sum -c -; \
+    else \
+      curl -fsSL https://go.dev/dl/go1.21.13.linux-amd64.tar.gz -o go.tar.gz && echo "502fc16d5910562461e6a6631fb6377de2322aad7304bf2bcd23500ba9dab4a7  go.tar.gz" | sha256sum -c -; \
+    fi && tar -C /usr/local -xzf go.tar.gz && rm go.tar.gz
+ENV PATH="/usr/local/go/bin:${PATH}"
+RUN curl -fsSL https://github.com/aquasecurity/trivy/archive/refs/tags/v0.50.0.tar.gz -o trivy-source.tar.gz && \
+    echo "16fa56d6c3549657baa49f1de8ffef5b6a976d7bf11d378d0f097189b70bae2b  trivy-source.tar.gz" | sha256sum -c - && \
+    tar -xzf trivy-source.tar.gz && cd trivy-0.50.0 && \
+    go mod download && \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -buildvcs=false \
+      -ldflags "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0" \
+      -o /tmp/bin/trivy ./cmd/trivy && \
+    chmod +x /tmp/bin/trivy && \
+    TRIVY_SOURCE_SHA256="16fa56d6c3549657baa49f1de8ffef5b6a976d7bf11d378d0f097189b70bae2b" \
+    GO_TOOLCHAIN_SHA256="$([ "$TARGETARCH" = "arm64" ] && echo "2ca2d70dc9c84feef959eb31f2a5aac33eefd8c97fe48f1548886d737bffabd4" || echo "502fc16d5910562461e6a6631fb6377de2322aad7304bf2bcd23500ba9dab4a7")" \
+    TARGET_ARCH="$TARGETARCH" python3 -c 'import hashlib,json,os; p="/tmp/bin/trivy"; json.dump({"tool_id":"TOOL-TRIVY","tool_version":"v0.50.0","artifact_filename":"trivy-0.50.0-source.tar.gz","artifact_sha256":os.environ["TRIVY_SOURCE_SHA256"],"source_commit":"8ec3938e01a93855503e3400eae9831abbb5de4a","build_toolchain":"go1.21.13","build_toolchain_sha256":os.environ["GO_TOOLCHAIN_SHA256"],"executable_relative_path":"trivy","executable_sha256":hashlib.sha256(open(p,"rb").read()).hexdigest(),"platform":"linux","architecture":os.environ["TARGET_ARCH"],"installer_version":"14.3.0","trust_status":"VALID","claims":["SOURCE_ARCHIVE_INTEGRITY_VERIFIED","BUILD_TOOLCHAIN_INTEGRITY_VERIFIED","EXECUTABLE_INTEGRITY_VERIFIED"]},open("/tmp/bin/trivy.trust.json","w"),sort_keys=True)' && \
+    rm -rf /tmp/bin/trivy-0.50.0 /tmp/bin/trivy-source.tar.gz
 
 # 5. Subfinder (v2.6.5)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
@@ -217,6 +233,8 @@ COPY --from=builder /tmp/bin/subfinder /app/backend/bin/subfinder
 COPY --from=builder /tmp/bin/subfinder.trust.json /app/backend/bin/subfinder.trust.json
 COPY --from=builder /tmp/bin/httpx /app/backend/bin/httpx
 COPY --from=builder /tmp/bin/httpx.trust.json /app/backend/bin/httpx.trust.json
+COPY --from=builder /tmp/bin/trivy /app/backend/bin/trivy
+COPY --from=builder /tmp/bin/trivy.trust.json /app/backend/bin/trivy.trust.json
 COPY --from=builder /tmp/bin/katana /usr/local/bin/katana
 COPY --from=builder /tmp/bin/syft /usr/local/bin/syft
 COPY --from=builder /tmp/bin/grype /usr/local/bin/grype

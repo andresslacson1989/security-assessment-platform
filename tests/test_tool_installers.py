@@ -28,6 +28,7 @@ from app.core.auth import create_access_token
 from app.installers.base_installer import BaseToolInstaller, SecurityError
 from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
+from app.installers.source_build_installer import SourceBuildInstaller
 from app.core.binary_resolver import resolve_tool_binary
 from app.installers.system_installer import SystemToolHelper
 from app.installers.manager import ToolInstallationManager
@@ -131,12 +132,18 @@ def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
         ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "nmap", "trivy", "unknown-tool"]
     )
 
-    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire"}
-    assert status["incomplete"] == ["nmap", "trivy"]
+    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "trivy"}
+    assert status["incomplete"] == ["nmap"]
     assert status["invalid"] == []
     assert status["unregistered"] == ["unknown-tool"]
 
-    assert audit_tool_manifest(["trivy"])["incomplete"] == ["trivy"]
+    assert audit_tool_manifest(["trivy"])["assured"] == ["trivy"]
+
+
+def test_trivy_uses_the_verified_source_build_installer():
+    installer = ToolInstallationManager().get_installer("trivy")
+    assert isinstance(installer, SourceBuildInstaller)
+    assert PINNED_TOOL_MANIFEST["trivy"]["trust_mode"] == "SOURCE_BUILD_MODE"
 
 
 def test_manifest_audit_rejects_malformed_digest_metadata():

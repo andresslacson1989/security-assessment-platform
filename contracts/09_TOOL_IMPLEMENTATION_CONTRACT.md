@@ -2320,16 +2320,25 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`, `DOCKERFILE`, `CONTAINER_IMAGE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Trivy `v0.50.0` (Exact GitHub Release).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Trivy `v0.50.0` (Exact upstream source tag; the corresponding
+  GitHub release binary is unavailable and is therefore not used).
 - **Version Enforcement:** Runtime probe checks `actual_version == "0.50.0"`.
 - **Version Detection:** `trivy --version` -> Regex `Version:\s*([0-9\.]+)`
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
-- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` (Standalone GitHub release binary downloaded via `github_release_installer.py`).
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `SOURCE_BUILD_MODE` (approved exception under Contract 03; source is
+  built only from the immutable upstream tag archive with the pinned Go toolchain below).
 
 ### 9. Supply-Chain Integrity & Provenance
-- `windows_amd64`: `7ef999da89cc79aa9369d714cb9fdf3c32ef093a1f8d48e35a111a43a059f3d9`
-- `linux_amd64`: `1ff1e6d2bc1050a4da61706f30a91176b6ef0aa0fefca23a63ec592ff3320f69`
+- **Source archive:** `https://github.com/aquasecurity/trivy/archive/refs/tags/v0.50.0.tar.gz`
+- **Source archive SHA-256:** `16fa56d6c3549657baa49f1de8ffef5b6a976d7bf11d378d0f097189b70bae2b`
+- **Build toolchain:** Go `1.21.13`, downloaded only from `https://go.dev/dl/`.
+- **Go Linux amd64 SHA-256:** `502fc16d5910562461e6a6631fb6377de2322aad7304bf2bcd23500ba9dab4a7`
+- **Go Linux arm64 SHA-256:** `2ca2d70dc9c84feef959eb31f2a5aac33eefd8c97fe48f1548886d737bffabd4`
+- **Build command:** `CGO_ENABLED=0 GOOS=linux GOARCH=<arch> go build -trimpath -buildvcs=false -ldflags "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0" ./cmd/trivy`
+- **Integrity claims:** `SOURCE_ARCHIVE_INTEGRITY_VERIFIED`, `BUILD_TOOLCHAIN_INTEGRITY_VERIFIED`, and
+  `EXECUTABLE_INTEGRITY_VERIFIED` are recorded in the generated trust sidecar. Upstream release provenance is
+  not claimed for the unavailable binary release.
 
 ### 10. Required Permissions & Privileges
 - Read-only workspace access (or local Docker daemon access for image scanning).
@@ -3560,7 +3569,7 @@ Stderr: Diagnostic logs
 | `TOOL-GITLEAKS` | Gitleaks | `CREDENTIAL_AWARE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `SAST-SEC-001` | `tests/test_adapters.py::TestGitleaksAdapter` | Gitleaks |
 | `TOOL-TRUFFLEHOG` | TruffleHog | `CREDENTIAL_AWARE` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `SAST-SEC-001` | `tests/test_adapters.py::TestTruffleHogAdapter` | Truffle Security |
 | `TOOL-RETIREJS` | Retire.js | `SUPPLY_CHAIN` | `PACKAGE_MANAGER_MODE` | `SPECIALIZED` | `SAST-DEP-001` | `tests/test_adapters.py::TestRetireJSAdapter` | Retire.js |
-| `TOOL-TRIVY` | Trivy | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `SAST-DEP-001`, `IAC-DOCKER-001` | `tests/test_adapters.py::TestTrivyAdapter` | Aqua Security |
+| `TOOL-TRIVY` | Trivy | `SUPPLY_CHAIN` | `SOURCE_BUILD_MODE` | `PRIMARY` | `SAST-DEP-001`, `IAC-DOCKER-001` | `tests/test_adapters.py::TestTrivyAdapter` | Aqua Security |
 | `TOOL-GRYPE` | Grype | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `SAST-DEP-001` | `tests/test_adapters.py::TestGrypeAdapter` | Anchore |
 | `TOOL-SYFT` | Syft | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `SAST-SBOM-001` | `tests/test_adapters.py::TestSyftAdapter` | Anchore |
 | `TOOL-OSV-SCANNER` | OSV-Scanner | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `SAST-DEP-001` | `tests/test_adapters.py::TestOSVScannerAdapter` | Google |

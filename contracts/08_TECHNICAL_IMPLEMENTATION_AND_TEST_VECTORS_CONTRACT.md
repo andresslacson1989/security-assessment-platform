@@ -64,7 +64,7 @@ def authorize_scan_access(user: UserProfile, scan: ScanJob, action: str = "read"
 
 All official binary artifacts in `tool_manifest.py` MUST specify authentic SHA-256 hashes matching official upstream releases:
 - `nuclei`: `v3.2.0` -> `sha256` verified
-- `trivy`: `v0.50.0` -> `sha256` verified
+- `trivy`: `v0.50.0` -> verified source archive and pinned Go toolchain SHA-256 values; reproducible `SOURCE_BUILD_MODE`
 - `gitleaks`: `v8.18.2` -> `sha256` verified
 - `ffuf`: `v2.1.0` -> `sha256` verified
 - `katana`: `v1.0.5` -> `sha256` verified
