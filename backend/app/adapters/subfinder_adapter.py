@@ -6,6 +6,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (Secti
 from __future__ import annotations
 import json
 import re
+import ipaddress
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 from urllib.parse import urlparse
 
@@ -24,6 +25,48 @@ class SubfinderAdapter(BaseToolAdapter):
     @property
     def tool_name(self) -> str:
         return "subfinder"
+
+    APPROVED_VERSION = "v2.6.5"
+    MAX_DOMAINS = 10_000
+    ALLOWED_PROFILES = {"FULL_STACK", "NETWORK_ONLY", "PASSIVE_OSINT", "DAST_ONLY"}
+
+    @staticmethod
+    def normalize_domain(value: str) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        value = value.strip().rstrip(".").lower()
+        if value.startswith("*.") or "://" in value or "/" in value:
+            return None
+        try:
+            ipaddress.ip_address(value)
+            return None
+        except ValueError:
+            pass
+        try:
+            value = value.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+        if len(value) > 253 or not value or any(
+            len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+            for label in value.split(".")
+        ):
+            return None
+        return value
+
+    @classmethod
+    def classify_scope(cls, domain: str, authorized_root: str) -> str:
+        root = cls.normalize_domain(authorized_root)
+        candidate = cls.normalize_domain(domain)
+        if not root or not candidate:
+            return "INVALID"
+        return "IN_SCOPE" if candidate == root or candidate.endswith("." + root) else "OUT_OF_SCOPE"
+
+    @classmethod
+    def build_command(cls, binary: str, authorized_root: str) -> List[str]:
+        root = cls.normalize_domain(authorized_root)
+        if not root:
+            raise ValueError("Invalid authorized discovery domain")
+        return [binary, "-d", root, "-silent", "-json", "-timeout", "10", "-max-time", "1"]
 
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
@@ -85,6 +128,16 @@ class SubfinderAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Subfinder binary not found. Skipping Subfinder EASM recon.")
             return findings
 
+        profile = getattr(config, "profile", None)
+        if getattr(profile, "value", profile) not in self.ALLOWED_PROFILES:
+            await emit_log(LogLevel.WARNING, "Subfinder discovery blocked for unsupported assessment profile.")
+            return findings
+        version = await self.get_version(binary)
+        if version != f"subfinder {self.APPROVED_VERSION}":
+            state = "VERSION_UNAVAILABLE" if version is None else "INVALID_VERSION"
+            await emit_log(LogLevel.ERROR, f"Subfinder execution blocked: {state} (approved {self.APPROVED_VERSION}).")
+            return findings
+
         # Extract apex domain
         domain = target.value
         if "://" in domain:
@@ -96,14 +149,13 @@ class SubfinderAdapter(BaseToolAdapter):
         if domain.startswith("www."):
             domain = domain[4:]
 
-        parts = domain.split(".")
-        if len(parts) >= 2 and not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", domain):
-            apex_domain = ".".join(parts[-2:])
-        else:
-            apex_domain = domain
+        apex_domain = self.normalize_domain(domain)
+        if not apex_domain or "." not in apex_domain:
+            await emit_log(LogLevel.WARNING, "Subfinder discovery blocked: target is not a valid domain.")
+            return findings
 
         await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {apex_domain}")
-        cmd = [binary, "-d", apex_domain, "-silent", "-oJ", "-timeout", "10", "-max-time", "1"]
+        cmd = self.build_command(binary, apex_domain)
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=30.0, emit_log=emit_log)
         if code != 0 and not stdout:
@@ -111,43 +163,52 @@ class SubfinderAdapter(BaseToolAdapter):
             return findings
 
         discovered_hosts = set()
+        source_map: Dict[str, set[str]] = {}
+        parser_warnings = 0
+        out_of_scope = 0
         for line in stdout.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
                 data = json.loads(line)
-                host = data.get("host", "").strip().lower()
-                sources = data.get("sources", [])
-                if host and host not in discovered_hosts:
-                    discovered_hosts.add(host)
-                    ips, cnames, dns_status = await self._resolve_host_dns(host)
-                    sub_model = DiscoveredSubdomain(
-                        domain=host,
-                        ip_addresses=ips,
-                        cname_targets=cnames,
-                        dns_status=dns_status,
-                        service_fingerprint=f"Sources: {', '.join(sources)}" if sources else "Subfinder",
-                        discovered_via="Subfinder",
-                    )
-                    if emit_subdomain:
-                        await emit_subdomain(sub_model)
-            except Exception:
-                # If plain text line
-                host = line.strip().lower()
-                if "." in host and host not in discovered_hosts:
-                    discovered_hosts.add(host)
-                    ips, cnames, dns_status = await self._resolve_host_dns(host)
-                    sub_model = DiscoveredSubdomain(
-                        domain=host,
-                        ip_addresses=ips,
-                        cname_targets=cnames,
-                        dns_status=dns_status,
-                        service_fingerprint="Subfinder",
-                        discovered_via="Subfinder",
-                    )
-                    if emit_subdomain:
-                        await emit_subdomain(sub_model)
+                if not isinstance(data, dict):
+                    raise ValueError("record is not an object")
+                host = self.normalize_domain(data.get("host", ""))
+                sources = data.get("sources", ["unknown"])
+                if not isinstance(sources, list) or not all(isinstance(s, str) for s in sources):
+                    sources = ["unknown"]
+            except (ValueError, TypeError, json.JSONDecodeError):
+                parser_warnings += 1
+                continue
+            if not host:
+                parser_warnings += 1
+                continue
+            if self.classify_scope(host, apex_domain) != "IN_SCOPE":
+                out_of_scope += 1
+                continue
+            if host in discovered_hosts:
+                source_map[host].update(sources)
+                continue
+            if len(discovered_hosts) >= self.MAX_DOMAINS:
+                continue
+            discovered_hosts.add(host)
+            source_map[host] = set(sources)
+            # Discovery is not authorization and remains passive; DNS probing is a separate stage.
+            if emit_subdomain:
+                await emit_subdomain(DiscoveredSubdomain(
+                    domain=host,
+                    service_fingerprint=f"Sources: {', '.join(sorted(source_map[host]))}",
+                    discovered_via="Subfinder",
+                    dns_status="UNRESOLVED",
+                ))
+
+        if parser_warnings:
+            await emit_log(LogLevel.WARNING, f"Subfinder parser rejected {parser_warnings} malformed JSONL records.")
+        if out_of_scope:
+            await emit_log(LogLevel.WARNING, f"Subfinder classified {out_of_scope} discoveries as OUT_OF_SCOPE; none were admitted.")
+        if len(discovered_hosts) >= self.MAX_DOMAINS:
+            await emit_log(LogLevel.WARNING, "Subfinder discovery reached the per-run result limit; results are partial.")
 
         if discovered_hosts:
             desc = f"Subfinder discovered {len(discovered_hosts)} subdomains in the external attack surface: {', '.join(list(discovered_hosts)[:10])}"

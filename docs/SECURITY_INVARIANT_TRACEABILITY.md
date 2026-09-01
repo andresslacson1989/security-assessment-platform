@@ -82,6 +82,12 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
   - Each audit event records previous_event_hash and computes event_hash = SHA256(canonical_payload + previous_event_hash).
   - Forms an immutable, unbroken cryptographic hash chain verifiable across the relational audit log.
 
+### INV-013: Subfinder Discovery Does Not Grant Authorization
+- **Contract Specification:** Contract 09, TOOL 03 Sections 13, 20, 24, 30 and 36.
+- **Implementation:** `backend/app/adapters/subfinder_adapter.py` validates the authorized root, constructs a fixed argument vector, rejects malformed/out-of-scope records, and emits only scoped discovery observations. It does not perform DNS probing or inventory admission.
+- **Tests:** `tests/security/test_subfinder_assurance.py::test_discovery_never_promotes_out_of_scope_or_resolves_hosts`.
+- **Status:** PARTIALLY VERIFIED; provider egress governance, credential injection, and persistent inventory-admission workflow require further implementation.
+
 ---
 
 ## 3. Final Verification Assertion
