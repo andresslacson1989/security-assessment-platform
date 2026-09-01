@@ -5,7 +5,7 @@ Contract 03, 06 & 08 Network & TLS Assessment Engine Coordinator.
 from __future__ import annotations
 from typing import List
 
-from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel
+from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel, NormalizedExecutionState
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.engines.network.tls_auditor import audit_tls_certificates, audit_tls_protocols_and_ciphers, extract_host_and_port
 from app.engines.network.dns_hygiene import audit_dns_hygiene
@@ -87,7 +87,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         f.scan_id = scan_id
                         findings.append(f)
                     if tool_state_cb:
-                        await tool_state_cb("sslyze", sslyze_adapter.last_execution_state.value)
+                        state = getattr(sslyze_adapter, "last_execution_state", None)
+                        await tool_state_cb("sslyze", (state or (NormalizedExecutionState.COMPLETED_WITH_FINDINGS if sslyze_findings else NormalizedExecutionState.COMPLETED_NO_FINDINGS)).value)
                     sslyze_executed = True
                 else:
                     if tool_state_cb:
@@ -160,7 +161,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         f.scan_id = scan_id
                         findings.append(f)
                     if tool_state_cb:
-                        await tool_state_cb("nmap", nmap_adapter.last_execution_state.value)
+                        state = getattr(nmap_adapter, "last_execution_state", None)
+                        await tool_state_cb("nmap", (state or (NormalizedExecutionState.COMPLETED_WITH_FINDINGS if nmap_findings else NormalizedExecutionState.COMPLETED_NO_FINDINGS)).value)
                     nmap_executed = True
                 else:
                     if tool_state_cb:

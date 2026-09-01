@@ -1214,6 +1214,8 @@ async def test_scenario_16_adapters_first_priority_and_native_pruning():
     net_engine = NetworkAssessmentEngine()
     target = Target(name="Target", type=TargetType.DOMAIN, value="test-priority.com")
     config = ScanConfig()
+    config.adapters.enable_subfinder = False
+    config.adapters.enable_httpx = False
 
     nmap_finding = Finding(
         scan_id="active",
