@@ -36,6 +36,7 @@ from app.core.models import (
     APIKeyRecord,
     AuditEvent,
     AuditAction,
+    PrincipalType,
     Evidence,
     utc_now,
 )
@@ -423,14 +424,42 @@ class DatabaseManager:
             # Update last_used_at
             conn.execute("UPDATE api_keys SET last_used_at = ? WHERE key_id = ?", (utc_now().isoformat(), row["key_id"]))
 
-            # Synthesize or lookup caller user profile
-            user_profile = UserProfile(
-                id=row["user_id"] or f"usr-key-{row['key_id']}",
-                username=f"apikey-{row['name']}",
-                email=f"apikey-{row['name']}@cyberassess.local",
-                role=UserRole.SECURITY_ANALYST,
-                organization_id=row["organization_id"],
-            )
+            # A user-bound key must remain bound to the current authoritative
+            # identity. Never let a stale key preserve access after the user
+            # is deactivated or moved to another organization.
+            if row["user_id"]:
+                cur.execute("SELECT * FROM users WHERE id = ?", (row["user_id"],))
+                bound_user = cur.fetchone()
+                if (
+                    not bound_user
+                    or not bool(bound_user["is_active"])
+                    or bound_user["organization_id"] != row["organization_id"]
+                ):
+                    return None, None
+                principal_type = PrincipalType.TENANT_PRINCIPAL
+                if "principal_type" in bound_user.keys():
+                    try:
+                        principal_type = PrincipalType(bound_user["principal_type"])
+                    except ValueError:
+                        return None, None
+                user_profile = UserProfile(
+                    id=bound_user["id"],
+                    username=bound_user["username"],
+                    email=bound_user["email"],
+                    role=UserRole(bound_user["role"]),
+                    principal_type=principal_type,
+                    organization_id=bound_user["organization_id"],
+                    is_active=True,
+                    created_at=datetime.fromisoformat(bound_user["created_at"]),
+                )
+            else:
+                user_profile = UserProfile(
+                    id=f"usr-key-{row['key_id']}",
+                    username=f"apikey-{row['name']}",
+                    email=f"apikey-{row['name']}@cyberassess.local",
+                    role=UserRole.SECURITY_ANALYST,
+                    organization_id=row["organization_id"],
+                )
             return key_record, user_profile
 
     def get_user_by_id(self, user_id: str) -> Optional[UserProfile]:
@@ -446,6 +475,9 @@ class DatabaseManager:
                 username=row["username"],
                 email=row["email"],
                 role=UserRole(row["role"]),
+                principal_type=PrincipalType(row["principal_type"])
+                if "principal_type" in row.keys() and row["principal_type"]
+                else PrincipalType.TENANT_PRINCIPAL,
                 organization_id=row["organization_id"],
                 is_active=bool(row["is_active"]),
                 created_at=datetime.fromisoformat(row["created_at"]),

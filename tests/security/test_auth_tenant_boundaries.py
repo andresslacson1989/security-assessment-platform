@@ -78,6 +78,92 @@ async def test_bearer_identity_rechecks_authoritative_user_status(tmp_path, monk
     assert exc_info.value.status_code == 401
 
 
+def test_user_bound_api_key_fails_when_bound_user_is_deactivated(tmp_path):
+    """A user-bound API key cannot outlive the authoritative user identity."""
+    db = DatabaseManager(db_path=tmp_path / "bound-key.db")
+    raw_key = "bound-api-key"
+    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    with db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
+            ("org-bound", "Bound Org", "bound-org", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            (
+                "usr-bound",
+                "bound-user",
+                "bound@example.test",
+                "unused",
+                "SECURITY_ANALYST",
+                "org-bound",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO api_keys (key_id, key_hash, organization_id, user_id, name, scopes_json, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')",
+            (
+                "key-bound",
+                key_hash,
+                "org-bound",
+                "usr-bound",
+                "bound-key",
+                '["scan:read"]',
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+
+    record, user = db.verify_api_key_hash(key_hash)
+    assert record is not None
+    assert user is not None
+    assert user.id == "usr-bound"
+
+    with db._get_connection() as conn:
+        conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", ("usr-bound",))
+    record, user = db.verify_api_key_hash(key_hash)
+    assert record is None
+    assert user is None
+
+
+@pytest.mark.asyncio
+async def test_bearer_principal_type_cannot_be_elevated_by_token_claim(tmp_path, monkeypatch):
+    """The durable user principal type outranks a forged-but-signed claim."""
+    db = DatabaseManager(db_path=tmp_path / "principal-boundary.db")
+    with db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
+            ("org-principal", "Principal Org", "principal-org", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            (
+                "usr-principal",
+                "principal-user",
+                "principal@example.test",
+                "unused",
+                "ADMIN",
+                "org-principal",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+
+    import app.core.db as db_module
+    monkeypatch.setattr(db_module, "db_manager", db)
+    token = create_access_token(UserProfile(
+        id="usr-principal",
+        username="principal-user",
+        email="principal@example.test",
+        role=UserRole.ADMIN,
+        principal_type=PrincipalType.SYSTEM_PRINCIPAL,
+        organization_id="org-principal",
+    ))
+    current = await get_current_user(authorization=f"Bearer {token}", x_api_key=None)
+    assert current.principal_type == PrincipalType.TENANT_PRINCIPAL
+
+
 def test_principal_type_is_explicit_for_system_scope():
     """Tenant admins and system admins are distinct authorization principals."""
     from app.core.models import UserProfile

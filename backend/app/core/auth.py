@@ -422,9 +422,6 @@ async def get_current_user(
                     detail="User account has been deactivated.",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            p_type_val = payload.get("principal_type", "TENANT_PRINCIPAL")
-            p_type = PrincipalType(p_type_val) if p_type_val in [p.value for p in PrincipalType] else PrincipalType.TENANT_PRINCIPAL
-            authoritative_user.principal_type = p_type
             authoritative_user.scopes = payload.get("scopes", ["*"])
             return authoritative_user
 
