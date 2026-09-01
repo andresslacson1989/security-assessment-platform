@@ -141,6 +141,22 @@ async def test_pip_tool_version_fallback_uses_process_supervisor():
 
 
 @pytest.mark.asyncio
+async def test_subfinder_version_probe_initializes_fresh_windows_config_dir(monkeypatch, tmp_path):
+    installer = GithubReleaseInstaller("subfinder")
+    appdata = tmp_path / "AppData" / "Roaming"
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    with patch("app.installers.github_release_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+        0, "subfinder v2.6.5\n", ""
+    ))) as execute_mock:
+        version = await installer._probe_version("C:\\managed\\subfinder.exe")
+
+    assert version == "subfinder v2.6.5"
+    assert (appdata / "subfinder").is_dir()
+    execute_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_pip_tool_installer_failure():
     """Tests PipToolInstaller failure handling on non-zero exit."""
     installer = PipToolInstaller("sslyze")

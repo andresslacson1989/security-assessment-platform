@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import zipfile
 import uuid
+from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 import httpx
 
@@ -273,6 +274,12 @@ class GithubReleaseInstaller(BaseToolInstaller):
 
     async def _probe_version(self, path: str) -> Optional[str]:
         """Probe a specific executable through the central process supervisor."""
+        # Subfinder initializes its provider configuration during a version
+        # probe. Create the managed user-config directory first so a fresh
+        # Windows installation is not rejected as an apparent version failure.
+        if self.tool_name == "subfinder":
+            appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+            Path(appdata, "subfinder").mkdir(parents=True, exist_ok=True)
         code, stdout, stderr = await process_supervisor.execute(
             [path] + self._cfg["version_cmd"],
             timeout=5.0,
