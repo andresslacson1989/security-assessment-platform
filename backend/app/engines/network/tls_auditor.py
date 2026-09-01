@@ -55,6 +55,7 @@ async def audit_tls_certificates(
     target_value: str,
     emit_log: Optional[LogCallback] = None,
     timeout_seconds: float = 5.0,
+    connection_host: Optional[str] = None,
 ) -> List[Finding]:
     """
     Connects to target, extracts X.509 certificate metadata, and evaluates expiration and SAN matches.
@@ -73,7 +74,7 @@ async def audit_tls_certificates(
     der_cert = None
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(hostname, port, ssl=ssl_context),
+            asyncio.open_connection(connection_host or hostname, port, ssl=ssl_context, server_hostname=hostname),
             timeout=timeout_seconds,
         )
         sslobj = writer.get_extra_info("ssl_object")
@@ -226,6 +227,7 @@ async def audit_tls_protocols_and_ciphers(
     target_value: str,
     emit_log: Optional[LogCallback] = None,
     timeout_seconds: float = 3.0,
+    connection_host: Optional[str] = None,
 ) -> List[Finding]:
     """
     Tests for deprecated protocols (SSLv3, TLS 1.0, TLS 1.1) and weak ciphers.
@@ -257,7 +259,7 @@ async def audit_tls_protocols_and_ciphers(
             ctx.maximum_version = proto_const
 
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(hostname, port, ssl=ctx),
+                asyncio.open_connection(connection_host or hostname, port, ssl=ctx, server_hostname=hostname),
                 timeout=timeout_seconds,
             )
             writer.close()
@@ -300,7 +302,7 @@ async def audit_tls_protocols_and_ciphers(
         ctx_sweet32.set_ciphers("3DES:DES-CBC3-SHA:DES:RC4")
 
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(hostname, port, ssl=ctx_sweet32),
+            asyncio.open_connection(connection_host or hostname, port, ssl=ctx_sweet32, server_hostname=hostname),
             timeout=timeout_seconds,
         )
         sslobj = writer.get_extra_info("ssl_object")

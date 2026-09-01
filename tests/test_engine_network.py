@@ -142,6 +142,11 @@ async def test_network_engine_full_run():
         assert len(progress_updates) >= 4
         assert progress_updates[-1][0] == 100
         assert len(logs) >= 2
+        # Native fallbacks must connect to the already validated destination,
+        # not resolve the user-supplied hostname again.
+        assert mock_tls.await_args.kwargs["connection_host"]
+        assert mock_proto.await_args.kwargs["connection_host"]
+        assert mock_port.await_args.kwargs["connection_host"]
 
 
 @pytest.mark.asyncio

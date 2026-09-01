@@ -54,14 +54,19 @@ async def grab_service_banner(host: str, port: int, timeout: float = 1.5) -> Opt
         return None
 
 
-async def audit_service_banners(host: str, open_ports: List[int], scan_id: str) -> List[Finding]:
+async def audit_service_banners(
+    host: str,
+    open_ports: List[int],
+    scan_id: str,
+    connection_host: Optional[str] = None,
+) -> List[Finding]:
     """
     Audits banners of open ports and emits NET-SVC-001 if vulnerable daemon version signatures are detected.
     """
     findings: List[Finding] = []
 
     for port in open_ports:
-        banner = await grab_service_banner(host, port)
+        banner = await grab_service_banner(connection_host or host, port)
         if not banner:
             continue
 

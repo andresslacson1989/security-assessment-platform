@@ -120,12 +120,13 @@ async def audit_exposed_ports(
     custom_ports: Optional[List[int]] = None,
     emit_log: Optional[LogCallback] = None,
     timeout_seconds: float = 1.5,
+    connection_host: Optional[str] = None,
 ) -> List[Finding]:
     """
     Concurrently probes sensitive database, cache, and management ports.
     """
     findings: List[Finding] = []
-    host = extract_host(target_value)
+    host = connection_host or extract_host(target_value)
     ports_to_check = custom_ports or list(SENSITIVE_PORTS.keys())
 
     if emit_log:

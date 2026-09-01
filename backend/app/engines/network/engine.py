@@ -131,6 +131,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 target.value,
                 emit_log=emit_log,
                 timeout_seconds=min(5.0, config.timeout_seconds),
+                connection_host=validated_target.selected_destination,
             )
             for f in tls_cert_findings:
                 f.scan_id = scan_id
@@ -142,6 +143,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 target.value,
                 emit_log=emit_log,
                 timeout_seconds=min(3.0, config.timeout_seconds),
+                connection_host=validated_target.selected_destination,
             )
             for f in tls_proto_findings:
                 f.scan_id = scan_id
@@ -205,6 +207,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 custom_ports=config.port_list or None,
                 emit_log=emit_log,
                 timeout_seconds=min(2.0, config.timeout_seconds),
+                connection_host=validated_target.selected_destination,
             )
             for f in port_findings:
                 f.scan_id = scan_id
@@ -221,7 +224,12 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 except Exception:
                     pass
             if open_port_nums:
-                banner_findings = await audit_service_banners(host, open_port_nums, scan_id=scan_id)
+                banner_findings = await audit_service_banners(
+                    host,
+                    open_port_nums,
+                    scan_id=scan_id,
+                    connection_host=validated_target.selected_destination,
+                )
                 for f in banner_findings:
                     f.source_tool = "native"
                     findings.append(f)
