@@ -538,19 +538,28 @@ def verify_download_integrity(
     if not manifest_entry:
         return False, actual_hash, f"Tool '{tool_name}' is not registered in the authoritative pinned manifest."
 
-    expected = expected_sha256
-    if not expected and platform_key:
-        checksums = manifest_entry.get("sha256_checksums", {})
-        expected = checksums.get(platform_key)
-
-    if not expected:
-        # Look up if any matching checksum exists in manifest
-        checksums = manifest_entry.get("sha256_checksums", {})
-        if len(checksums) == 1:
-            expected = next(iter(checksums.values()))
-
-    if not expected:
+    checksums = manifest_entry.get("sha256_checksums", {})
+    if not isinstance(checksums, dict) or not checksums:
         return False, actual_hash, f"No authoritative SHA-256 digest is registered for tool '{tool_name}'. Installation rejected."
+
+    # A caller-supplied digest is only an assertion about which manifest
+    # artifact is being checked; it is never allowed to establish trust. This
+    # prevents a caller from passing the digest of arbitrary bytes and making
+    # them appear to be an approved release.
+    if platform_key:
+        expected = checksums.get(platform_key)
+        if not expected:
+            return False, actual_hash, f"No authoritative SHA-256 digest is registered for '{tool_name}' artifact '{platform_key}'. Installation rejected."
+    elif len(checksums) == 1:
+        expected = next(iter(checksums.values()))
+    else:
+        return False, actual_hash, f"A platform or artifact key is required to select the authoritative digest for '{tool_name}'. Installation rejected."
+
+    if expected_sha256 is not None and expected_sha256.strip().lower() != str(expected).strip().lower():
+        return False, actual_hash, f"Caller-supplied digest does not match the authoritative manifest digest for '{tool_name}'. Installation rejected."
+
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+        return False, actual_hash, f"Authoritative SHA-256 digest metadata for '{tool_name}' is invalid. Installation rejected."
 
     if expected.strip().lower() != actual_hash:
         return (

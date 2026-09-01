@@ -2019,16 +2019,17 @@ def test_scenario_29_cryptographic_sha256_checksum_and_supply_chain():
     Contract 05 (Scenario 29): Cryptographic SHA-256 Checksum & Supply Chain.
     Verifies binary archive integrity checks.
     """
-    from app.installers.tool_manifest import calculate_sha256, verify_download_integrity
+    from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, calculate_sha256, verify_download_integrity
 
     data = b"Clean tool archive binary 2026"
     h = calculate_sha256(data)
-    valid, _, _ = verify_download_integrity("nuclei", data, expected_sha256=h)
+    with patch.dict(PINNED_TOOL_MANIFEST["nuclei"]["sha256_checksums"], {"test_fixture": h}):
+        valid, _, _ = verify_download_integrity("nuclei", data, expected_sha256=h, platform_key="test_fixture")
     assert valid is True
 
     bad_valid, _, err = verify_download_integrity("nuclei", data, expected_sha256="corrupted_hash")
     assert bad_valid is False
-    assert "mismatch" in err.lower()
+    assert "authoritative" in err.lower()
 
 
 # ============================================================================

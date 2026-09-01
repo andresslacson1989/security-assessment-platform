@@ -5,6 +5,7 @@ Automated Security Hardening, SSRF Gateway, RBAC, Path Sandbox & Integrity Test 
 
 import pytest
 import pytest_asyncio
+from unittest.mock import patch
 from pathlib import Path
 from app.core.ssrf_protector import is_ip_allowed, validate_target_url, assert_safe_url, SSRFProtectionError
 from app.core.path_sandbox import is_path_safe, assert_safe_path, PathSandboxViolation
@@ -159,8 +160,13 @@ def test_sha256_integrity_verification():
     dummy_data = b"Official Verified Binary Bytes 2026"
     correct_hash = calculate_sha256(dummy_data)
 
-    # Valid Hash
-    valid, computed, err = verify_download_integrity("nuclei", dummy_data, expected_sha256=correct_hash)
+    # Valid Hash, but only after the fixture is explicitly registered as an
+    # authoritative artifact. A caller-controlled digest alone is not trust.
+    from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+    with patch.dict(PINNED_TOOL_MANIFEST["nuclei"]["sha256_checksums"], {"test_fixture": correct_hash}):
+        valid, computed, err = verify_download_integrity(
+            "nuclei", dummy_data, expected_sha256=correct_hash, platform_key="test_fixture"
+        )
     assert valid is True
     assert computed == correct_hash
     assert err is None
@@ -168,7 +174,7 @@ def test_sha256_integrity_verification():
     # Tampered / Mismatched Hash
     valid_bad, _, err_bad = verify_download_integrity("nuclei", dummy_data, expected_sha256="badhash1234567890")
     assert valid_bad is False
-    assert "mismatch" in err_bad.lower()
+    assert "authoritative" in err_bad.lower() or "required" in err_bad.lower()
 
 
 # ============================================================================

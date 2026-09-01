@@ -68,7 +68,7 @@ from app.core.auth import (
 from app.core.db import DatabaseManager
 from app.core.ssrf_protector import assert_safe_url, create_validated_target, SSRFProtectionError
 from app.core.path_sandbox import assert_safe_path, PathSandboxViolation
-from app.installers.tool_manifest import verify_download_integrity, PINNED_TOOL_MANIFEST
+from app.installers.tool_manifest import calculate_sha256, verify_download_integrity, PINNED_TOOL_MANIFEST
 from app.core.correlator import correlator, compute_sla_info
 from app.core.risk_engine import calculate_finding_contextual_risk, calculate_contextual_posture_grade
 
@@ -429,9 +429,20 @@ def test_database_connections_enable_foreign_keys(tmp_path):
 def test_sec_017_tool_hash_mismatch_rejection():
     """SEC-017: Release archives with mismatched SHA-256 digests are rejected."""
     payload = b"MALICIOUS_TAMPERED_BINARY_PAYLOAD"
-    is_valid, computed, err = verify_download_integrity("nuclei", payload, expected_sha256="0000000000000000000000000000000000000000000000000000000000000000")
+    is_valid, computed, err = verify_download_integrity(
+        "nuclei", payload, expected_sha256="0000000000000000000000000000000000000000000000000000000000000000", platform_key="linux_amd64"
+    )
     assert is_valid is False
-    assert "mismatch" in err.lower()
+    assert "authoritative" in err.lower()
+
+
+def test_sec_017_caller_digest_cannot_override_authoritative_manifest():
+    """A caller cannot authorize arbitrary bytes by supplying their own digest."""
+    payload = b"CALLER_SELECTED_BYTES"
+    caller_hash = calculate_sha256(payload)
+    is_valid, _, err = verify_download_integrity("nuclei", payload, expected_sha256=caller_hash, platform_key="linux_amd64")
+    assert is_valid is False
+    assert "authoritative" in err.lower()
 
 
 def test_sec_018_unpinned_tool_rejection():
