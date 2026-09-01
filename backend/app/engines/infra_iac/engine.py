@@ -103,6 +103,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=True,
                     )
                     for f in trivy_findings:
                         if f.fingerprint not in existing_fps:

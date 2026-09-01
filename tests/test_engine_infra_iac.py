@@ -5,6 +5,7 @@ Unit tests for Engine 4: Infrastructure-as-Code & Container Auditor.
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock
 import pytest
 
 from app.core.models import Target, TargetType, ScanConfig, Severity
@@ -13,6 +14,7 @@ from app.engines.infra_iac.compose_auditor import audit_compose_yaml, audit_comp
 from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_yaml, audit_k8s_manifests
 from app.engines.infra_iac.terraform_auditor import audit_terraform_file, audit_terraform_files
 from app.engines.infra_iac.engine import InfraIacAssessmentEngine
+from app.adapters.trivy_adapter import TrivyAdapter
 
 
 def test_dockerfile_auditor_rules():
@@ -162,3 +164,43 @@ async def test_infra_iac_engine_full_run():
         assert progress_updates[-1][0] == 100
     finally:
         shutil.rmtree(temp_dir)
+
+
+@pytest.mark.asyncio
+async def test_infra_iac_trivy_uses_managed_execution_boundary(monkeypatch, tmp_path):
+    """IaC execution must enforce the managed-tool trust boundary for Trivy."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM alpine:3.18\nUSER 1000\n", encoding="utf-8")
+    config = ScanConfig(
+        adapters={
+            "enable_checkov": False,
+            "enable_trivy": True,
+            "enable_dockle": False,
+            "enable_kube_bench": False,
+            "enable_prowler": False,
+            "enable_gtfobins": False,
+        }
+    )
+    run_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(TrivyAdapter, "is_available", AsyncMock(return_value=True))
+    monkeypatch.setattr(TrivyAdapter, "run", run_mock)
+
+    async def log_cb(*_args):
+        return None
+
+    async def progress_cb(*_args):
+        return None
+
+    async def finding_cb(*_args):
+        return None
+
+    await InfraIacAssessmentEngine().run(
+        Target(name="IaC Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
+        config,
+        log_cb,
+        progress_cb,
+        finding_cb,
+    )
+
+    assert run_mock.await_count == 1
+    assert run_mock.await_args.kwargs["require_managed_binary"] is True
