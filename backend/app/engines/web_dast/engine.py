@@ -39,6 +39,7 @@ from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
+from app.core.ssrf_protector import create_validated_target
 
 
 class WebDastAssessmentEngine(BaseAssessmentEngine):
@@ -84,6 +85,23 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         findings: List[Finding] = []
         existing_fps = set()
         tool_state_cb = kwargs.get("emit_tool_execution_state")
+
+        # Gate every E12 operation through the authoritative target validator before
+        # any external adapter or native HTTP client can be invoked.
+        try:
+            _validated_target = create_validated_target(
+                target,
+                organization_id=kwargs.get("organization_id") or "org-default",
+                project_id=kwargs.get("project_id"),
+                asset_id=kwargs.get("asset_id"),
+            )
+        except Exception as exc:
+            await emit_log(LogLevel.WARNING, f"Web DAST target blocked by security policy: {exc}")
+            if tool_state_cb:
+                for tool_name in ("ffuf", "nuclei", "katana", "schemathesis"):
+                    if getattr(config.adapters, f"enable_{tool_name}", True):
+                        await tool_state_cb(tool_name, "EXECUTION_BLOCKED")
+            return findings
 
         async def publish_tool_state(tool_name: str, adapter=None, fallback: str = "TOOL_EXECUTION_FAILED") -> None:
             if not tool_state_cb:

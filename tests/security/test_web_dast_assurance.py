@@ -8,6 +8,7 @@ from app.adapters.nuclei_adapter import NucleiAdapter
 from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
+from app.engines.web_dast.engine import WebDastAssessmentEngine
 
 
 TARGET = Target(name="Example", type=TargetType.URL, value="https://example.com")
@@ -41,3 +42,30 @@ async def test_e12_nonzero_output_is_partial_not_success():
         await adapter.run(TARGET, config, AsyncMock(), AsyncMock())
 
     assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
+
+@pytest.mark.asyncio
+async def test_web_dast_blocks_private_target_before_adapter_execution():
+    states = []
+    config = ScanConfig()
+    config.adapters.enable_ffuf = True
+    config.adapters.enable_nuclei = True
+    config.adapters.enable_katana = True
+    config.adapters.enable_schemathesis = True
+
+    async def capture_state(tool, state):
+        states.append((tool, state))
+
+    findings = await WebDastAssessmentEngine().run(
+        Target(name="Internal", type=TargetType.URL, value="http://127.0.0.1"),
+        config, AsyncMock(), AsyncMock(), AsyncMock(),
+        emit_tool_execution_state=capture_state,
+    )
+
+    assert findings == []
+    assert states == [
+        ("ffuf", "EXECUTION_BLOCKED"),
+        ("nuclei", "EXECUTION_BLOCKED"),
+        ("katana", "EXECUTION_BLOCKED"),
+        ("schemathesis", "EXECUTION_BLOCKED"),
+    ]
