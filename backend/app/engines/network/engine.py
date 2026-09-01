@@ -17,6 +17,7 @@ from app.adapters.nmap_adapter import NmapAdapter
 from app.adapters.sslyze_adapter import SslyzeAdapter
 from app.adapters.subfinder_adapter import SubfinderAdapter
 from app.adapters.httpx_adapter import HttpxAdapter
+from app.core.ssrf_protector import create_validated_target
 
 
 class NetworkAssessmentEngine(BaseAssessmentEngine):
@@ -63,6 +64,23 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         tool_state_cb = kwargs.get("emit_tool_execution_state")
         endpoint_cb = kwargs.get("emit_endpoint_discovered")
 
+        # Establish one authoritative target identity before any active network
+        # adapter is allowed to run. Passive Subfinder remains on the original
+        # domain value because it must not resolve or connect to discoveries.
+        try:
+            validated_target = create_validated_target(
+                target,
+                organization_id=kwargs.get("organization_id") or "org-default",
+                project_id=kwargs.get("project_id"),
+                asset_id=kwargs.get("asset_id"),
+            )
+        except Exception as exc:
+            await emit_log(LogLevel.ERROR, f"Network assessment blocked by target validation: {exc}")
+            if tool_state_cb:
+                for tool_name in ("nmap", "sslyze", "httpx"):
+                    await tool_state_cb(tool_name, NormalizedExecutionState.EXECUTION_BLOCKED.value)
+            return findings
+
         # --- Stage 1: TLS / SSL Audit (SSLyze Adapter First -> Native Fallback) (0% - 30%) ---
         await emit_progress(10, "Auditing SSL/TLS certificate validity and ciphers...")
 
@@ -75,7 +93,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 if await sslyze_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing SSLyze CLI adapter as primary deep TLS auditor...")
                     sslyze_findings = await sslyze_adapter.run(
-                        target,
+                        validated_target,
                         config,
                         emit_log,
                         emit_finding,
@@ -149,7 +167,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 if await nmap_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Nmap CLI adapter as primary port and service scanner...")
                     nmap_findings = await nmap_adapter.run(
-                        target,
+                        validated_target,
                         config,
                         emit_log,
                         emit_finding,
@@ -239,12 +257,14 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 if await httpx_adapter.is_available(custom_path):
                     await emit_progress(78, "Executing Httpx web port & tech stack probe...")
                     hx_findings = await httpx_adapter.run(
-                        target,
+                        validated_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
                         emit_endpoint=endpoint_cb,
+                        validated_target=validated_target,
+                        require_managed_binary=True,
                     )
                     findings.extend(hx_findings)
                     if tool_state_cb:

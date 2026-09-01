@@ -1178,7 +1178,10 @@ class TestHttpxAdapter:
         )
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(side_effect=[
+                 (0, "httpx v1.6.0", ""),
+                 (0, mock_json_lines, ""),
+             ])):
             findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
             assert len(findings) == 1
             assert len(endpoints) == 1
@@ -1196,11 +1199,42 @@ class TestHttpxAdapter:
         config = ScanConfig()
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(1, "", "connection failed"))):
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(side_effect=[
+                 (0, "httpx v1.6.0", ""),
+                 (1, "", "connection failed"),
+             ])):
             findings = await adapter.run(target, config, AsyncMock(), AsyncMock())
 
         assert findings == []
         assert adapter.last_execution_state == NormalizedExecutionState.TOOL_EXECUTION_FAILED
+
+    @pytest.mark.asyncio
+    async def test_httpx_binds_validated_destination_and_preserves_host_and_sni(self):
+        from app.adapters.httpx_adapter import HttpxAdapter
+        from types import SimpleNamespace
+
+        adapter = HttpxAdapter()
+        target = Target(name="Web", type=TargetType.URL, value="https://example.com")
+        config = ScanConfig()
+        validated = SimpleNamespace(
+            canonical_value="https://example.com",
+            selected_destination="93.184.216.34",
+        )
+        commands = []
+
+        async def execute(cmd, **_kwargs):
+            commands.append(cmd)
+            if cmd[1] == "-version":
+                return 0, "httpx v1.6.0", ""
+            return 0, '{"url":"https://example.com","status_code":200}\n', ""
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(side_effect=execute)):
+            await adapter.run(target, config, AsyncMock(), AsyncMock(), validated_target=validated)
+
+        scan_command = commands[-1]
+        assert scan_command[2] == "https://93.184.216.34"
+        assert scan_command[-4:] == ["-H", "Host: example.com", "-sni", "example.com"]
 
 
 # ============================================================================

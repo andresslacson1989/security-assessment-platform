@@ -102,7 +102,7 @@ async def test_validated_http_transport_pins_address_and_rejects_origin_escape()
 
     request = httpx.Request("GET", "https://example.com/login")
     await transport.handle_async_request(request)
-    assert request.url.host == "93.184.216.34"
+    assert request.url.host == "example.com"
     assert request.headers["host"] == "example.com"
 
     with pytest.raises(ValueError, match="escaped validated origin"):

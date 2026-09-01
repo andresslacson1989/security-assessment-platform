@@ -8,6 +8,7 @@ import ipaddress
 import socket
 import urllib.parse
 import httpx
+import httpcore
 from typing import Any, List, Tuple, Optional
 
 
@@ -54,11 +55,14 @@ class SSRFProtectionError(ValueError):
 
 
 class ValidatedTargetTransport(httpx.AsyncBaseTransport):
-    """httpx transport that pins same-origin requests to a gateway-selected address."""
+    """httpx transport that pins TCP connections while preserving hostname SNI."""
 
     def __init__(self, validated_target: Any):
         self._validated_target = validated_target
-        self._transport = httpx.AsyncHTTPTransport(retries=0, verify=True)
+        self._transport = httpx.AsyncHTTPTransport(retries=0, verify=True, trust_env=False)
+        self._transport._pool._network_backend = _PinnedNetworkBackend(
+            str(getattr(validated_target, "selected_destination", ""))
+        )
         raw_value = str(getattr(validated_target, "canonical_value", ""))
         parsed = urllib.parse.urlsplit(raw_value if "://" in raw_value else f"https://{raw_value}")
         self._authorized_host = (parsed.hostname or "").lower().strip("[]")
@@ -70,15 +74,30 @@ class ValidatedTargetTransport(httpx.AsyncBaseTransport):
         ).lower().strip("[]"):
             raise SSRFProtectionError(f"Redirect or request escaped validated origin: {request.url}")
 
-        destination = str(getattr(self._validated_target, "selected_destination", ""))
-        if not destination:
+        if not getattr(self._validated_target, "selected_destination", ""):
             raise SSRFProtectionError("Validated target has no selected destination.")
-        request.url = request.url.copy_with(host=destination)
         request.headers["host"] = self._authorized_host
         return await self._transport.handle_async_request(request)
 
     async def aclose(self) -> None:
         await self._transport.aclose()
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Connect to the selected address; httpcore retains the original origin for TLS SNI."""
+
+    def __init__(self, destination: str):
+        self._destination = destination
+        self._delegate = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host: str, port: int, timeout: float | None = None, local_address: str | None = None, socket_options: Any = None) -> Any:
+        return await self._delegate.connect_tcp(
+            self._destination,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
 
 
 def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, str]:

@@ -363,7 +363,7 @@ Stderr: Captures runtime diagnostics and errors
   - Approved NSE Scripts: `SUPPORTED`
   - OS Fingerprinting (Raw Sockets): `NOT_SUPPORTED` (Requires root privileges)
   - Intrusive Exploit Scripts: `NOT_SUPPORTED` (Safety policy violation)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nmap_adapter.py`).
+- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nmap_adapter.py`); approved managed `7.95` runtime execution is `UNAVAILABLE` because the host reports `7.991`.
 
 ---
 
@@ -544,7 +544,7 @@ Stderr: Diagnostic logs
   - Cipher Suite Enumeration: `SUPPORTED`
   - Certificate Chain Trust: `SUPPORTED`
   - Early Data (0-RTT) Probing: `DEFERRED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/sslyze_adapter.py`).
+- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/sslyze_adapter.py`); approved managed `5.2.0` runtime execution is `UNAVAILABLE` because the host reports `6.3.1`.
 
 ---
 
@@ -715,9 +715,9 @@ Stderr: Diagnostic logs
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSubfinderAdapter` passing.
 - **Capability Taxonomy:**
   - Passive CT Log Enumeration: `SUPPORTED`
-  - Multi-Source Aggregator API Queries: `SUPPORTED`
+  - Multi-Source Aggregator API Queries: `NOT_SUPPORTED` (Current governed baseline is public `crtsh` only; credentialed providers require a future tenant-scoped egress and secret-injection control)
   - Active DNS Brute-Forcing: `NOT_SUPPORTED` (Passive scope constraint)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/subfinder_adapter.py`).
+- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/subfinder_adapter.py`); approved managed `v2.6.5` runtime execution is `UNAVAILABLE` in the current environment.
 
 ---
 
@@ -874,7 +874,7 @@ Stderr: Diagnostic logs
   - HTTP Probe & Status: `SUPPORTED`
   - Technology Fingerprinting: `SUPPORTED`
   - Raw Request Fuzzing: `NOT_SUPPORTED` (Handled by FFuF)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/httpx_adapter.py`).
+- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/httpx_adapter.py`); approved managed `v1.6.0` runtime execution is `UNAVAILABLE` in the current environment.
 
 ---
 

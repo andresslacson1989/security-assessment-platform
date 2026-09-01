@@ -1212,7 +1212,7 @@ async def test_scenario_16_adapters_first_priority_and_native_pruning():
     from app.core.models import Target, TargetType, ScanConfig, Severity, Finding, Evidence, calculate_fingerprint
 
     net_engine = NetworkAssessmentEngine()
-    target = Target(name="Target", type=TargetType.DOMAIN, value="test-priority.com")
+    target = Target(name="Target", type=TargetType.DOMAIN, value="example.com")
     config = ScanConfig()
     config.adapters.enable_subfinder = False
     config.adapters.enable_httpx = False
@@ -1547,7 +1547,7 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
     net_engine = NetworkAssessmentEngine()
     dast_engine = WebDastAssessmentEngine()
 
-    target = Target(name="EASM Target", type=TargetType.DOMAIN, value="corp.example.com")
+    target = Target(name="EASM Target", type=TargetType.DOMAIN, value="example.com")
     config = ScanConfig()
     config.osint.subdomain_enumeration = False
     config.crawler.enabled = False
@@ -1590,6 +1590,8 @@ async def test_scenario_21_high_speed_easm_and_headless_spa_discovery():
         stack.enter_context(patch("app.engines.network.engine.NmapAdapter.is_available", new=AsyncMock(return_value=False)))
         stack.enter_context(patch.object(HttpxAdapter, "is_available", AsyncMock(return_value=True)))
         stack.enter_context(patch.object(HttpxAdapter, "resolve_binary_path", return_value="/bin/httpx"))
+        stack.enter_context(patch.object(HttpxAdapter, "verify_managed_binary", return_value=True))
+        stack.enter_context(patch.object(HttpxAdapter, "get_version", AsyncMock(return_value="httpx v1.6.0")))
         stack.enter_context(patch.object(HttpxAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_hx_stdout, ""))))
         stack.enter_context(patch.object(KatanaAdapter, "is_available", AsyncMock(return_value=True)))
         stack.enter_context(patch.object(KatanaAdapter, "resolve_binary_path", return_value="/bin/katana"))

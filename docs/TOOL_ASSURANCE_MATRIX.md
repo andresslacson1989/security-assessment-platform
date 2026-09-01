@@ -56,6 +56,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Failure Handling**: Zero cascade failure; missing or failed Nmap preserves `tool_failed` event log, degrades assessment coverage (`COVERAGE_DEGRADED`), and activates native fallback tagged with `source_tool="native"`.
 - **Role Strategy**: **PRIMARY**. Retain native port checker as non-blocking fallback.
 - **Implementation Status**: `REPOSITORY_VERIFIED` (Passed all 13 security assurance tests, 53 adapter tests, 30 adversarial tests, and 32 acceptance scenarios).
+- **Runtime Evidence**: The host Nmap executable reports `7.991`, not the approved `7.95`; approved managed Nmap runtime verification is `UNAVAILABLE`.
 
 ### 2. SSLyze (TLS/SSL Cipher Suite & Protocol Analyzer)
 - **Security Domain**: Network / TLS
@@ -66,6 +67,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Safety Controls**: Universal target gateway, pre-resolved hostname verification.
 - **Finding Normalization**: Check IDs `NET-TLS-001` (Insecure TLS 1.0/1.1), `NET-TLS-002` (Weak Ciphers), `NET-TLS-003` (Expiring/Expired Certs), CWE-326, CWE-327.
 - **Role Strategy**: **PRIMARY**. Complemented by native TLS auditor.
+- **Runtime Evidence**: The host SSLyze package reports `6.3.1`, not the approved `5.2.0`; approved managed SSLyze runtime verification is `UNAVAILABLE`.
 
 ### 3. Subfinder (Passive Subdomain Enumeration)
 - **Security Domain**: Perimeter / EASM
@@ -83,11 +85,12 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 ### 4. httpx (High-Speed Multi-Purpose HTTP Prober)
 - **Security Domain**: HTTP Probing & Discovery
 - **Purpose**: Probes discovered subdomains/IPs for live HTTP/HTTPS services, status codes, title, technology stack, and TLS SANs.
-- **Enterprise Maturity**: Production-Mature.
+- **Enterprise Maturity**: Repository controls verified; approved managed-runtime evidence remains unavailable in this environment.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/httpx).
-- **Safety Controls**: Pre-resolved IP validation, bounded concurrency (`-t 10`), SSRF blocklist enforcement.
+- **Safety Controls**: Engine-level validated-target handoff, selected-destination binding with Host/SNI preservation, exact-version gate, managed-binary preflight, bounded execution, and SSRF blocklist enforcement.
 - **Output Format & Parser**: JSON Lines parsed safely line by line.
 - **Role Strategy**: **VALIDATION**. Enriches discovered attack surface before DAST execution.
+- **Runtime Evidence**: Approved managed httpx `v1.6.0` executable was unavailable in this verification environment; real managed-runtime execution is `UNAVAILABLE`.
 
 ### 5. Nuclei (Template-Based DAST & Vulnerability Scanner)
 - **Security Domain**: Web DAST
