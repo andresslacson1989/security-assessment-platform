@@ -164,7 +164,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
-    PORT=8000
+    PORT=8000 \
+    HOME=/app/data
 
 # Install runtime system packages: Nmap, Git, Curl, Node.js (for Retire.js), procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -180,7 +181,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create application directories
 WORKDIR /app
-RUN mkdir -p /app/data/scans /app/backend /app/frontend
+RUN mkdir -p /app/data/scans /app/data/.config/subfinder /app/backend /app/frontend
 
 # Install application requirements from the hash-locked dependency set.
 COPY backend/requirements.lock /app/backend/
