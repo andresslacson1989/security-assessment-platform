@@ -44,13 +44,157 @@ from app.core.models import (
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
 
 
+class _PostgresRow(dict):
+    """Mapping row compatible with the SQLite row access used by the DAL."""
+
+    def __init__(self, columns: List[str], values: tuple):
+        super().__init__(zip(columns, values))
+        self._columns = columns
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return super().__getitem__(self._columns[key])
+        return super().__getitem__(key)
+
+
+def _qmark_to_postgres(sql: str) -> str:
+    """Translate DB-API qmark placeholders while preserving quoted literals."""
+    output: List[str] = []
+    quote: Optional[str] = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote:
+            output.append(char)
+            if char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    output.append(sql[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif char in ("'", '"'):
+            quote = char
+            output.append(char)
+        elif char == "?":
+            output.append("%s")
+        else:
+            output.append(char)
+        index += 1
+    return "".join(output)
+
+
+class _PostgresCursor:
+    """Small DB-API compatibility adapter for the existing parameterized DAL."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, sql: str, params=None):
+        self._cursor.execute(_qmark_to_postgres(sql), params or ())
+        return self
+
+    def executemany(self, sql: str, params):
+        self._cursor.executemany(_qmark_to_postgres(sql), params)
+        return self
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    def _columns(self) -> List[str]:
+        return [column.name if hasattr(column, "name") else column[0] for column in (self._cursor.description or [])]
+
+    def _row(self, value):
+        return _PostgresRow(self._columns(), tuple(value)) if value is not None else None
+
+    def fetchone(self):
+        return self._row(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._row(value) for value in self._cursor.fetchall()]
+
+
+class _PostgresConnection:
+    """Connection wrapper exposing the SQLite DAL's execute/row contract."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self):
+        return _PostgresCursor(self._connection.cursor())
+
+    def execute(self, sql: str, params=None):
+        return _PostgresCursor(self._connection.cursor()).execute(sql, params)
+
+    def executemany(self, sql: str, params):
+        return _PostgresCursor(self._connection.cursor()).executemany(sql, params)
+
+    def executescript(self, sql: str):
+        # The schema contains independent DDL statements and no procedural
+        # blocks; execute each statement so PostgreSQL can plan them normally.
+        for statement in sql.split(";"):
+            statement = statement.strip()
+            if statement:
+                self.execute(statement)
+        return self
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+
+class PostgresDatabaseManager:
+    """PostgreSQL enterprise backend using a bounded connection pool."""
+
+    def __init__(self, database_url: str):
+        try:
+            from psycopg_pool import ConnectionPool
+        except ImportError as exc:
+            raise RuntimeError(
+                "Enterprise mode requires psycopg[binary,pool] to be installed."
+            ) from exc
+        self.database_url = database_url
+        self._pool = ConnectionPool(
+            conninfo=database_url,
+            min_size=int(os.getenv("POSTGRES_POOL_MIN_SIZE", "1")),
+            max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
+            open=True,
+        )
+        self._init_db()
+
+    @contextmanager
+    def _connection_scope(self):
+        raw_connection = self._pool.getconn()
+        connection = _PostgresConnection(raw_connection)
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            self._pool.putconn(raw_connection)
+
+    def _init_db(self):
+        # Reuse the canonical schema/method implementation from the SQLite DAL.
+        DatabaseManager._init_db(self)
+
+    def __getattr__(self, name):
+        return getattr(DatabaseManager, name).__get__(self, type(self))
+
+
 class DatabaseManager:
     """
     Universal database manager handling relational tables, migrations, transactions, and tenant queries.
     Uses SQLite with WAL mode by default, supporting thread-safe connection pooling.
     """
 
-    _instance: Optional[DatabaseManager] = None
+    _instance: Optional[Any] = None
     _lock = threading.Lock()
 
     def __init__(self, db_path: Optional[Path] = None):
@@ -63,7 +207,11 @@ class DatabaseManager:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = cls()
+                    database_url = os.getenv("DATABASE_URL", "").strip()
+                    if database_url.lower().startswith(("postgresql://", "postgres://")):
+                        cls._instance = PostgresDatabaseManager(database_url)
+                    else:
+                        cls._instance = cls()
         return cls._instance
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -281,6 +429,7 @@ class DatabaseManager:
             -- Immutable Append-Only Audit Trail Table with Chained Hashes
             CREATE TABLE IF NOT EXISTS audit_events (
                 id TEXT PRIMARY KEY,
+                sequence_number INTEGER,
                 timestamp TEXT NOT NULL,
                 actor TEXT NOT NULL,
                 organization_id TEXT NOT NULL DEFAULT 'org-default',
@@ -313,12 +462,23 @@ class DatabaseManager:
                 "ALTER TABLE api_keys ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';",
                 "ALTER TABLE users ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'TENANT_PRINCIPAL';",
                 "ALTER TABLE finding_occurrences ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'org-default';",
+                "ALTER TABLE audit_events ADD COLUMN sequence_number INTEGER;",
             ]
-            for mig in migrations:
+            for migration_index, mig in enumerate(migrations):
+                savepoint = f"schema_migration_{migration_index}"
                 try:
+                    conn.execute(f"SAVEPOINT {savepoint}")
                     conn.execute(mig)
-                except sqlite3.OperationalError as exc:
-                    if "duplicate column name" not in str(exc).lower():
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                except Exception as exc:
+                    # PostgreSQL aborts a transaction after a duplicate-column
+                    # error; rollback to a savepoint before continuing.
+                    try:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    except Exception:
+                        raise
+                    if "duplicate column name" not in str(exc).lower() and "already exists" not in str(exc).lower():
                         raise
 
     # ========================================================================
@@ -498,7 +658,14 @@ class DatabaseManager:
         """Revokes a JWT token by jti identifier."""
         with self._connection_scope() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO revoked_tokens (jti, token_hash, revoked_at, expires_at) VALUES (?, ?, ?, ?)",
+                """
+                INSERT INTO revoked_tokens (jti, token_hash, revoked_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(jti) DO UPDATE SET
+                    token_hash = excluded.token_hash,
+                    revoked_at = excluded.revoked_at,
+                    expires_at = excluded.expires_at
+                """,
                 (jti, token_hash, utc_now().isoformat(), expires_at),
             )
 
@@ -517,9 +684,14 @@ class DatabaseManager:
         """Inserts an audit event using an already-open connection. Use this when the caller
         already holds a write transaction to avoid a second-connection deadlock on SQLite."""
         cur = conn.cursor()
-        cur.execute("SELECT event_hash FROM audit_events ORDER BY rowid DESC LIMIT 1")
+        cur.execute(
+            "SELECT event_hash, sequence_number FROM audit_events "
+            "ORDER BY sequence_number DESC NULLS LAST, timestamp DESC, id DESC LIMIT 1"
+        )
         last_row = cur.fetchone()
         prev_hash = last_row["event_hash"] if (last_row and last_row["event_hash"]) else None
+        sequence_number = (last_row["sequence_number"] if last_row else None) or 0
+        sequence_number += 1
 
         ts_str = event.timestamp.isoformat() if event.timestamp else utc_now().isoformat()
         act_str = event.action.value if hasattr(event.action, "value") else str(event.action)
@@ -532,13 +704,13 @@ class DatabaseManager:
         conn.execute(
             """
             INSERT INTO audit_events (
-                id, timestamp, actor, organization_id, action, object_type,
+                id, sequence_number, timestamp, actor, organization_id, action, object_type,
                 object_id, result, source_ip, correlation_id, details_json,
                 previous_event_hash, event_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                event.id, ts_str, event.actor, event.organization_id, act_str,
+                event.id, sequence_number, ts_str, event.actor, event.organization_id, act_str,
                 event.object_type, event.object_id, event.result, event.source_ip,
                 event.correlation_id, details_str, prev_hash, event_hash,
             ),
@@ -606,7 +778,7 @@ class DatabaseManager:
             if organization_id:
                 query += " WHERE organization_id = ?"
                 params.append(organization_id)
-            query += " ORDER BY rowid ASC"
+            query += " ORDER BY sequence_number ASC NULLS LAST, timestamp ASC, id ASC"
             cur.execute(query, params)
             rows = cur.fetchall()
 
@@ -647,11 +819,26 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO assets (
+                INSERT INTO assets (
                     id, organization_id, project_id, name, type, target_value,
                     criticality, internet_exposed, owner, lifecycle_status, tags_json,
                     created_at, updated_at, last_scanned_at, last_verified_at, active_findings_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    organization_id = excluded.organization_id,
+                    project_id = excluded.project_id,
+                    name = excluded.name,
+                    type = excluded.type,
+                    target_value = excluded.target_value,
+                    criticality = excluded.criticality,
+                    internet_exposed = excluded.internet_exposed,
+                    owner = excluded.owner,
+                    lifecycle_status = excluded.lifecycle_status,
+                    tags_json = excluded.tags_json,
+                    updated_at = excluded.updated_at,
+                    last_scanned_at = excluded.last_scanned_at,
+                    last_verified_at = excluded.last_verified_at,
+                    active_findings_count = excluded.active_findings_count
                 """,
                 (
                     asset.id,
@@ -757,11 +944,28 @@ class DatabaseManager:
 
             conn.execute(
                 """
-                INSERT OR REPLACE INTO scans (
+                INSERT INTO scans (
                     id, organization_id, project_id, asset_id, target_name, target_type, target_value,
                     profile, status, progress_percent, grade, score, total_findings,
                     started_at, completed_at, summary_json, data_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    organization_id = excluded.organization_id,
+                    project_id = excluded.project_id,
+                    asset_id = excluded.asset_id,
+                    target_name = excluded.target_name,
+                    target_type = excluded.target_type,
+                    target_value = excluded.target_value,
+                    profile = excluded.profile,
+                    status = excluded.status,
+                    progress_percent = excluded.progress_percent,
+                    grade = excluded.grade,
+                    score = excluded.score,
+                    total_findings = excluded.total_findings,
+                    started_at = excluded.started_at,
+                    completed_at = excluded.completed_at,
+                    summary_json = excluded.summary_json,
+                    data_json = excluded.data_json
                 """,
                 (
                     scan_job.id,
@@ -858,10 +1062,21 @@ class DatabaseManager:
             for occ in occurrences:
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO finding_occurrences (
+                    INSERT INTO finding_occurrences (
                         id, organization_id, canonical_finding_id, scan_id, asset_id, source_tool, check_id,
                         raw_evidence_json, reproduction_curl, taint_trace_json, detected_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        organization_id = excluded.organization_id,
+                        canonical_finding_id = excluded.canonical_finding_id,
+                        scan_id = excluded.scan_id,
+                        asset_id = excluded.asset_id,
+                        source_tool = excluded.source_tool,
+                        check_id = excluded.check_id,
+                        raw_evidence_json = excluded.raw_evidence_json,
+                        reproduction_curl = excluded.reproduction_curl,
+                        taint_trace_json = excluded.taint_trace_json,
+                        detected_at = excluded.detected_at
                     """,
                     (
                         occ.id,
