@@ -95,4 +95,4 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 ---
 
 ## 3. Final Verification Assertion
-All 15 security invariants are enforced in production paths, backed by authoritative database state, and verified by 30/30 passing adversarial security tests (tests/security/test_adversarial_sec_matrix.py) and 100% passing core acceptance scenarios.
+Repository-level controls for the documented invariants are implemented and partially verified through focused and adversarial tests. E11 runtime verification and full regression remain unavailable; therefore this document does not assert complete production verification or section acceptance.

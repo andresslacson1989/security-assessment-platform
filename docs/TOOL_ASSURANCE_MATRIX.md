@@ -69,14 +69,14 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 
 ### 3. Subfinder (Passive Subdomain Enumeration)
 - **Security Domain**: Perimeter / EASM
-- **Purpose**: Discovers valid subdomains passively via Certificate Transparency logs, VirusTotal, SecurityTrails, and DNS datasets without active probing.
+- **Purpose**: Discovers valid subdomains passively through the governed public `crtsh` provider baseline without active probing. Additional credentialed providers remain disabled.
 - **Enterprise Maturity**: Implementation in progress; repository controls are partially verified.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/subfinder).
 - **Version Pinning & Integrity**: Pinned in `PINNED_TOOL_MANIFEST` with exact SHA-256 binary digests.
 - **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, no credential injection, and no automatic DNS probing or inventory admission. Broader provider egress policy/credential injection remains unimplemented.
 - **Output Format & Parser**: Line-by-line JSON output (`-json -silent`).
 - **Finding Normalization**: Emits discovery observations and `NET-OSINT-001` informational findings; out-of-scope and malformed records are rejected with warnings and are not emitted as candidates.
-- **Role Strategy**: **PRIMARY**. Complemented by native `crt.sh` client. Discovery is not authorization and does not itself create an active scan target.
+- **Role Strategy**: **PRIMARY**. Complemented by an independent native `crt.sh` enrichment path. Discovery is not authorization and does not itself create an active scan target.
 - **Runtime Evidence**: Approved managed Subfinder `v2.6.5` executable was unavailable in the verification environment; real binary execution and runtime command acceptance remain `UNAVAILABLE` / `UNVERIFIED`.
 - **Architectural Limitation**: Explicit inventory admission and active-target authorization are broader product capabilities and are not implemented by this adapter.
 
