@@ -88,14 +88,14 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 - **Tests:** `tests/security/test_subfinder_assurance.py::test_discovery_never_promotes_out_of_scope_or_resolves_hosts`.
 - **Status:** PARTIALLY VERIFIED; provider egress governance, credential injection, and persistent inventory-admission workflow require further implementation.
 
-### E11.3 Runtime Verification Limitation
-- **Evidence:** No approved managed Subfinder `v2.6.5` executable was present in the verification environment.
-- **Status:** UNAVAILABLE / UNVERIFIED. Repository command and parser tests pass, but real v2.6.5 process execution has not been demonstrated.
+### E11.3 Runtime Verification
+- **Evidence:** On 2026-09-01, the production adapter executed the approved managed `backend/bin/subfinder.exe` against `example.com`; managed trust verification returned true, the runtime reported `subfinder v2.6.5`, and the adapter completed with normalized state `COMPLETED_NO_FINDINGS`.
+- **Status:** VERIFIED for the managed adapter execution path. This does not claim upstream provenance beyond the recorded artifact/install controls, nor does it close provider-egress governance or explicit inventory admission.
 
 ---
 
 ## 3. Final Verification Assertion
-Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime verification and complete repository regression remain unavailable as environmental evidence conditions; this document records those limitations explicitly and does not represent them as runtime passes.
+Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime execution and complete repository regression are now evidenced; remaining E11 limitations are recorded explicitly and are not represented as completed capabilities.
 
 ### E12 Web DAST Execution Boundary
 - **Implementation:** `backend/app/engines/web_dast/engine.py`, `backend/app/core/ssrf_protector.py`, `backend/app/adapters/base_adapter.py`, and the four E12 adapters.
