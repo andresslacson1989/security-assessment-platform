@@ -8,13 +8,14 @@ enforces security headers, and derives metadata exclusively from app.core.versio
 from __future__ import annotations
 import os
 import uuid
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.version import (
     APP_NAME,
@@ -31,6 +32,8 @@ from app.engines.code_sast.engine import CodeSastAssessmentEngine
 from app.engines.infra_iac.engine import InfraIacAssessmentEngine
 from app.engines.cicd_audit.engine import CicdAuditAssessmentEngine
 from app.api import api_router
+
+logger = logging.getLogger("cyberassess.api")
 
 
 def register_default_engines() -> None:
@@ -86,6 +89,27 @@ app = FastAPI(
     description=f"Enterprise Automated Security Assessment Platform (Contract v{CONTRACT_VERSION}, Ruleset v{RULESET_VERSION}).",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(Exception)
+async def handle_unexpected_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Return a generic production error while retaining correlation-safe logs."""
+    correlation_id = getattr(request.state, "correlation_id", "unavailable")
+    logger.exception(
+        "Unhandled API exception correlation_id=%s method=%s path=%s",
+        correlation_id,
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error_code": "INTERNAL_ERROR",
+            "message": "An internal server error occurred.",
+            "correlation_id": correlation_id,
+        },
+        headers={"X-Correlation-ID": correlation_id},
+    )
 
 
 @app.middleware("http")

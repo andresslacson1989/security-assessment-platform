@@ -29,6 +29,7 @@ from app.core.models import (
 from app.core.auth import create_access_token
 from app.core.storage import save_scan
 from app.core.orchestrator import orchestrator
+from starlette.requests import Request
 
 
 @pytest.fixture
@@ -61,6 +62,27 @@ async def test_system_endpoints(auth_headers):
         assert resp_eng.status_code == 200
         data_eng = resp_eng.json()
         assert data_eng["count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_unexpected_api_errors_are_generic_and_correlated():
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/test",
+        "headers": [(b"x-correlation-id", b"corr-test-123")],
+        "query_string": b"",
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("127.0.0.1", 1),
+    })
+    request.state.correlation_id = "corr-test-123"
+    from app.main import handle_unexpected_exception
+
+    response = await handle_unexpected_exception(request, RuntimeError("secret filesystem path"))
+    assert response.status_code == 500
+    assert response.body == b'{"error_code":"INTERNAL_ERROR","message":"An internal server error occurred.","correlation_id":"corr-test-123"}'
+    assert b"secret filesystem path" not in response.body
 
 
 @pytest.mark.asyncio
