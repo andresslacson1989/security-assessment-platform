@@ -409,13 +409,13 @@ async def test_system_tool_helper_instructions():
 
     logs = []
     prog = []
-        with patch.object(installer, "get_version", new=AsyncMock(return_value="Nmap 7.95")):
+    with patch.object(installer, "get_version", new=AsyncMock(return_value="Nmap 7.95")):
         res = await installer.install(
             lambda m: logs.append(m) or asyncio.sleep(0),
             lambda p, s: prog.append((p, s)) or asyncio.sleep(0),
         )
         assert res is True
-        assert any("Nmap 7.94" in l for l in logs)
+        assert any("Nmap 7.95" in l for l in logs)
 
 
 def test_tool_management_api_endpoints(client, manager, auth_headers):
