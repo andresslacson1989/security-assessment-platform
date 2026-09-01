@@ -4,7 +4,6 @@ Inspects commit history (git log -p) for leaked credentials and hardcoded secret
 """
 
 from __future__ import annotations
-import asyncio
 import os
 import re
 from pathlib import Path
@@ -12,6 +11,8 @@ from typing import List, Optional
 
 from app.core.models import Finding, Evidence, Severity, mask_secret, calculate_fingerprint
 from app.engines.code_sast.secret_scanner import SECRET_RULES
+from app.core.process_supervisor import process_supervisor
+from app.core.path_sandbox import safe_workspace_relative_path
 
 
 async def audit_git_commit_history(repo_path: str, max_commits: int = 100) -> List[Finding]:
@@ -28,18 +29,20 @@ async def audit_git_commit_history(repo_path: str, max_commits: int = 100) -> Li
     if not git_dir.exists():
         return findings
 
-    cmd = ["git", "log", "-p", f"-n{max_commits}"]
+    cmd = ["git", "log", "--no-ext-diff", "--no-textconv", "-p", f"-n{max_commits}", "--"]
     cwd = str(p if p.is_dir() else p.parent)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+        returncode, stdout, _ = await process_supervisor.execute(
+            cmd=cmd,
             cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout=8.0,
+            max_output_bytes=10 * 1024 * 1024,
+            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
-        diff_text = stdout.decode("utf-8", errors="ignore")
+        if returncode not in (0, 1):
+            return findings
+        diff_text = stdout
     except Exception:
         return findings
 
@@ -53,7 +56,7 @@ async def audit_git_commit_history(repo_path: str, max_commits: int = 100) -> Li
         elif line.startswith("diff --git a/"):
             parts = line.split()
             if len(parts) >= 4:
-                current_file = parts[2].replace("a/", "")
+                current_file = safe_workspace_relative_path(parts[2].replace("a/", ""), p) or "untrusted-output"
             continue
 
         # Only audit added lines in commits

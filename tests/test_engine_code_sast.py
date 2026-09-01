@@ -176,7 +176,7 @@ async def test_code_sast_engine_full_run():
         async def find_cb(f):
             findings_emitted.append(f)
 
-        findings = await engine.run(target, config, log_cb, prog_cb, find_cb)
+        findings = await engine.run(target, config, log_cb, prog_cb, find_cb, workspace_roots=[temp_dir])
         assert findings == []
         assert len(progress_updates) >= 4
         assert progress_updates[-1][0] == 100

@@ -1553,7 +1553,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 12. Workspace Requirements & Confinement
-- Server-derived authorized workspace jail (`Path.resolve().startswith(workspace_root)`).
+- Server-derived authorized workspace jail with canonical containment and symlink/reparse-point rejection before any tool receives the path.
 
 ### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline execution (uses local ruleset or cached rules).
@@ -1662,7 +1662,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - Polyglot AST Matching: `SUPPORTED`
   - Cross-File Deep Taint: `DEFERRED` (Requires Semgrep Pro engine)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/semgrep_adapter.py`).
+- **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/semgrep_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
 
@@ -1712,7 +1712,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 12. Workspace Requirements & Confinement
-- Server-derived authorized workspace jail.
+- Server-derived authorized workspace jail with canonical containment and symlink/reparse-point rejection before any tool receives the path.
 
 ### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline static analysis.
@@ -1820,7 +1820,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - Python AST Security Linting: `SUPPORTED`
   - Cross-File Taint Tracking: `NOT_SUPPORTED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/bandit_adapter.py`).
+- **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/bandit_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
 
@@ -1894,7 +1894,7 @@ Stderr: Diagnostic logs
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_gitleaks_path>
-Command Line: gitleaks detect --source <authorized_workspace_path> --report-format json --report-path <temp_report_path> --no-banner
+Command Line: gitleaks detect --source <authorized_workspace_path> --report-format json --report-path - --no-banner
 Stdout: Diagnostic logs
 Stderr: Diagnostic logs
 ```
@@ -1977,7 +1977,7 @@ Stderr: Diagnostic logs
   - Filesystem Secret Detection: `SUPPORTED`
   - Git Commit History Traversal: `SUPPORTED`
   - Secret Live Verification: `NOT_SUPPORTED` (Delegated to TruffleHog)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/gitleaks_adapter.py`).
+- **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/gitleaks_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
 
@@ -2132,7 +2132,7 @@ Stderr: Diagnostic logs
   - Filesystem Secret Detection: `SUPPORTED`
   - Live Secret Verification: `SUPPORTED`
   - S3 / Git Remote Crawling: `DEFERRED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/trufflehog_adapter.py`).
+- **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/trufflehog_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
 
@@ -2205,7 +2205,7 @@ Stderr: Diagnostic logs
 ### 19. Invocation Contract
 ```text
 Executable: <resolved_retire_path>
-Command Line: retire --path <authorized_workspace_path> --outputformat json --nodownload
+Command Line: retire --path <authorized_workspace_path> --outputformat json --nodownload --exitwith 0
 Stdout: Captures JSON results
 Stderr: Diagnostic logs
 ```
@@ -2287,7 +2287,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - JavaScript File Scanning: `SUPPORTED`
   - Node Modules Scanning: `SUPPORTED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/retirejs_adapter.py`).
+- **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/retirejs_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
 

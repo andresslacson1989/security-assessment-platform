@@ -15,7 +15,7 @@ import shutil
 import sys
 from typing import Optional, List, Callable, Awaitable, Tuple
 
-from app.core.models import Target, Finding, ScanConfig, LogLevel
+from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
 
 
@@ -25,6 +25,24 @@ class BaseToolAdapter(ABC):
     """
 
     safe_execute_subprocess = staticmethod(safe_execute_subprocess)
+    last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+    def _record_execution(self, returncode: int, stdout: str, stderr: str, findings_count: int = 0, parser_error: bool = False) -> None:
+        """Map upstream process results to the platform execution-state contract."""
+        if parser_error:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if stdout.strip() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+        elif "timed out" in (stderr or "").lower():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
+        elif returncode == 126 and "security check" in (stderr or "").lower():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+        elif returncode != 0 and not stdout.strip():
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+        elif findings_count:
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
+        elif returncode in (0, 1):
+            self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+        else:
+            self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if stdout.strip() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
 
     @property
     @abstractmethod
@@ -87,6 +105,19 @@ class BaseToolAdapter(ABC):
         """Verify the installer-created identity record for direct managed binaries."""
         managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
         path = os.path.abspath(binary)
+        package_name = getattr(self, "package_name", None)
+        if package_name:
+            python_roots = {
+                os.path.abspath(os.path.dirname(sys.executable)),
+                os.path.abspath(sys.prefix),
+            }
+            try:
+                if not any(os.path.commonpath([path, root]) == root for root in python_roots):
+                    return False
+                from importlib.metadata import version
+                return version(package_name) == str(getattr(self, "approved_version", "")).lstrip("v")
+            except Exception:
+                return False
         if self.tool_name == "schemathesis":
             # Schemathesis is governed as a package-manager tool. Accept only
             # the active interpreter's executable and exact installed metadata.

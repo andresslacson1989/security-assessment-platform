@@ -11,7 +11,8 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, SBOMReport, SBOMComponent, SBOMExportFormat
+    calculate_fingerprint, SBOMReport, SBOMComponent, SBOMExportFormat,
+    NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -20,16 +21,17 @@ class SyftAdapter(BaseToolAdapter):
     """
     Adapter for Anchore Syft SBOM generator (CycloneDX and SPDX).
     """
+    approved_version = "1.0.1"
 
     @property
     def tool_name(self) -> str:
         return "syft"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check)
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -50,18 +52,29 @@ class SyftAdapter(BaseToolAdapter):
 
         binary = self.resolve_binary_path(config.adapters.syft_path or config.adapters.custom_syft_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Syft binary not found. Skipping SBOM generation.")
             return findings
 
         scan_path = target.value
         if not os.path.exists(scan_path):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"Target directory not accessible: {scan_path}")
             return findings
 
         await emit_log(LogLevel.INFO, f"Executing Syft SBOM cataloging on: {scan_path}")
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Syft execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(
+            config.adapters.syft_path or config.adapters.custom_syft_path, emit_log, pre_launch_check=managed_check
+        ):
+            return findings
         cmd = [binary, scan_path, "-o", "cyclonedx-json", "-q"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
         if code != 0 and not stdout:
             await emit_log(LogLevel.WARNING, f"Syft exited with code {code}: {stderr.strip()[:200]}")
             return findings
@@ -132,6 +145,8 @@ class SyftAdapter(BaseToolAdapter):
             await emit_log(LogLevel.INFO, f"Syft cataloged {len(components)} software components into CycloneDX SBOM.")
 
         except Exception as e:
+            self._record_execution(code, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Syft SBOM processing error: {e}")
 
+        self._record_execution(code, stdout, stderr, findings_count=len(findings))
         return findings

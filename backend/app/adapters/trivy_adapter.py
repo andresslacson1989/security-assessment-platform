@@ -16,6 +16,7 @@ from app.core.models import (
     ScanConfig,
     LogLevel,
     calculate_fingerprint,
+    NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -34,12 +35,13 @@ class TrivyAdapter(BaseToolAdapter):
     Hybrid tool adapter for Aqua Security Trivy vulnerability and dependency scanner.
     Normalizes JSON scan output into canonical SAST-DEP-001 and IAC-DOCK-xxx findings.
     """
+    approved_version = "0.50.0"
 
     @property
     def tool_name(self) -> str:
         return "trivy"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves Trivy version string via `trivy --version`.
         """
@@ -47,7 +49,7 @@ class TrivyAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0)
+        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check)
         output = stdout or stderr
         if output:
             for line in output.splitlines():
@@ -78,7 +80,16 @@ class TrivyAdapter(BaseToolAdapter):
         trivy_path = self.resolve_binary_path(custom_path)
 
         if not trivy_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Trivy binary not found on host. Skipping Trivy execution.")
+            return findings
+
+        managed_check = (lambda: self.verify_managed_binary(trivy_path)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Trivy execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         repo_path = target.value.strip()
@@ -94,9 +105,11 @@ class TrivyAdapter(BaseToolAdapter):
             cmd,
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
+            pre_launch_check=managed_check,
         )
 
         if not stdout.strip():
+            self._record_execution(returncode, stdout, stderr)
             if returncode != 0 and stderr:
                 await emit_log(LogLevel.WARNING, f"Trivy exited with code {returncode}: {stderr.strip()}")
             else:
@@ -106,6 +119,7 @@ class TrivyAdapter(BaseToolAdapter):
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError as e:
+            self._record_execution(returncode, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.ERROR, f"Failed to parse Trivy JSON output: {e}")
             return findings
 
@@ -229,5 +243,6 @@ class TrivyAdapter(BaseToolAdapter):
                 findings.append(finding)
                 await emit_finding(finding)
 
+        self._record_execution(returncode, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"Trivy scan completed. Generated {len(findings)} findings.")
         return findings

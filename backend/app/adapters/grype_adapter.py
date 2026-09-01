@@ -11,7 +11,7 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint
+    calculate_fingerprint, NormalizedExecutionState,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -20,16 +20,17 @@ class GrypeAdapter(BaseToolAdapter):
     """
     Adapter for Anchore Grype vulnerability matcher for container images and filesystems.
     """
+    approved_version = "0.74.0"
 
     @property
     def tool_name(self) -> str:
         return "grype"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check)
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -49,18 +50,29 @@ class GrypeAdapter(BaseToolAdapter):
 
         binary = self.resolve_binary_path(config.adapters.grype_path or config.adapters.custom_grype_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Grype binary not found. Skipping Grype vulnerability matching.")
             return findings
 
         scan_path = target.value
         if not os.path.exists(scan_path):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"Target path not accessible: {scan_path}")
             return findings
 
         await emit_log(LogLevel.INFO, f"Executing Grype supply chain vulnerability scanner on: {scan_path}")
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Grype execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(
+            config.adapters.grype_path or config.adapters.custom_grype_path, emit_log, pre_launch_check=managed_check
+        ):
+            return findings
         cmd = [binary, scan_path, "-o", "json", "-q"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
         try:
             data = json.loads(stdout)
@@ -115,7 +127,9 @@ class GrypeAdapter(BaseToolAdapter):
                 await emit_finding(finding)
 
         except Exception as e:
+            self._record_execution(code, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Grype output parsing error: {e}")
 
+        self._record_execution(code, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"Grype completed: {len(findings)} package vulnerabilities matched.")
         return findings

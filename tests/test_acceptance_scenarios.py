@@ -1707,18 +1707,25 @@ async def test_scenario_22_software_supply_chain_and_sbom_export(tmp_path):
 
     with patch.object(SyftAdapter, "is_available", AsyncMock(return_value=True)), \
          patch.object(SyftAdapter, "resolve_binary_path", return_value="/bin/syft"), \
+         patch.object(SyftAdapter, "verify_managed_binary", return_value=True), \
+         patch.object(SyftAdapter, "get_version", AsyncMock(return_value="syft 1.0.1")), \
          patch.object(SyftAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_cdx), ""))), \
          patch.object(GrypeAdapter, "is_available", AsyncMock(return_value=True)), \
          patch.object(GrypeAdapter, "resolve_binary_path", return_value="/bin/grype"), \
+         patch.object(GrypeAdapter, "verify_managed_binary", return_value=True), \
+         patch.object(GrypeAdapter, "get_version", AsyncMock(return_value="grype 0.74.0")), \
          patch.object(GrypeAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_grype), ""))), \
          patch.object(OSVScannerAdapter, "is_available", AsyncMock(return_value=True)), \
          patch.object(OSVScannerAdapter, "resolve_binary_path", return_value="/bin/osv-scanner"), \
+         patch.object(OSVScannerAdapter, "verify_managed_binary", return_value=True), \
+         patch.object(OSVScannerAdapter, "get_version", AsyncMock(return_value="osv-scanner 1.7.0")), \
          patch.object(OSVScannerAdapter, "execute_command", new=AsyncMock(return_value=(0, json.dumps(mock_osv), ""))), \
          patch.object(RetireJSAdapter, "is_available", AsyncMock(return_value=False)):
 
         findings = await engine.run(
             target, config, emit_log, emit_prog, emit_find,
             record_sbom_report=record_sbom,
+            workspace_roots=[tmp_path],
         )
 
         assert any(f.source_tool == "syft" for f in findings)
@@ -1772,9 +1779,15 @@ async def test_scenario_23_live_verified_secret_auditing(tmp_path):
 
     with patch.object(TruffleHogAdapter, "is_available", AsyncMock(return_value=True)), \
          patch.object(TruffleHogAdapter, "resolve_binary_path", return_value="/bin/trufflehog"), \
+         patch.object(TruffleHogAdapter, "verify_managed_binary", return_value=True), \
+         patch.object(TruffleHogAdapter, "get_version", AsyncMock(return_value="trufflehog v3.63.0")), \
          patch.object(TruffleHogAdapter, "execute_command", new=AsyncMock(return_value=(0, mock_th_stdout, ""))):
 
-        findings = await engine.run(target, config, emit_log, emit_prog, emit_find, organization_id="org-test")
+        findings = await engine.run(
+            target, config, emit_log, emit_prog, emit_find,
+            organization_id="org-test", workspace_roots=[tmp_path],
+            allow_live_secret_verification=True,
+        )
         verified_findings = [f for f in findings if f.source_tool == "trufflehog" and f.verified_secret and f.verified_secret.is_live]
 
         assert len(verified_findings) == 1

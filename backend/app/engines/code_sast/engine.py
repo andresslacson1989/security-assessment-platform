@@ -5,7 +5,8 @@ Contract 03, 06 & 08 Static Code Analysis, Secrets & SCA Engine Coordinator.
 from __future__ import annotations
 from typing import List
 
-from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel
+from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel, NormalizedExecutionState
+from app.core.path_sandbox import resolve_authorized_workspace, PathSandboxViolation
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.engines.code_sast.secret_scanner import audit_code_secrets
 from app.engines.code_sast.git_history_scanner import audit_git_commit_history
@@ -64,8 +65,31 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
     ) -> List[Finding]:
         findings: List[Finding] = []
         existing_fps = set()
-        repo_path = target.value
+        tool_state_cb = kwargs.get("emit_tool_execution_state")
+        try:
+            workspace = resolve_authorized_workspace(
+                target.value,
+                allowed_roots=kwargs.get("workspace_roots"),
+            )
+        except PathSandboxViolation as exc:
+            await emit_log(LogLevel.ERROR, f"Code SAST execution blocked by workspace policy: {exc}")
+            if tool_state_cb:
+                for tool_name in ("semgrep", "bandit", "gitleaks", "trufflehog", "retirejs"):
+                    await tool_state_cb(tool_name, NormalizedExecutionState.EXECUTION_BLOCKED.value)
+            return findings
+
+        repo_path = str(workspace)
+        scan_target = target.model_copy(update={"value": repo_path})
         record_sbom = kwargs.get("record_sbom_report")
+        require_managed_binary = kwargs.get("require_managed_binary", True)
+
+        async def report_tool_state(tool_name: str, adapter, finding_count: int = 0) -> None:
+            if not tool_state_cb:
+                return
+            state = getattr(adapter, "last_execution_state", NormalizedExecutionState.TOOL_EXECUTION_FAILED)
+            if finding_count and state == NormalizedExecutionState.COMPLETED_NO_FINDINGS:
+                state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
+            await tool_state_cb(tool_name, state.value)
 
         # --- Stage 0: Primary External Tool Adapters First-in-Line ---
         await emit_progress(5, "Running primary external SAST & Secret tool adapters...")
@@ -78,12 +102,14 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await gitleaks_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Gitleaks CLI adapter for git secret detection...")
                     gitleaks_findings = await gitleaks_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("gitleaks", gitleaks_adapter, len(gitleaks_findings))
                     for f in gitleaks_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -91,8 +117,12 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("gitleaks", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Gitleaks CLI not available - using native secret & git history scanner")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("gitleaks", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Gitleaks adapter error: {e}")
 
         # 0.2 TruffleHog Adapter (Verified Live Secret Scanner)
@@ -103,19 +133,28 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await trufflehog_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing TruffleHog CLI adapter for verified secret detection...")
                     th_findings = await trufflehog_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
+                        allow_live_verification=kwargs.get("allow_live_secret_verification", False),
                     )
+                    await report_tool_state("trufflehog", trufflehog_adapter, len(th_findings))
                     for f in th_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "trufflehog"
                             f.scan_id = "active"
                             findings.append(f)
+                else:
+                    if tool_state_cb:
+                        await tool_state_cb("syft", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await emit_log(LogLevel.INFO, "Syft CLI not available")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("trufflehog", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"TruffleHog adapter error: {e}")
 
         # 0.3 Bandit Adapter (Python AST Security Linter)
@@ -126,12 +165,14 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await bandit_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Bandit CLI adapter for Python AST security linting...")
                     bandit_findings = await bandit_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("bandit", bandit_adapter, len(bandit_findings))
                     for f in bandit_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -139,8 +180,12 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("bandit", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Bandit CLI not available - using native AST crypto & injection linters")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("bandit", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Bandit adapter error: {e}")
 
         # 0.4 Semgrep Adapter (Multi-Language AST SAST)
@@ -151,12 +196,14 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await semgrep_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Semgrep CLI adapter for multi-language AST SAST...")
                     semgrep_findings = await semgrep_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("semgrep", semgrep_adapter, len(semgrep_findings))
                     for f in semgrep_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -164,8 +211,12 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("semgrep", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Semgrep CLI not available - using native AST taint & injection linters")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("semgrep", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Semgrep adapter error: {e}")
 
         # 0.5 Retire.js Adapter (Client-Side JavaScript Vulnerabilities)
@@ -176,19 +227,27 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await retire_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Retire.js adapter for client-side JS CVEs...")
                     retire_findings = await retire_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("retirejs", retire_adapter, len(retire_findings))
                     for f in retire_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "retirejs"
                             f.scan_id = "active"
                             findings.append(f)
+                else:
+                    if tool_state_cb:
+                        await tool_state_cb("grype", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await emit_log(LogLevel.INFO, "Grype CLI not available")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("retirejs", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Retire.js adapter error: {e}")
 
         # 0.6 Syft Adapter (Software Bill of Materials Generation)
@@ -199,20 +258,28 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await syft_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Syft SBOM generator...")
                     syft_findings = await syft_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
                         record_sbom_report=record_sbom,
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("syft", syft_adapter, len(syft_findings))
                     for f in syft_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "syft"
                             f.scan_id = "active"
                             findings.append(f)
+                else:
+                    if tool_state_cb:
+                        await tool_state_cb("osv_scanner", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await emit_log(LogLevel.INFO, "OSV-Scanner CLI not available")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("syft", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Syft adapter error: {e}")
 
         # 0.7 Grype Adapter (SBOM & Filesystem Vulnerability Matcher)
@@ -223,12 +290,14 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await grype_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Grype supply chain vulnerability matcher...")
                     grype_findings = await grype_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("grype", grype_adapter, len(grype_findings))
                     for f in grype_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -236,6 +305,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("grype", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Grype adapter error: {e}")
 
         # 0.8 OSV-Scanner Adapter (Google OSV Database)
@@ -246,12 +317,14 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await osv_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Google OSV-Scanner dependency audit...")
                     osv_findings = await osv_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("osv_scanner", osv_adapter, len(osv_findings))
                     for f in osv_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -259,6 +332,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("osv_scanner", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"OSV-Scanner adapter error: {e}")
 
         # 0.9 Trivy Adapter (SCA Dependency Vulnerabilities)
@@ -269,12 +344,14 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 if await trivy_adapter.is_available(custom_path):
                     await emit_log(LogLevel.INFO, "Executing Trivy CLI adapter for filesystem SCA vulnerability auditing...")
                     trivy_findings = await trivy_adapter.run(
-                        target,
+                        scan_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id="active",
+                        require_managed_binary=require_managed_binary,
                     )
+                    await report_tool_state("trivy", trivy_adapter, len(trivy_findings))
                     for f in trivy_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
@@ -282,8 +359,12 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = "active"
                             findings.append(f)
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("trivy", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Trivy CLI not available - using native dependency SCA manifest auditor")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("trivy", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Trivy adapter error: {e}")
 
         # --- Stage 1: Native Secret & Credential Scanning (Entropy + Regex) ---
@@ -341,6 +422,12 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 f.scan_id = "active"
                 findings.append(f)
                 await emit_finding(f)
+
+        # Stamp the authoritative tenant/workspace provenance after all
+        # adapters and native fallbacks have normalized their findings.
+        for finding in findings:
+            finding.organization_id = kwargs.get("organization_id") or "org-default"
+            finding.workspace_id = kwargs.get("workspace_id") or str(workspace)
 
         await emit_progress(100, "Static code assessment completed.")
         await emit_log(LogLevel.INFO, f"Code SAST engine finished with {len(findings)} total findings.")

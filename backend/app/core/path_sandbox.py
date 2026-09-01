@@ -58,6 +58,76 @@ class PathSandboxViolation(ValueError):
     pass
 
 
+def resolve_authorized_workspace(
+    path_str: str,
+    allowed_roots: Optional[List[Path]] = None,
+) -> Path:
+    """Resolve a scan workspace and prove containment before filesystem access.
+
+    The caller must provide the tenant-authorized roots.  When omitted, only the
+    application's managed workspace root is authorized.  Every existing path
+    component is checked for symlink traversal so a link cannot redirect a scan
+    outside the authorized tree.
+    """
+    roots = allowed_roots or [get_default_workspace_dir()]
+    if not path_str or not isinstance(path_str, str):
+        raise PathSandboxViolation("Workspace path cannot be empty.")
+
+    candidate = Path(path_str).expanduser()
+    if not candidate.exists():
+        raise PathSandboxViolation(f"Workspace path does not exist: '{path_str}'.")
+
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise PathSandboxViolation(f"Workspace path cannot be resolved: {exc}") from exc
+
+    resolved_roots: List[Path] = []
+    for root in roots:
+        try:
+            root_path = Path(root).expanduser().resolve(strict=True)
+        except OSError:
+            continue
+        resolved_roots.append(root_path)
+        try:
+            resolved.relative_to(root_path)
+        except ValueError:
+            continue
+
+        # Reject links/reparse points in the user-controlled path.  The
+        # canonical root itself may be a deployment-managed directory.
+        current = candidate.absolute()
+        root_absolute = root_path.absolute()
+        while True:
+            if current != root_absolute and (current.is_symlink() or os.path.islink(str(current))):
+                raise PathSandboxViolation("Workspace traversal through a symlink or reparse point is prohibited.")
+            if current == root_absolute or current.parent == current:
+                break
+            current = current.parent
+        return resolved
+
+    if not resolved_roots:
+        raise PathSandboxViolation("No authorized workspace root is available.")
+    raise PathSandboxViolation(f"Workspace path '{path_str}' is outside the authorized workspace.")
+
+
+def safe_workspace_relative_path(raw_path: str, workspace: Path) -> Optional[str]:
+    """Return a normalized evidence path only when it remains in the workspace."""
+    try:
+        workspace_resolved = Path(workspace).resolve(strict=False)
+        raw = Path(str(raw_path))
+        if not raw.is_absolute():
+            if ".." in raw.parts:
+                return None
+            return Path(*raw.parts).as_posix()
+        candidate = raw
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(workspace_resolved)
+        return resolved.relative_to(workspace_resolved).as_posix()
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def get_default_workspace_dir() -> Path:
     """Returns the default allowed workspace base path."""
     base = Path(__file__).resolve().parent.parent.parent.parent / "data" / "workspaces"

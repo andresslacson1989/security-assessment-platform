@@ -7,29 +7,33 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, mask_secret, VerifiedSecretEvidence
+    calculate_fingerprint, mask_secret, VerifiedSecretEvidence,
+    NormalizedExecutionState, sanitize_sensitive_text,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.path_sandbox import safe_workspace_relative_path
 
 
 class TruffleHogAdapter(BaseToolAdapter):
     """
     Adapter for TruffleHog deep secret scanner with live verification probes.
     """
+    approved_version = "3.63.0"
 
     @property
     def tool_name(self) -> str:
         return "trufflehog"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check)
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -49,18 +53,39 @@ class TruffleHogAdapter(BaseToolAdapter):
 
         binary = self.resolve_binary_path(config.adapters.trufflehog_path or config.adapters.custom_trufflehog_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "TruffleHog binary not found. Skipping verified secret audit.")
             return findings
 
         scan_path = target.value
         if not os.path.exists(scan_path):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"Target directory not accessible: {scan_path}")
             return findings
 
-        await emit_log(LogLevel.INFO, f"Executing TruffleHog secret scan with live verification on: {scan_path}")
-        cmd = [binary, "filesystem", scan_path, "--json"]
+        if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "TruffleHog execution blocked: executable is not a trusted managed installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not kwargs.get("allow_live_verification", False):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.WARNING, "TruffleHog live verification is disabled without explicit tenant authorization.")
+            return findings
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(
+            config.adapters.trufflehog_path or config.adapters.custom_trufflehog_path,
+            emit_log,
+            pre_launch_check=managed_check,
+        ):
+            return findings
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log)
+        await emit_log(LogLevel.INFO, f"Executing TruffleHog secret scan with live verification on: {scan_path}")
+        cmd = [binary, "filesystem", scan_path, "--json", "--no-update"]
+
+        code, stdout, stderr = await self.execute_command(
+            cmd, timeout=60.0, emit_log=emit_log,
+            pre_launch_check=managed_check,
+        )
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -68,7 +93,7 @@ class TruffleHogAdapter(BaseToolAdapter):
                 continue
             try:
                 data = json.loads(line)
-                detector_name = data.get("DetectorName", "Generic Secret")
+                detector_name = sanitize_sensitive_text(data.get("DetectorName", "Generic Secret")) or "Generic Secret"
                 verified = bool(data.get("Verified", False))
                 raw_secret = data.get("Raw", "")
                 masked = mask_secret(raw_secret) if raw_secret else "********"
@@ -77,7 +102,7 @@ class TruffleHogAdapter(BaseToolAdapter):
                 # Extract file path
                 src_meta = data.get("SourceMetadata", {}).get("Data", {})
                 if "Filesystem" in src_meta:
-                    file_path = src_meta["Filesystem"].get("file", "Unknown")
+                    file_path = safe_workspace_relative_path(src_meta["Filesystem"].get("file", "Unknown"), Path(scan_path)) or "untrusted-output"
                 elif "Git" in src_meta:
                     file_path = src_meta["Git"].get("file", "Git Repository")
 
@@ -125,7 +150,9 @@ class TruffleHogAdapter(BaseToolAdapter):
                 findings.append(finding)
                 await emit_finding(finding)
             except Exception:
+                self._record_execution(code, stdout, stderr, parser_error=True)
                 continue
 
+        self._record_execution(code, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"TruffleHog completed scan: {len(findings)} secrets identified.")
         return findings

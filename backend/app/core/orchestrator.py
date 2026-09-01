@@ -213,6 +213,11 @@ class ScanOrchestrator:
     async def emit_finding(self, scan_id: str, finding: Finding) -> None:
         job = self._active_jobs.get(scan_id)
         if job:
+            # Attach authoritative tenant provenance before persistence or SSE
+            # publication; adapters must not be able to invent ownership.
+            finding.organization_id = job.organization_id
+            if finding.engine == "code_sast":
+                finding.workspace_id = job.target.value
             # Deduplicate by fingerprint
             existing_fps = {f.fingerprint for f in job.findings}
             if finding.fingerprint in existing_fps:

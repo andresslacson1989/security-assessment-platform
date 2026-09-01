@@ -5,6 +5,8 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 
 from __future__ import annotations
 import json
+import os
+from pathlib import Path
 import re
 from typing import Optional, List, Callable, Awaitable
 
@@ -16,8 +18,11 @@ from app.core.models import (
     ScanConfig,
     LogLevel,
     calculate_fingerprint,
+    NormalizedExecutionState,
+    sanitize_sensitive_text,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.path_sandbox import safe_workspace_relative_path
 
 
 def map_semgrep_rule(
@@ -133,11 +138,14 @@ class SemgrepAdapter(BaseToolAdapter):
     Normalizes JSON scan output into canonical SAST-xxx findings.
     """
 
+    approved_version = "1.65.0"
+    package_name = "semgrep"
+
     @property
     def tool_name(self) -> str:
         return "semgrep"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves Semgrep version string via `semgrep --version`.
         """
@@ -145,7 +153,7 @@ class SemgrepAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0)
+        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check)
         output = stdout or stderr
         if output:
             first_line = output.splitlines()[0].strip()
@@ -172,7 +180,15 @@ class SemgrepAdapter(BaseToolAdapter):
         semgrep_path = self.resolve_binary_path(custom_path)
 
         if not semgrep_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Semgrep binary not found on host. Skipping Semgrep execution.")
+            return findings
+        managed_check = (lambda: self.verify_managed_binary(semgrep_path)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Semgrep execution blocked: executable is not a trusted managed package installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         repo_path = target.value.strip()
@@ -189,9 +205,11 @@ class SemgrepAdapter(BaseToolAdapter):
             cmd,
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
+            pre_launch_check=managed_check,
         )
 
         if not stdout.strip():
+            self._record_execution(returncode, stdout, stderr)
             if returncode != 0 and stderr:
                 await emit_log(LogLevel.WARNING, f"Semgrep exited with code {returncode}: {stderr.strip()}")
             else:
@@ -201,6 +219,7 @@ class SemgrepAdapter(BaseToolAdapter):
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError as e:
+            self._record_execution(returncode, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.ERROR, f"Failed to parse Semgrep JSON output: {e}")
             return findings
 
@@ -210,6 +229,7 @@ class SemgrepAdapter(BaseToolAdapter):
         for r in results:
             rule_id = r.get("check_id") or "semgrep-rule"
             file_path = r.get("path") or "unknown"
+            file_path = safe_workspace_relative_path(file_path, Path(repo_path)) or "untrusted-output"
             start = r.get("start", {})
             line_no = start.get("line", 1)
             col_no = start.get("col", 1)
@@ -242,7 +262,7 @@ class SemgrepAdapter(BaseToolAdapter):
                 location=f"{file_path}:{line_no}",
                 observed_value=message[:300],
                 expected_value="Code adheres to secure development best practices and lacks taint sinks",
-                raw_response_snippet=lines_snippet.strip() if lines_snippet else None,
+                raw_response_snippet=sanitize_sensitive_text(lines_snippet.strip()) if lines_snippet else None,
                 line_number=line_no,
                 column_number=col_no,
             )
@@ -270,5 +290,6 @@ class SemgrepAdapter(BaseToolAdapter):
             findings.append(finding)
             await emit_finding(finding)
 
+        self._record_execution(returncode, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"Semgrep scan completed. Generated {len(findings)} findings.")
         return findings

@@ -70,7 +70,7 @@ async def audit_injection_patterns(
         return findings
 
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not (Path(dirpath) / d).is_symlink()]
 
         for filename in filenames:
             ext = Path(filename).suffix.lower()
@@ -78,6 +78,8 @@ async def audit_injection_patterns(
                 continue
 
             file_path = Path(dirpath) / filename
+            if file_path.is_symlink():
+                continue
             rel_path = file_path.relative_to(root)
 
             try:

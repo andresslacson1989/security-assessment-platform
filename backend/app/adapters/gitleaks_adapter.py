@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable
 
 from app.core.models import (
@@ -18,8 +19,11 @@ from app.core.models import (
     LogLevel,
     mask_secret,
     calculate_fingerprint,
+    NormalizedExecutionState,
+    sanitize_sensitive_text,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.path_sandbox import safe_workspace_relative_path
 
 
 class GitleaksAdapter(BaseToolAdapter):
@@ -27,12 +31,13 @@ class GitleaksAdapter(BaseToolAdapter):
     Hybrid tool adapter for Gitleaks dedicated git history and secret scanner.
     Normalizes JSON findings with mandatory token masking into canonical SAST-SEC-xxx and SAST-GIT-001 findings.
     """
+    approved_version = "8.18.2"
 
     @property
     def tool_name(self) -> str:
         return "gitleaks"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves Gitleaks version string via `gitleaks version`.
         """
@@ -40,7 +45,7 @@ class GitleaksAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, _ = await self.execute_command([path, "version"], timeout=5.0)
+        returncode, stdout, _ = await self.execute_command([path, "version"], timeout=5.0, pre_launch_check=pre_launch_check)
         if stdout:
             match = re.search(r"(\d+\.\d+(\.\d+)?)", stdout)
             if match:
@@ -65,11 +70,13 @@ class GitleaksAdapter(BaseToolAdapter):
             gitleaks_path = self.resolve_binary_path(custom_path)
 
             if not gitleaks_path:
+                self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
                 await emit_log(LogLevel.WARNING, "Gitleaks binary not found on host. Skipping Gitleaks execution.")
                 return findings
 
             repo_path = target.value.strip()
             if not os.path.isdir(repo_path):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.WARNING, f"Gitleaks requires a directory path, received '{repo_path}'.")
                 return findings
 
@@ -82,14 +89,24 @@ class GitleaksAdapter(BaseToolAdapter):
                 "--no-banner",
             ]
 
+            managed_check = (lambda: self.verify_managed_binary(gitleaks_path)) if kwargs.get("require_managed_binary") else None
+            if kwargs.get("require_managed_binary") and not managed_check():
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Gitleaks execution blocked: executable is not a trusted managed installation.")
+                return findings
+            if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
+                return findings
+
             await emit_log(LogLevel.INFO, f"Starting Gitleaks secret detection on '{repo_path}'...")
             returncode, stdout, stderr = await self.execute_command(
                 cmd,
                 timeout=float(min(60.0, config.timeout_seconds * 6)),
                 emit_log=emit_log,
+                pre_launch_check=managed_check,
             )
 
             if not stdout.strip():
+                self._record_execution(returncode, stdout, stderr)
                 if returncode not in (0, 1):  # Gitleaks exits with 1 when leaks are found
                     await emit_log(LogLevel.WARNING, f"Gitleaks finished with exit code {returncode}: {stderr[:200]}")
                 return findings
@@ -100,7 +117,7 @@ class GitleaksAdapter(BaseToolAdapter):
                     for leak in leaks:
                         rule_id = leak.get("RuleID", "generic-api-key")
                         description = leak.get("Description", "Hardcoded Secret Identified")
-                        file_path = leak.get("File", "unknown")
+                        file_path = safe_workspace_relative_path(leak.get("File", "unknown"), Path(repo_path)) or "untrusted-output"
                         start_line = leak.get("StartLine", 1)
                         raw_secret = leak.get("Secret", "")
                         commit = leak.get("Commit", "")
@@ -125,7 +142,7 @@ class GitleaksAdapter(BaseToolAdapter):
                             location=location_str,
                             observed_value=masked_value,
                             expected_value="No hardcoded API credentials or cryptographic keys in source code",
-                            raw_response_snippet=f"Rule: {rule_id}\nFile: {file_path}:{start_line}\nMasked Secret: {masked_value}",
+                            raw_response_snippet=sanitize_sensitive_text(f"Rule: {rule_id}\nFile: {file_path}:{start_line}\nMasked Secret: {masked_value}"),
                             line_number=start_line,
                         )
 
@@ -153,9 +170,13 @@ class GitleaksAdapter(BaseToolAdapter):
                         findings.append(f)
                         await emit_finding(f)
             except Exception as parse_err:
+                self._record_execution(returncode, stdout, stderr, parser_error=True)
                 await emit_log(LogLevel.WARNING, f"Failed to parse Gitleaks JSON report: {parse_err}")
 
+            self._record_execution(returncode, stdout, stderr, findings_count=len(findings))
+
         except Exception as err:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, f"Gitleaks execution error: {err}")
 
         return findings

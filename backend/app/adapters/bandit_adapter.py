@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable
 
 from app.core.models import (
@@ -17,8 +18,11 @@ from app.core.models import (
     ScanConfig,
     LogLevel,
     calculate_fingerprint,
+    NormalizedExecutionState,
+    sanitize_sensitive_text,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.path_sandbox import safe_workspace_relative_path
 
 
 class BanditAdapter(BaseToolAdapter):
@@ -26,12 +30,14 @@ class BanditAdapter(BaseToolAdapter):
     Hybrid tool adapter for Bandit Python AST static security linter.
     Normalizes JSON findings into canonical SAST-CRY-xxx and SAST-INJ-xxx findings.
     """
+    approved_version = "1.7.8"
+    package_name = "bandit"
 
     @property
     def tool_name(self) -> str:
         return "bandit"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         """
         Retrieves Bandit version string via `bandit --version`.
         """
@@ -39,7 +45,7 @@ class BanditAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0)
+        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check)
         output = stdout.strip() or stderr.strip()
         if output:
             match = re.search(r"(\d+\.\d+(\.\d+)?)", output)
@@ -64,11 +70,21 @@ class BanditAdapter(BaseToolAdapter):
         bandit_path = self.resolve_binary_path(custom_path)
 
         if not bandit_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Bandit binary not found on host. Skipping Bandit execution.")
+            return findings
+
+        managed_check = (lambda: self.verify_managed_binary(bandit_path)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Bandit execution blocked: executable is not a trusted managed package installation.")
+            return findings
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
             return findings
 
         repo_path = target.value.strip()
         if not os.path.exists(repo_path):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"Target path '{repo_path}' does not exist for Bandit scan.")
             return findings
 
@@ -84,9 +100,11 @@ class BanditAdapter(BaseToolAdapter):
             cmd,
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
+            pre_launch_check=managed_check,
         )
 
         if not stdout.strip():
+            self._record_execution(returncode, stdout, stderr)
             if returncode not in (0, 1):
                 await emit_log(LogLevel.WARNING, f"Bandit finished with exit code {returncode}: {stderr[:200]}")
             return findings
@@ -98,9 +116,9 @@ class BanditAdapter(BaseToolAdapter):
             for item in results:
                 test_id = item.get("test_id", "")
                 issue_text = item.get("issue_text", "Insecure Python code pattern")
-                filename = item.get("filename", "unknown")
+                filename = safe_workspace_relative_path(item.get("filename", "unknown"), Path(repo_path)) or "untrusted-output"
                 line_number = item.get("line_number", 1)
-                code_snippet = item.get("code", "")
+                code_snippet = sanitize_sensitive_text(item.get("code", "")) or ""
                 issue_sev = item.get("issue_severity", "MEDIUM").upper()
 
                 severity_map = {
@@ -169,6 +187,9 @@ class BanditAdapter(BaseToolAdapter):
                 await emit_finding(f)
 
         except Exception as e:
+            self._record_execution(returncode, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Failed to parse Bandit JSON results: {str(e)}")
+
+        self._record_execution(returncode, stdout, stderr, findings_count=len(findings))
 
         return findings

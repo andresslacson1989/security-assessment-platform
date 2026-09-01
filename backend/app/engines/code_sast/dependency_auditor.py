@@ -91,10 +91,15 @@ async def audit_dependencies(
     manifest_files_found = 0
 
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in IGNORED_DIRS and not (Path(dirpath) / d).is_symlink()
+        ]
 
         for filename in filenames:
             file_path = Path(dirpath) / filename
+            if file_path.is_symlink():
+                continue
             rel_path = file_path.relative_to(root)
             fn_lower = filename.lower()
 

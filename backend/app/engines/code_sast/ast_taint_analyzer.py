@@ -28,6 +28,11 @@ CMD_SINKS = {
     "os.system", "os.popen",
 }
 
+SANITIZER_NAMES = {
+    "escape", "escape_string", "quote", "shlex.quote", "parameterize",
+    "sanitize", "sanitize_sql", "validate_input", "bleach.clean",
+}
+
 
 def _get_call_name(node: ast.AST) -> str:
     """Extracts a dotted function call name from an AST node."""
@@ -80,7 +85,11 @@ class TaintVisitor(ast.NodeVisitor):
                         var_name = target.id
                         source_steps = self.tainted_vars[intersecting_taints[0]]
                         prop_step = f"Propagate ({self.filename}:{line_no}): {code_line}"
-                        self.tainted_vars[var_name] = source_steps + [prop_step]
+                        rhs_call_name = _get_call_name(node.value)
+                        if not any(name in rhs_call_name.lower() for name in SANITIZER_NAMES):
+                            self.tainted_vars[var_name] = source_steps + [prop_step]
+                        else:
+                            self.tainted_vars.pop(var_name, None)
 
         self.generic_visit(node)
 
@@ -192,17 +201,27 @@ def audit_ast_taint_flow(repo_path: str) -> List[Finding]:
     if not p.exists():
         return findings
 
-    python_files = list(p.rglob("*.py")) if p.is_dir() else ([p] if p.suffix == ".py" else [])
+    if p.is_dir():
+        python_files = []
+        for dirpath, dirnames, filenames in os.walk(p):
+            dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d).is_symlink()]
+            python_files.extend(
+                Path(dirpath) / filename
+                for filename in filenames
+                if filename.endswith(".py") and not (Path(dirpath) / filename).is_symlink()
+            )
+    else:
+        python_files = [p] if p.suffix == ".py" and not p.is_symlink() else []
 
     for py_file in python_files:
         try:
             code = py_file.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(code, filename=str(py_file))
             lines = code.splitlines()
-            visitor = TaintVisitor(str(py_file.name), lines)
+            visitor = TaintVisitor(str(py_file.relative_to(p)), lines)
             visitor.visit(tree)
             findings.extend(visitor.findings)
         except Exception:
             pass
 
-    return findings
+    return sorted(findings, key=lambda finding: (finding.evidence.location, finding.check_id, finding.fingerprint))

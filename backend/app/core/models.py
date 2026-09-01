@@ -681,6 +681,24 @@ def mask_secret(secret: str) -> str:
     return secret[:4] + "*" * (len(secret) - 7) + secret[-3:]
 
 
+def sanitize_sensitive_text(value: Optional[str], max_length: int = 4096) -> Optional[str]:
+    """Remove credential material from scanner output before telemetry or storage."""
+    if value is None:
+        return None
+    text = str(value)[:max_length]
+    patterns = (
+        (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED_AWS_KEY]"),
+        (r"\b(?:ghp|github_pat)_[A-Za-z0-9_]+\b", "[REDACTED_GITHUB_TOKEN]"),
+        (r"\b(?:sk|pk)_(?:test|live)_[A-Za-z0-9]+\b", "[REDACTED_STRIPE_KEY]"),
+        (r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]"),
+        (r"(?i)(https?://[^\s/:]+):[^@\s]+@", r"\1:[REDACTED]@"),
+        (r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]"),
+    )
+    for pattern, replacement in patterns:
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
 _SENSITIVE_REPRODUCTION_NAME = r"(?:authorization|proxy-authorization|cookie|set-cookie|token|password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|jwt)"
 
 
@@ -722,6 +740,8 @@ class Finding(BaseModel):
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique finding UUID")
     scan_id: str = Field(..., description="Parent scan execution UUID")
+    organization_id: Optional[str] = Field(default=None, description="Owning tenant organization ID")
+    workspace_id: Optional[str] = Field(default=None, description="Authorized workspace identity")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
     source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")

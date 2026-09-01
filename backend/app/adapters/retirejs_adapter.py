@@ -7,29 +7,33 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint
+    calculate_fingerprint, NormalizedExecutionState, sanitize_sensitive_text,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.path_sandbox import safe_workspace_relative_path
 
 
 class RetireJSAdapter(BaseToolAdapter):
     """
     Adapter for Retire.js client-side JavaScript library vulnerability scanner.
     """
+    approved_version = "4.4.3"
+    package_name = "retire"
 
     @property
     def tool_name(self) -> str:
         return "retire"
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check)
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -49,18 +53,34 @@ class RetireJSAdapter(BaseToolAdapter):
 
         binary = self.resolve_binary_path(config.adapters.retirejs_path or config.adapters.custom_retirejs_path)
         if not binary:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Retire.js binary not found. Skipping client-side JS audit.")
             return findings
 
         scan_path = target.value
         if not os.path.exists(scan_path):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"Target path not accessible: {scan_path}")
             return findings
 
         await emit_log(LogLevel.INFO, f"Executing Retire.js vulnerability audit on: {scan_path}")
-        cmd = [binary, "--path", scan_path, "--outputformat", "json", "--exitwith", "0"]
+        if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Retire.js execution blocked: executable is not a trusted managed installation.")
+            return findings
+        managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
+        if kwargs.get("require_managed_binary") and not await self.ensure_approved_version(
+            config.adapters.retirejs_path or config.adapters.custom_retirejs_path,
+            emit_log,
+            pre_launch_check=managed_check,
+        ):
+            return findings
+        cmd = [binary, "--path", scan_path, "--outputformat", "json", "--nodownload", "--exitwith", "0"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=45.0, emit_log=emit_log)
+        code, stdout, stderr = await self.execute_command(
+            cmd, timeout=45.0, emit_log=emit_log,
+            pre_launch_check=managed_check,
+        )
 
         try:
             report_data = json.loads(stdout) if stdout.strip().startswith("{") or stdout.strip().startswith("[") else []
@@ -68,7 +88,7 @@ class RetireJSAdapter(BaseToolAdapter):
                 report_data = report_data.get("data", [])
 
             for item in report_data:
-                file_path = item.get("file", "Unknown JS file")
+                file_path = safe_workspace_relative_path(item.get("file", "Unknown JS file"), Path(scan_path)) or "untrusted-output"
                 results = item.get("results", [])
                 for res in results:
                     component = res.get("component", "JS Library")
@@ -79,7 +99,7 @@ class RetireJSAdapter(BaseToolAdapter):
                         identifiers = vuln.get("identifiers", {})
                         cves = identifiers.get("CVE", [])
                         cve_str = ", ".join(cves) if cves else identifiers.get("issue", "Prototype Pollution / XSS")
-                        summary = vuln.get("info", ["Vulnerable JavaScript library component"])[0]
+                        summary = sanitize_sensitive_text(vuln.get("info", ["Vulnerable JavaScript library component"])[0]) or "Vulnerable JavaScript library component"
                         severity_str = vuln.get("severity", "medium").upper()
 
                         sev_map = {
@@ -117,7 +137,9 @@ class RetireJSAdapter(BaseToolAdapter):
                         findings.append(finding)
                         await emit_finding(finding)
         except Exception as e:
+            self._record_execution(code, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Retire.js parsing error: {e}")
 
+        self._record_execution(code, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"Retire.js completed: {len(findings)} JavaScript library CVEs identified.")
         return findings

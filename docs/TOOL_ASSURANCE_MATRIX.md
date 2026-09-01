@@ -153,7 +153,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Enterprise Maturity**: Enterprise-Grade.
 - **Upstream Project**: Semgrep (https://github.com/semgrep/semgrep).
 - **Rule Governance**: Pinned official Semgrep rulesets (`auto`, `security`, `p/owasp-top-ten`).
-- **Safety Controls**: Workspace path sandboxing, absolute root confinement, symlink traversal prevention.
+- **Safety Controls**: Engine/API workspace authorization, canonical path and symlink confinement, exact `1.65.0` package gate, pre-launch verification, fixed `auto` ruleset, and bounded supervised execution.
 - **Output Format & Parser**: JSON output (`--json`) parsed into `Finding` records with AST line numbers and code snippets.
 - **Finding Normalization**: Maps Semgrep check IDs to `SAST-INJ-xxx`, `SAST-SEC-xxx`, `SAST-CRYPTO-xxx`.
 - **Role Strategy**: **PRIMARY**. Complemented by native Python AST taint analyzer.
@@ -163,7 +163,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Purpose**: In-depth Python AST inspection for dangerous function calls (e.g. `eval`, `pickle.loads`, `os.system`, weak pseudo-random generators).
 - **Enterprise Maturity**: Production-Mature.
 - **Upstream Project**: PyCQA (https://github.com/PyCQA/bandit).
-- **Safety Controls**: Sandboxed execution on authorized workspace directory.
+- **Safety Controls**: Engine/API workspace authorization, canonical path and symlink confinement, exact `1.7.8` package gate, pre-launch verification, and bounded supervised execution.
 - **Output Format & Parser**: JSON output (`-f json`).
 - **Finding Normalization**: Check IDs `SAST-PY-001` (Dangerous Eval/Exec), `SAST-CRYPTO-001` (Insecure Hash/Cipher), CWE-94, CWE-327.
 - **Role Strategy**: **SPECIALIZED**. Deep inspection for Python repositories.
@@ -173,7 +173,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Purpose**: High-speed regex and entropy scanning across git commit history and working tree files.
 - **Enterprise Maturity**: Enterprise-Grade.
 - **Upstream Project**: https://github.com/gitleaks/gitleaks.
-- **Safety Controls**: Evidence secret masking (secrets are sanitized to `AKIA****` or `sha256(secret)` before storage/logging).
+- **Safety Controls**: Authorized workspace confinement, Git history invocation through `ProcessSupervisor`, exact `v8.18.2` gate, managed executable verification, bounded output, and mandatory secret masking.
 - **Output Format & Parser**: JSON report (`--report-format json`).
 - **Finding Normalization**: Check IDs `SAST-SEC-001` (Hardcoded Secret), CWE-798, CWE-259.
 - **Role Strategy**: **PRIMARY**. Complemented by TruffleHog live verification.
@@ -185,6 +185,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Upstream Project**: Truffle Security (https://github.com/trufflesecurity/trufflehog).
 - **Evidence Handling**: Stores `VerifiedSecretEvidence` with live confirmation flag, masked account ID, and verified permissions while redacting raw secret.
 - **Role Strategy**: **VALIDATION**. Upgrades secret confidence from `DETECTED` to `VALIDATED`.
+- **Safety Controls**: Authorized workspace confinement, exact `v3.63.0` gate, managed executable verification, `--no-update`, explicit tenant authorization for live verification, and masked evidence.
 
 ### 13. Retire.js (JavaScript Dependency Vulnerability Scanner)
 - **Security Domain**: Client-Side SCA
@@ -193,6 +194,13 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 - **Upstream Project**: https://github.com/RetireJS/retire.js.
 - **Finding Normalization**: Check ID `SAST-DEP-002` (Vulnerable Client-Side Library), CWE-1395.
 - **Role Strategy**: **SPECIALIZED**. Web client-side supply chain analysis.
+- **Safety Controls**: Authorized workspace confinement, exact `4.4.3` gate, managed package verification, offline `--nodownload` execution, bounded supervised process, and normalized parser failure state.
+
+### E13 Section Evidence Status
+- **Repository status**: `REPOSITORY_VERIFIED` for the authorized workspace boundary, symlink rejection, managed/exact-version execution gates, supervised Git history analysis, secret sanitization, taint sanitizer handling, and normalized adapter states.
+- **Managed runtime status**: `UNAVAILABLE` for all approved E13 runtimes in the current environment. Semgrep reports `1.175.0` (approved `1.65.0`), Bandit reports `1.9.4` (approved `1.7.8`), and Trivy reports `0.74.0` (approved `0.50.0`); Gitleaks is present but does not yield an approved managed runtime/trust record; TruffleHog, Retire.js, Grype, Syft, and OSV-Scanner are unavailable. No unmanaged runtime is treated as evidence.
+- **Regression evidence**: Focused E13 assurance and orchestration tests completed with `43 passed, 1 skipped`; full repository regression completed with `285 passed, 2 skipped, 4 warnings`.
+- **Coverage limitation**: Native fallbacks are explicitly limited compared with the external tools; failed, blocked, timed-out, cancelled, or parser-degraded tools must remain visible as degraded coverage.
 
 ### 14. Trivy (Container, Filesystem & IaC Vulnerability Scanner)
 - **Security Domain**: Container / SCA / IaC

@@ -35,7 +35,7 @@ from app.core.models import (
 from app.core.storage import get_scan, list_scans, delete_scan
 from app.core.orchestrator import orchestrator
 from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
-from app.core.path_sandbox import assert_safe_path, PathSandboxViolation
+from app.core.path_sandbox import assert_safe_path, PathSandboxViolation, get_default_workspace_dir
 from app.core.auth import (
     get_current_user,
     require_admin,
@@ -72,6 +72,9 @@ def validate_target_input(target_type: TargetType, target_value: str, allow_inte
         raise HTTPException(status_code=400, detail="Target value cannot be empty.")
 
     try:
+        if target_type in (TargetType.LOCAL_PATH, TargetType.DOCKERFILE, TargetType.IAC_MANIFEST):
+            assert_safe_path(val, allowed_roots=[get_default_workspace_dir()])
+            return
         from app.core.ssrf_protector import assert_safe_target
         assert_safe_target(target_type.value, val, allow_internal=allow_internal)
     except SSRFProtectionError as err:
