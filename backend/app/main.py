@@ -10,6 +10,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -52,17 +53,32 @@ async def lifespan(app: FastAPI):
     yield
 
 
+def _load_allowed_origins(raw: str | None) -> list[str]:
+    """Parse CORS origins and fail closed on wildcard or malformed values."""
+    if not raw:
+        return [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if not origins or "*" in origins:
+        raise RuntimeError("ALLOWED_ORIGINS must contain explicit origins; wildcard CORS is forbidden")
+    for origin in origins:
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path or parsed.params or parsed.query or parsed.fragment:
+            raise RuntimeError(f"ALLOWED_ORIGINS contains a malformed origin: {origin!r}")
+    return origins
+
+
 ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS")
 if ALLOWED_ORIGINS_ENV:
-    ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
+    ALLOWED_ORIGINS = _load_allowed_origins(ALLOWED_ORIGINS_ENV)
 else:
     # Explicit trusted local frontend origins
-    ALLOWED_ORIGINS = [
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    ALLOWED_ORIGINS = _load_allowed_origins(None)
 
 app = FastAPI(
     title=APP_TITLE,
@@ -107,7 +123,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID"],
 )
 
 # Mount REST & SSE API Routers

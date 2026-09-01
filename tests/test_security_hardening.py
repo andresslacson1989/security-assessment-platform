@@ -27,6 +27,17 @@ from app.core.models import (
     FindingLifecycleStatus,
     CorrelationType,
 )
+from app.main import _load_allowed_origins
+
+
+def test_cors_origin_configuration_fails_closed():
+    assert _load_allowed_origins("https://console.example.com,http://localhost:3000") == [
+        "https://console.example.com", "http://localhost:3000"
+    ]
+    with pytest.raises(RuntimeError, match="wildcard"):
+        _load_allowed_origins("*")
+    with pytest.raises(RuntimeError, match="malformed"):
+        _load_allowed_origins("https://console.example.com/path")
 from app.core.db import DatabaseManager
 from app.core.correlator import correlator
 from app.core.risk_engine import calculate_finding_contextual_risk, calculate_contextual_posture_grade
