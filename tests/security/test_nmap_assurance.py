@@ -56,9 +56,12 @@ def test_validated_target_does_not_grant_intrusive_probing_by_default():
     target = Target(name="Test", type=TargetType.IP, value="192.168.1.50")
     with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
         ordinary = create_validated_target(target, allow_internal=True)
+        with pytest.raises(SSRFProtectionError, match="inventory asset"):
+            create_validated_target(target, allow_internal=True, active_probing_granted=True)
         authorized = create_validated_target(
             target,
             allow_internal=True,
+            asset_id="asset-authorized",
             active_probing_granted=True,
         )
 

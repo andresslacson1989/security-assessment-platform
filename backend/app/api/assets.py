@@ -49,6 +49,7 @@ class UpdateAssetRequest(BaseModel):
     tags: Optional[List[str]] = Field(default=None)
     owner: Optional[str] = Field(default=None)
     lifecycle_status: Optional[AssetLifecycleStatus] = Field(default=None)
+    active_probing_granted: Optional[bool] = Field(default=None, description="Explicit authorization for intrusive probing")
 
 
 @router.get("", summary="List Monitored Organization Assets")
@@ -153,6 +154,10 @@ async def update_asset(
         asset.owner = payload.owner
     if payload.lifecycle_status:
         asset.lifecycle_status = payload.lifecycle_status
+    if "active_probing_granted" in payload.model_fields_set:
+        if current_user.role != UserRole.ADMIN:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may change intrusive probing authorization.")
+        asset.active_probing_granted = bool(payload.active_probing_granted)
     asset.updated_at = utc_now()
 
     updated = db_manager.create_asset(asset)

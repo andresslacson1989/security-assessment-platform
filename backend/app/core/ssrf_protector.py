@@ -370,6 +370,11 @@ def create_validated_target(
     """
     import hashlib
     from app.core.models import ValidatedTarget, TargetType, utc_now
+
+    if (active_probing_granted or state_changing_granted) and not asset_id:
+        raise SSRFProtectionError(
+            "Intrusive or state-changing authorization requires an explicitly authorized inventory asset."
+        )
     
     t_val = raw_target.value if hasattr(raw_target, "value") else str(raw_target)
     t_type = raw_target.type if hasattr(raw_target, "type") else TargetType.URL

@@ -1929,7 +1929,7 @@ async def test_scenario_25_property_based_api_contract_security():
 
         findings = await engine.run(
             target, config, emit_log, emit_prog, emit_find,
-            organization_id="org-test", state_changing_granted=True,
+            organization_id="org-test", asset_id="asset-test", state_changing_granted=True,
         )
         schema_findings = [f for f in findings if f.source_tool == "schemathesis"]
 
