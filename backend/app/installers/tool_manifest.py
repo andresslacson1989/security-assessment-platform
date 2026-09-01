@@ -265,6 +265,21 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "darwin_arm64": "dockle_0.4.14_macOS-ARM64.tar.gz",
         }
     },
+    "retire": {
+        "tool_name": "retire",
+        "version": "4.4.3",
+        "release_tag": "4.4.3",
+        "repo": "npm:retire",
+        "pinned_version": "4.4.3",
+        "category": "Code SAST",
+        "trust_mode": "PACKAGE_MANAGER_MODE",
+        "sha256_checksums": {
+            "npm_tarball": "1352bd6054d92d261b4d85dbfd75c4cee800f583573b5d9d0c45b56e3282c280",
+        },
+        "asset_names": {
+            "npm_tarball": "retire-4.4.3.tgz",
+        },
+    },
     "sslyze": {
         "tool_name": "sslyze",
         "version": "5.2.0",

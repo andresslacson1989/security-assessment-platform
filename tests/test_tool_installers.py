@@ -108,12 +108,21 @@ def test_pypi_manifest_records_match_hash_locked_release_metadata():
         assert entry["asset_names"]["pypi_sdist"].endswith(f"-{version}.tar.gz")
 
 
+def test_retire_manifest_records_official_npm_tarball_identity():
+    entry = PINNED_TOOL_MANIFEST["retire"]
+
+    assert entry["version"] == "4.4.3"
+    assert entry["repo"] == "npm:retire"
+    assert entry["asset_names"]["npm_tarball"] == "retire-4.4.3.tgz"
+    assert entry["sha256_checksums"]["npm_tarball"] == "1352bd6054d92d261b4d85dbfd75c4cee800f583573b5d9d0c45b56e3282c280"
+
+
 def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
     status = audit_tool_manifest(
-        ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "trivy", "unknown-tool"]
+        ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "trivy", "unknown-tool"]
     )
 
-    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler"}
+    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire"}
     assert status["incomplete"] == ["trivy"]
     assert status["invalid"] == []
     assert status["unregistered"] == ["unknown-tool"]
