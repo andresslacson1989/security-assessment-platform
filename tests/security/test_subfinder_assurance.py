@@ -159,6 +159,30 @@ async def test_wrong_version_fails_closed():
 
 
 @pytest.mark.asyncio
+async def test_wrong_version_publishes_invalid_version_state(monkeypatch):
+    adapter = SubfinderAdapter()
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: "/bin/subfinder")
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
+    monkeypatch.setattr(adapter, "get_version", AsyncMock(return_value="subfinder v2.6.4"))
+    states = []
+
+    async def callback(*_args):
+        return None
+
+    async def capture_state(tool, state):
+        states.append((tool, state))
+
+    await adapter.run(
+        Target(name="root", type=TargetType.DOMAIN, value="example.com"),
+        ScanConfig(), callback, callback,
+        organization_id="org-a", emit_tool_execution_state=capture_state,
+    )
+
+    assert adapter.last_execution_state == NormalizedExecutionState.INVALID_VERSION
+    assert states == [("subfinder", "INVALID_VERSION")]
+
+
+@pytest.mark.asyncio
 async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypatch):
     adapter = SubfinderAdapter()
     emitted = []

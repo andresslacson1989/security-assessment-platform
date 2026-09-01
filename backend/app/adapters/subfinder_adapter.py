@@ -184,7 +184,11 @@ class SubfinderAdapter(BaseToolAdapter):
             return findings
         version = await self.get_version(binary)
         if version != f"subfinder {self.APPROVED_VERSION}":
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = (
+                NormalizedExecutionState.INVALID_VERSION
+                if version is not None
+                else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            )
             state = "VERSION_UNAVAILABLE" if version is None else "INVALID_VERSION"
             await emit_log(LogLevel.ERROR, f"Subfinder execution blocked: {state} (approved {self.APPROVED_VERSION}).")
             await publish_state()

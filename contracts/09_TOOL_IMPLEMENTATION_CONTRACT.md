@@ -58,6 +58,7 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
 3. **The Supply-Chain Trust Boundary Invariant (Contract 03 §2, Contract 08 §4):**
    Every tool artifact must declare its exact supply-chain trust mode:
    - **`DIRECT_ARTIFACT_MODE` (GitHub Release Standalone Binaries):** Must match exact approved release tag AND verify against canonical SHA-256 archive digest in `PINNED_TOOL_MANIFEST` before quarantine promotion.
+   - **`SOURCE_BUILD_MODE` (Approved Verified Source Builds):** May be used only for a named, explicitly approved exception when no suitable direct release artifact is available. The immutable source archive, compiler/toolchain, build inputs, and resulting executable MUST each be pinned and verified; the resulting executable MUST be bound to its installation record and pass exact runtime-version and pre-launch integrity checks. This mode MUST NOT replace an available direct release artifact and MUST NOT claim release-binary provenance.
    - **`PACKAGE_MANAGER_MODE` (System Binaries & Pip Wheels):** Trust delegated to verified OS package manager (WinGet / apt / brew) or pip locked hashes in `requirements.txt`. Explicitly classified as `[UNVERIFIED (Package Manager Delegated)]` for raw artifact hashes, relying on package manager transport and repository trust.
    - **Exact Version Enforcement:** The adapter MUST enforce `actual_version == approved_version` during runtime probe. Any version discrepancy triggers `INVALID_VERSION` and blocks tool execution.
 
