@@ -72,6 +72,11 @@ class DockleAdapter(BaseToolAdapter):
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
+        if not stdout.strip():
+            self._record_execution(code, stdout, stderr)
+            await emit_log(LogLevel.WARNING, f"Dockle produced no report (exit code {code}).")
+            return findings
+
         try:
             data = json.loads(stdout)
             details = data.get("details", [])
@@ -128,7 +133,9 @@ class DockleAdapter(BaseToolAdapter):
                     await emit_finding(finding)
 
         except Exception as e:
+            self._record_execution(code, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Dockle output parsing error: {e}")
 
+        self._record_execution(code, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"Dockle completed: {len(findings)} CIS container image findings reported.")
         return findings

@@ -253,3 +253,42 @@ async def test_infra_iac_adapters_fail_closed_without_managed_identity(
 
     assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
     execute_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_type", "binary_name", "version"),
+    [
+        (CheckovAdapter, "checkov", "Checkov 3.2.0"),
+        (DockleAdapter, "dockle", "dockle 0.4.14"),
+        (KubeBenchAdapter, "kube-bench", "kube-bench 0.7.0"),
+        (ProwlerAdapter, "prowler", "prowler 4.1.0"),
+    ],
+)
+async def test_infra_iac_adapters_publish_failed_process_state(
+    monkeypatch, tmp_path, adapter_type, binary_name, version
+):
+    """A failed external process must not be normalized as a clean scan."""
+    adapter = adapter_type()
+    fake_binary = tmp_path / binary_name
+    fake_binary.write_bytes(b"trusted-test-double")
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: str(fake_binary))
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
+    monkeypatch.setattr(adapter, "get_version", AsyncMock(return_value=version))
+    monkeypatch.setattr(adapter, "execute_command", AsyncMock(return_value=(2, "", "fatal process failure")))
+
+    async def log_cb(*_args):
+        return None
+
+    async def finding_cb(*_args):
+        return None
+
+    await adapter.run(
+        Target(name="IaC Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
+        ScanConfig(),
+        log_cb,
+        finding_cb,
+        require_managed_binary=True,
+    )
+
+    assert adapter.last_execution_state == NormalizedExecutionState.TOOL_EXECUTION_FAILED

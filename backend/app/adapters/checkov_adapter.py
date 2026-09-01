@@ -100,6 +100,7 @@ class CheckovAdapter(BaseToolAdapter):
         )
 
         if not stdout.strip():
+            self._record_execution(returncode, stdout, stderr)
             if returncode not in (0, 1):
                 await emit_log(LogLevel.WARNING, f"Checkov completed with exit code {returncode}: {stderr[:200]}")
             return findings
@@ -167,6 +168,8 @@ class CheckovAdapter(BaseToolAdapter):
                     await emit_finding(f)
 
         except Exception as e:
+            self._record_execution(returncode, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Failed to parse Checkov JSON results: {str(e)}")
 
+        self._record_execution(returncode, stdout, stderr, findings_count=len(findings))
         return findings

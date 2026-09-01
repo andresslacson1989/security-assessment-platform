@@ -72,6 +72,11 @@ class ProwlerAdapter(BaseToolAdapter):
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
+        if not stdout.strip():
+            self._record_execution(code, stdout, stderr)
+            await emit_log(LogLevel.WARNING, f"Prowler produced no report (exit code {code}).")
+            return findings
+
         try:
             items = []
             for line in stdout.splitlines():
@@ -131,7 +136,9 @@ class ProwlerAdapter(BaseToolAdapter):
                     await emit_finding(finding)
 
         except Exception as e:
+            self._record_execution(code, stdout, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Prowler output parsing error: {e}")
 
+        self._record_execution(code, stdout, stderr, findings_count=len(findings))
         await emit_log(LogLevel.INFO, f"Prowler completed: {len(findings)} CIS cloud compliance failures reported.")
         return findings
