@@ -16,11 +16,11 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v3.2.0",
         "category": "Web DAST",
         "sha256_checksums": {
-            "windows_amd64": "64d0a3ec74f63cbb2f97f740a6b98686fba7fa01f5c6adbc81c81ef4554b5ec9",
-            "linux_amd64": "e2c39e248b613c0efcfd1d575c3db6fb8260b43521b44ec5fdfdfc845ad35e80",
-            "linux_arm64": "7749f50e8a7ea39268f7b5394be54eb8be437c35f79a957d6ef621f3796fc718",
-            "darwin_amd64": "9b12e3db78490a0300a06df5c6899446d328ee624febe188df4f494f6f4eb224",
-            "darwin_arm64": "5f64b4c6e3b5e4c6cf4bb3c437190f845d4a13d7199c0b2b8ce7ffbd3dfc6a38",
+            "windows_amd64": "a927ea4b32f7d928700e8e61869b0d949d287d49d7ec9db3b22938f9eb103ba3",
+            "linux_amd64": "8351b05772f37268fd172476de3f0c831ca9d9b9b1a6c64bacd38ef055e5d052",
+            "linux_arm64": "57886fcfd9b15548adbfbc0816b18db5aa9bd0b9b72d5183a55ccac586feeaa5",
+            "darwin_amd64": "407437c4cbf1bffc040e5c03c375c98e2d9b48c33e054f0e0798656706d3574f",
+            "darwin_arm64": "1970bd8164fbef8c0368f559bf7d36dced65442e708ae2a476ae8ce047fadd5c",
         }
     },
     "ffuf": {
@@ -28,11 +28,11 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v2.1.0",
         "category": "Web DAST",
         "sha256_checksums": {
-            "windows_amd64": "c62b66236b281bf77bb0b57e7eb3b7235a8bc33b28b58a1ee2e94625b597c5e2",
-            "linux_amd64": "426be0eb2a297e6be9ea83664746f34586db30188aa1d3824ee18c15668db8c0",
-            "linux_arm64": "00f72a42b10955f17a944621c5f3e4b779a116cfc9c7c4c375fa05ec6b0b8db7",
-            "darwin_amd64": "e5c6a1e389d443ef9fbdaea9c77eebec5a21e427027c4db67f13f1b40280eb4c",
-            "darwin_arm64": "78ee1da4c0556488349dc9ce2e6c5c0c9780287a937fc4f2b1d3d639b56f2f9f",
+            "windows_amd64": "c0aec0289f1963cfc38a204f9ebe97712441c670fa7d7aad145cf87b15f038d4",
+            "linux_amd64": "fc2c82736c14dcbea4daf3d3cf3878c1c4773008ba45c2bc0fceba7d17b40bb5",
+            "linux_arm64": "6ae920d09d5202762fca21967a460c6fb88135bdfa806bee4d3d2c430dcedeea",
+            "darwin_amd64": "d2d8a561f166d34d60d90f2f9b0a7ebe1414c0836549a1292e8da3206ac8781d",
+            "darwin_arm64": "df1fdfbdc7ab6abb54cdf212452d585121bf291512649cf36c43a18d849f960e",
         }
     },
     "gitleaks": {
@@ -40,11 +40,11 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v8.18.2",
         "category": "Code SAST",
         "sha256_checksums": {
-            "windows_amd64": "22ffef9b8d28131378393c0bc506c4293f773b06ee258be0a597793d54839cf9",
-            "linux_amd64": "ea7b003a2efcaea7f311c19b02a9eb733b8a1c9ef007c6f0c6c06a350a4980a0",
-            "linux_arm64": "ff9115f5e27a6f23624e54e4881da7bc05500e572074fec9c3d4a04d5ff1a92e",
-            "darwin_amd64": "a3b836ec3b2a8d381048b6c59b66f272a0ba0508ffb6a7a7262078696ec09138",
-            "darwin_arm64": "24445c7ebcf4d209192aa73426749964b0f0a4f5ef46ee3a7e3d8c1c4f697424",
+            "windows_amd64": "aa19543417c668b15e89b3357413099d81a75029a8ebbaec5034b7c8cc33c7e5",
+            "linux_amd64": "6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee",
+            "linux_arm64": "4df25683f95b9e1dbb8cc71dac74d10067b8aba221e7f991e01cafa05bcbd030",
+            "darwin_amd64": "b2dc4f853128062856273d422e2f29791a036641c1655feb83192078970fbfc0",
+            "darwin_arm64": "7be53fa77d7ec10cb8a7085d6ebcf375d55dd4c71f2cf6e7e6bf11554847a095",
         }
     },
     "trivy": {
@@ -64,8 +64,8 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v2.6.5",
         "category": "Network EASM",
         "sha256_checksums": {
-            "windows_amd64": "382a5c54ec5a7cfeb60ad4fae3c321fa4ba5b6028a05c6ea4d49a751682ea576",
-            "linux_amd64": "5ea58ceea06ea64e5aa06b12f68bc7aa3f63e6396da197825d19ec6ad06b2e3e",
+            "windows_amd64": "11c2a40a822546e0a8373b201c3fbccbc693b80c2189e12bf84324cd0be701d9",
+            "linux_amd64": "19320e575c4fb422b1d2f9e4800b624eb5b5215e526db506570cb73dd2de5907",
         }
     },
     "httpx": {
@@ -73,8 +73,8 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v1.6.0",
         "category": "Network EASM",
         "sha256_checksums": {
-            "windows_amd64": "4a129d20c57c44db8fca539e0839f8f2b3ec48ee5f8e65fa1a4e9b9809930f76",
-            "linux_amd64": "9fa0cb78fe664bd9f0cb18a4d79a29e4eb589a19c72e2cf5ec9aeebbb85da570",
+            "windows_amd64": "52c3721a905f04d88efd0c66321fe1b03c64182e55da0d7c0ddcb2f92f479bb6",
+            "linux_amd64": "a209fbf6eb95cdfb3be9a90a1a57463c6dd1879a56ca32bb4a39cc55d9b0754d",
         }
     },
     "katana": {
@@ -82,8 +82,9 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v1.0.5",
         "category": "Web DAST",
         "sha256_checksums": {
-            "windows_amd64": "806a6b574a44b94f1c713beeafe9be2bb53a5c6ca8858e999905f15d9715bf85",
-            "linux_amd64": "00f07bf266ce2da4a6c4c95f19069d5fb3fbffac4fe6d24f0cba160b73df7816",
+            "windows_amd64": "4ba8e8a926dd5ca7b84462544a87ea9711ca06c7c28b131e7dae0d64d145b511",
+            "linux_amd64": "d50ba599822701628396659a2b2bc7dc074eed23374c3e7c1794355cd4852f83",
+            "linux_arm64": "e9fa87ef114ab8afde2f1f77ce357d62ba3d68091a46f550f32358918162d0aa",
         }
     },
     "syft": {
@@ -91,8 +92,11 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v1.0.1",
         "category": "Supply Chain",
         "sha256_checksums": {
-            "windows_amd64": "426be0eb2a297e6be9ea83664746f34586db30188aa1d3824ee18c15668db8c0",
-            "linux_amd64": "99ea78ab499c75fe95fa72ce66d3cfcbb86baebfca1a24dcaee263d91cf9679f",
+            "windows_amd64": "95bc151e3a713a31f7ae7bfacbe0bda8c8d8e08e390038b0c2fc7220c1b9c49c",
+            "linux_amd64": "420f90e57def27745e414efcb7a41384b2ccdccafca87c327096ca44621ab0ce",
+            "linux_arm64": "c8582aa0e1c92c84c4a751c739ac3d7ca48c88a54b5d1b884d0629d7df72a6f9",
+            "darwin_amd64": "3730868e23a65c0c2b94bd1d3c7ce608176aa98b631bf98249f04bec1a035b12",
+            "darwin_arm64": "5dc061290afb7e8249dc590fcf4a7e15966346e73948415559855e1154fc0f42",
         }
     },
     "grype": {
@@ -100,8 +104,11 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v0.74.0",
         "category": "Supply Chain",
         "sha256_checksums": {
-            "windows_amd64": "82ff190a6e60b135bb0a3952ba5c3d4f1ea38ba662884a20b666a0eb0bb9b7c8",
-            "linux_amd64": "e30e6912a52efc188fa63e52701a2eb3a8a9bc6838a53e680a653bb26d9c9b58",
+            "windows_amd64": "0088cb8969c893ae3ee9ba018e1ff8639f17a11a63c2250ad3f4c6dd48fe1d31",
+            "linux_amd64": "7645f114e46cabb989254ec8ec34107240382a4b0626d940aa91a835177fbaf3",
+            "linux_arm64": "754edfce7cdaa28849f997c9959879b21f753c382066af7c31ef238353558ba9",
+            "darwin_amd64": "4c26b9047407f3743f7cfc025613aebcda4fee2c2befac4800f3c560bfbbb4cb",
+            "darwin_arm64": "540e72006397995440e134641c05ce16f19538ad1e44cc2cabb3be091b763acf",
         }
     },
     "osv_scanner": {
@@ -109,8 +116,11 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v1.7.0",
         "category": "Supply Chain",
         "sha256_checksums": {
-            "windows_amd64": "9812e987c1cb50faeeeb14c330f878f0d8a7c2b6ca8858e999905f15d9715bf8",
-            "linux_amd64": "a3b836ec3b2a8d381048b6c59b66f272a0ba0508ffb6a7a7262078696ec09138",
+            "windows_amd64": "cd85bb140c2406e91f365947f1d3e30b942b2450f3e643cef9a6b1a6c87e6eb0",
+            "linux_amd64": "3baa59720f92a37a90b23317d51dcd0a8eb11e612d3218e00859b36bfa2f84bc",
+            "linux_arm64": "9ac3f0dc3f0fbfae5fc9e8e00d46906e08e5e85f88c5e79950d331d0f139a5c5",
+            "darwin_amd64": "db94288f80a29742e98f0c7e520fae411e16f5c2a251f5bf12d8a30a91fd6bdd",
+            "darwin_arm64": "b814f74155a9bc30794589f74c8fe3ea23c2e50290a437dc530ca5bc90eb5049",
         }
     },
     "dockle": {
@@ -118,8 +128,10 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v0.4.14",
         "category": "Infra IaC",
         "sha256_checksums": {
-            "windows_amd64": "fca8987ec89da3b764b8bb26c3674681467ea309db8935c1ba9c0a373b9e4a8b",
-            "linux_amd64": "64d0a3ec74f63cbb2f97f740a6b98686fba7fa01f5c6adbc81c81ef4554b5ec9",
+            "linux_amd64": "a7eb7f10c6c3f7bf7209baf48d7b51dec0771aacda1f4773891def77b555e097",
+            "linux_arm64": "2ab0fbf42fdbbb1532958244a8c7832f8aeabee27d1e3a545ffdfcff9b0ef332",
+            "darwin_amd64": "23d9994f96e5d284fdc573c45c48080b02ca27ac0bd5326bd081cb7548b04837",
+            "darwin_arm64": "417f3f9c20f6465c3973d10ee43e1a04fe5ed2338ff989b81b638c87ad9c922e",
         }
     },
 }
