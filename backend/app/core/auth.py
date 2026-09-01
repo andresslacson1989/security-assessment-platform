@@ -40,9 +40,12 @@ OPERATING_MODE = OperatingMode.PRODUCTION if OPERATING_MODE_STR == "PRODUCTION" 
 )
 
 _raw_secret = os.getenv("JWT_SECRET")
-if not _raw_secret or _raw_secret.strip() in ("", "cyberassess-enterprise-secret-key-32b-min", "secret", "changeme", "default"):
-    # Generate an ephemeral, cryptographically secure 256-bit secret on boot
-    # Guarantees ZERO static predictable production default credentials
+_invalid_secret_values = {"", "cyberassess-enterprise-secret-key-32b-min", "secret", "changeme", "default"}
+if not _raw_secret or _raw_secret.strip().lower() in _invalid_secret_values or len(_raw_secret.strip()) < 32:
+    if OPERATING_MODE == OperatingMode.PRODUCTION:
+        raise RuntimeError("JWT_SECRET must be configured with at least 32 characters in PRODUCTION mode.")
+    # Non-production environments may use an ephemeral secret, but never a
+    # predictable built-in value.
     JWT_SECRET = secrets.token_hex(32)
 else:
     JWT_SECRET = _raw_secret.strip()

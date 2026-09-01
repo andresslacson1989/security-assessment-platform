@@ -7,6 +7,8 @@ Validates platform-wide security invariants under active adversarial conditions.
 import asyncio
 import os
 import json
+import subprocess
+import sys
 import pytest
 from unittest.mock import patch
 from datetime import datetime, timezone
@@ -33,6 +35,23 @@ from app.core.models import (
     utc_now,
     calculate_evidence_hash,
 )
+
+
+def test_sec_000_production_fails_closed_without_jwt_secret():
+    """Contract 01 §2.3: production cannot boot with an absent signing key."""
+    env = os.environ.copy()
+    env.pop("JWT_SECRET", None)
+    env["OPERATING_MODE"] = "PRODUCTION"
+    env["PYTHONPATH"] = str(__import__("pathlib").Path(__file__).resolve().parents[2] / "backend")
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.core.auth"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "JWT_SECRET must be configured" in (result.stderr + result.stdout)
 from app.core.auth import (
     hash_password,
     verify_password,
