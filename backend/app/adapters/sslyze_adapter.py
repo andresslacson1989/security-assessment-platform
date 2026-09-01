@@ -379,6 +379,7 @@ class SslyzeAdapter(BaseToolAdapter):
         self.role = ROLE
         self.security_domain = SECURITY_DOMAIN
         self.default_operation_class = DEFAULT_OPERATION_CLASS
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
     @property
     def tool_name(self) -> str:
@@ -499,6 +500,7 @@ class SslyzeAdapter(BaseToolAdapter):
         - NET-TLS-008: OpenSSL CCS Injection (CVE-2014-0224) (HIGH / 7.4)
         """
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         evidence_hashes: List[str] = []
 
         if not json_str or not json_str.strip():
@@ -851,6 +853,7 @@ class SslyzeAdapter(BaseToolAdapter):
                     asset_id=kwargs.get("asset_id"),
                 )
             except Exception as e:
+                self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
                 await emit_log(LogLevel.ERROR, f"Target validation failed for SSLyze: {e}")
                 return findings
 
@@ -858,6 +861,7 @@ class SslyzeAdapter(BaseToolAdapter):
         custom_path = getattr(config.adapters, "sslyze_path", None) or getattr(config.adapters, "custom_sslyze_path", None)
         sslyze_path = self.resolve_binary_path(custom_path)
         if not sslyze_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "SSLyze binary not found on host. Skipping SSLyze execution.")
             return findings
 
@@ -865,6 +869,7 @@ class SslyzeAdapter(BaseToolAdapter):
         version_str = await self.get_version(sslyze_path)
         is_v_valid, v_err = self.verify_version(version_str)
         if not is_v_valid:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.ERROR, f"SSLyze version rejected: {v_err}. Execution blocked.")
             return findings
 
@@ -879,6 +884,7 @@ class SslyzeAdapter(BaseToolAdapter):
             custom_flags=custom_flags,
         )
         if not is_auth:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"SSLyze execution blocked by policy ({failed_gate}): {auth_err}")
             return findings
 
@@ -899,6 +905,7 @@ class SslyzeAdapter(BaseToolAdapter):
             include_vuln_probes=include_vuln_probes,
         )
         if cmd_err:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, f"Failed to build SSLyze command: {cmd_err}")
             return findings
 
@@ -917,10 +924,12 @@ class SslyzeAdapter(BaseToolAdapter):
 
         # Handle Timeout & Execution Errors
         if returncode != 0 and "timed out" in stderr.lower():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
             await emit_log(LogLevel.WARNING, f"SSLyze execution timed out after {timeout_sec}s.")
             return findings
 
         if not stdout.strip():
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(
                 LogLevel.WARNING,
                 f"SSLyze produced no output (Exit code {returncode}): {stderr.strip()}",
@@ -934,6 +943,7 @@ class SslyzeAdapter(BaseToolAdapter):
             target_port=target_port,
             scan_id=scan_id,
         )
+        self.last_execution_state = exec_state
 
         for f in parsed_findings:
             findings.append(f)

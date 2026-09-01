@@ -374,6 +374,9 @@ class NmapCommandBuilder:
 
 class NmapAdapter(BaseToolAdapter):
     """
+    def __init__(self):
+        super().__init__()
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
     Authoritative Enterprise Nmap Tool Adapter.
     Enforces exact version (7.95), approved NSE allowlist, 3-tier authorization,
     connection-level destination binding, hardened XML parsing, and coverage preservation.
@@ -499,6 +502,7 @@ class NmapAdapter(BaseToolAdapter):
         Normalizes into canonical Finding models with cryptographic evidence digests.
         """
         findings: List[Finding] = []
+        self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         evidence_hashes: List[str] = []
 
         if not xml_content or not xml_content.strip():
@@ -667,6 +671,7 @@ class NmapAdapter(BaseToolAdapter):
                     asset_id=kwargs.get("asset_id"),
                 )
             except Exception as e:
+                self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
                 await emit_log(LogLevel.ERROR, f"Target validation failed for Nmap: {e}")
                 return findings
 
@@ -674,6 +679,7 @@ class NmapAdapter(BaseToolAdapter):
         custom_path = getattr(config.adapters, "nmap_path", None) or getattr(config.adapters, "custom_nmap_path", None)
         nmap_path = self.resolve_binary_path(custom_path)
         if not nmap_path:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.WARNING, "Nmap binary not found on host. Skipping Nmap execution.")
             return findings
 
@@ -681,6 +687,7 @@ class NmapAdapter(BaseToolAdapter):
         version_str = await self.get_version(nmap_path)
         is_v_valid, v_err = self.verify_version(version_str)
         if not is_v_valid:
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(LogLevel.ERROR, f"Nmap version rejected: {v_err}. Execution blocked.")
             return findings
 
@@ -706,6 +713,7 @@ class NmapAdapter(BaseToolAdapter):
             custom_scripts=custom_scripts,
         )
         if not is_auth:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.WARNING, f"Nmap execution blocked by policy ({failed_gate}): {auth_err}")
             return findings
 
@@ -719,6 +727,7 @@ class NmapAdapter(BaseToolAdapter):
             custom_scripts=custom_scripts,
         )
         if cmd_err:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, f"Failed to build Nmap command: {cmd_err}")
             return findings
 
@@ -737,10 +746,12 @@ class NmapAdapter(BaseToolAdapter):
 
         # Handle Timeout & Cancellation
         if returncode != 0 and "timed out" in stderr.lower():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
             await emit_log(LogLevel.WARNING, f"Nmap execution timed out after {timeout_sec}s.")
             return findings
 
         if not stdout.strip():
+            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
             await emit_log(
                 LogLevel.WARNING,
                 f"Nmap produced no output (Exit code {returncode}): {stderr.strip()}",
@@ -754,6 +765,7 @@ class NmapAdapter(BaseToolAdapter):
             scan_id=scan_id,
             emit_log=emit_log,
         )
+        self.last_execution_state = exec_state
 
         # Emit findings
         for f in parsed_findings:

@@ -86,10 +86,16 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         f.source_tool = "sslyze"
                         f.scan_id = scan_id
                         findings.append(f)
+                    if tool_state_cb:
+                        await tool_state_cb("sslyze", sslyze_adapter.last_execution_state.value)
                     sslyze_executed = True
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("sslyze", "TOOL_EXECUTION_FAILED")
                     await emit_log(LogLevel.INFO, "SSLyze CLI not available - using pure native TLS auditor fallback")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("sslyze", "TOOL_EXECUTION_FAILED")
                 await emit_log(LogLevel.WARNING, f"SSLyze CLI execution error: {e}")
                 await emit_log(LogLevel.INFO, "SSLyze CLI not available - using pure native TLS auditor fallback")
         else:
@@ -153,10 +159,16 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         f.source_tool = "nmap"
                         f.scan_id = scan_id
                         findings.append(f)
+                    if tool_state_cb:
+                        await tool_state_cb("nmap", nmap_adapter.last_execution_state.value)
                     nmap_executed = True
                 else:
+                    if tool_state_cb:
+                        await tool_state_cb("nmap", "TOOL_EXECUTION_FAILED")
                     await emit_log(LogLevel.INFO, "Nmap CLI not available - using pure native port checker & banner grabber fallback")
             except Exception as e:
+                if tool_state_cb:
+                    await tool_state_cb("nmap", "TOOL_EXECUTION_FAILED")
                 await emit_log(LogLevel.WARNING, f"Nmap CLI execution error: {e}")
                 await emit_log(LogLevel.INFO, "Nmap CLI execution failed - using pure native port checker & banner grabber fallback")
         else:
