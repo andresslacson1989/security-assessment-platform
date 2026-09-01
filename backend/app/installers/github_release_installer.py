@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -271,10 +272,16 @@ class GithubReleaseInstaller(BaseToolInstaller):
         """Extracts zip archive with ZipSlip path traversal protection."""
         target_dir = os.path.abspath(target_dir)
         with zipfile.ZipFile(zip_path, "r") as z:
-            for member in z.namelist():
+            for info in z.infolist():
+                member = info.filename
                 dest_path = os.path.abspath(os.path.join(target_dir, member))
                 if not dest_path.startswith(target_dir + os.sep) and dest_path != target_dir:
                     raise SecurityError(f"ZipSlip traversal attempt detected: {member}")
+                # Unix mode bits are stored in the upper half of external_attr.
+                # Reject links and special files even when their names are safe.
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode in (stat.S_IFLNK, stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK):
+                    raise SecurityError(f"Unsafe archive entry type detected: {member}")
             z.extractall(target_dir)
 
     def _safe_extract_tar(self, tar_path: str, target_dir: str) -> None:
@@ -285,6 +292,8 @@ class GithubReleaseInstaller(BaseToolInstaller):
                 dest_path = os.path.abspath(os.path.join(target_dir, member.name))
                 if not dest_path.startswith(target_dir + os.sep) and dest_path != target_dir:
                     raise SecurityError(f"TarSlip traversal attempt detected: {member.name}")
+                if member.issym() or member.islnk() or member.isdev() or member.isfifo() or member.ischr() or member.isblk():
+                    raise SecurityError(f"Unsafe archive entry type detected: {member.name}")
             t.extractall(target_dir)
 
     async def install(

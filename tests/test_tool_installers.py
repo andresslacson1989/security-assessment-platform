@@ -8,6 +8,8 @@ import io
 import json
 import os
 import shutil
+import stat
+import tarfile
 import tempfile
 import zipfile
 import pytest
@@ -194,6 +196,29 @@ async def test_github_release_installer_zip_slip_prevention():
         with pytest.raises(SecurityError) as exc_info:
             installer._safe_extract_zip(bad_zip_path, extract_target)
         assert "ZipSlip" in str(exc_info.value)
+
+
+def test_github_release_installer_rejects_archive_links(tmp_path):
+    """Archive links and special files cannot escape quarantine during extraction."""
+    installer = GithubReleaseInstaller("nuclei")
+    zip_path = tmp_path / "link.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        info = zipfile.ZipInfo("nuclei.exe")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(info, "../../outside.exe")
+
+    with pytest.raises(SecurityError, match="Unsafe archive entry type"):
+        installer._safe_extract_zip(str(zip_path), str(tmp_path / "zip-out"))
+
+    tar_path = tmp_path / "link.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as archive:
+        info = tarfile.TarInfo("nuclei.exe")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../../outside.exe"
+        archive.addfile(info)
+
+    with pytest.raises(SecurityError, match="Unsafe archive entry type"):
+        installer._safe_extract_tar(str(tar_path), str(tmp_path / "tar-out"))
 
 
 @pytest.mark.asyncio
