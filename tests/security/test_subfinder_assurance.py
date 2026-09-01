@@ -148,7 +148,6 @@ async def test_network_engine_propagates_authoritative_tenant_and_provider_evide
                 authorized_root="example.com", assessment_id="scan-1",
                 organization_id=kwargs["organization_id"],
             ))
-            await kwargs["emit_tool_execution_state"]("subfinder", "PARTIAL_RESULTS_WITH_WARNING")
             return []
 
     async def noop(*_args, **_kwargs):
