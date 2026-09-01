@@ -108,6 +108,12 @@ class TestNmapIdentityAndVersion:
             assert ok is False
             assert "empty" in err.lower()
 
+    def test_assured_execution_rejects_arbitrary_binary_location(self, tmp_path):
+        adapter = NmapAdapter()
+        candidate = tmp_path / "nmap"
+        candidate.write_text("not a managed executable")
+        assert adapter.verify_managed_binary(str(candidate)) is False
+
 
 # ============================================================================
 # 2. ValidatedTarget & Connection Destination Binding

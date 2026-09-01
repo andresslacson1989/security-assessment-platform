@@ -118,6 +118,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        require_managed_binary=True,
                     )
                     await emit_log(LogLevel.INFO, f"SSLyze audit completed successfully with {len(sslyze_findings)} findings.")
                     for f in sslyze_findings:
@@ -198,6 +199,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        require_managed_binary=True,
                     )
                     await emit_log(LogLevel.INFO, "Nmap active scan completed successfully")
                     for f in nmap_findings:

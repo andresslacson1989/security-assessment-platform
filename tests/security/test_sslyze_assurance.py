@@ -72,6 +72,19 @@ class TestSslyzeIdentityAndVersion:
         assert adapter.security_domain == "NETWORK / PERIMETER / TLS"
         assert adapter.default_operation_class == ToolOperationClass.ACTIVE_READ_ONLY
 
+    def test_assured_execution_requires_isolated_tool_venv(self, tmp_path, monkeypatch):
+        adapter = SslyzeAdapter()
+        venv_root = tmp_path / "tool-venvs"
+        bin_dir = venv_root / "sslyze" / ("Scripts" if os.name == "nt" else "bin")
+        bin_dir.mkdir(parents=True)
+        executable = bin_dir / "sslyze"
+        executable.write_text("managed executable")
+        (bin_dir / ("python.exe" if os.name == "nt" else "python")).write_text("managed interpreter")
+        monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(venv_root))
+
+        assert adapter.verify_managed_binary(str(executable)) is True
+        assert adapter.verify_managed_binary(str(tmp_path / "sslyze")) is False
+
     def test_version_authority_hierarchy(self):
         assert APP_VERSION == "14.3.0"
         assert CONTRACT_VERSION == "14.3.0"

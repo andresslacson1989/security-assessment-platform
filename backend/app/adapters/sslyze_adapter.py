@@ -387,7 +387,29 @@ class SslyzeAdapter(BaseToolAdapter):
     def tool_name(self) -> str:
         return TOOL_NAME
 
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
+    def verify_managed_binary(self, binary: str) -> bool:
+        """Require SSLyze to resolve from CyberAssess's isolated tool venv."""
+        if not isinstance(binary, str) or not binary.strip():
+            return False
+        path = os.path.abspath(binary)
+        if not os.path.isfile(path) or os.path.realpath(path) != path:
+            return False
+        if os.path.basename(path).lower() not in {"sslyze", "sslyze.exe"}:
+            return False
+
+        venv_root = Path(os.environ.get(
+            "CYBERASSESS_TOOL_VENV_DIR",
+            str(Path(__file__).resolve().parents[2] / ".tool-venvs"),
+        )).resolve() / self.tool_name
+        expected_bin = venv_root / ("Scripts" if os.name == "nt" else "bin")
+        interpreter = expected_bin / ("python.exe" if os.name == "nt" else "python")
+        return Path(path).parent == expected_bin and interpreter.is_file()
+
+    async def get_version(
+        self,
+        custom_path: Optional[str] = None,
+        pre_launch_check: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
         """
         Contract 09 TOOL-SSLYZE §7: Retrieves SSLyze's exact package version from
         the Python environment that owns the resolved executable.
@@ -416,6 +438,7 @@ class SslyzeAdapter(BaseToolAdapter):
             [str(interpreter), "-c", version_probe],
             timeout=5.0,
             max_output_bytes=1024,
+            pre_launch_check=pre_launch_check,
         )
         if returncode == 0 and stdout:
             first_line = stdout.splitlines()[0].strip()
@@ -885,8 +908,14 @@ class SslyzeAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "SSLyze binary not found on host. Skipping SSLyze execution.")
             return findings
 
+        managed_check = (lambda: self.verify_managed_binary(sslyze_path)) if kwargs.get("require_managed_binary") else None
+        if managed_check and not managed_check():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "SSLyze execution blocked: executable is not a trusted managed installation.")
+            return findings
+
         # 3. Exact Version Enforcement (Contract 09 TOOL-SSLYZE §7)
-        version_str = await self.get_version(sslyze_path)
+        version_str = await self.get_version(sslyze_path, pre_launch_check=managed_check)
         is_v_valid, v_err = self.verify_version(version_str)
         if not is_v_valid:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
@@ -940,6 +969,7 @@ class SslyzeAdapter(BaseToolAdapter):
             cmd,
             timeout=timeout_sec,
             emit_log=emit_log,
+            pre_launch_check=managed_check,
         )
 
         # Handle Timeout & Execution Errors
