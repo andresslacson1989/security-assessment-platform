@@ -29,6 +29,12 @@ from app.core.models import AuditEvent, AuditAction, APIKeyRecord, Organization,
 
 router = APIRouter()
 
+API_KEY_ALLOWED_SCOPES = frozenset({
+    "scan:create", "scan:read", "scan:repeater",
+    "asset:read", "asset:write", "asset:delete",
+    "finding:read", "finding:write", "report:read", "tool:install",
+})
+
 
 class BootstrapRequest(BaseModel):
     admin_username: str = Field(..., min_length=3, max_length=50)
@@ -66,7 +72,7 @@ class CreateUserRequest(BaseModel):
 
 class CreateAPIKeyRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=50)
-    scopes: List[str] = Field(default_factory=lambda: ["scan:create", "scan:read", "finding:read", "asset:read"])
+    scopes: List[str] = Field(default_factory=lambda: ["scan:create", "scan:read", "finding:read", "asset:read"], min_length=1, max_length=20)
     expires_in_days: Optional[int] = Field(default=90, ge=1, le=365)
 
 
@@ -284,6 +290,19 @@ async def create_api_key(
     Generates a cryptographically random API Key.
     The database stores only the SHA-256 hash. Plaintext secret is returned exactly once.
     """
+    requested_scopes = {scope.strip() for scope in payload.scopes if isinstance(scope, str) and scope.strip()}
+    if not requested_scopes or "*" in requested_scopes or not requested_scopes.issubset(API_KEY_ALLOWED_SCOPES):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API key scopes must be a non-empty subset of the platform scope allowlist.",
+        )
+    caller_scopes = set(current_user.scopes or [])
+    if "*" not in caller_scopes and not requested_scopes.issubset(caller_scopes):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key scopes cannot exceed the caller's effective permissions.",
+        )
+    scopes = sorted(requested_scopes)
     key_id = f"ca_key_{secrets.token_hex(6)}"
     raw_secret = f"ca_live_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
@@ -308,7 +327,7 @@ async def create_api_key(
                 current_user.organization_id,
                 current_user.id,
                 payload.name.strip(),
-                json.dumps(payload.scopes),
+                json.dumps(scopes),
                 now_str,
                 expires_at_str,
             ),
@@ -322,7 +341,7 @@ async def create_api_key(
             object_type="api_key",
             object_id=key_id,
             result="SUCCESS",
-            details={"name": payload.name, "scopes": payload.scopes},
+            details={"name": payload.name, "scopes": scopes},
         )
     )
 
@@ -330,7 +349,7 @@ async def create_api_key(
         key_id=key_id,
         plaintext_key=raw_secret,
         name=payload.name,
-        scopes=payload.scopes,
+        scopes=scopes,
         created_at=now_str,
         expires_at=expires_at_str,
     )

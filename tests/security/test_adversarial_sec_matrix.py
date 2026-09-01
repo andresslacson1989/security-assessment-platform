@@ -275,6 +275,28 @@ def test_sec_013_api_key_revocation(setup_test_db):
     assert user is None
 
 
+@pytest.mark.asyncio
+async def test_api_key_scope_requests_cannot_escape_allowlist_or_caller_grants():
+    from fastapi import HTTPException
+    from app.api.auth import CreateAPIKeyRequest, create_api_key
+
+    analyst = UserProfile(
+        id="usr-scoped-analyst", username="scoped-analyst", email="analyst@example.com",
+        role=UserRole.SECURITY_ANALYST, scopes=["scan:read"],
+    )
+    with pytest.raises(HTTPException) as wildcard_error:
+        await create_api_key(CreateAPIKeyRequest(name="wildcard", scopes=["*"]), analyst)
+    assert wildcard_error.value.status_code == 400
+
+    with pytest.raises(HTTPException) as excess_error:
+        await create_api_key(CreateAPIKeyRequest(name="excess", scopes=["scan:create"]), analyst)
+    assert excess_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as unknown_error:
+        await create_api_key(CreateAPIKeyRequest(name="unknown", scopes=["unknown:admin"]), analyst)
+    assert unknown_error.value.status_code == 400
+
+
 def test_sec_014_jwt_algorithm_confusion_rejection():
     """SEC-014: Tokens with alg=none or tampered signatures are rejected, key rotation is supported."""
     user = UserProfile(id="usr-1", username="testuser", email="test@local", role=UserRole.VIEWER)
