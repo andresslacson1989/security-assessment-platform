@@ -17,6 +17,7 @@ from app.installers.base_installer import (
     LogCallback,
     ProgressCallback,
 )
+from app.core.process_supervisor import process_supervisor
 
 
 SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
@@ -137,21 +138,14 @@ class SystemToolHelper(BaseToolInstaller):
             return None
         cmd = [path] + self._cfg["version_cmd"]
         try:
-            import subprocess
-            def _run():
-                return subprocess.run(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=5.0,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            res = await asyncio.to_thread(_run)
-            if res.returncode != 0:
+            returncode, stdout, stderr = await process_supervisor.execute(
+                cmd,
+                timeout=5.0,
+                max_output_bytes=1024 * 1024,
+            )
+            if returncode != 0:
                 return None
-            text = (res.stdout or "").strip()
+            text = (stdout or "").strip()
             if not text:
                 return None
             first_line = text.splitlines()[0].strip()
