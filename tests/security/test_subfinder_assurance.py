@@ -118,7 +118,13 @@ async def test_orchestrator_discovery_callback_does_not_authorize_or_queue_targe
     orchestrator = ScanOrchestrator()
     job = ScanJob(target=Target(name="root", type=TargetType.DOMAIN, value="example.com"), organization_id="org-a")
     orchestrator._active_jobs[job.id] = job
-    discovered = DiscoveredSubdomain(domain="api.example.com", discovered_via="Subfinder", dns_status="UNRESOLVED")
+    discovered = DiscoveredSubdomain(
+        domain="api.example.com",
+        discovered_via="Subfinder",
+        dns_status="UNRESOLVED",
+        organization_id="org-attacker",
+        assessment_id="assessment-attacker",
+    )
 
     await orchestrator.emit_subdomain_discovered(job.id, discovered)
 
