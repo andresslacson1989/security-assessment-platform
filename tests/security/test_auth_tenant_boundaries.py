@@ -8,7 +8,7 @@ import pytest
 
 from app.core.auth import create_access_token, get_current_user
 from app.core.db import DatabaseManager
-from app.core.models import PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole
+from app.core.models import OperatingMode, PrincipalType, ScanJob, Target, TargetType, UserProfile, UserRole
 from app.core.orchestrator import ScanOrchestrator
 
 
@@ -71,6 +71,30 @@ async def test_bearer_identity_rechecks_authoritative_user_status(tmp_path, monk
     assert current.organization_id == "org-one"
     with db._get_connection() as conn:
         conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", ("usr-jwt-boundary",))
+
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(authorization=f"Bearer {token}", x_api_key=None)
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_production_rejects_signed_token_for_missing_authoritative_user(tmp_path, monkeypatch):
+    """A signed JWT cannot create a production identity outside the user store."""
+    db = DatabaseManager(db_path=tmp_path / "missing-user.db")
+
+    import app.core.auth as auth_module
+    import app.core.db as db_module
+    monkeypatch.setattr(db_module, "db_manager", db)
+    monkeypatch.setattr(auth_module, "OPERATING_MODE", OperatingMode.PRODUCTION)
+
+    token = create_access_token(UserProfile(
+        id="usr-never-provisioned",
+        username="missing-user",
+        email="missing@example.test",
+        role=UserRole.ADMIN,
+        organization_id="org-missing",
+    ))
 
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc_info:

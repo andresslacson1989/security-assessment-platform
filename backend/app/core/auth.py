@@ -427,6 +427,18 @@ async def get_current_user(
             authoritative_user.scopes = payload.get("scopes", ["*"])
             return authoritative_user
 
+        # Production identities are database-authoritative.  A signed token
+        # is not sufficient evidence that the subject still exists: accepting
+        # its claims here would let deleted or never-provisioned users retain
+        # access until token expiry.  TEST mode deliberately retains the
+        # synthetic-identity compatibility path used by isolated API tests.
+        if OPERATING_MODE == OperatingMode.PRODUCTION:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authenticated user identity is not present in the authoritative database.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         p_type_val = payload.get("principal_type", "TENANT_PRINCIPAL")
         p_type = PrincipalType(p_type_val) if p_type_val in [p.value for p in PrincipalType] else PrincipalType.TENANT_PRINCIPAL
         
