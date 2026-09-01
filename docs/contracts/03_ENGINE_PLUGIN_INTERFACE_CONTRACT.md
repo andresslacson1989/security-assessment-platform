@@ -44,6 +44,9 @@ Every tool manifest entry MUST define:
 - `architecture`: `amd64`, `arm64`.
 - `asset_name`: Exact archive filename.
 - `sha256`: Authentic 64-character lowercase hexadecimal cryptographic SHA-256 checksum.
+- `source_build`: For an explicitly approved `SOURCE_BUILD_MODE` exception, the immutable source archive,
+  compiler/toolchain archive, build inputs, and resulting executable MUST each be pinned and verified before
+  promotion. This mode MUST NOT replace an available direct release artifact.
 
 **Registry Parity Invariant:**
 $$\text{Tool Registry} \equiv \text{Installer Registry} \equiv \text{Integrity Manifest} \equiv \text{Supported 21 Tools}$$
