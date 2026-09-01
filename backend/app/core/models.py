@@ -607,7 +607,7 @@ class ValidatedTarget(BaseModel):
     Frozen and immutable data model. Only validated target representations
     are authorized to reach the execution plane.
     """
-    model_config = dict(frozen=True, extra="ignore")
+    model_config = dict(frozen=True, extra="forbid")
 
     target_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Cryptographic resource identity: sha256(canonical_value + ':' + selected_destination)")
     authorization_decision_id: str = Field(default="", description="Cryptographic authorization decision ID")
@@ -744,6 +744,8 @@ class Finding(BaseModel):
     workspace_id: Optional[str] = Field(default=None, description="Authorized workspace identity")
     engine: str = Field(..., description="Originating engine identifier (network, web_dast, code_sast, infra_iac, cicd_audit)")
     source_tool: str = Field(default="native", description="Originating tool/adapter: 'native', 'nmap', 'sslyze', 'nuclei', 'ffuf', 'semgrep', 'gitleaks', 'bandit', 'trivy', 'checkov'")
+    is_fallback: bool = Field(default=False, description="Whether this finding came from a reduced-coverage fallback after a primary tool failure")
+    primary_tool_failed: Optional[str] = Field(default=None, description="Primary tool whose failure caused fallback coverage")
     check_id: str = Field(..., description="Canonical check identifier (e.g. DAST-INJ-001, DAST-XSS-001, NET-OSINT-001)")
     category: str = Field(..., description="Taxonomy category (e.g. Injection, OSINT, SSL/TLS, Security Headers, Hardcoded Secrets)")
     title: str = Field(..., min_length=5, max_length=200, description="Concise summary title")

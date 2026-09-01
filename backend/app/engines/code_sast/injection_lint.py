@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import List, Optional
 
-from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel
+from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, LogLevel, sanitize_sensitive_text
 from app.engines.base import LogCallback
 
 IGNORED_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
@@ -66,6 +66,7 @@ async def audit_injection_patterns(
     """
     findings: List[Finding] = []
     root = Path(repo_path)
+    read_errors = 0
     if not root.exists():
         return findings
 
@@ -112,13 +113,18 @@ async def audit_injection_patterns(
                                     references=["https://cwe.mitre.org/data/definitions/89.html"],
                                     evidence=Evidence(
                                         location=location_str,
-                                        observed_value=line_str[:120],
+                                        observed_value=sanitize_sensitive_text(line_str[:120]),
                                         expected_value="Safe parameterized / sanitized call",
                                         line_number=line_num,
                                     ),
                                     fingerprint=calculate_fingerprint(rule["check_id"], location_str, line_str[:60]),
                                 ))
-            except Exception:
-                continue
+            except Exception as exc:
+                read_errors += 1
+                if emit_log:
+                    await emit_log(LogLevel.WARNING, f"Injection linter could not read '{rel_path}': {type(exc).__name__}")
+
+    if emit_log and read_errors:
+        await emit_log(LogLevel.WARNING, f"Injection linter skipped {read_errors} files; coverage is degraded.")
 
     return findings

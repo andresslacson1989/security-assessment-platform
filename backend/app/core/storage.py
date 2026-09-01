@@ -44,14 +44,11 @@ def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
 
 def get_scan(scan_id: str, storage_dir: Optional[Path] = None) -> Optional[ScanJob]:
     """
-    Retrieves a ScanJob entity directly from authoritative database persistence,
-    falling back to cached JSON file if necessary.
+    Retrieves a ScanJob entity from authoritative database persistence. JSON files
+    are export caches and are never used to resurrect authoritative state.
     """
-    # 1. Check authoritative relational DB if no custom storage_dir requested
     if storage_dir is None:
-        job = db_manager.get_scan_record(scan_id)
-        if job:
-            return job
+        return db_manager.get_scan_record(scan_id)
 
     # 2. Fallback to cached JSON file
     target_dir = get_storage_dir(storage_dir)
@@ -76,9 +73,7 @@ def list_scans(
     Returns a paginated list of all stored ScanJobs sorted by creation/start time descending.
     """
     if storage_dir is None:
-        scans, total = db_manager.list_scans_records(limit=limit, offset=offset)
-        if scans or total > 0:
-            return scans, total
+        return db_manager.list_scans_records(limit=limit, offset=offset)
 
     # Fallback / explicit custom directory scan
     target_dir = get_storage_dir(storage_dir)

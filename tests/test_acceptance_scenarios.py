@@ -1786,7 +1786,11 @@ async def test_scenario_23_live_verified_secret_auditing(tmp_path):
         findings = await engine.run(
             target, config, emit_log, emit_prog, emit_find,
             organization_id="org-test", workspace_roots=[tmp_path],
-            allow_live_secret_verification=True,
+            live_secret_authorization={
+                "approved": True,
+                "organization_id": "org-test",
+                "assessment_id": "active",
+            },
         )
         verified_findings = [f for f in findings if f.source_tool == "trufflehog" and f.verified_secret and f.verified_secret.is_live]
 

@@ -6,11 +6,12 @@ and string formatting into SQL and Command Execution sinks, generating structure
 
 from __future__ import annotations
 import ast
+import logging
 import os
 from pathlib import Path
 from typing import List, Dict, Set, Optional, Tuple
 
-from app.core.models import Finding, Evidence, Severity, calculate_fingerprint
+from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, sanitize_sensitive_text
 
 UNTRUSTED_SOURCES = {
     "request.args.get", "request.args", "request.form.get", "request.form",
@@ -33,6 +34,8 @@ SANITIZER_NAMES = {
     "sanitize", "sanitize_sql", "validate_input", "bleach.clean",
 }
 
+logger = logging.getLogger("cyberassess.code_sast.taint")
+
 
 def _get_call_name(node: ast.AST) -> str:
     """Extracts a dotted function call name from an AST node."""
@@ -53,6 +56,18 @@ def _extract_names_from_expr(node: ast.AST) -> Set[str]:
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
             names.add(child.id)
     return names
+
+
+def _contains_untrusted_source(node: ast.AST) -> bool:
+    """Detect source calls inline, including direct source-to-sink expressions."""
+    for child in ast.walk(node):
+        if _get_call_name(child) in UNTRUSTED_SOURCES:
+            return True
+        if isinstance(child, ast.Attribute) and any(
+            source in _get_call_name(child) for source in UNTRUSTED_SOURCES
+        ):
+            return True
+    return False
 
 
 class TaintVisitor(ast.NodeVisitor):
@@ -106,10 +121,16 @@ class TaintVisitor(ast.NodeVisitor):
             call_names.update(_extract_names_from_expr(kw.value))
 
         tainted_args = [n for n in call_names if n in self.tainted_vars]
+        direct_source = any(_contains_untrusted_source(arg) for arg in node.args) or any(
+            _contains_untrusted_source(keyword.value) for keyword in node.keywords
+        )
+        if not tainted_args and direct_source:
+            tainted_args = ["<direct-source>"]
 
         if tainted_args:
             first_taint = tainted_args[0]
-            trace = self.tainted_vars[first_taint] + [f"Sink ({self.filename}:{line_no}): {code_line}"]
+            source_trace = self.tainted_vars.get(first_taint, [f"Source ({self.filename}:{line_no}): {code_line}"])
+            trace = source_trace + [f"Sink ({self.filename}:{line_no}): {code_line}"]
             loc = f"{self.filename}:{line_no}"
 
             # Check for SQL Injection Sink
@@ -140,7 +161,7 @@ class TaintVisitor(ast.NodeVisitor):
                         observed_value=obs,
                         expected_value="User input passed exclusively through query parameter binding",
                         line_number=line_no,
-                        raw_response_snippet=code_line,
+                        raw_response_snippet=sanitize_sensitive_text(code_line),
                     ),
                     taint_trace=trace,
                     fingerprint=calculate_fingerprint("SAST-TAINT-001", loc, obs),
@@ -182,7 +203,7 @@ class TaintVisitor(ast.NodeVisitor):
                             observed_value=obs,
                             expected_value="Command execution executed with shell=False and argument list",
                             line_number=line_no,
-                            raw_response_snippet=code_line,
+                        raw_response_snippet=sanitize_sensitive_text(code_line),
                         ),
                         taint_trace=trace,
                         fingerprint=calculate_fingerprint("SAST-TAINT-002", loc, obs),
@@ -194,7 +215,8 @@ class TaintVisitor(ast.NodeVisitor):
 
 def audit_ast_taint_flow(repo_path: str) -> List[Finding]:
     """
-    Scans Python files in repository path for interprocedural AST taint flow vulnerabilities.
+    Scans Python files for intra-file AST taint flow vulnerabilities. Cross-file
+    and interprocedural call-graph analysis is intentionally not claimed here.
     """
     findings: List[Finding] = []
     p = Path(repo_path)
@@ -221,7 +243,7 @@ def audit_ast_taint_flow(repo_path: str) -> List[Finding]:
             visitor = TaintVisitor(str(py_file.relative_to(p)), lines)
             visitor.visit(tree)
             findings.extend(visitor.findings)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("AST taint analyzer skipped %s: %s", py_file, type(exc).__name__)
 
     return sorted(findings, key=lambda finding: (finding.evidence.location, finding.check_id, finding.fingerprint))

@@ -10,6 +10,8 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("cyberassess.process_supervisor")
@@ -88,8 +90,71 @@ class ProcessSupervisor:
             return -1, "", "Empty command provided"
 
         creationflags = 0
+        start_new_session = False
         if sys.platform == "win32":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            start_new_session = True
+
+        def _bounded_communicate(proc: subprocess.Popen) -> Tuple[str, str, bool]:
+            """Drain both pipes concurrently while enforcing a combined byte cap."""
+            output_lock = threading.Lock()
+            captured = {"stdout": bytearray(), "stderr": bytearray()}
+            total_bytes = 0
+            limit_reached = threading.Event()
+
+            def _reader(name: str, stream) -> None:
+                nonlocal total_bytes
+                try:
+                    while True:
+                        chunk = stream.read(8192)
+                        if not chunk:
+                            return
+                        with output_lock:
+                            remaining = max_output_bytes - total_bytes
+                            if remaining > 0:
+                                kept = chunk[:remaining]
+                                captured[name].extend(kept)
+                                total_bytes += len(kept)
+                            if len(chunk) > max(remaining, 0):
+                                limit_reached.set()
+                except Exception:
+                    limit_reached.set()
+
+            readers = [
+                threading.Thread(target=_reader, args=("stdout", proc.stdout), daemon=True),
+                threading.Thread(target=_reader, args=("stderr", proc.stderr), daemon=True),
+            ]
+            for reader in readers:
+                reader.start()
+
+            deadline = time.monotonic() + max(timeout, 0.0)
+            timed_out = False
+            while proc.poll() is None:
+                if limit_reached.is_set():
+                    self.kill_process_tree(proc.pid)
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    self.kill_process_tree(proc.pid)
+                    break
+                time.sleep(0.01)
+
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            for reader in readers:
+                reader.join(timeout=2)
+
+            stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
+            stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
+            if limit_reached.is_set():
+                stderr = f"Output exceeded maximum of {max_output_bytes} bytes" + (f"\n{stderr}" if stderr else "")
+            if timed_out:
+                stderr = f"Execution timed out after {timeout} seconds" + (f"\n{stderr}" if stderr else "")
+            return stdout, stderr, limit_reached.is_set() or timed_out
 
         def _run_sync() -> Tuple["int", "str", "str"]:
             proc = None
@@ -100,23 +165,19 @@ class ProcessSupervisor:
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True,
                     cwd=cwd,
                     env=env,
-                    encoding="utf-8",
-                    errors="replace",
                     creationflags=creationflags,
+                    start_new_session=start_new_session,
                 )
                 self._register_pid(proc.pid)
 
-                try:
-                    stdout, stderr = proc.communicate(timeout=timeout)
-                    return proc.returncode, stdout or "", stderr or ""
-                except subprocess.TimeoutExpired:
-                    self.kill_process_tree(proc.pid)
-                    proc.kill()
-                    stdout, stderr = proc.communicate()
-                    return -1, stdout or "", f"Execution timed out after {timeout} seconds"
+                stdout, stderr, bounded_failure = _bounded_communicate(proc)
+                if "Output exceeded maximum" in stderr:
+                    return -1, stdout, stderr
+                if bounded_failure and "Execution timed out" in stderr:
+                    return -1, stdout, stderr
+                return proc.returncode, stdout, stderr
             except FileNotFoundError as e:
                 return 127, "", f"Executable not found: {e}"
             except PermissionError as e:

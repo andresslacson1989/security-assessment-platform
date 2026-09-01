@@ -1,6 +1,7 @@
 """E13 workspace, execution-state, taint, and evidence boundary assurance."""
 
 from pathlib import Path
+import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -9,6 +10,7 @@ from app.adapters.semgrep_adapter import SemgrepAdapter
 from app.adapters.trufflehog_adapter import TruffleHogAdapter
 from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType
 from app.core.path_sandbox import PathSandboxViolation, resolve_authorized_workspace
+from app.core.process_supervisor import ProcessSupervisor
 from app.engines.code_sast.ast_taint_analyzer import audit_ast_taint_flow
 from app.engines.code_sast.engine import CodeSastAssessmentEngine
 
@@ -110,3 +112,45 @@ def test_e13_taint_sanitizer_prevents_false_positive_and_output_is_deterministic
         encoding="utf-8",
     )
     assert audit_ast_taint_flow(str(tmp_path)) == []
+
+
+def test_e13_taint_detects_direct_source_to_sink(tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text(
+        "def unsafe(cursor, request):\n"
+        "    cursor.execute(request.args.get('id'))\n",
+        encoding="utf-8",
+    )
+    findings = audit_ast_taint_flow(str(tmp_path))
+    assert any(f.check_id == "SAST-TAINT-001" for f in findings)
+
+
+@pytest.mark.asyncio
+async def test_e13_process_supervisor_enforces_combined_output_limit():
+    supervisor = ProcessSupervisor()
+    code = "import sys; sys.stdout.write('x' * 100000)"
+    returncode, stdout, stderr = await supervisor.execute(
+        [sys.executable, "-c", code],
+        timeout=5,
+        max_output_bytes=4096,
+    )
+    assert returncode == -1
+    assert len(stdout.encode("utf-8")) <= 4096
+    assert "Output exceeded maximum" in stderr
+
+
+@pytest.mark.asyncio
+async def test_e13_process_supervisor_uses_isolated_unix_session_when_available():
+    if sys.platform == "win32":
+        pytest.skip("Unix process sessions are not available on Windows")
+    supervisor = ProcessSupervisor()
+    with patch("app.core.process_supervisor.subprocess.Popen") as popen:
+        proc = popen.return_value
+        proc.pid = 1234
+        proc.stdout = iter(())
+        proc.stderr = iter(())
+        proc.poll.return_value = 0
+        proc.wait.return_value = None
+        proc.returncode = 0
+        await supervisor.execute(["tool"], timeout=1)
+        assert popen.call_args.kwargs["start_new_session"] is True

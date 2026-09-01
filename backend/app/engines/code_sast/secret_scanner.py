@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import List, Optional, Tuple, Dict
 
-from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, mask_secret, LogLevel
+from app.core.models import Finding, Evidence, Severity, calculate_fingerprint, mask_secret, LogLevel, sanitize_sensitive_text
 from app.engines.base import LogCallback
 
 
@@ -170,6 +170,7 @@ async def audit_code_secrets(
         return findings
 
     files_scanned = 0
+    skipped_long_lines = 0
     for dirpath, dirnames, filenames in os.walk(root):
         # Filter out ignored directories in place
         dirnames[:] = [
@@ -192,7 +193,10 @@ async def audit_code_secrets(
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     for line_num, line in enumerate(f, start=1):
                         line_str = line.strip()
-                        if not line_str or len(line_str) > 2000:
+                        if not line_str:
+                            continue
+                        if len(line_str) > 2000:
+                            skipped_long_lines += 1
                             continue
 
                         # 1. Pattern Regex Evaluation
@@ -233,10 +237,13 @@ async def audit_code_secrets(
                                     fingerprint=calculate_fingerprint(rule["check_id"], location_str, masked_val),
                                 ))
 
-            except Exception:
-                continue
+            except Exception as exc:
+                if emit_log:
+                    await emit_log(LogLevel.WARNING, f"Secret scanner could not read '{rel_path}': {type(exc).__name__}")
 
     if emit_log:
         await emit_log(LogLevel.INFO, f"Secret scanner evaluated {files_scanned} files in '{repo_path}'.")
+        if skipped_long_lines:
+            await emit_log(LogLevel.WARNING, f"Secret scanner skipped {skipped_long_lines} overlong lines; coverage is degraded.")
 
     return findings

@@ -4,6 +4,7 @@ Contract 03, 06 & 08 Software Composition Analysis (SCA) & Lockfile Dependency A
 
 from __future__ import annotations
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -40,6 +41,8 @@ KNOWN_VULNERABLE_PACKAGES: Dict[str, List[Tuple[str, str, str, str]]] = {
     ],
 }
 
+logger = logging.getLogger("cyberassess.code_sast.dependencies")
+
 
 def parse_requirements_txt(content: str) -> List[Tuple[str, str, int]]:
     """
@@ -71,8 +74,8 @@ def parse_package_json(content: str) -> List[Tuple[str, str, int]]:
         deps.update(data.get("devDependencies", {}))
         for pkg, ver in deps.items():
             results.append((pkg.lower(), str(ver), 1))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not parse package.json: %s", type(exc).__name__)
     return results
 
 
@@ -110,7 +113,8 @@ async def audit_dependencies(
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         parsed_packages = parse_requirements_txt(f.read())
                     manifest_files_found += 1
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Could not read dependency manifest %s: %s", file_path, type(exc).__name__)
                     continue
 
             elif fn_lower == "package.json":
@@ -118,7 +122,8 @@ async def audit_dependencies(
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         parsed_packages = parse_package_json(f.read())
                     manifest_files_found += 1
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Could not read dependency manifest %s: %s", file_path, type(exc).__name__)
                     continue
 
             for pkg_name, ver_spec, line_num in parsed_packages:

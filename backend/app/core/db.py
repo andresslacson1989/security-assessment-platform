@@ -82,20 +82,9 @@ class DatabaseManager:
                 pass
             return conn
         except Exception:
-            # Fallback path if host volume mount prevents lock creation
-            fallback_path = Path.home() / ".cyberassess" / "cyberassess.db"
-            fallback_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(fallback_path), check_same_thread=False, timeout=30)
-            conn.row_factory = sqlite3.Row
-            try:
-                conn.execute("PRAGMA journal_mode=DELETE;")
-            except Exception:
-                pass
-            try:
-                conn.execute("PRAGMA foreign_keys=ON;")
-            except Exception:
-                pass
-            return conn
+            # Never silently switch databases: doing so can mix tenants or
+            # resurrect state from an unrelated persistence location.
+            raise
 
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""

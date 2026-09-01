@@ -2239,7 +2239,7 @@ Stderr: Diagnostic logs
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native dependency auditor.
 - **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
-- **Coverage Loss:** Native auditor checks `package.json` lockfiles; cannot fingerprint raw unversioned vendor JS files embedded in HTML/JS assets.
+- **Coverage Loss:** Native fallback is limited to supported manifests and does not replace Retire.js's authoritative vulnerability database or full JavaScript dependency resolution.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
@@ -2395,7 +2395,7 @@ Stderr: Diagnostic logs
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native lockfile dependency auditor.
 - **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
-- **Coverage Loss:** Native auditor parses Python and Node lockfiles against a local cache; lacks Trivy's comprehensive multi-ecosystem vulnerability database and OS package scanning.
+- **Coverage Loss:** Native fallback is limited manifest parsing with a small local advisory catalog; it is not equivalent to Trivy's comprehensive multi-ecosystem vulnerability database, lockfile resolution, or OS package scanning.
 
 ### 28. Cancellation Protocol
 - Immediate process tree termination via `ProcessSupervisor`.
@@ -2709,7 +2709,7 @@ Stderr: Diagnostic logs
 ### 27. Fallback Coverage Level & Coverage Loss
 - **Fallback Engine:** Native Python CycloneDX exporter.
 - **Coverage Level:** `LIMITED` (Partial Baseline Coverage).
-- **Coverage Loss:** Native exporter catalogs top-level lockfile entries; lacks Syft's deep binary scanning and license extraction.
+- **Coverage Loss:** Native exporter catalogs only supported top-level dependency entries; it lacks Syft's deep binary scanning and license extraction.
 
 ### 28. Cancellation Protocol
 - Process group termination via `ProcessSupervisor`.
