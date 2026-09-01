@@ -225,6 +225,7 @@ class ScanOrchestrator:
     ) -> None:
         entry = LogEntry(
             timestamp=utc_now(),
+            correlation_id=getattr(self._active_jobs.get(scan_id), "correlation_id", None),
             level=level,
             engine=engine,
             message=message,
@@ -235,6 +236,7 @@ class ScanOrchestrator:
 
         await self._broadcast(scan_id, "log", {
             "timestamp": entry.timestamp.isoformat(),
+            "correlation_id": entry.correlation_id,
             "level": entry.level.value,
             "engine": engine,
             "message": message,

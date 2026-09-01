@@ -683,6 +683,9 @@ class DatabaseManager:
     def _insert_audit_event_conn(self, conn: sqlite3.Connection, event: "AuditEvent") -> None:
         """Inserts an audit event using an already-open connection. Use this when the caller
         already holds a write transaction to avoid a second-connection deadlock on SQLite."""
+        if event.correlation_id is None:
+            from app.core.correlation import get_correlation_id
+            event.correlation_id = get_correlation_id()
         cur = conn.cursor()
         cur.execute(
             "SELECT event_hash, sequence_number FROM audit_events "
@@ -718,6 +721,9 @@ class DatabaseManager:
 
     def record_audit_event(self, event: "AuditEvent") -> None:
         """Appends an immutable security audit event to the relational audit log with chained cryptographic hash."""
+        if event.correlation_id is None:
+            from app.core.correlation import get_correlation_id
+            event.correlation_id = get_correlation_id()
         with self._connection_scope() as conn:
             self._insert_audit_event_conn(conn, event)
 

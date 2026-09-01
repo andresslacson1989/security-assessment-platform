@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import urllib.parse
-from fastapi import APIRouter, HTTPException, Query, status, Depends
+from fastapi import APIRouter, HTTPException, Query, status, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -99,6 +99,7 @@ def validate_target_input(target_type: TargetType, target_value: str, allow_inte
 @router.post("/start", status_code=status.HTTP_201_CREATED, summary="Start Automated Security Scan")
 async def start_security_scan(
     payload: StartScanRequest,
+    request: Request,
     current_user: UserProfile = Depends(require_permission(required_scope="scan:create", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
     """
@@ -127,6 +128,7 @@ async def start_security_scan(
     scan_config = payload.config or ScanConfig()
 
     scan_job = ScanJob(
+        correlation_id=getattr(request.state, "correlation_id", None),
         organization_id=current_user.organization_id,
         target=target,
         profile=payload.profile,
@@ -143,6 +145,7 @@ async def start_security_scan(
             object_type="scan",
             object_id=scan_job.id,
             result="SUCCESS",
+            correlation_id=scan_job.correlation_id,
             details={"target_type": target.type.value, "target_value": target.value, "profile": scan_job.profile.value},
         )
     )
@@ -158,6 +161,7 @@ async def start_security_scan(
             object_type="scan",
             object_id=scan_job.id,
             result="SUCCESS",
+            correlation_id=scan_job.correlation_id,
         )
     )
 
@@ -296,6 +300,7 @@ async def get_scan_telemetry(
         normalized_state = recorded_states.get(t_name)
         tool_telemetry_map[t_name] = ToolExecutionTelemetry(
             tool_name=t_name,
+            correlation_id=job.correlation_id,
             engine="adapter",
             status=degraded_states.get(normalized_state, EngineExecutionStatus.PASS),
             duration_seconds=0.0,
@@ -311,6 +316,7 @@ async def get_scan_telemetry(
         if src not in tool_telemetry_map:
             tool_telemetry_map[src] = ToolExecutionTelemetry(
                 tool_name=src,
+                correlation_id=job.correlation_id,
                 engine=f.engine or "native",
                 status=EngineExecutionStatus.FINDINGS,
                 duration_seconds=0.0,
@@ -414,6 +420,7 @@ async def get_scan_telemetry(
 
     return ScanTelemetryReport(
         scan_id=job.id,
+        correlation_id=job.correlation_id,
         target_value=job.target.value,
         target_type=job.target.type,
         profile=job.profile,

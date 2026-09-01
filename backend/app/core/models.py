@@ -820,6 +820,7 @@ class LogEntry(BaseModel):
     Real-time log message emitted during scan execution.
     """
     timestamp: datetime = Field(default_factory=utc_now)
+    correlation_id: Optional[str] = Field(default=None, description="Request/scan correlation identifier")
     level: LogLevel = Field(default=LogLevel.INFO)
     engine: Optional[str] = Field(default=None, description="Origin engine name")
     tool: Optional[str] = Field(default=None, description="Origin tool/adapter name (e.g. nmap, nuclei, katana, ffuf)")
@@ -831,6 +832,7 @@ class ToolExecutionTelemetry(BaseModel):
     Contract 04 §1.3: Per-tool execution telemetry summary.
     """
     tool_name: str = Field(..., description="Name of external tool or native component")
+    correlation_id: Optional[str] = Field(default=None, description="Request/scan correlation identifier")
     engine: str = Field(..., description="Parent assessment engine domain")
     status: EngineExecutionStatus = Field(default=EngineExecutionStatus.PASS, description="Execution status")
     duration_seconds: float = Field(default=0.0, description="Total execution runtime in seconds")
@@ -846,6 +848,7 @@ class ScanTelemetryReport(BaseModel):
     Contract 04 §1.3: Consolidated Assessment Telemetry & Tool Intelligence Hub Report.
     """
     scan_id: str = Field(..., description="Scan UUID")
+    correlation_id: Optional[str] = Field(default=None, description="Request/scan correlation identifier")
     target_value: str = Field(..., description="Assessed target URL, IP, or path")
     target_type: TargetType = Field(default=TargetType.URL, description="Target classification")
     profile: ScanProfile = Field(..., description="Assessment profile")
@@ -865,6 +868,7 @@ class ScanJob(BaseModel):
     Complete state representation of a scan job.
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    correlation_id: Optional[str] = Field(default=None, description="Request correlation identifier that created the scan")
     organization_id: str = Field(default="org-default")
     project_id: Optional[str] = Field(default=None)
     asset_id: Optional[str] = Field(default=None)

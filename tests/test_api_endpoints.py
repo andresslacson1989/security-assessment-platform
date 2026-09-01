@@ -22,12 +22,14 @@ from app.core.models import (
     DiscoveredEndpoint,
     UserProfile,
     UserRole,
+    LogLevel,
     Finding,
     Evidence,
     calculate_fingerprint,
 )
 from app.core.auth import create_access_token
 from app.core.storage import save_scan
+from app.core.db import db_manager
 from app.core.orchestrator import orchestrator
 from starlette.requests import Request
 
@@ -62,6 +64,48 @@ async def test_system_endpoints(auth_headers):
         assert resp_eng.status_code == 200
         data_eng = resp_eng.json()
         assert data_eng["count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_scan_correlation_id_propagates_to_job_logs_telemetry_and_audit(monkeypatch, auth_headers):
+    """Contract 04: request correlation is retained across scan evidence surfaces."""
+    captured = {}
+
+    async def fake_start_scan(job):
+        captured["job"] = job
+        orchestrator._active_jobs[job.id] = job
+        await orchestrator.emit_log(job.id, LogLevel.INFO, "test", "scan created")
+        return asyncio.create_task(asyncio.sleep(0))
+
+    monkeypatch.setattr(orchestrator, "start_scan", fake_start_scan)
+    correlation_id = "corr-contract-04"
+    payload = {
+        "target_type": "DOMAIN",
+        "target_value": "example.com",
+        "profile": "QUICK",
+        "enabled_engines": [],
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/api/scans/start",
+            json=payload,
+            headers={**auth_headers, "X-Correlation-ID": correlation_id},
+        )
+        assert response.status_code == 201
+        job = captured["job"]
+        assert job.correlation_id == correlation_id
+        assert job.logs[0].correlation_id == correlation_id
+
+        telemetry = await ac.get(f"/api/scans/{job.id}/telemetry", headers=auth_headers)
+        assert telemetry.status_code == 200
+        assert telemetry.json()["correlation_id"] == correlation_id
+
+        audit_events, _ = db_manager.list_audit_events(organization_id=job.organization_id)
+        scan_events = [event for event in audit_events if event.object_id == job.id]
+        assert scan_events
+        assert all(event.correlation_id == correlation_id for event in scan_events)
+
+    orchestrator._active_jobs.pop(job.id, None)
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from app.core.version import (
     RULESET_VERSION,
 )
 from app.core.orchestrator import orchestrator
+from app.core.correlation import set_correlation_id, reset_correlation_id
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.engines.web_dast.engine import WebDastAssessmentEngine
 from app.engines.code_sast.engine import CodeSastAssessmentEngine
@@ -119,8 +120,12 @@ async def security_headers_and_correlation_middleware(request: Request, call_nex
     """
     correlation_id = request.headers.get("X-Correlation-ID") or f"corr-{uuid.uuid4().hex[:12]}"
     request.state.correlation_id = correlation_id
+    correlation_token = set_correlation_id(correlation_id)
 
-    response: Response = await call_next(request)
+    try:
+        response: Response = await call_next(request)
+    finally:
+        reset_correlation_id(correlation_token)
 
     response.headers["X-Correlation-ID"] = correlation_id
     response.headers["X-Content-Type-Options"] = "nosniff"
