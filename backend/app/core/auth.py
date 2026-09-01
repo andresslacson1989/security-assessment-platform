@@ -89,7 +89,9 @@ ANONYMOUS_DEV_USER = UserProfile(
 # Active In-Memory Token Revocation Registry
 REVOKED_TOKENS_REGISTRY: set = set()
 
-# Programmatic API Key In-Memory Cache (hashed token -> (UserProfile, List[str], float))
+# Retained for compatibility with the logout/admin invalidation endpoint. API-key
+# authentication itself is database-authoritative and does not serve identities
+# from this cache, because revocation must take effect immediately.
 API_KEYS_CACHE: Dict[str, Tuple[UserProfile, List[str], float]] = {}
 
 
@@ -381,19 +383,6 @@ async def get_current_user(
     # 1. API Key Authentication (Hashed Token Lookup)
     if x_api_key:
         key_hash = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
-        now_ts = time.time()
-        
-        # Bounded cache check (5-minute TTL)
-        if key_hash in API_KEYS_CACHE:
-            cached_user, cached_scopes, cached_time = API_KEYS_CACHE[key_hash]
-            if now_ts - cached_time < 300:
-                if not cached_user.is_active:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="User account is deactivated.",
-                        headers={"WWW-Authenticate": "ApiKey"},
-                    )
-                return cached_user
 
         from app.core.db import db_manager
         key_record, user_profile = db_manager.verify_api_key_hash(key_hash)
@@ -403,9 +392,8 @@ async def get_current_user(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid, expired, or revoked API key.",
                     headers={"WWW-Authenticate": "ApiKey"},
-                )
+            )
             user_profile.scopes = key_record.scopes
-            API_KEYS_CACHE[key_hash] = (user_profile, key_record.scopes, now_ts)
             return user_profile
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -496,4 +484,3 @@ def require_scope(required_scope: str):
 require_admin = require_permission(allowed_roles=[UserRole.ADMIN])
 require_analyst_or_admin = require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST])
 require_dev_or_higher = require_permission(allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])
-

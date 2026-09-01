@@ -1,0 +1,52 @@
+"""Regression coverage for authoritative authentication and tenant query boundaries."""
+
+from __future__ import annotations
+
+import hashlib
+
+import pytest
+
+from app.core.auth import get_current_user
+from app.core.db import DatabaseManager
+from app.core.models import PrincipalType, UserRole
+
+
+@pytest.mark.asyncio
+async def test_api_key_revocation_is_checked_against_database_each_request(tmp_path, monkeypatch):
+    """A revoked API key cannot be accepted from an in-memory identity cache."""
+    db = DatabaseManager(db_path=tmp_path / "auth-boundary.db")
+    raw_key = "test-api-key"
+    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    with db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (key_id, key_hash, organization_id, name, scopes_json, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
+            ("key-cache-regression", key_hash, "org-one", "regression", '["finding:read"]', "2026-01-01T00:00:00+00:00"),
+        )
+
+    import app.core.db as db_module
+    monkeypatch.setattr(db_module, "db_manager", db)
+
+    first = await get_current_user(x_api_key=raw_key)
+    assert first.organization_id == "org-one"
+    db.revoke_api_key("key-cache-regression", organization_id="org-one")
+
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(x_api_key=raw_key)
+    assert exc_info.value.status_code == 401
+
+
+def test_principal_type_is_explicit_for_system_scope():
+    """Tenant admins and system admins are distinct authorization principals."""
+    from app.core.models import UserProfile
+
+    tenant_admin = UserProfile(
+        username="tenant-admin", email="tenant@example.test", role=UserRole.ADMIN,
+        principal_type=PrincipalType.TENANT_PRINCIPAL, organization_id="org-one",
+    )
+    system_admin = UserProfile(
+        username="system-admin", email="system@example.test", role=UserRole.ADMIN,
+        principal_type=PrincipalType.SYSTEM_PRINCIPAL, organization_id="org-system",
+    )
+    assert tenant_admin.principal_type != system_admin.principal_type

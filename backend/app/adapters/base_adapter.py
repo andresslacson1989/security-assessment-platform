@@ -193,6 +193,7 @@ class BaseToolAdapter(ABC):
         timeout: float = 60.0,
         cwd: Optional[str] = None,
         env: Optional[dict] = None,
+        max_output_bytes: int = 10 * 1024 * 1024,
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
         pre_launch_check: Optional[Callable[[], bool]] = None,
     ) -> Tuple[int, str, str]:
@@ -211,6 +212,7 @@ class BaseToolAdapter(ABC):
             timeout=timeout,
             cwd=cwd,
             env=env,
+            max_output_bytes=max_output_bytes,
             pre_launch_check=pre_launch_check,
         )
 

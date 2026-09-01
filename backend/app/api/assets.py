@@ -113,7 +113,7 @@ async def get_asset(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:read")),
 ) -> Asset:
     """Retrieves asset details. Enforces strict tenant ownership (IDOR denial)."""
-    asset = db_manager.get_asset(asset_id)
+    asset = db_manager.get_asset(asset_id, organization_id=current_user.organization_id)
     if not asset or not authorize_asset_access(current_user, asset, action="read"):
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
     return asset
@@ -126,7 +126,7 @@ async def update_asset(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Asset:
     """Updates asset metadata. Enforces tenant ownership."""
-    asset = db_manager.get_asset(asset_id)
+    asset = db_manager.get_asset(asset_id, organization_id=current_user.organization_id)
     if not asset or not authorize_asset_access(current_user, asset, action="write"):
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
 
@@ -165,11 +165,11 @@ async def delete_asset(
     current_user: UserProfile = Depends(require_permission(required_scope="asset:delete", allowed_roles=[UserRole.ADMIN])),
 ) -> Dict[str, Any]:
     """Deletes an asset from the inventory. Enforces tenant ownership."""
-    asset = db_manager.get_asset(asset_id)
+    asset = db_manager.get_asset(asset_id, organization_id=current_user.organization_id)
     if not asset or not authorize_asset_access(current_user, asset, action="delete"):
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
 
-    deleted = db_manager.delete_asset(asset_id)
+    deleted = db_manager.delete_asset(asset_id, organization_id=current_user.organization_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
 

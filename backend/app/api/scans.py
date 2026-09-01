@@ -178,11 +178,11 @@ async def get_all_scans(
     current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Returns paginated list of historical scan summaries for caller's organization."""
-    scans, total = list_scans(limit=limit, offset=offset)
-    # Filter by user's organization if not super admin
-    if current_user.organization_id and current_user.role != UserRole.ADMIN:
-        scans = [s for s in scans if getattr(s, "organization_id", None) == current_user.organization_id or getattr(s, "organization_id", None) is None]
-        total = len(scans)
+    scans, total = list_scans(
+        limit=limit,
+        offset=offset,
+        organization_id=current_user.organization_id,
+    )
 
     return {
         "total": total,
@@ -216,7 +216,7 @@ async def get_scan_details(
     current_user: UserProfile = Depends(get_current_user),
 ) -> ScanJob:
     """Returns full ScanJob model. Enforces tenant ownership (IDOR denial)."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -239,7 +239,7 @@ async def get_scan_telemetry(
     Returns organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface.
     Enforces strict multi-tenant authorization and IDOR defense.
     """
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
@@ -462,14 +462,14 @@ async def delete_scan_job(
     current_user: UserProfile = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Deletes a scan job from storage. Enforces tenant ownership."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
     if not authorize_scan_access(current_user, job, action="delete"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to delete scan job '{scan_id}'.")
 
-    deleted = delete_scan(scan_id)
+    deleted = delete_scan(scan_id, organization_id=current_user.organization_id)
     return {"scan_id": scan_id, "deleted": deleted, "message": "Scan record deleted."}
 
 
@@ -479,7 +479,7 @@ async def stream_scan_events(
     current_user: UserProfile = Depends(get_current_user),
 ) -> StreamingResponse:
     """Streams real-time logs, findings, and progress updates over SSE."""
-    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id)
+    job = orchestrator.get_active_job(scan_id) or get_scan(scan_id, organization_id=current_user.organization_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 

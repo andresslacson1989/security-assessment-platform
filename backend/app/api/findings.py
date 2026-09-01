@@ -18,6 +18,7 @@ from app.core.models import (
     FindingComment,
     AuditEvent,
     AuditAction,
+    PrincipalType,
     utc_now,
 )
 from app.core.auth import get_current_user, require_dev_or_higher, require_permission, UserProfile, UserRole
@@ -50,10 +51,13 @@ async def list_findings(
         query = "SELECT * FROM findings WHERE 1=1"
         params: List[Any] = []
 
-        if current_user.role != UserRole.ADMIN or current_user.organization_id:
-            if current_user.organization_id:
-                query += " AND organization_id = ?"
-                params.append(current_user.organization_id)
+        is_system_admin = (
+            current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+            and current_user.role == UserRole.ADMIN
+        )
+        if not is_system_admin:
+            query += " AND organization_id = ?"
+            params.append(current_user.organization_id)
         if severity:
             query += " AND severity = ?"
             params.append(severity.value)
@@ -106,15 +110,13 @@ async def get_finding_detail(
     """Retrieves full finding details. Enforces strict tenant ownership (IDOR denial)."""
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
+        cur.execute(
+            "SELECT * FROM findings WHERE id = ? AND organization_id = ?",
+            (finding_id, current_user.organization_id),
+        )
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
-
-        # Multi-tenant IDOR check
-        if current_user.role != UserRole.ADMIN or current_user.organization_id:
-            if row["organization_id"] != current_user.organization_id:
-                raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
 
         f_data = json.loads(row["data_json"])
         f_data["lifecycle_status"] = row["status"]
@@ -136,19 +138,18 @@ async def update_finding_status(
     """
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
+        cur.execute(
+            "SELECT * FROM findings WHERE id = ? AND organization_id = ?",
+            (finding_id, current_user.organization_id),
+        )
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
 
-        # Tenant isolation
-        if row["organization_id"] and current_user.organization_id and row["organization_id"] != current_user.organization_id:
-            raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
-
         now_str = utc_now().isoformat()
         conn.execute(
-            "UPDATE findings SET status = ?, assigned_to = ?, last_seen = ? WHERE id = ?",
-            (payload.status.value, payload.assigned_to, now_str, finding_id),
+            "UPDATE findings SET status = ?, assigned_to = ?, last_seen = ? WHERE id = ? AND organization_id = ?",
+            (payload.status.value, payload.assigned_to, now_str, finding_id, current_user.organization_id),
         )
 
         if payload.comment:
@@ -190,12 +191,12 @@ async def add_finding_comment(
     """
     with db_manager._get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
+        cur.execute(
+            "SELECT * FROM findings WHERE id = ? AND organization_id = ?",
+            (finding_id, current_user.organization_id),
+        )
         row = cur.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
-
-        if row["organization_id"] and current_user.organization_id and row["organization_id"] != current_user.organization_id:
             raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
 
         comment_id = f"cmt-{uuid.uuid4().hex[:12]}"

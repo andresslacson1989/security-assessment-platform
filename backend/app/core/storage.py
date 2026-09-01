@@ -42,13 +42,17 @@ def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
         pass
 
 
-def get_scan(scan_id: str, storage_dir: Optional[Path] = None) -> Optional[ScanJob]:
+def get_scan(
+    scan_id: str,
+    storage_dir: Optional[Path] = None,
+    organization_id: Optional[str] = None,
+) -> Optional[ScanJob]:
     """
     Retrieves a ScanJob entity from authoritative database persistence. JSON files
     are export caches and are never used to resurrect authoritative state.
     """
     if storage_dir is None:
-        return db_manager.get_scan_record(scan_id)
+        return db_manager.get_scan_record(scan_id, organization_id=organization_id)
 
     # 2. Fallback to cached JSON file
     target_dir = get_storage_dir(storage_dir)
@@ -67,13 +71,14 @@ def get_scan(scan_id: str, storage_dir: Optional[Path] = None) -> Optional[ScanJ
 def list_scans(
     limit: int = 50,
     offset: int = 0,
-    storage_dir: Optional[Path] = None
+    storage_dir: Optional[Path] = None,
+    organization_id: Optional[str] = None,
 ) -> Tuple[List[ScanJob], int]:
     """
     Returns a paginated list of all stored ScanJobs sorted by creation/start time descending.
     """
     if storage_dir is None:
-        return db_manager.list_scans_records(limit=limit, offset=offset)
+        return db_manager.list_scans_records(limit=limit, offset=offset, organization_id=organization_id)
 
     # Fallback / explicit custom directory scan
     target_dir = get_storage_dir(storage_dir)
@@ -95,11 +100,15 @@ def list_scans(
     return disk_scans[offset : offset + limit], len(disk_scans)
 
 
-def delete_scan(scan_id: str, storage_dir: Optional[Path] = None) -> bool:
+def delete_scan(
+    scan_id: str,
+    storage_dir: Optional[Path] = None,
+    organization_id: Optional[str] = None,
+) -> bool:
     """
     Deletes the scan record from authoritative database and removes cached JSON file.
     """
-    db_deleted = db_manager.delete_scan_record(scan_id)
+    db_deleted = db_manager.delete_scan_record(scan_id, organization_id=organization_id)
     target_dir = get_storage_dir(storage_dir)
     file_path = target_dir / f"{scan_id}.json"
     file_deleted = False

@@ -88,6 +88,8 @@ class ProcessSupervisor:
         """
         if not cmd:
             return -1, "", "Empty command provided"
+        if max_output_bytes <= 0:
+            return -1, "", "Invalid maximum output size"
 
         creationflags = 0
         start_new_session = False
