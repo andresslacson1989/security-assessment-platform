@@ -146,6 +146,13 @@ def test_trivy_uses_the_verified_source_build_installer():
     assert PINNED_TOOL_MANIFEST["trivy"]["trust_mode"] == "SOURCE_BUILD_MODE"
 
 
+def test_manifest_covers_every_registered_tool_without_assuring_manual_tools():
+    manager_names = set(ToolInstallationManager()._installers)
+    assert manager_names == set(PINNED_TOOL_MANIFEST)
+    status = audit_tool_manifest(sorted(manager_names))
+    assert {"metasploit", "sqlmap", "amass", "hydra", "gtfobins"}.issubset(status["incomplete"])
+
+
 def test_manifest_audit_rejects_malformed_digest_metadata():
     malformed = {
         "demo": {
@@ -264,7 +271,7 @@ async def test_tool_installation_info_exposes_manifest_assurance_status():
 
     assert assured.assurance_status == "ASSURED"
     assert delegated.assurance_status == "DELEGATED"
-    assert unregistered.assurance_status == "UNREGISTERED"
+    assert unregistered.assurance_status == "INCOMPLETE"
 
 
 @pytest.mark.asyncio
