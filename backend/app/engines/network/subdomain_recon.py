@@ -155,7 +155,9 @@ async def audit_subdomain_osint(
 
     try:
         url = f"https://crt.sh/?q=%25.{apex_domain}&output=json"
-        async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+        # crt.sh is a fixed external dependency; provider redirects must not
+        # expand the scan's external egress destinations.
+        async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True) as client:
             resp = await client.get(url, headers={"User-Agent": "CyberAssess-OSINT/4.1.0"})
             if resp.status_code == 200:
                 entries = resp.json()

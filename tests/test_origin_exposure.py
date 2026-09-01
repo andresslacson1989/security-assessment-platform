@@ -155,3 +155,26 @@ async def test_fetch_ct_logs_mocking_certspotter_and_crtsh():
         assert "api.example.com" in subs
         assert "*.example.com" in wildcards
         assert len(certs) >= 1
+
+
+@pytest.mark.asyncio
+async def test_external_ct_and_origin_clients_require_verified_tls_without_redirects():
+    """External native clients must not disable TLS or follow arbitrary redirects."""
+    client = AsyncMock()
+    response = MagicMock(status_code=503)
+    client.get.return_value = response
+    client.head.return_value = response
+
+    client_context = MagicMock()
+    client_context.__aenter__ = AsyncMock(return_value=client)
+    client_context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.engines.network.origin_exposure.httpx.AsyncClient", return_value=client_context) as factory:
+        await fetch_ct_logs("example.com")
+        await safe_probe_exposed_ip("8.8.8.8")
+
+    calls = factory.call_args_list
+    assert len(calls) == 2  # CT client and the first non-empty origin probe
+    for call in calls:
+        assert call.kwargs["verify"] is True
+        assert call.kwargs["follow_redirects"] is False

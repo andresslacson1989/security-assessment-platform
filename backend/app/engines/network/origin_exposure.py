@@ -123,7 +123,9 @@ async def fetch_ct_logs(
     if is_private_or_loopback_ip(apex_domain) or re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", apex_domain) or apex_domain in ("localhost", "127.0.0.1"):
         return discovered_subdomains, cert_records, wildcard_domains
 
-    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+    # CT providers are fixed external dependencies.  Do not follow a provider
+    # redirect into an ungoverned destination.
+    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True) as client:
         # 1. Primary Source: Certspotter API
         try:
             certspotter_url = (
@@ -226,7 +228,10 @@ async def safe_probe_exposed_ip(
     for scheme, port in [("http", 80), ("https", 443)]:
         try:
             url = f"{scheme}://{ip_str}:{port}/"
-            async with httpx.AsyncClient(timeout=timeout_sec, verify=False) as client:
+            # Keep certificate verification enabled even when probing an IP.
+            # A certificate mismatch should fail closed rather than turning the
+            # HTTPS probe into an unauthenticated network request.
+            async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True) as client:
                 resp = await client.head(url)
                 probe_details["status_code"] = str(resp.status_code)
                 probe_details["server"] = resp.headers.get("Server", "")
