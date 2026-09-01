@@ -220,8 +220,14 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    kid = unverified_header.get("kid", ACTIVE_KEY_ID)
-    verification_key = JWT_KEY_ROTATION_STORE.get(kid, JWT_SECRET)
+    kid = unverified_header.get("kid")
+    if not isinstance(kid, str) or not kid.strip() or kid not in JWT_KEY_ROTATION_STORE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown or missing token key identifier.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    verification_key = JWT_KEY_ROTATION_STORE[kid]
 
     # 2. Strict PyJWT Verification
     try:

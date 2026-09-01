@@ -9,6 +9,7 @@ import os
 import json
 import subprocess
 import sys
+import time
 import pytest
 from unittest.mock import patch
 from datetime import datetime, timezone
@@ -340,6 +341,28 @@ def test_sec_014_jwt_algorithm_confusion_rejection():
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
         decode_access_token(fake_token)
+
+
+def test_jwt_unknown_key_identifier_is_rejected():
+    """JWT key rotation must reject unrecognized or omitted key identifiers."""
+    import jwt
+    from app.core.auth import JWT_SECRET, JWT_ISSUER, JWT_AUDIENCE
+
+    now = int(time.time())
+    payload = {
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "sub": "usr-test",
+        "iat": now,
+        "nbf": now,
+        "exp": now + 60,
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256", headers={"kid": "unrecognized-key"})
+
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        decode_access_token(token)
+    assert exc_info.value.status_code == 401
 
 
 def test_sec_015_jwt_expiry_rejection():
