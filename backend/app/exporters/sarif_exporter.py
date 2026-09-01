@@ -4,7 +4,7 @@ Contract 04 & 05 OASIS SARIF v2.1.0 Exporter for GitHub Code Scanning & CI/CD Se
 
 from __future__ import annotations
 from typing import Dict, Any, List
-from app.core.models import ScanJob, Severity
+from app.core.models import ScanJob, Severity, mask_secret, sanitize_sensitive_text
 
 
 def severity_to_sarif_level(severity: Severity) -> str:
@@ -30,23 +30,29 @@ def export_scan_to_sarif(scan_job: ScanJob) -> Dict[str, Any]:
 
     for f in scan_job.findings:
         sarif_level = severity_to_sarif_level(f.severity)
+        safe_title = sanitize_sensitive_text(f.title) or ""
+        safe_description = sanitize_sensitive_text(f.description) or ""
+        safe_remediation = sanitize_sensitive_text(f.remediation) or ""
+        safe_observed = sanitize_sensitive_text(f.evidence.observed_value) or ""
+        if "secret" in str(f.category).lower() or "secret" in str(f.check_id).lower():
+            safe_observed = mask_secret(f.evidence.observed_value)
 
         # 1. Register Rule in Driver Rules Catalog
         if f.check_id not in rules_map:
-            help_md = f"### Remediation\n\n{f.remediation}\n"
+            help_md = f"### Remediation\n\n{safe_remediation}\n"
             if f.remediation_code_snippet:
-                help_md += f"\n```\n{f.remediation_code_snippet}\n```\n"
+                help_md += f"\n```\n{sanitize_sensitive_text(f.remediation_code_snippet) or ''}\n```\n"
 
             rules_map[f.check_id] = {
                 "id": f.check_id,
-                "name": f.title,
-                "shortDescription": {"text": f.title},
-                "fullDescription": {"text": f.description},
+                "name": safe_title,
+                "shortDescription": {"text": safe_title},
+                "fullDescription": {"text": safe_description},
                 "defaultConfiguration": {
                     "level": sarif_level
                 },
                 "help": {
-                    "text": f"{f.remediation}",
+                    "text": safe_remediation,
                     "markdown": help_md,
                 },
                 "properties": {
@@ -60,7 +66,7 @@ def export_scan_to_sarif(scan_job: ScanJob) -> Dict[str, Any]:
             }
 
         # 2. Build Location Object
-        uri_str = f.evidence.location
+        uri_str = sanitize_sensitive_text(f.evidence.location) or "[REDACTED]"
         line_num = f.evidence.line_number or 1
 
         # Extract file path if location is in 'path:line' format
@@ -75,7 +81,7 @@ def export_scan_to_sarif(scan_job: ScanJob) -> Dict[str, Any]:
             "ruleId": f.check_id,
             "level": sarif_level,
             "message": {
-                "text": f"{f.title}: {f.description} (Observed: {f.evidence.observed_value})"
+                "text": f"{safe_title}: {safe_description} (Observed: {safe_observed})"
             },
             "locations": [
                 {

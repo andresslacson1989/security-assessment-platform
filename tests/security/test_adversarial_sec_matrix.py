@@ -686,6 +686,7 @@ def test_sec_028_report_secret_leakage_sanitization():
     """SEC-028: Exported reports sanitize sensitive credentials."""
     from app.exporters.json_exporter import export_scan_to_json
     from app.exporters.html_exporter import export_scan_to_html
+    from app.exporters.sarif_exporter import export_scan_to_sarif
 
     finding = Finding(
         id="f-secret-01",
@@ -696,10 +697,17 @@ def test_sec_028_report_secret_leakage_sanitization():
         title="AWS Access Key Exposed",
         severity=Severity.CRITICAL,
         cvss_score=9.0,
-        description="Exposed key",
+        description="Exposed key password=super-secret-description",
         impact="Compromise",
         remediation="Rotate",
-        evidence=Evidence(location="config.py:10", observed_value="AKIAIOSFODNN7EXAMPLE", expected_value="Environment variable"),
+        evidence=Evidence(
+            location="https://user:password123@example.com/config.py:10",
+            observed_value="AKIAIOSFODNN7EXAMPLE",
+            expected_value="Environment variable",
+            request_details={"headers": {"Authorization": "Bearer report-secret"}},
+            response_details={"headers": {"Set-Cookie": "session=report-secret"}},
+        ),
+        reproduction_curl="curl -H 'Authorization: Bearer report-secret' 'https://example.com/?token=report-secret'",
     )
     scan = ScanJob(
         id="s-sec-01",
@@ -710,10 +718,63 @@ def test_sec_028_report_secret_leakage_sanitization():
 
     json_report = export_scan_to_json(scan)
     html_report = export_scan_to_html(scan)
+    sarif_report = json.dumps(export_scan_to_sarif(scan))
+    for report in (json_report, html_report, sarif_report):
+        assert "report-secret" not in report
+        assert "super-secret-description" not in report
+        assert "password123" not in report
     assert "AKIA" in json_report
     assert "AKIA" in html_report
+    assert "AKIA" in sarif_report
     assert "AKIAIOSFODNN7EXAMPLE" not in json_report
     assert "AKIAIOSFODNN7EXAMPLE" not in html_report
+
+
+def test_sec_022_persistence_and_audit_boundaries_redact_sensitive_values(setup_test_db):
+    """SEC-022: DB and audit serialization never store credential material verbatim."""
+    secret = "persisted-secret-value"
+    event = AuditEvent(
+        actor="admin",
+        organization_id="org-test",
+        action=AuditAction.SCAN_CREATED,
+        object_type="scan",
+        object_id="scan-secret-01",
+        result="SUCCESS",
+        details={"Authorization": f"Bearer {secret}", "safe": "visible"},
+    )
+    setup_test_db.record_audit_event(event)
+    scan = ScanJob(
+        id="scan-secret-01",
+        organization_id="org-test",
+        target=Target(name="Secret Target", type=TargetType.URL, value="https://example.com"),
+        profile=ScanProfile.QUICK,
+        findings=[Finding(
+            id="finding-secret-01",
+            scan_id="scan-secret-01",
+            engine="code_sast",
+            check_id="SAST-SEC-001",
+            category="Hardcoded Secrets",
+            title="Credential leak",
+            severity=Severity.HIGH,
+            cvss_score=8.0,
+            description="credential detected",
+            impact="compromise",
+            remediation="rotate it",
+            evidence=Evidence(location="settings.py", observed_value=f"password={secret}", expected_value="environment"),
+        )],
+    )
+    setup_test_db.save_scan_record(scan)
+    with setup_test_db._get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT data_json FROM scans WHERE id = ?", (scan.id,))
+        scan_json = cur.fetchone()["data_json"]
+        cur.execute("SELECT details_json FROM audit_events WHERE object_id = ?", (scan.id,))
+        audit_json = cur.fetchone()["details_json"]
+        cur.execute("SELECT raw_evidence_json FROM finding_occurrences WHERE scan_id = ?", (scan.id,))
+        occurrence_json = cur.fetchone()["raw_evidence_json"]
+    assert secret not in scan_json
+    assert secret not in audit_json
+    assert secret not in occurrence_json
 
 
 def test_sec_029_database_transaction_integrity(setup_test_db):

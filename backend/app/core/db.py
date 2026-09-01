@@ -38,6 +38,7 @@ from app.core.models import (
     AuditAction,
     PrincipalType,
     Evidence,
+    sanitize_sensitive_data,
     utc_now,
 )
 
@@ -729,6 +730,7 @@ class DatabaseManager:
 
         ts_str = event.timestamp.isoformat() if event.timestamp else utc_now().isoformat()
         act_str = event.action.value if hasattr(event.action, "value") else str(event.action)
+        event.details = sanitize_sensitive_data(event.details)
         details_str = json.dumps(event.details, sort_keys=True)
         canonical_payload = f"{event.id}|{ts_str}|{event.actor}|{event.organization_id}|{act_str}|{event.object_type}|{event.object_id}|{event.result}|{details_str}|{prev_hash or ''}"
         event_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
@@ -977,7 +979,11 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             target = scan_job.target
             summary = scan_job.summary
-            data_json = scan_job.model_dump_json()
+            data_json = json.dumps(
+                sanitize_sensitive_data(scan_job.model_dump(mode="json")),
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
             org_id = getattr(scan_job, "organization_id", None) or "org-default"
             proj_id = getattr(scan_job, "project_id", None)
             asset_id = getattr(scan_job, "asset_id", None)
@@ -1041,6 +1047,7 @@ class DatabaseManager:
             # Persist canonical findings
             for cf in canonical_findings:
                 now_str = utc_now().isoformat()
+                cf_data = sanitize_sensitive_data(cf.model_dump(mode="json"))
                 first_seen_str = cf.first_seen.isoformat() if cf.first_seen else now_str
                 last_seen_str = cf.last_seen.isoformat() if cf.last_seen else now_str
                 sla_json = cf.sla.model_dump_json() if cf.sla else None
@@ -1088,13 +1095,13 @@ class DatabaseManager:
                         cf.assigned_to,
                         tools_json,
                         corr_type,
-                        cf.description or "",
-                        cf.impact or "",
-                        cf.remediation or "",
+                        sanitize_sensitive_data(cf.description) or "",
+                        sanitize_sensitive_data(cf.impact) or "",
+                        sanitize_sensitive_data(cf.remediation) or "",
                         cf.evidence_hash or "",
                         sla_json,
                         cf.evidence_hash or cf.id,
-                        cf.model_dump_json(),
+                        json.dumps(cf_data, ensure_ascii=False),
                     ),
                 )
 
@@ -1126,8 +1133,13 @@ class DatabaseManager:
                         occ.asset_id or asset_id,
                         occ.source_tool,
                         occ.check_id,
-                        occ.raw_evidence.model_dump_json() if hasattr(occ.raw_evidence, "model_dump_json") else json.dumps(occ.raw_evidence),
-                        occ.reproduction_curl,
+                        json.dumps(
+                            sanitize_sensitive_data(occ.raw_evidence.model_dump(mode="json")),
+                            ensure_ascii=False,
+                        ) if hasattr(occ.raw_evidence, "model_dump") else json.dumps(
+                            sanitize_sensitive_data(occ.raw_evidence), ensure_ascii=False
+                        ),
+                        sanitize_sensitive_data(occ.reproduction_curl),
                         json.dumps(occ.taint_trace or []),
                         occ.detected_at.isoformat() if occ.detected_at else utc_now().isoformat(),
                     ),

@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional, List, Tuple
-from app.core.models import ScanJob
+from app.core.models import ScanJob, sanitize_sensitive_data
 from app.core.db import db_manager
 
 logger = logging.getLogger("cyberassess.storage")
@@ -37,7 +37,11 @@ def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
     try:
         target_dir = get_storage_dir(storage_dir)
         file_path = target_dir / f"{scan_job.id}.json"
-        json_data = scan_job.model_dump_json(indent=2)
+        json_data = json.dumps(
+            sanitize_sensitive_data(scan_job.model_dump(mode="json")),
+            indent=2,
+            ensure_ascii=False,
+        )
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(json_data)
     except OSError as exc:

@@ -6,7 +6,12 @@ Zero CDN dependencies, fully embedded dark-theme Cyber SOC dashboard styling.
 from __future__ import annotations
 import html
 from typing import Optional
-from app.core.models import ScanJob, Severity, mask_secret
+from app.core.models import ScanJob, Severity, mask_secret, sanitize_sensitive_text
+
+
+def _safe_html(value: object) -> str:
+    """Sanitize untrusted evidence before HTML escaping and rendering."""
+    return html.escape(sanitize_sensitive_text(str(value)) or "")
 
 
 def export_scan_to_html(scan_job: ScanJob) -> str:
@@ -45,20 +50,20 @@ def export_scan_to_html(scan_job: ScanJob) -> str:
 
         cat = str(f.category or "").lower()
         chk = str(f.check_id or "").lower()
-        raw_obs = f.evidence.observed_value
+        raw_obs = sanitize_sensitive_text(f.evidence.observed_value) or ""
         if "secret" in cat or "secret" in chk or "key" in cat:
-            raw_obs = mask_secret(raw_obs)
+            raw_obs = mask_secret(f.evidence.observed_value)
 
-        ev_loc = html.escape(f.evidence.location)
-        ev_obs = html.escape(raw_obs)
-        ev_exp = html.escape(f.evidence.expected_value or "Secure default")
-        remed_desc = html.escape(f.remediation)
-        desc = html.escape(f.description)
-        impact = html.escape(f.impact)
+        ev_loc = _safe_html(f.evidence.location)
+        ev_obs = _safe_html(raw_obs)
+        ev_exp = _safe_html(f.evidence.expected_value or "Secure default")
+        remed_desc = _safe_html(f.remediation)
+        desc = _safe_html(f.description)
+        impact = _safe_html(f.impact)
 
         code_snippet_html = ""
         if f.remediation_code_snippet:
-            snip_esc = html.escape(f.remediation_code_snippet)
+            snip_esc = _safe_html(f.remediation_code_snippet)
             code_snippet_html = f"""
             <div class="code-block-container">
               <div class="code-header">
@@ -69,17 +74,17 @@ def export_scan_to_html(scan_job: ScanJob) -> str:
             </div>
             """
 
-        cwe_html = f'<span class="meta-tag">{html.escape(f.cwe_id)}</span>' if f.cwe_id else ""
-        owasp_html = f'<span class="meta-tag">{html.escape(f.owasp_category)}</span>' if f.owasp_category else ""
-        nist_html = f'<span class="meta-tag">{html.escape(f.nist_control)}</span>' if f.nist_control else ""
+        cwe_html = f'<span class="meta-tag">{_safe_html(f.cwe_id)}</span>' if f.cwe_id else ""
+        owasp_html = f'<span class="meta-tag">{_safe_html(f.owasp_category)}</span>' if f.owasp_category else ""
+        nist_html = f'<span class="meta-tag">{_safe_html(f.nist_control)}</span>' if f.nist_control else ""
 
         card_html = f"""
         <div class="finding-card severity-{f.severity.value.lower()}" id="finding-{idx}">
           <div class="finding-header" onclick="toggleCard('{idx}')">
             <div class="finding-title-group">
               <span class="severity-badge" style="color: {fg_col}; background-color: {bg_col};">{f.severity.value}</span>
-              <span class="check-id">{html.escape(f.check_id)}</span>
-              <h3 class="finding-title">{html.escape(f.title)}</h3>
+              <span class="check-id">{_safe_html(f.check_id)}</span>
+              <h3 class="finding-title">{_safe_html(f.title)}</h3>
             </div>
             <div class="finding-header-meta">
               <span class="cvss-badge">CVSS {f.cvss_score:.1f}</span>
@@ -91,7 +96,7 @@ def export_scan_to_html(scan_job: ScanJob) -> str:
               {cwe_html}
               {owasp_html}
               {nist_html}
-              <span class="meta-tag engine-tag">{html.escape(f.engine)}</span>
+              <span class="meta-tag engine-tag">{_safe_html(f.engine)}</span>
             </div>
             
             <p class="finding-desc"><strong>Description:</strong> {desc}</p>
@@ -142,7 +147,7 @@ def export_scan_to_html(scan_job: ScanJob) -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Security Assessment Report - {html.escape(target.name)}</title>
+  <title>Security Assessment Report - {_safe_html(target.name)}</title>
   <style>
     :root {{
       --bg-dark: #07090e;
@@ -359,8 +364,8 @@ def export_scan_to_html(scan_job: ScanJob) -> str:
     <!-- Header Panel -->
     <div class="header-panel">
       <div class="header-title">
-        <h1>{html.escape(target.name)}</h1>
-        <div class="target-val">{html.escape(target.value)}</div>
+        <h1>{_safe_html(target.name)}</h1>
+        <div class="target-val">{_safe_html(target.value)}</div>
       </div>
       <div class="header-meta">
         <div><strong>Scan ID:</strong> <code>{html.escape(scan_job.id[:8])}</code></div>

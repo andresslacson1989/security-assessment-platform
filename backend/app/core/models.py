@@ -709,6 +709,29 @@ def sanitize_sensitive_text(value: Optional[str], max_length: int = 4096) -> Opt
     return text
 
 
+_SENSITIVE_DATA_KEY = re.compile(
+    r"(?:^|[_-])(authorization|proxy-authorization|cookie|set-cookie|password|passwd|pwd|"
+    r"token|api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|"
+    r"raw[_-]?secret|secret[_-]?(?:value|data)|credential)(?:$|[_-])",
+    re.IGNORECASE,
+)
+
+
+def sanitize_sensitive_data(value: Any, key: Optional[str] = None) -> Any:
+    """Recursively sanitize data before persistence or external output."""
+    if key and _SENSITIVE_DATA_KEY.search(str(key)):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(k): sanitize_sensitive_data(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_sensitive_data(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_sensitive_data(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_sensitive_text(value)
+    return value
+
+
 _SENSITIVE_REPRODUCTION_NAME = r"(?:authorization|proxy-authorization|cookie|set-cookie|token|password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|jwt)"
 
 
