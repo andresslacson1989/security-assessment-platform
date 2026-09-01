@@ -1,5 +1,5 @@
 """
-Contract 03 & 08 System / Driver-Level Tool Helper (nmap, retire).
+Contract 03 & 08 System / Driver-Level Tool Helper and manually provisioned tools.
 Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 """
 
@@ -41,6 +41,46 @@ SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
         },
         "download_url": "https://github.com/RetireJS/retire.js",
         "version_cmd": ["--version"],
+    },
+    "metasploit": {
+        "display_name": "Metasploit Auxiliary Verification Framework",
+        "category": "Exploit Verification",
+        "command_hint": {"windows": "Install from the official Metasploit package: https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html", "linux": "Install from the official Metasploit package: https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html", "darwin": "Install from the official Metasploit package: https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html"},
+        "download_url": "https://github.com/rapid7/metasploit-framework",
+        "version_cmd": ["-v"],
+        "binary_name": "msfconsole",
+    },
+    "sqlmap": {
+        "display_name": "sqlmap Bounded SQL Injection Verifier",
+        "category": "Web DAST",
+        "command_hint": {"windows": "Install the pinned sqlmap release through the approved isolated tool environment.", "linux": "Install the pinned sqlmap release through the approved isolated tool environment.", "darwin": "Install the pinned sqlmap release through the approved isolated tool environment."},
+        "download_url": "https://github.com/sqlmapproject/sqlmap",
+        "version_cmd": ["--version"],
+        "binary_name": "sqlmap",
+    },
+    "amass": {
+        "display_name": "OWASP Amass Passive Attack Surface Enumerator",
+        "category": "Network Perimeter",
+        "command_hint": {"windows": "Install from the official OWASP Amass release: https://github.com/owasp-amass/amass/releases", "linux": "Install from the official OWASP Amass release: https://github.com/owasp-amass/amass/releases", "darwin": "Install from the official OWASP Amass release: https://github.com/owasp-amass/amass/releases"},
+        "download_url": "https://github.com/owasp-amass/amass",
+        "version_cmd": ["-version"],
+        "binary_name": "amass",
+    },
+    "hydra": {
+        "display_name": "THC-Hydra Bounded Authentication Auditor",
+        "category": "Authentication Resilience",
+        "command_hint": {"windows": "Install from the approved isolated tool environment; use only for explicitly authorized credential audits.", "linux": "Install from the official THC-Hydra package: https://github.com/vanhauser-thc/thc-hydra", "darwin": "Install from the official THC-Hydra package: https://github.com/vanhauser-thc/thc-hydra"},
+        "download_url": "https://github.com/vanhauser-thc/thc-hydra",
+        "version_cmd": ["-h"],
+        "binary_name": "hydra",
+    },
+    "gtfobins": {
+        "display_name": "GTFOBins / LOLBAS Native Privilege Rule Engine",
+        "category": "Host Privilege Escalation",
+        "command_hint": {"windows": "Native rule engine; no external installation required.", "linux": "Native rule engine; no external installation required.", "darwin": "Native rule engine; no external installation required."},
+        "download_url": "https://gtfobins.github.io/",
+        "version_cmd": [],
+        "binary_name": None,
     },
 }
 

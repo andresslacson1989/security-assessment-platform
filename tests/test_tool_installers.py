@@ -49,15 +49,15 @@ def manager():
 
 @pytest.mark.asyncio
 async def test_manager_get_all_tools_info(manager):
-    """Verifies that all 21 tools are registered with valid installation metadata."""
+    """Verifies that all 26 contract tools are registered with valid metadata."""
     tools = await manager.get_all_tools_info()
-    assert len(tools) == 21
+    assert len(tools) == 26
     names = {t.name for t in tools}
     expected_names = {
         "sslyze", "bandit", "semgrep", "checkov", "prowler", "schemathesis",
         "nuclei", "ffuf", "gitleaks", "trivy", "subfinder", "httpx", "katana",
         "syft", "grype", "osv-scanner", "trufflehog", "dockle", "kube-bench",
-        "nmap", "retire"
+        "nmap", "retire", "metasploit", "sqlmap", "amass", "hydra", "gtfobins"
     }
     assert names == expected_names
 
@@ -259,7 +259,7 @@ def test_tool_management_api_endpoints(client, manager, auth_headers):
     resp = client.get("/api/system/tools")
     assert resp.status_code == 200
     tools = resp.json()
-    assert len(tools) == 21
+    assert len(tools) == 26
 
     # 2. GET /api/system/tools/nuclei/status
     resp = client.get("/api/system/tools/nuclei/status")

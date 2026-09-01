@@ -59,6 +59,11 @@ class ToolInstallationManager:
             # System / driver helpers & package manager tools (2 tools)
             "nmap": SystemToolHelper("nmap"),
             "retire": SystemToolHelper("retire"),
+            "metasploit": SystemToolHelper("metasploit"),
+            "sqlmap": SystemToolHelper("sqlmap"),
+            "amass": SystemToolHelper("amass"),
+            "hydra": SystemToolHelper("hydra"),
+            "gtfobins": SystemToolHelper("gtfobins"),
         }
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._tool_to_task: Dict[str, str] = {}

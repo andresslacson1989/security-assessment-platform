@@ -83,7 +83,7 @@ class BaseToolInstaller(ABC):
         Tier 5: Platform-Specific Auto-Discovery (Windows Registry, multi-drive Program Files, package managers, Unix paths)
         """
         return resolve_tool_binary(
-            tool_name=self.tool_name,
+            tool_name=getattr(self, "_cfg", {}).get("binary_name") or self.tool_name,
             local_bin_dir=self.get_bin_dir(),
         )
 
