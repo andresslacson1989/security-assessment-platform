@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock
 import json
 import hashlib
 import os
+import shutil
+import uuid
 
 from app.core.models import ScanConfig, Target, TargetType
 
@@ -29,29 +31,33 @@ def test_unmanaged_binary_cannot_satisfy_assured_execution():
     assert SubfinderAdapter().verify_managed_binary("/usr/local/bin/subfinder") is False
 
 
-def test_managed_trust_record_binds_identity_and_detects_tampering(tmp_path, monkeypatch):
+def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):
     import app.adapters.subfinder_adapter as module
-    adapter_dir = tmp_path / "backend" / "app" / "adapters"
-    managed_dir = tmp_path / "backend" / "bin"
-    adapter_dir.mkdir(parents=True)
-    managed_dir.mkdir(parents=True)
-    binary = managed_dir / "subfinder"
-    binary.write_bytes(b"approved-binary")
-    record = managed_dir / "subfinder.trust.json"
-    monkeypatch.setattr(module, "__file__", str(adapter_dir / "subfinder_adapter.py"))
-    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    current_platform = "windows" if os.name == "nt" else ("darwin" if module.platform.system().lower() == "darwin" else "linux")
-    current_arch = "arm64" if module.platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
-    record.write_text(json.dumps({
-        "tool_id": "TOOL-SUBFINDER", "tool_version": "v2.6.5", "artifact_filename": "release.zip",
-        "artifact_sha256": "a" * 64, "executable_relative_path": "subfinder", "executable_sha256": digest,
-        "platform": current_platform, "architecture": current_arch, "installer_version": "13.0.0",
-        "trust_status": "VALID", "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
-    }))
-    adapter = SubfinderAdapter()
-    assert adapter.verify_managed_binary(str(binary)) is True
-    binary.write_bytes(b"tampered-binary")
-    assert adapter.verify_managed_binary(str(binary)) is False
+    root = __import__("pathlib").Path.cwd() / f".subfinder-trust-test-{uuid.uuid4().hex}"
+    try:
+        adapter_dir = root / "backend" / "app" / "adapters"
+        managed_dir = root / "backend" / "bin"
+        adapter_dir.mkdir(parents=True)
+        managed_dir.mkdir(parents=True)
+        binary = managed_dir / "subfinder"
+        binary.write_bytes(b"approved-binary")
+        record = managed_dir / "subfinder.trust.json"
+        monkeypatch.setattr(module, "__file__", str(adapter_dir / "subfinder_adapter.py"))
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        current_platform = "windows" if os.name == "nt" else ("darwin" if module.platform.system().lower() == "darwin" else "linux")
+        current_arch = "arm64" if module.platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
+        record.write_text(json.dumps({
+            "tool_id": "TOOL-SUBFINDER", "tool_version": "v2.6.5", "artifact_filename": "release.zip",
+            "artifact_sha256": "a" * 64, "executable_relative_path": "subfinder", "executable_sha256": digest,
+            "platform": current_platform, "architecture": current_arch, "installer_version": "13.0.0",
+            "trust_status": "VALID", "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
+        }))
+        adapter = SubfinderAdapter()
+        assert adapter.verify_managed_binary(str(binary)) is True
+        binary.write_bytes(b"tampered-binary")
+        assert adapter.verify_managed_binary(str(binary)) is False
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest.mark.asyncio
