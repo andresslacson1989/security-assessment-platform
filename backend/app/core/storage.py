@@ -51,21 +51,9 @@ def get_scan(
     Retrieves a ScanJob entity from authoritative database persistence. JSON files
     are export caches and are never used to resurrect authoritative state.
     """
-    if storage_dir is None:
-        return db_manager.get_scan_record(scan_id, organization_id=organization_id)
-
-    # 2. Fallback to cached JSON file
-    target_dir = get_storage_dir(storage_dir)
-    file_path = target_dir / f"{scan_id}.json"
-    if not file_path.exists() or not file_path.is_file():
-        return None
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return ScanJob.model_validate(data)
-    except Exception:
-        return None
+    # JSON snapshots are export/cache artifacts only.  They must never
+    # resurrect authoritative state when the relational record is absent.
+    return db_manager.get_scan_record(scan_id, organization_id=organization_id)
 
 
 def list_scans(
@@ -77,27 +65,9 @@ def list_scans(
     """
     Returns a paginated list of all stored ScanJobs sorted by creation/start time descending.
     """
-    if storage_dir is None:
-        return db_manager.list_scans_records(limit=limit, offset=offset, organization_id=organization_id)
-
-    # Fallback / explicit custom directory scan
-    target_dir = get_storage_dir(storage_dir)
-    scan_files = list(target_dir.glob("*.json"))
-    disk_scans: List[ScanJob] = []
-    for file_path in scan_files:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            job = ScanJob.model_validate(data)
-            disk_scans.append(job)
-        except Exception:
-            continue
-
-    disk_scans.sort(
-        key=lambda s: s.started_at or s.target.created_at,
-        reverse=True
-    )
-    return disk_scans[offset : offset + limit], len(disk_scans)
+    # JSON snapshots are not a query source.  Listing is always backed by the
+    # relational database, regardless of where export/cache files are stored.
+    return db_manager.list_scans_records(limit=limit, offset=offset, organization_id=organization_id)
 
 
 def delete_scan(

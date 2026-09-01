@@ -48,6 +48,8 @@ from app.core.models import (
 )
 from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan, list_scans, delete_scan
+from app.core import storage as storage_module
+from app.core.db import DatabaseManager
 
 
 def test_target_and_evidence_models():
@@ -458,9 +460,12 @@ def test_grading_grade_f_critical_override():
     assert summary.overall_security_grade == "F"
 
 
-def test_storage_lifecycle():
+def test_storage_lifecycle(monkeypatch):
     temp_dir = Path(tempfile.mkdtemp())
+    original_db_manager = storage_module.db_manager
+    temporary_db_manager = DatabaseManager(temp_dir / "cyberassess.db")
     try:
+        monkeypatch.setattr(storage_module, "db_manager", temporary_db_manager)
         target = Target(name="Local App", type=TargetType.URL, value="http://localhost:3000")
         scan_job = ScanJob(
             target=target,
@@ -495,5 +500,14 @@ def test_storage_lifecycle():
         assert get_scan(scan_job.id, storage_dir=temp_dir) is None
         scans_after, total_after = list_scans(limit=10, offset=0, storage_dir=temp_dir)
         assert total_after == 0
+
+        # A stale JSON export must never resurrect a deleted database record.
+        (temp_dir / f"{scan_job.id}.json").write_text(scan_job.model_dump_json(), encoding="utf-8")
+        assert get_scan(scan_job.id, storage_dir=temp_dir) is None
+        scans_after_cache_restore, total_after_cache_restore = list_scans(limit=10, offset=0, storage_dir=temp_dir)
+        assert scans_after_cache_restore == []
+        assert total_after_cache_restore == 0
     finally:
+        monkeypatch.setattr(storage_module, "db_manager", original_db_manager)
+        del temporary_db_manager
         shutil.rmtree(temp_dir)

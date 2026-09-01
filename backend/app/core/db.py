@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
@@ -88,9 +89,22 @@ class DatabaseManager:
             # resurrect state from an unrelated persistence location.
             raise
 
+    @contextmanager
+    def _connection_scope(self):
+        """Provide an explicit transaction scope that always closes SQLite handles."""
+        conn = self._get_connection()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             # 1. Ensure all tables exist
             conn.executescript("""
             -- Organizations Table
@@ -312,7 +326,7 @@ class DatabaseManager:
 
     def is_initialized(self) -> bool:
         """Returns True if the system already contains at least one administrator user."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) as cnt FROM users WHERE role = 'ADMIN'")
             row = cur.fetchone()
@@ -337,7 +351,7 @@ class DatabaseManager:
         user_id = f"usr-{uuid.uuid4().hex[:8]}"
         now_str = utc_now().isoformat()
 
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             # 1. Create Default Organization
             conn.execute(
                 "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
@@ -379,7 +393,7 @@ class DatabaseManager:
 
     def verify_api_key_hash(self, key_hash: str) -> Tuple[Optional[APIKeyRecord], Optional[UserProfile]]:
         """Verifies an incoming API Key hash against the database and returns the bound UserProfile."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM api_keys WHERE key_hash = ? AND (revoked_at IS NULL) AND (status = 'ACTIVE')", (key_hash,))
             row = cur.fetchone()
@@ -421,7 +435,7 @@ class DatabaseManager:
 
     def get_user_by_id(self, user_id: str) -> Optional[UserProfile]:
         """Load the current authoritative identity state for a bearer-token subject."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
             row = cur.fetchone()
@@ -439,7 +453,7 @@ class DatabaseManager:
 
     def revoke_api_key(self, key_id: str, organization_id: Optional[str] = None) -> bool:
         """Revokes an API Key and updates its status to REVOKED."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             query = "UPDATE api_keys SET revoked_at = ?, status = 'REVOKED' WHERE key_id = ?"
             params = [utc_now().isoformat(), key_id]
             if organization_id:
@@ -450,7 +464,7 @@ class DatabaseManager:
 
     def revoke_token(self, jti: str, token_hash: Optional[str] = None, expires_at: Optional[str] = None) -> None:
         """Revokes a JWT token by jti identifier."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO revoked_tokens (jti, token_hash, revoked_at, expires_at) VALUES (?, ?, ?, ?)",
                 (jti, token_hash, utc_now().isoformat(), expires_at),
@@ -458,7 +472,7 @@ class DatabaseManager:
 
     def is_token_revoked(self, jti: str) -> bool:
         """Checks if a JWT token has been revoked in the database."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,))
             return bool(cur.fetchone())
@@ -500,7 +514,7 @@ class DatabaseManager:
 
     def record_audit_event(self, event: "AuditEvent") -> None:
         """Appends an immutable security audit event to the relational audit log with chained cryptographic hash."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             self._insert_audit_event_conn(conn, event)
 
 
@@ -510,7 +524,7 @@ class DatabaseManager:
         limit: int = 50,
         offset: int = 0,
     ) -> Tuple[List[AuditEvent], int]:
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             query = "SELECT * FROM audit_events WHERE 1=1"
             params: List[Any] = []
@@ -553,7 +567,7 @@ class DatabaseManager:
         Returns (True, None) if the hash chain is completely intact, or (False, broken_event_id)
         if any record was modified, reordered, deleted, or tampered with.
         """
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             query = "SELECT * FROM audit_events"
             params: List[Any] = []
@@ -598,7 +612,7 @@ class DatabaseManager:
     # ========================================================================
 
     def create_asset(self, asset: Asset) -> Asset:
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO assets (
@@ -629,7 +643,7 @@ class DatabaseManager:
         return asset
 
     def get_asset(self, asset_id: str, organization_id: Optional[str] = None) -> Optional[Asset]:
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             if organization_id:
                 cur.execute("SELECT * FROM assets WHERE id = ? AND organization_id = ?", (asset_id, organization_id))
@@ -646,7 +660,7 @@ class DatabaseManager:
         limit: int = 50,
         offset: int = 0,
     ) -> Tuple[List[Asset], int]:
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             query = "SELECT * FROM assets WHERE 1=1"
             params: List[Any] = []
@@ -665,7 +679,7 @@ class DatabaseManager:
             return [self._row_to_asset(r) for r in rows], total
 
     def delete_asset(self, asset_id: str, organization_id: Optional[str] = None) -> bool:
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             if organization_id:
                 cur.execute("DELETE FROM assets WHERE id = ? AND organization_id = ?", (asset_id, organization_id))
@@ -701,7 +715,7 @@ class DatabaseManager:
         Atomically persists or updates a ScanJob entity, correlates raw findings into
         CanonicalFinding entities with SLA tracking, and stores all FindingOccurrence records.
         """
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             target = scan_job.target
             summary = scan_job.summary
             data_json = scan_job.model_dump_json()
@@ -833,7 +847,7 @@ class DatabaseManager:
 
     def get_scan_record(self, scan_id: str, organization_id: Optional[str] = None) -> Optional[ScanJob]:
         """Retrieves a ScanJob entity directly from relational persistence."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             if organization_id:
                 cur.execute("SELECT data_json FROM scans WHERE id = ? AND organization_id = ?", (scan_id, organization_id))
@@ -855,7 +869,7 @@ class DatabaseManager:
         offset: int = 0
     ) -> Tuple[List[ScanJob], int]:
         """Returns paginated scan jobs scoped to the caller's organization."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             if organization_id:
                 cur.execute("SELECT COUNT(*) FROM scans WHERE organization_id = ?", (organization_id,))
@@ -883,7 +897,7 @@ class DatabaseManager:
 
     def delete_scan_record(self, scan_id: str, organization_id: Optional[str] = None) -> bool:
         """Deletes a scan job and cascades removal of child finding records."""
-        with self._get_connection() as conn:
+        with self._connection_scope() as conn:
             cur = conn.cursor()
             if organization_id:
                 cur.execute("DELETE FROM scans WHERE id = ? AND organization_id = ?", (scan_id, organization_id))
