@@ -33,7 +33,15 @@ from app.core.ssrf_protector import (
     SSRFProtectionError,
     ValidatedTargetTransport,
 )
-from app.core.auth import get_current_user, require_admin, require_analyst_or_admin, require_permission, UserProfile, UserRole
+from app.core.auth import (
+    get_current_user,
+    require_admin,
+    require_analyst_or_admin,
+    require_permission,
+    authorize_internal_target,
+    UserProfile,
+    UserRole,
+)
 from app.core.db import db_manager
 
 router = APIRouter()
@@ -208,7 +216,7 @@ async def execute_http_repeater(
     Sends an arbitrary HTTP request from the server, guarded by SSRF gateway,
     per-hop redirect re-validation, response size bounds, and role/scope authorization.
     """
-    allow_internal = (current_user.role == UserRole.ADMIN)
+    allow_internal = authorize_internal_target(current_user, payload.url)
     try:
         assert_safe_url(payload.url, allow_internal=allow_internal)
         validated_target = create_validated_target(

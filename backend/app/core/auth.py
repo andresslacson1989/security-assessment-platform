@@ -363,10 +363,9 @@ def authorize_finding_access(user: UserProfile, finding: CanonicalFinding, actio
 def authorize_internal_target(user: UserProfile, target_value: str) -> bool:
     """
     Checks if a user is explicitly authorized to scan internal/private network addresses.
-    Restricted to ADMIN or caller with explicit 'scan:internal' scope.
+    Requires an explicit ``scan:internal`` scope (or the explicit wildcard scope).
+    Role membership alone is not sufficient.
     """
-    if user.role == UserRole.ADMIN:
-        return True
     scopes = user.scopes or []
     return "*" in scopes or "scan:internal" in scopes
 

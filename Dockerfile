@@ -175,7 +175,7 @@ ENV CYBERASSESS_TOOL_VENV_DIR=/opt/cyberassess/tool-venvs
 RUN mkdir -p "$CYBERASSESS_TOOL_VENV_DIR" && \
     for tool in sslyze bandit semgrep checkov prowler schemathesis; do \
         python -m venv "$CYBERASSESS_TOOL_VENV_DIR/$tool" && \
-        "$CYBERASSESS_TOOL_VENV_DIR/$tool/bin/python" -m pip install --no-cache-dir --require-hashes --timeout 1000 --retries 10 -r "/app/backend/tool-requirements/$tool.lock"; \
+        "$CYBERASSESS_TOOL_VENV_DIR/$tool/bin/python" -m pip install --no-cache-dir --require-hashes --timeout 1000 --retries 10 -r "/app/backend/tool-requirements/$tool.lock" || exit 1; \
     done
 # Keep the platform interpreter first. Adapters resolve each managed Python
 # tool from CYBERASSESS_TOOL_VENV_DIR, so tool environments never shadow the
