@@ -8,7 +8,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredSubdomain
+from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredSubdomain, NormalizedExecutionState
 from app.core.orchestrator import ScanOrchestrator
 
 from app.adapters.subfinder_adapter import SubfinderAdapter
@@ -43,6 +43,70 @@ def test_runtime_harness_is_explicitly_unavailable_without_approved_binary():
     candidates = [managed_dir / "subfinder", managed_dir / "subfinder.exe"]
     if not any(path.exists() for path in candidates):
         pytest.skip("UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed")
+
+
+@pytest.mark.asyncio
+async def test_real_managed_subfinder_runtime_path():
+    """Exercise the approved binary, governed vector, parser, and state path."""
+    managed_dir = Path("backend/bin")
+    candidates = [managed_dir / "subfinder", managed_dir / "subfinder.exe"]
+    if not any(path.exists() for path in candidates):
+        pytest.skip("UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed")
+
+    adapter = SubfinderAdapter()
+    path = adapter.resolve_binary_path()
+    assert path is not None
+    assert adapter.verify_managed_binary(path) is True
+    assert await adapter.get_version(path) == "subfinder v2.6.5"
+
+    logs = []
+    findings = []
+    discoveries = []
+    rejected = []
+    commands = []
+    original_execute = adapter.execute_command
+
+    async def capture_execute(command, **kwargs):
+        commands.append(command)
+        return await original_execute(command, **kwargs)
+
+    adapter.execute_command = capture_execute
+
+    async def log(*args):
+        logs.append(args)
+
+    async def finding(value):
+        findings.append(value)
+
+    async def discovered(value):
+        discoveries.append(value)
+
+    async def rejected_discovery(value):
+        rejected.append(value)
+
+    result = await adapter.run(
+        Target(name="runtime", type=TargetType.DOMAIN, value="example.com"),
+        ScanConfig(), log, finding,
+        scan_id="subfinder-real-runtime",
+        organization_id="org-runtime",
+        emit_subdomain=discovered,
+        emit_rejected_discovery=rejected_discovery,
+    )
+
+    assert result == findings
+    assert adapter.last_execution_state in {
+        NormalizedExecutionState.COMPLETED_NO_FINDINGS,
+        NormalizedExecutionState.COMPLETED_WITH_FINDINGS,
+        NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING,
+        NormalizedExecutionState.TOOL_EXECUTION_FAILED,
+        NormalizedExecutionState.EXECUTION_TIMED_OUT,
+    }
+    assert any(
+        command[1:] == ["-d", "example.com", "-s", "crtsh", "-silent", "-json", "-timeout", "10", "-max-time", "1"]
+        for command in commands
+    )
+    assert all(item.dns_status == "UNRESOLVED" for item in discoveries)
+    assert all(item.organization_id == "org-runtime" for item in discoveries + rejected)
 
 
 def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):
@@ -113,6 +177,54 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
     assert rejected[0].organization_id == "org-a"
     assert rejected[0].sources == ["provider"]
     assert adapter.last_execution_state.value == "PARTIAL_RESULTS_WITH_WARNING"
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_with_partial_stdout_is_degraded_not_success(monkeypatch):
+    adapter = SubfinderAdapter()
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: "/bin/subfinder")
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
+    monkeypatch.setattr(adapter, "get_version", AsyncMock(return_value="subfinder v2.6.5"))
+    monkeypatch.setattr(adapter, "safe_execute_subprocess", AsyncMock(return_value=(
+        2,
+        '{"host":"api.example.com","sources":["crtsh"]}\n',
+        "provider returned a non-zero status",
+    )))
+
+    async def callback(*_args):
+        return None
+
+    await adapter.run(
+        Target(name="root", type=TargetType.DOMAIN, value="example.com"),
+        ScanConfig(), callback, callback,
+        organization_id="org-a",
+    )
+
+    assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
+
+@pytest.mark.asyncio
+async def test_timeout_with_partial_stdout_remains_timed_out(monkeypatch):
+    adapter = SubfinderAdapter()
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: "/bin/subfinder")
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
+    monkeypatch.setattr(adapter, "get_version", AsyncMock(return_value="subfinder v2.6.5"))
+    monkeypatch.setattr(adapter, "safe_execute_subprocess", AsyncMock(return_value=(
+        -1,
+        '{"host":"api.example.com","sources":["crtsh"]}\n',
+        "Execution timed out after 30 seconds",
+    )))
+
+    async def callback(*_args):
+        return None
+
+    await adapter.run(
+        Target(name="root", type=TargetType.DOMAIN, value="example.com"),
+        ScanConfig(), callback, callback,
+        organization_id="org-a",
+    )
+
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_TIMED_OUT
 
 
 @pytest.mark.asyncio

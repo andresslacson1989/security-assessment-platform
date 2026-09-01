@@ -269,6 +269,16 @@ class SubfinderAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Subfinder discovery reached the per-run result limit; results are partial.")
             self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
 
+        # A non-zero process result is never a successful assessment merely
+        # because the tool emitted parseable records. Preserve timeout as its
+        # own terminal state; all other non-zero exits with output are
+        # explicitly degraded so partial coverage cannot masquerade as clean.
+        if code != 0:
+            if "timed out" in (stderr or "").lower():
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
+            else:
+                self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
         if discovered_hosts:
             desc = f"Subfinder discovered {len(discovered_hosts)} subdomains in the external attack surface: {', '.join(list(discovered_hosts)[:10])}"
             if len(discovered_hosts) > 10:
