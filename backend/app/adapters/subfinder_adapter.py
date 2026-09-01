@@ -9,6 +9,7 @@ import re
 import ipaddress
 import hashlib
 import os
+import platform
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 from urllib.parse import urlparse
 
@@ -74,6 +75,8 @@ class SubfinderAdapter(BaseToolAdapter):
         """Verify the exact managed executable and its installer-created identity record."""
         managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
         path = os.path.abspath(binary)
+        if os.path.realpath(path) != path:
+            return False
         if os.path.dirname(path) != managed_dir or os.path.basename(path).lower() not in {"subfinder", "subfinder.exe"}:
             return False
         record_path = f"{path}.trust.json"
@@ -81,6 +84,20 @@ class SubfinderAdapter(BaseToolAdapter):
             with open(record_path, "r", encoding="utf-8") as record_file:
                 record = json.load(record_file)
             if record.get("tool_id") != "TOOL-SUBFINDER" or record.get("trust_status") != "VALID":
+                return False
+            current_platform = "windows" if os.name == "nt" else ("darwin" if platform.system().lower() == "darwin" else "linux")
+            current_arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
+            if record.get("tool_version") != self.APPROVED_VERSION:
+                return False
+            if record.get("platform") != current_platform or record.get("architecture") != current_arch:
+                return False
+            if record.get("artifact_filename") is None or not record.get("artifact_sha256"):
+                return False
+            if record.get("installer_version") is None:
+                return False
+            if "ARCHIVE_INTEGRITY_VERIFIED" not in record.get("claims", []):
+                return False
+            if "EXECUTABLE_INTEGRITY_VERIFIED" not in record.get("claims", []):
                 return False
             if record.get("executable_relative_path") != os.path.basename(path):
                 return False
