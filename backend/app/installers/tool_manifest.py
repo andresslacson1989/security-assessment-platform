@@ -6,6 +6,7 @@ Ensures tool supply-chain integrity, preventing unpinned or tampered binary exec
 
 from __future__ import annotations
 import hashlib
+import re
 from typing import Dict, Optional, Any, Tuple
 
 
@@ -363,6 +364,55 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         },
     },
 }
+
+
+def audit_tool_manifest(
+    tool_names: list[str],
+    manifest: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, list[str]]:
+    """Classify registry tools without converting incomplete metadata to trust.
+
+    ``assured`` means the entry has the minimum identity and digest metadata
+    required for immutable artifact verification.  ``incomplete`` is an
+    explicit fail-closed result for known tools whose contract metadata is not
+    available yet (for example package-manager delegated or manual tools).
+    ``invalid`` is reserved for malformed entries, while ``unregistered``
+    identifies tools absent from the authoritative manifest entirely.
+    """
+    source = manifest if manifest is not None else PINNED_TOOL_MANIFEST
+    result = {"assured": [], "incomplete": [], "invalid": [], "unregistered": []}
+    digest_pattern = re.compile(r"^[0-9a-f]{64}$")
+
+    for tool_name in tool_names:
+        entry = source.get(tool_name)
+        if entry is None:
+            result["unregistered"].append(tool_name)
+            continue
+
+        required_identity = all(
+            isinstance(entry.get(field), str) and entry[field].strip()
+            for field in ("tool_name", "version", "release_tag")
+        )
+        checksums = entry.get("sha256_checksums")
+        assets = entry.get("asset_names", {})
+        structurally_valid = (
+            required_identity
+            and isinstance(checksums, dict)
+            and isinstance(assets, dict)
+            and all(
+                isinstance(digest, str) and digest_pattern.fullmatch(digest)
+                for digest in checksums.values()
+            )
+            and set(checksums).issubset(assets)
+        )
+        if not structurally_valid:
+            result["invalid"].append(tool_name)
+        elif not checksums:
+            result["incomplete"].append(tool_name)
+        else:
+            result["assured"].append(tool_name)
+
+    return result
 
 
 def calculate_sha256(data: bytes) -> str:

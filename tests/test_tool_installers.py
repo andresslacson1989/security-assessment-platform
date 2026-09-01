@@ -31,7 +31,7 @@ from app.installers.github_release_installer import GithubReleaseInstaller
 from app.core.binary_resolver import resolve_tool_binary
 from app.installers.system_installer import SystemToolHelper
 from app.installers.manager import ToolInstallationManager
-from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, audit_tool_manifest
 
 
 @pytest.fixture
@@ -106,6 +106,38 @@ def test_pypi_manifest_records_match_hash_locked_release_metadata():
         assert entry["version"] == version
         assert entry["sha256_checksums"]["pypi_sdist"] == digest
         assert entry["asset_names"]["pypi_sdist"].endswith(f"-{version}.tar.gz")
+
+
+def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
+    status = audit_tool_manifest(
+        ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "trivy", "unknown-tool"]
+    )
+
+    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler"}
+    assert status["incomplete"] == ["trivy"]
+    assert status["invalid"] == []
+    assert status["unregistered"] == ["unknown-tool"]
+
+    assert audit_tool_manifest(["trivy"])["incomplete"] == ["trivy"]
+
+
+def test_manifest_audit_rejects_malformed_digest_metadata():
+    malformed = {
+        "demo": {
+            "tool_name": "demo",
+            "version": "1.0.0",
+            "release_tag": "v1.0.0",
+            "sha256_checksums": {"linux_amd64": "not-a-sha256"},
+            "asset_names": {"linux_amd64": "demo.tar.gz"},
+        }
+    }
+
+    assert audit_tool_manifest(["demo"], malformed) == {
+        "assured": [],
+        "incomplete": [],
+        "invalid": ["demo"],
+        "unregistered": [],
+    }
 
 
 @pytest.mark.asyncio
