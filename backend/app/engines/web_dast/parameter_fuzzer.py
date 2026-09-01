@@ -315,16 +315,17 @@ async def audit_parameter_fuzzing(
                     fuzzed_params[param_name] = redir_payload
                     fuzzed_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(fuzzed_params), parsed.fragment))
 
-                    # Do not follow redirects for open redirect check
-                    async with httpx.AsyncClient(verify=True, follow_redirects=False, timeout=config.timeout_seconds) as redir_client:
-                        resp = await redir_client.get(fuzzed_url)
-                        if resp.status_code in (301, 302, 303, 307, 308):
-                            location_hdr = resp.headers.get("location", "")
-                            if "attacker.invalid" in location_hdr:
-                                loc = f"{url_str} [{param_name}]"
-                                obs = f"HTTP {resp.status_code} Redirect Location: '{location_hdr}' reflects untrusted external target."
-                                curl_cmd = format_curl_poc("GET", fuzzed_url)
-                                f = Finding(
+                    # Reuse the engine's validated, connection-pinned client;
+                    # disabling redirect following here must not create a
+                    # second unvalidated socket path.
+                    resp = await client.get(fuzzed_url, follow_redirects=False)
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        location_hdr = resp.headers.get("location", "")
+                        if "attacker.invalid" in location_hdr:
+                            loc = f"{url_str} [{param_name}]"
+                            obs = f"HTTP {resp.status_code} Redirect Location: '{location_hdr}' reflects untrusted external target."
+                            curl_cmd = format_curl_poc("GET", fuzzed_url)
+                            f = Finding(
                                     scan_id=scan_id,
                                     engine="web_dast",
                                     check_id="DAST-REDIR-001",
@@ -358,9 +359,9 @@ async def audit_parameter_fuzzing(
                                     fingerprint=calculate_fingerprint("DAST-REDIR-001", loc, "open_redir"),
                                     source_tool="native",
                                 )
-                                findings.append(f)
-                                if emit_finding:
-                                    await emit_finding(f)
+                            findings.append(f)
+                            if emit_finding:
+                                await emit_finding(f)
                 except Exception:
                     pass
 

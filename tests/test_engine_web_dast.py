@@ -26,6 +26,7 @@ from app.engines.web_dast.api_inspector import audit_sensitive_exposure_and_meth
 from app.engines.web_dast.browser_posture import audit_browser_posture
 from app.engines.web_dast.graphql_auditor import audit_graphql_endpoints
 from app.engines.web_dast.engine import WebDastAssessmentEngine
+from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
 
 
 @pytest.mark.asyncio
@@ -310,6 +311,41 @@ async def test_web_dast_engine_reaches_bounded_sqlmap_path():
         )
 
     assert "sqlmap" in calls
+
+
+@pytest.mark.asyncio
+async def test_parameter_redirect_probe_reuses_validated_client():
+    """Open-redirect probing must not create a second unvalidated HTTP client."""
+    def handler(request):
+        return httpx.Response(
+            302,
+            headers={"location": "https://attacker.invalid"},
+            request=request,
+        )
+
+    config = ScanConfig(
+        fuzzing=FuzzingConfig(
+            enabled=True,
+            fuzz_sqli=False,
+            fuzz_xss=False,
+            fuzz_lfi=False,
+            fuzz_ssti=False,
+            fuzz_redirect=True,
+        )
+    )
+    target_url = "https://example.com/?next=home"
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with patch("app.engines.web_dast.parameter_fuzzer.httpx.AsyncClient", side_effect=AssertionError("new client not allowed")):
+            findings = await audit_parameter_fuzzing(
+                target_url,
+                discovered_endpoints=[],
+                client=client,
+                config=config,
+                scan_id="scan-redirect-binding",
+            )
+
+    assert any(f.check_id == "DAST-REDIR-001" for f in findings)
 
 
 @pytest.mark.asyncio
