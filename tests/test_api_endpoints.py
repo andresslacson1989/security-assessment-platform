@@ -336,6 +336,68 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_finding_occurrences_endpoint_is_tenant_scoped(auth_headers):
+    """Contract 04 §1.4: occurrence history is durable and cannot cross tenants."""
+    from app.core.db import db_manager
+
+    scan_id = "occurrence-api-scan"
+    job = ScanJob(
+        id=scan_id,
+        organization_id="org-default",
+        target=Target(name="Occurrence API", type=TargetType.URL, value="https://occurrence.test"),
+        profile=ScanProfile.FULL_STACK,
+        findings=[
+            Finding(
+                scan_id=scan_id,
+                engine="web_dast",
+                source_tool="nuclei",
+                check_id="DAST-OCC-001",
+                category="Test",
+                title="Occurrence API finding",
+                severity=Severity.MEDIUM,
+                cvss_score=5.0,
+                description="Test finding",
+                impact="Test impact",
+                remediation="Test remediation",
+                evidence=Evidence(
+                    location="https://occurrence.test",
+                    observed_value="observed",
+                    expected_value="expected",
+                ),
+            )
+        ],
+    )
+    save_scan(job)
+    with db_manager._connection_scope() as conn:
+        row = conn.execute(
+            "SELECT id FROM findings WHERE scan_id = ? AND organization_id = ?",
+            (scan_id, "org-default"),
+        ).fetchone()
+    assert row is not None
+    finding_id = row["id"]
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/api/findings/{finding_id}/occurrences", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["finding_id"] == finding_id
+        assert data["total"] == 1
+        assert data["items"][0]["organization_id"] == "org-default"
+        assert data["items"][0]["source_tool"] == "nuclei"
+
+        other_tenant = UserProfile(
+            id="usr-occurrence-other",
+            username="other-tenant",
+            email="other-tenant@example.test",
+            role=UserRole.ADMIN,
+            organization_id="org-other",
+        )
+        other_headers = {"Authorization": f"Bearer {create_access_token(other_tenant)}"}
+        denied = await ac.get(f"/api/findings/{finding_id}/occurrences", headers=other_headers)
+        assert denied.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_asset_creation_all_supported_types(auth_headers):
     """
     Verifies that all supported AssetType values (WEB_APPLICATION, API_ENDPOINT,

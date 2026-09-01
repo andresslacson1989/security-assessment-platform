@@ -139,7 +139,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     username = payload.username.strip()
     source_ip = request.client.host if request.client else None
 
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM users WHERE username = ?", (username,))
         row = cur.fetchone()
@@ -249,7 +249,7 @@ async def create_user(
         raise HTTPException(status_code=403, detail="Tenant administrators may only create users in their own organization.")
     org_id = payload.organization_id or current_user.organization_id
 
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE username = ?", (payload.username.strip(),))
         if cur.fetchone():
@@ -315,7 +315,7 @@ async def create_api_key(
 
     now_str = utc_now().isoformat()
 
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         conn.execute(
             """
             INSERT INTO api_keys (key_id, key_hash, organization_id, user_id, name, scopes_json, created_at, expires_at)
@@ -360,7 +360,7 @@ async def list_api_keys(
     current_user: UserProfile = Depends(require_analyst_or_admin),
 ) -> List[Dict[str, Any]]:
     """Lists registered API keys for the caller's organization (excluding hashes)."""
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         is_system_admin = (
             current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
@@ -393,7 +393,7 @@ async def revoke_api_key(
     current_user: UserProfile = Depends(require_analyst_or_admin),
 ) -> Dict[str, Any]:
     """Revokes an active API key immediately."""
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         is_system_admin = (
             current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL

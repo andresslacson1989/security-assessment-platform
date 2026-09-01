@@ -52,7 +52,7 @@ async def list_findings(
     """
     Returns filtered canonical finding records scoped strictly to caller's organization.
     """
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         query = "SELECT * FROM findings WHERE 1=1"
         params: List[Any] = []
@@ -114,7 +114,7 @@ async def get_finding_detail(
     current_user: UserProfile = Depends(require_permission(required_scope="finding:read")),
 ) -> Dict[str, Any]:
     """Retrieves full finding details. Enforces strict tenant ownership (IDOR denial)."""
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",
@@ -132,6 +132,62 @@ async def get_finding_detail(
         return f_data
 
 
+@router.get("/{finding_id}/occurrences", summary="Get Finding Occurrence History")
+async def list_finding_occurrences(
+    finding_id: str,
+    current_user: UserProfile = Depends(require_permission(required_scope="finding:read")),
+) -> Dict[str, Any]:
+    """Return historical detections for a finding within the caller's tenant."""
+    organization_id = _organization_scope(current_user)
+    with db_manager._connection_scope() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",
+            (finding_id, organization_id, organization_id),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found.")
+
+        cur.execute(
+            """
+            SELECT id, organization_id, canonical_finding_id, scan_id, asset_id,
+                   source_tool, check_id, raw_evidence_json, reproduction_curl,
+                   taint_trace_json, detected_at
+            FROM finding_occurrences
+            WHERE canonical_finding_id = ?
+              AND (? IS NULL OR organization_id = ?)
+            ORDER BY detected_at DESC, id DESC
+            """,
+            (finding_id, organization_id, organization_id),
+        )
+        rows = cur.fetchall()
+
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            raw_evidence = json.loads(row["raw_evidence_json"])
+        except (TypeError, json.JSONDecodeError):
+            raw_evidence = {}
+        try:
+            taint_trace = json.loads(row["taint_trace_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            taint_trace = []
+        items.append({
+            "id": row["id"],
+            "organization_id": row["organization_id"],
+            "canonical_finding_id": row["canonical_finding_id"],
+            "scan_id": row["scan_id"],
+            "asset_id": row["asset_id"],
+            "source_tool": row["source_tool"],
+            "check_id": row["check_id"],
+            "raw_evidence": raw_evidence,
+            "reproduction_curl": row["reproduction_curl"],
+            "taint_trace": taint_trace,
+            "detected_at": row["detected_at"],
+        })
+    return {"finding_id": finding_id, "total": len(items), "items": items}
+
+
 @router.patch("/{finding_id}/status", summary="Update Finding Lifecycle State & SLA Assignment")
 async def update_finding_status(
     finding_id: str,
@@ -142,7 +198,7 @@ async def update_finding_status(
     Updates the lifecycle triage status of a vulnerability finding (OPEN, IN_PROGRESS, FIXED, RISK_ACCEPTED).
     Enforces tenant ownership.
     """
-    with db_manager._get_connection() as conn:
+    with db_manager._connection_scope() as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM findings WHERE id = ? AND (? IS NULL OR organization_id = ?)",

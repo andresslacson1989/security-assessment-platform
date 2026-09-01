@@ -827,12 +827,13 @@ class DatabaseManager:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO finding_occurrences (
-                        id, canonical_finding_id, scan_id, asset_id, source_tool, check_id,
+                        id, organization_id, canonical_finding_id, scan_id, asset_id, source_tool, check_id,
                         raw_evidence_json, reproduction_curl, taint_trace_json, detected_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         occ.id,
+                        occ.organization_id,
                         occ.canonical_finding_id,
                         occ.scan_id,
                         occ.asset_id or asset_id,

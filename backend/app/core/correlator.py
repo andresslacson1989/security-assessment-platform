@@ -206,6 +206,7 @@ class FindingCorrelator:
 
             for gf in group:
                 occurrences.append(FindingOccurrence(
+                    organization_id=org_id,
                     canonical_finding_id=canonical.id,
                     scan_id=gf.scan_id,
                     asset_id=asset_id,
