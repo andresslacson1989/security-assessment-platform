@@ -70,7 +70,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 ### 3. Subfinder (Passive Subdomain Enumeration)
 - **Security Domain**: Perimeter / EASM
 - **Purpose**: Discovers valid subdomains passively through the governed public `crtsh` provider baseline without active probing. Additional credentialed providers remain disabled.
-- **Enterprise Maturity**: Implementation in progress; repository controls are partially verified.
+- **Enterprise Maturity**: Repository controls verified; managed-runtime evidence remains unavailable in this environment.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/subfinder).
 - **Version Pinning & Integrity**: Pinned in `PINNED_TOOL_MANIFEST` with exact SHA-256 binary digests.
 - **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, no credential injection, and no automatic DNS probing or inventory admission. Broader provider egress policy/credential injection remains unimplemented.

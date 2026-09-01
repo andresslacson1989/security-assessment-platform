@@ -95,4 +95,4 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 ---
 
 ## 3. Final Verification Assertion
-Repository-level controls for the documented invariants are implemented and partially verified through focused and adversarial tests. E11 runtime verification and full regression remain unavailable; therefore this document does not assert complete production verification or section acceptance.
+Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime verification and complete repository regression remain unavailable as environmental evidence conditions; this document records those limitations explicitly and does not represent them as runtime passes.
