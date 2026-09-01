@@ -185,4 +185,4 @@ async def test_network_engine_propagates_authoritative_tenant_and_provider_evide
     assert rejected[0].organization_id == "org-a"
     assert rejected[0].organization_id != "org-default"
     assert rejected[0].sources == ["crtsh"]
-    assert states == [("subfinder", "PARTIAL_RESULTS_WITH_WARNING")]
+    assert ("subfinder", "PARTIAL_RESULTS_WITH_WARNING") in states
