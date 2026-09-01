@@ -319,28 +319,37 @@ async def test_api_key_scope_requests_cannot_escape_allowlist_or_caller_grants()
 
 def test_sec_014_jwt_algorithm_confusion_rejection():
     """SEC-014: Tokens with alg=none or tampered signatures are rejected, key rotation is supported."""
+    import app.core.auth as auth_module
+
+    original_active_key_id = auth_module.ACTIVE_KEY_ID
+    original_rotation_store = dict(auth_module.JWT_KEY_ROTATION_STORE)
     user = UserProfile(id="usr-1", username="testuser", email="test@local", role=UserRole.VIEWER)
-    token = create_access_token(user)
+    try:
+        token = create_access_token(user)
 
-    # Decode valid token
-    decoded = decode_access_token(token)
-    assert decoded["sub"] == "usr-1"
+        # Decode valid token
+        decoded = decode_access_token(token)
+        assert decoded["sub"] == "usr-1"
 
-    # Test key rotation: tokens signed with previous active keys remain valid while new keys take effect
-    rotate_signing_key("k-rotated-v13", "secret-rotated-256bit-key-here!!!")
-    new_token = create_access_token(user)
-    assert decode_access_token(new_token)["sub"] == "usr-1"
-    assert decode_access_token(token)["sub"] == "usr-1"
+        # Test key rotation: tokens signed with previous active keys remain valid while new keys take effect
+        rotate_signing_key("k-rotated-v13", "secret-rotated-256bit-key-here!!!")
+        new_token = create_access_token(user)
+        assert decode_access_token(new_token)["sub"] == "usr-1"
+        assert decode_access_token(token)["sub"] == "usr-1"
 
-    # Attempt alg=none attack
-    parts = token.split(".")
-    import base64
-    fake_header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
-    fake_token = f"{fake_header}.{parts[1]}."
+        # Attempt alg=none attack
+        parts = token.split(".")
+        import base64
+        fake_header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+        fake_token = f"{fake_header}.{parts[1]}."
 
-    from fastapi import HTTPException
-    with pytest.raises(HTTPException):
-        decode_access_token(fake_token)
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException):
+            decode_access_token(fake_token)
+    finally:
+        auth_module.JWT_KEY_ROTATION_STORE.clear()
+        auth_module.JWT_KEY_ROTATION_STORE.update(original_rotation_store)
+        auth_module.ACTIVE_KEY_ID = original_active_key_id
 
 
 def test_jwt_key_rotation_rejects_weak_replacement_keys():
