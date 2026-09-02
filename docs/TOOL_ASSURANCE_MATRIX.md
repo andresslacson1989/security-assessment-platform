@@ -1,7 +1,7 @@
 # CyberAssess v14 — Enterprise Tool Assurance Program & Methodology Matrix
 
 ## Document Purpose & Authority
-This specification serves as the **Audit & Assurance Matrix** for all 26 supported security tool adapters integrated into the CyberAssess platform. It contains 21 numbered external-tool reviews plus five auxiliary/manual adapter reviews defined in Contract 03 §4.1–§4.5.
+This specification serves as the **Audit & Assurance Matrix** for all 26 supported security tool adapters integrated into the CyberAssess platform. It contains one assurance entry for each supported tool, including the five auxiliary/manual adapters defined in Contract 03 §4.1–§4.5.
 
 - **Authoritative Implementation Contract:** [`contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md`](../contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md) defines the canonical 41-point implementation requirements, invocation boundaries, schemas, and security controls.
 - **Audit & Assurance View:** This document provides the high-level methodology overview, evaluation taxonomy, and operational governance mappings.
