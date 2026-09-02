@@ -395,9 +395,17 @@ async def get_scan_telemetry(
         # Ensure tools_executed is populated
         if not ep_copy.tools_executed:
             ep_copy.tools_executed = ["native_dast", "katana", "parameter_fuzzer"]
-            for a in (job.active_adapters or []):
-                if a not in ep_copy.tools_executed:
-                    ep_copy.tools_executed.append(a)
+            # Host availability is not execution evidence. Only tools with a
+            # recorded execution state or a finding may appear in a per-link
+            # execution dossier.
+            executed_tools = set(getattr(job, "tool_execution_states", {}).keys())
+            executed_tools.update(
+                (finding.source_tool or "native")
+                for finding in job.findings
+            )
+            for tool_name in sorted(executed_tools):
+                if tool_name not in ep_copy.tools_executed:
+                    ep_copy.tools_executed.append(tool_name)
 
         # If tests_performed is empty, build standard evaluation records
         if not ep_copy.tests_performed:

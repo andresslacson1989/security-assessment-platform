@@ -565,6 +565,7 @@ async def test_per_link_assessment_dossier_structure(auth_headers):
         profile=ScanProfile.FULL_STACK,
         status=ScanStatus.COMPLETED,
         progress_percent=100,
+        active_adapters=["nuclei"],
         discovered_endpoints=[
             DiscoveredEndpoint(
                 url="https://dossier-test.local/admin/settings",
@@ -606,6 +607,7 @@ async def test_per_link_assessment_dossier_structure(auth_headers):
         assert ep["url"] == "https://dossier-test.local/admin/settings"
         assert len(ep["finding_ids"]) == 1
         assert len(ep["tools_executed"]) >= 3
+        assert "nuclei" not in ep["tools_executed"], "availability must not masquerade as endpoint execution"
         assert len(ep["tests_performed"]) >= 4
         # Verify test records contain test name, category, tool, and status
         test_names = [t["test_name"] for t in ep["tests_performed"]]
