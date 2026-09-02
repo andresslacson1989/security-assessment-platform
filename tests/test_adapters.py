@@ -1041,13 +1041,13 @@ class TestCapabilitiesAndRegistry:
         mock_nmap.tool_name = "nmap"
         mock_nmap.resolve_binary_path.return_value = "/usr/bin/nmap"
         mock_nmap.is_available = AsyncMock(return_value=True)
-        mock_nmap.get_version = AsyncMock(return_value="Nmap 7.94")
+        mock_nmap.get_version = AsyncMock(return_value="Nmap 7.95")
 
         mock_semgrep = MagicMock(spec=SemgrepAdapter)
         mock_semgrep.tool_name = "semgrep"
         mock_semgrep.resolve_binary_path.return_value = "/usr/bin/semgrep"
         mock_semgrep.is_available = AsyncMock(return_value=True)
-        mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.60.0")
+        mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.65.0")
 
         all_tools = [
             "nmap", "sslyze", "subfinder", "httpx",
@@ -1075,11 +1075,11 @@ class TestCapabilitiesAndRegistry:
 
             assert tool_map["nmap"].available is True
             assert tool_map["nmap"].execution_mode == ToolExecutionMode.ADAPTER_ACTIVE
-            assert tool_map["nmap"].version == "Nmap 7.94"
+            assert tool_map["nmap"].version == "Nmap 7.95"
 
             assert tool_map["semgrep"].available is True
             assert tool_map["semgrep"].execution_mode == ToolExecutionMode.ADAPTER_ACTIVE
-            assert tool_map["semgrep"].version == "semgrep 1.60.0"
+            assert tool_map["semgrep"].version == "semgrep 1.65.0"
 
             assert tool_map["nuclei"].available is False
             assert tool_map["nuclei"].execution_mode == ToolExecutionMode.NATIVE_FALLBACK
@@ -1101,7 +1101,7 @@ class TestCapabilitiesAndRegistry:
         mock_nmap.tool_name = "nmap"
         mock_nmap.resolve_binary_path.return_value = "/usr/bin/nmap"
         mock_nmap.is_available = AsyncMock(return_value=True)
-        mock_nmap.get_version = AsyncMock(return_value="Nmap 7.94")
+        mock_nmap.get_version = AsyncMock(return_value="Nmap 7.95")
 
         mock_nuclei = MagicMock(spec=NucleiAdapter)
         mock_nuclei.tool_name = "nuclei"
@@ -1113,7 +1113,7 @@ class TestCapabilitiesAndRegistry:
         mock_semgrep.tool_name = "semgrep"
         mock_semgrep.resolve_binary_path.return_value = "/usr/bin/semgrep"
         mock_semgrep.is_available = AsyncMock(return_value=True)
-        mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.60.0")
+        mock_semgrep.get_version = AsyncMock(return_value="semgrep 1.65.0")
 
         mock_registry = {
             tool: MagicMock(
@@ -1159,6 +1159,23 @@ class TestCapabilitiesAndRegistry:
         assert status.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
         assert status.version is None
         unassured.get_version.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_capability_discovery_rejects_runtime_version_mismatch(self):
+        mismatched = MagicMock()
+        mismatched.tool_name = "semgrep"
+        mismatched.resolve_binary_path.return_value = r"C:\managed\semgrep.exe"
+        mismatched.is_available = AsyncMock(return_value=True)
+        mismatched.verify_managed_binary.return_value = True
+        mismatched.get_version = AsyncMock(return_value="semgrep 9.9.9")
+
+        with patch("app.adapters.get_adapter_registry", return_value={"semgrep": mismatched}):
+            caps = await discover_system_capabilities()
+
+        status = caps.tools[0]
+        assert status.assurance_status == "INVALID"
+        assert status.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+        assert status.version is None
 
 
 # ============================================================================

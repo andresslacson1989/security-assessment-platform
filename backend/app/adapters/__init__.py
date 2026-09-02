@@ -6,6 +6,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 import platform
 import inspect
+import re
 from typing import Optional, Dict, List
 
 from app.core.models import (
@@ -43,7 +44,7 @@ from app.adapters.metasploit_adapter import MetasploitAdapter
 from app.adapters.sqlmap_adapter import SqlmapAdapter
 from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.hydra_adapter import HydraAdapter
-from app.installers.tool_manifest import audit_tool_manifest
+from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, audit_tool_manifest
 
 
 __all__ = [
@@ -243,6 +244,17 @@ async def discover_system_capabilities(
                     adapter.verify_managed_binary(resolved_path)
                 )
             version = await adapter.get_version(custom_path, **version_kwargs)
+            configured_version = getattr(adapter, "approved_version", None)
+            expected_version = str(
+                configured_version
+                if isinstance(configured_version, str) and configured_version.strip()
+                else PINNED_TOOL_MANIFEST.get(name, {}).get("version", "")
+            ).lstrip("v")
+            version_match = re.search(r"(?<![0-9A-Za-z.-])v?(\d+(?:\.\d+){1,2})(?![0-9A-Za-z.-])", version or "")
+            if expected_version and (not version_match or version_match.group(1) != expected_version):
+                assurance_status = "INVALID"
+                assured_for_execution = False
+                version = None
 
         if available and resolved_path and assured_for_execution:
             mode = ToolExecutionMode.ADAPTER_ACTIVE
