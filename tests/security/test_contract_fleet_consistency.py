@@ -82,6 +82,8 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert matrix_tool_ids == expected_matrix_ids
     assert "Part II defines all 26 supported tools" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09
+    detailed_sections = re.findall(r"^## TOOL (\d{2}):", contract_09, re.MULTILINE)
+    assert detailed_sections == [f"{index:02d}" for index in range(1, 27)]
     traceability_rows = [line for line in contract_09.splitlines() if line.startswith("| `TOOL-")]
     traceability_ids = {line.split("|")[1].strip().strip("`") for line in traceability_rows}
     assert len(traceability_rows) == 26

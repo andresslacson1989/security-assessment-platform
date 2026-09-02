@@ -3552,6 +3552,236 @@ Stderr: Diagnostic logs
 
 ---
 
+## TOOL 22: Metasploit Framework
+
+- **Tool ID:** TOOL-METASPLOIT.
+- **41-point implementation specification:**
+  - 1. Identity: executable msfconsole; upstream Rapid7 Metasploit Framework.
+  - 2. Purpose: governed auxiliary TLS verification; role SPECIALIZED; class ACTIVE_READ_ONLY.
+  - 3. Automated capability is restricted to auxiliary/scanner/ssl/openssl_heartbleed.
+  - 4. Exploit modules, payloads, sessions, shells, and arbitrary resource scripts are forbidden.
+  - 5. Execution mode is MANUAL_MODE unless managed trust, ValidatedTarget, and active-probing authorization pass.
+  - 6. Unmanaged PATH/custom binaries are diagnostic-only and fail closed for assured execution.
+  - 7. Version probe is msfconsole -v and must match the manifest-approved exact version.
+  - 8. Invocation is fixed msfconsole -q -x with server-generated RHOSTS/RPORT, run, and exit.
+  - 9. Host is normalized and port is restricted to 1 through 65535.
+  - 10. No user-provided Metasploit script or module is accepted.
+  - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
+  - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
+  - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
+  - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
+  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 16. Version probing is independently bounded before the main invocation.
+  - 17. Concurrency is fixed or bounded by the adapter policy.
+  - 18. Stdout and stderr are captured through the bounded process supervisor.
+  - 19. Process cancellation terminates the supervised process group.
+  - 20. Normalized execution state is recorded independently of finding count.
+  - 21. Valid partial output is retained when execution is interrupted.
+  - 22. Tool output is untrusted and schema/format checked before interpretation.
+  - 23. Findings use canonical Finding objects and stable check identifiers.
+  - 24. Evidence is sanitized before telemetry or persistence.
+  - 25. Finding scan and tenant identity come from orchestration context.
+  - 26. Discovery or observation records cannot authorize active execution.
+  - 27. Native fallback, when available, is explicitly marked and never hides primary failure.
+  - 28. Coverage loss is reported when the primary tool is unavailable or incomplete.
+  - 29. Missing trust, invalid input, timeout, cancellation, and parser errors fail closed or degrade explicitly.
+  - 30. Secrets, tokens, and credential material are masked and excluded from evidence.
+  - 31. Reproducibility records include version, policy, target identity, and execution state.
+  - 32. Artifact integrity, executable integrity, and upstream provenance are separate claims.
+  - 33. Updates require approved manifest, code review, and trust-record changes.
+  - 34. Disabling a capability does not remove its identity from the 26-tool fleet.
+  - 35. The adapter exposes the platform execution and finding interface.
+  - 36. The production path uses the governed adapter rather than a test-only helper.
+  - 37. Client-controlled arguments cannot add forbidden capabilities or replace server-derived paths.
+  - 38. The security property is tested at the command or native execution boundary.
+  - 39. Repository verification is distinguished from live managed-runtime verification.
+  - 40. The capability is accepted only within the restrictions stated above.
+  - 41. This specification is authoritative for the tool and is covered by fleet consistency checks.
+
+## TOOL 23: sqlmap
+
+- **Tool ID:** TOOL-SQLMAP.
+- **41-point implementation specification:**
+  - 1. Identity: executable sqlmap; upstream sqlmap project.
+  - 2. Purpose: bounded SQL injection verification; role SPECIALIZED; class ACTIVE_INTRUSIVE.
+  - 3. Automated capability is limited to batch banner and low-risk injection verification.
+  - 4. Dumping, OS shell, file read/write, takeover, and equivalent escalation flags are forbidden.
+  - 5. Execution mode is MANUAL_MODE until managed trust, ValidatedTarget, and active authorization pass.
+  - 6. PATH/custom installations are diagnostic-only and fail closed for assured execution.
+  - 7. Version probe is sqlmap --version and must match the manifest-approved exact version.
+  - 8. Invocation fixes batch, banner, level 1, risk 1, timeout 15, retries 1, threads 2, and output directory.
+  - 9. Input is a credential-free HTTP(S) URL and server-derived absolute output directory.
+  - 10. Validated target binding supplies the selected destination and host header where available.
+  - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
+  - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
+  - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
+  - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
+  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 16. Version probing is independently bounded before the main invocation.
+  - 17. Concurrency is fixed or bounded by the adapter policy.
+  - 18. Stdout and stderr are captured through the bounded process supervisor.
+  - 19. Process cancellation terminates the supervised process group.
+  - 20. Normalized execution state is recorded independently of finding count.
+  - 21. Valid partial output is retained when execution is interrupted.
+  - 22. Tool output is untrusted and schema/format checked before interpretation.
+  - 23. Findings use canonical Finding objects and stable check identifiers.
+  - 24. Evidence is sanitized before telemetry or persistence.
+  - 25. Finding scan and tenant identity come from orchestration context.
+  - 26. Discovery or observation records cannot authorize active execution.
+  - 27. Native fallback, when available, is explicitly marked and never hides primary failure.
+  - 28. Coverage loss is reported when the primary tool is unavailable or incomplete.
+  - 29. Missing trust, invalid input, timeout, cancellation, and parser errors fail closed or degrade explicitly.
+  - 30. Secrets, tokens, and credential material are masked and excluded from evidence.
+  - 31. Reproducibility records include version, policy, target identity, and execution state.
+  - 32. Artifact integrity, executable integrity, and upstream provenance are separate claims.
+  - 33. Updates require approved manifest, code review, and trust-record changes.
+  - 34. Disabling a capability does not remove its identity from the 26-tool fleet.
+  - 35. The adapter exposes the platform execution and finding interface.
+  - 36. The production path uses the governed adapter rather than a test-only helper.
+  - 37. Client-controlled arguments cannot add forbidden capabilities or replace server-derived paths.
+  - 38. The security property is tested at the command or native execution boundary.
+  - 39. Repository verification is distinguished from live managed-runtime verification.
+  - 40. The capability is accepted only within the restrictions stated above.
+  - 41. This specification is authoritative for the tool and is covered by fleet consistency checks.
+
+## TOOL 24: OWASP Amass
+
+- **Tool ID:** TOOL-AMASS.
+- **41-point implementation specification:**
+  - 1. Identity: executable amass; upstream OWASP Amass.
+  - 2. Purpose: passive external attack-surface discovery; role PRIMARY; class PASSIVE.
+  - 3. Capability is passive enumeration only; a discovery is an untrusted observation.
+  - 4. Discovery never creates authorization, a ValidatedTarget, or an active queue entry.
+  - 5. Execution mode is DIRECT_ARTIFACT_MODE using the pinned v5.1.1 release and managed resources.
+  - 6. Managed archive, executable hash, trust record, and exact managed path are required.
+  - 7. Version probe is amass -version and must report exactly 5.1.1.
+  - 8. Invocation is enum -passive with a validated root, absolute JSON output, and timeout 30.
+  - 9. Provider selection is server-governed and credentialed providers remain disabled.
+  - 10. No active DNS resolution or active host probing is part of this adapter contract.
+  - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
+  - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
+  - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
+  - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
+  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 16. Version probing is independently bounded before the main invocation.
+  - 17. Concurrency is fixed or bounded by the adapter policy.
+  - 18. Stdout and stderr are captured through the bounded process supervisor.
+  - 19. Process cancellation terminates the supervised process group.
+  - 20. Normalized execution state is recorded independently of finding count.
+  - 21. Valid partial output is retained when execution is interrupted.
+  - 22. Tool output is untrusted and schema/format checked before interpretation.
+  - 23. Findings use canonical Finding objects and stable check identifiers.
+  - 24. Evidence is sanitized before telemetry or persistence.
+  - 25. Finding scan and tenant identity come from orchestration context.
+  - 26. Discovery or observation records cannot authorize active execution.
+  - 27. Native fallback, when available, is explicitly marked and never hides primary failure.
+  - 28. Coverage loss is reported when the primary tool is unavailable or incomplete.
+  - 29. Missing trust, invalid input, timeout, cancellation, and parser errors fail closed or degrade explicitly.
+  - 30. Secrets, tokens, and credential material are masked and excluded from evidence.
+  - 31. Reproducibility records include version, policy, target identity, and execution state.
+  - 32. Artifact integrity, executable integrity, and upstream provenance are separate claims.
+  - 33. Updates require approved manifest, code review, and trust-record changes.
+  - 34. Disabling a capability does not remove its identity from the 26-tool fleet.
+  - 35. The adapter exposes the platform execution and finding interface.
+  - 36. The production path uses the governed adapter rather than a test-only helper.
+  - 37. Client-controlled arguments cannot add forbidden capabilities or replace server-derived paths.
+  - 38. The security property is tested at the command or native execution boundary.
+  - 39. Repository verification is distinguished from live managed-runtime verification.
+  - 40. The capability is accepted only within the restrictions stated above.
+  - 41. This specification is authoritative for the tool and is covered by fleet consistency checks.
+
+## TOOL 25: THC-Hydra
+
+- **Tool ID:** TOOL-HYDRA.
+- **41-point implementation specification:**
+  - 1. Identity: executable hydra; upstream THC-Hydra.
+  - 2. Purpose: explicit credential-resilience audit; role SPECIALIZED; class STATE_CHANGING.
+  - 3. Capability is limited to small, explicitly authorized credential-audit checks.
+  - 4. Unrestricted brute force, arbitrary modules, and unrestricted dictionaries are forbidden.
+  - 5. Execution mode is MANUAL_MODE until managed trust, ValidatedTarget, active authorization, and credential-audit authorization pass.
+  - 6. Unmanaged PATH/custom binaries are diagnostic-only and fail closed for assured execution.
+  - 7. Version probe is hydra -h and must match the manifest-approved exact version.
+  - 8. Invocation fixes approved protocol, -t 2, -W 1, -f, JSON output, and server-derived files.
+  - 9. Input paths are absolute server-derived username, password, and report files.
+  - 10. Protocols are allowlisted and target host/port come from validated target context when present.
+  - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
+  - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
+  - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
+  - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
+  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 16. Version probing is independently bounded before the main invocation.
+  - 17. Concurrency is fixed or bounded by the adapter policy.
+  - 18. Stdout and stderr are captured through the bounded process supervisor.
+  - 19. Process cancellation terminates the supervised process group.
+  - 20. Normalized execution state is recorded independently of finding count.
+  - 21. Valid partial output is retained when execution is interrupted.
+  - 22. Tool output is untrusted and schema/format checked before interpretation.
+  - 23. Findings use canonical Finding objects and stable check identifiers.
+  - 24. Evidence is sanitized before telemetry or persistence.
+  - 25. Finding scan and tenant identity come from orchestration context.
+  - 26. Discovery or observation records cannot authorize active execution.
+  - 27. Native fallback, when available, is explicitly marked and never hides primary failure.
+  - 28. Coverage loss is reported when the primary tool is unavailable or incomplete.
+  - 29. Missing trust, invalid input, timeout, cancellation, and parser errors fail closed or degrade explicitly.
+  - 30. Secrets, tokens, and credential material are masked and excluded from evidence.
+  - 31. Reproducibility records include version, policy, target identity, and execution state.
+  - 32. Artifact integrity, executable integrity, and upstream provenance are separate claims.
+  - 33. Updates require approved manifest, code review, and trust-record changes.
+  - 34. Disabling a capability does not remove its identity from the 26-tool fleet.
+  - 35. The adapter exposes the platform execution and finding interface.
+  - 36. The production path uses the governed adapter rather than a test-only helper.
+  - 37. Client-controlled arguments cannot add forbidden capabilities or replace server-derived paths.
+  - 38. The security property is tested at the command or native execution boundary.
+  - 39. Repository verification is distinguished from live managed-runtime verification.
+  - 40. The capability is accepted only within the restrictions stated above.
+  - 41. This specification is authoritative for the tool and is covered by fleet consistency checks.
+
+## TOOL 26: GTFOBins & LOLBAS Rule Engine
+
+- **Tool ID:** TOOL-GTFOBINS.
+- **41-point implementation specification:**
+  - 1. Identity: native GTFOBinsAdapter using repository-controlled GTFOBins/LOLBAS rule catalogs.
+  - 2. Purpose: host/container privilege-escalation rule evaluation; role SPECIALIZED; class NATIVE_ENGINE_MODE.
+  - 3. Capability is static/native evaluation of supplied observations only.
+  - 4. It never executes escalation recipes, spawns a subprocess, or performs exploit delivery.
+  - 5. Execution mode is native; no external artifact installation or binary trust is required.
+  - 6. Catalog and rule data are governed as reviewed application code/data.
+  - 7. A catalog revision is recorded; no external runtime version probe exists.
+  - 8. Input includes server-side SUID/SGID, sudo, capability, and container observations.
+  - 9. An authoritative organization ID is mandatory for evaluation and findings.
+  - 10. A rule match is evidence only and cannot authorize active exploitation.
+  - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
+  - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
+  - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
+  - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
+  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 16. Version probing is independently bounded before the main invocation.
+  - 17. Concurrency is fixed or bounded by the adapter policy.
+  - 18. Stdout and stderr are captured through the bounded process supervisor.
+  - 19. Process cancellation terminates the supervised process group.
+  - 20. Normalized execution state is recorded independently of finding count.
+  - 21. Valid partial output is retained when execution is interrupted.
+  - 22. Tool output is untrusted and schema/format checked before interpretation.
+  - 23. Findings use canonical Finding objects and stable check identifiers.
+  - 24. Evidence is sanitized before telemetry or persistence.
+  - 25. Finding scan and tenant identity come from orchestration context.
+  - 26. Discovery or observation records cannot authorize active execution.
+  - 27. Native fallback, when available, is explicitly marked and never hides primary failure.
+  - 28. Coverage loss is reported when the primary tool is unavailable or incomplete.
+  - 29. Missing trust, invalid input, timeout, cancellation, and parser errors fail closed or degrade explicitly.
+  - 30. Secrets, tokens, and credential material are masked and excluded from evidence.
+  - 31. Reproducibility records include version, policy, target identity, and execution state.
+  - 32. Artifact integrity, executable integrity, and upstream provenance are separate claims.
+  - 33. Updates require approved manifest, code review, and trust-record changes.
+  - 34. Disabling a capability does not remove its identity from the 26-tool fleet.
+  - 35. The adapter exposes the platform execution and finding interface.
+  - 36. The production path uses the governed adapter rather than a test-only helper.
+  - 37. Client-controlled arguments cannot add forbidden capabilities or replace server-derived paths.
+  - 38. The security property is tested at the command or native execution boundary.
+  - 39. Repository verification is distinguished from live managed-runtime verification.
+  - 40. The capability is accepted only within the restrictions stated above.
+  - 41. This specification is authoritative for the tool and is covered by fleet consistency checks.
+
 # Part III: Verification, Test Traceability & Assurance Matrix
 
 ## 1. Tool-to-Contract Traceability Matrix
