@@ -38,6 +38,7 @@ from app.core.models import (
     LogEntry,
     ScanConfig,
     ScanJob,
+    AssessmentCoverage,
     ScanCreateRequest,
     StartScanRequest,
     ScanStartResponse,
@@ -216,6 +217,15 @@ def test_enums_completeness():
 
     # ToolExecutionMode
     assert set(m.value for m in ToolExecutionMode) == {"ADAPTER_ACTIVE", "NATIVE_FALLBACK", "DISABLED"}
+
+
+def test_coverage_status_fails_closed_when_gaps_are_recorded():
+    coverage = AssessmentCoverage(engines_failed=["network"])
+    assert coverage.coverage_status == "COVERAGE_DEGRADED"
+    assert coverage.is_fully_assessed is False
+
+    with pytest.raises(ValidationError):
+        AssessmentCoverage(coverage_status="UNKNOWN")
 
 
 def test_tool_status_and_system_capabilities():

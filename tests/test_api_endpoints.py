@@ -349,7 +349,7 @@ async def test_live_scan_sse_streaming(auth_headers):
 
 @pytest.mark.asyncio
 async def test_telemetry_endpoint_structure_and_filters(auth_headers):
-    from app.core.models import LogEntry, LogLevel, Finding, Evidence, DiscoveredEndpoint, DiscoveredSubdomain
+    from app.core.models import LogEntry, LogLevel, Finding, Evidence, DiscoveredEndpoint, DiscoveredSubdomain, ToolFailureEvent
     target = Target(name="Telemetry Target", type=TargetType.URL, value="https://telemetry-test.local")
     job = ScanJob(
         target=target,
@@ -358,6 +358,7 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
         progress_percent=100,
         active_adapters=["nmap", "nuclei", "katana"],
         tool_execution_states={"schemathesis": "TOOL_EXECUTION_FAILED"},
+        tool_failure_events=[ToolFailureEvent(tool_name="schemathesis", engine="web_dast", state="TOOL_EXECUTION_FAILED")],
         logs=[
             LogEntry(level=LogLevel.INFO, engine="network", tool="nmap", message="Nmap detected open port 443"),
             LogEntry(level=LogLevel.WARNING, engine="web_dast", tool="nuclei", message="Nuclei detected CVE-2024-9999"),
@@ -386,6 +387,8 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
             )
         ]
     )
+    job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
+    job.summary.coverage.is_fully_assessed = False
     save_scan(job)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -412,6 +415,16 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
         nuclei = next(item for item in data["tools_executed"] if item["tool_name"] == "nuclei")
         assert nuclei["status"] == "FINDINGS"
         assert nuclei["engine"] == "web_dast"
+        assert data["coverage"]["coverage_status"] == "COVERAGE_DEGRADED"
+        assert data["tool_failure_events"] == [
+            {
+                "tool_name": "schemathesis",
+                "engine": "web_dast",
+                "state": "TOOL_EXECUTION_FAILED",
+                "correlation_id": None,
+                "occurred_at": data["tool_failure_events"][0]["occurred_at"],
+            }
+        ]
 
         # A finding emitted before a later tool failure is partial evidence;
         # it must not make the failed execution look successful.

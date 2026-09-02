@@ -18,6 +18,7 @@ from app.core.models import (
     DiscoveredEndpoint,
     DiscoveredSubdomain,
     RejectedDiscovery,
+    ToolFailureEvent,
     utc_now,
     calculate_fingerprint,
 )
@@ -224,13 +225,15 @@ class ScanOrchestrator:
         scan_id: str,
         level: LogLevel,
         engine: str,
-        message: str
+        message: str,
+        tool: Optional[str] = None,
     ) -> None:
         entry = LogEntry(
             timestamp=utc_now(),
             correlation_id=getattr(self._active_jobs.get(scan_id), "correlation_id", None),
             level=level,
             engine=engine,
+            tool=tool,
             message=message,
         )
         job = self._active_jobs.get(scan_id)
@@ -242,6 +245,7 @@ class ScanOrchestrator:
             "correlation_id": entry.correlation_id,
             "level": entry.level.value,
             "engine": engine,
+            "tool": tool,
             "message": message,
         })
 
@@ -339,14 +343,43 @@ class ScanOrchestrator:
                 if limitation not in job.summary.coverage.coverage_limitations:
                     job.summary.coverage.coverage_limitations.append(limitation)
         if job:
+            previous_state = job.tool_execution_states.get(tool_name)
             job.tool_execution_states[tool_name] = state
             if engine:
                 job.tool_execution_engines[tool_name] = engine
-            if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED", "INVALID_VERSION"}:
+            degraded_states = {
+                "PARTIAL_RESULTS_WITH_WARNING",
+                "TOOL_EXECUTION_FAILED",
+                "BLOCKED",
+                "TIMED_OUT",
+                "CANCELLED",
+                "INVALID_VERSION",
+            }
+            if state in degraded_states:
+                job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
                 job.summary.coverage.is_fully_assessed = False
                 limitation = f"{tool_name}: {state}"
                 if limitation not in job.summary.coverage.coverage_limitations:
                     job.summary.coverage.coverage_limitations.append(limitation)
+                if previous_state != state and not any(
+                    event.tool_name == tool_name and event.state == state
+                    for event in job.tool_failure_events
+                ):
+                    failure_event = ToolFailureEvent(
+                        tool_name=tool_name,
+                        engine=job.tool_execution_engines.get(tool_name, "unknown"),
+                        state=state,
+                        correlation_id=job.correlation_id,
+                    )
+                    job.tool_failure_events.append(failure_event)
+                    await self.emit_log(
+                        scan_id,
+                        LogLevel.ERROR,
+                        failure_event.engine,
+                        f"Tool '{tool_name}' produced degraded coverage: {state}.",
+                        tool=tool_name,
+                    )
+                    await self._broadcast(scan_id, "tool_failed", failure_event.model_dump(mode="json"))
         await self._broadcast(scan_id, "tool_execution_state", {"tool_name": tool_name, "state": state})
 
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
@@ -458,6 +491,7 @@ class ScanOrchestrator:
             job.summary.coverage.engines_skipped = [engine_name for engine_name in job.enabled_engines]
             job.summary.coverage.is_fully_assessed = not bool(job.enabled_engines)
             if job.enabled_engines:
+                job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
                 job.summary.coverage.coverage_limitations.append("No enabled engines were applicable to the target.")
             save_scan(job)
             await self.emit_completed(scan_id, job.summary)
@@ -470,6 +504,7 @@ class ScanOrchestrator:
             if engine_name not in {engine.name for engine in applicable_engines}
         ]
         if job.summary.coverage.engines_skipped:
+            job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
             job.summary.coverage.is_fully_assessed = False
             for engine_name in job.summary.coverage.engines_skipped:
                 limitation = f"{engine_name}: SKIPPED"
@@ -569,6 +604,7 @@ class ScanOrchestrator:
                     # Error isolation guarantee: single engine failure never crashes the scan
                     if engine.name not in job.summary.coverage.engines_failed:
                         job.summary.coverage.engines_failed.append(engine.name)
+                    job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
                     job.summary.coverage.is_fully_assessed = False
                     limitation = f"{engine.name}: ENGINE_EXECUTION_FAILED"
                     if limitation not in job.summary.coverage.coverage_limitations:
@@ -591,6 +627,8 @@ class ScanOrchestrator:
             await self.emit_completed(scan_id, job.summary)
 
         except asyncio.CancelledError:
+            job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
+            job.summary.coverage.is_fully_assessed = False
             job.status = ScanStatus.CANCELLED
             job.completed_at = utc_now()
             job.current_stage = "Scan cancelled."
@@ -600,6 +638,8 @@ class ScanOrchestrator:
             await self.emit_cancelled(scan_id, "Scan task was cancelled.")
             raise
         except Exception as ex:
+            job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
+            job.summary.coverage.is_fully_assessed = False
             job.status = ScanStatus.FAILED
             job.completed_at = utc_now()
             job.current_stage = f"Scan failed: {str(ex)}"

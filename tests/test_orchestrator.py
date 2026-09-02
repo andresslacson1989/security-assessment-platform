@@ -19,6 +19,7 @@ from app.core.models import (
     Severity,
     calculate_fingerprint,
     RejectedDiscovery,
+    ToolFailureEvent,
 )
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.core.rate_limiter import TokenBucketRateLimiter, CircuitBreaker, CircuitState
@@ -263,12 +264,21 @@ async def test_unknown_tool_state_fails_closed():
     orch = ScanOrchestrator()
     job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
     orch._active_jobs[job.id] = job
+    queue = orch.subscribe_events(job.id)
 
     await orch.emit_tool_execution_state(job.id, "subfinder", "EXECUTION_NOT_A_REAL_STATE")
 
     assert job.tool_execution_states["subfinder"] == "TOOL_EXECUTION_FAILED"
     assert job.summary.coverage.is_fully_assessed is False
+    assert job.summary.coverage.coverage_status == "COVERAGE_DEGRADED"
     assert "subfinder: INVALID_STATE" in job.summary.coverage.coverage_limitations
+    assert len(job.tool_failure_events) == 1
+    assert job.tool_failure_events[0].state == "TOOL_EXECUTION_FAILED"
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert any(event["event"] == "tool_failed" for event in events)
+    orch.unsubscribe_events(job.id, queue)
 
 
 @pytest.mark.asyncio
@@ -281,6 +291,7 @@ async def test_invalid_version_degrades_coverage():
 
     assert job.tool_execution_states["subfinder"] == "INVALID_VERSION"
     assert job.summary.coverage.is_fully_assessed is False
+    assert job.summary.coverage.coverage_status == "COVERAGE_DEGRADED"
     assert "subfinder: INVALID_VERSION" in job.summary.coverage.coverage_limitations
 
 
@@ -290,7 +301,13 @@ def test_degraded_network_evidence_survives_authoritative_persistence():
         organization_id="org-a",
     )
     job.tool_execution_states["subfinder"] = "PARTIAL_RESULTS_WITH_WARNING"
+    job.tool_failure_events.append(ToolFailureEvent(
+        tool_name="subfinder",
+        engine="network",
+        state="PARTIAL_RESULTS_WITH_WARNING",
+    ))
     job.summary.coverage.is_fully_assessed = False
+    job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
     job.summary.coverage.coverage_limitations = ["subfinder: PARTIAL_RESULTS_WITH_WARNING"]
     job.rejected_discoveries.append(RejectedDiscovery(
         domain="outside.example.net",
@@ -307,7 +324,9 @@ def test_degraded_network_evidence_survives_authoritative_persistence():
     assert restored is not None
     assert restored.organization_id == "org-a"
     assert restored.tool_execution_states["subfinder"] == "PARTIAL_RESULTS_WITH_WARNING"
+    assert restored.tool_failure_events[0].engine == "network"
     assert restored.summary.coverage.is_fully_assessed is False
+    assert restored.summary.coverage.coverage_status == "COVERAGE_DEGRADED"
     assert restored.summary.coverage.coverage_limitations == ["subfinder: PARTIAL_RESULTS_WITH_WARNING"]
     assert restored.rejected_discoveries[0].organization_id == "org-a"
     assert restored.rejected_discoveries[0].sources == ["crtsh"]

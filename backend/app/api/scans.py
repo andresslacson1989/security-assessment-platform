@@ -468,6 +468,7 @@ async def get_scan_telemetry(
         total_logs=len(all_logs),
         logs=filtered_logs,
         tools_executed=tools_executed_list,
+        tool_failure_events=getattr(job, "tool_failure_events", []),
         discovered_endpoints=enriched_endpoints,
         discovered_subdomains=job.discovered_subdomains,
         rejected_discoveries=job.rejected_discoveries,

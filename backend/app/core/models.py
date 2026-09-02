@@ -125,7 +125,31 @@ class AssessmentCoverage(BaseModel):
     tools_unavailable: List[str] = Field(default_factory=list, description="Tools missing from system")
     targets_inaccessible: List[str] = Field(default_factory=list, description="Target endpoints that were unreachable")
     coverage_limitations: List[str] = Field(default_factory=list, description="Explicit notes on assessment coverage gaps")
+    coverage_status: str = Field(
+        default="COVERAGE_COMPLETE",
+        description="Authoritative coverage state: COVERAGE_COMPLETE or COVERAGE_DEGRADED",
+    )
     is_fully_assessed: bool = Field(default=True, description="Whether all requested engines completed successfully")
+
+    @model_validator(mode="after")
+    def enforce_coverage_state(self) -> "AssessmentCoverage":
+        """Keep the explicit coverage state consistent with recorded gaps."""
+        allowed = {"COVERAGE_COMPLETE", "COVERAGE_DEGRADED"}
+        if self.coverage_status not in allowed:
+            raise ValueError(f"Unknown coverage status: {self.coverage_status!r}")
+        if (
+            not self.is_fully_assessed
+            or self.engines_failed
+            or self.engines_skipped
+            or self.tools_unavailable
+            or self.targets_inaccessible
+            or self.coverage_limitations
+        ):
+            self.coverage_status = "COVERAGE_DEGRADED"
+            self.is_fully_assessed = False
+        elif self.coverage_status == "COVERAGE_DEGRADED":
+            self.is_fully_assessed = False
+        return self
 
 
 class SecurityGrade(str, Enum):
@@ -869,6 +893,16 @@ class ToolExecutionTelemetry(BaseModel):
     normalized_state: Optional[str] = Field(default=None, description="Tool-specific normalized execution state")
 
 
+class ToolFailureEvent(BaseModel):
+    """Durable record of a tool failure or degraded execution outcome."""
+
+    tool_name: str = Field(..., description="Tool that failed or produced degraded coverage")
+    engine: str = Field(default="unknown", description="Assessment engine that reported the outcome")
+    state: str = Field(..., description="Canonical normalized execution state")
+    correlation_id: Optional[str] = Field(default=None, description="Request/scan correlation identifier")
+    occurred_at: datetime = Field(default_factory=utc_now)
+
+
 class ScanTelemetryReport(BaseModel):
     """
     Contract 04 §1.3: Consolidated Assessment Telemetry & Tool Intelligence Hub Report.
@@ -882,6 +916,7 @@ class ScanTelemetryReport(BaseModel):
     total_logs: int = Field(default=0, description="Total log count")
     logs: List[LogEntry] = Field(default_factory=list, description="All structured execution logs")
     tools_executed: List[ToolExecutionTelemetry] = Field(default_factory=list, description="Per-tool execution breakdowns")
+    tool_failure_events: List[ToolFailureEvent] = Field(default_factory=list, description="Durable tool failure/degradation events")
     discovered_endpoints: List[DiscoveredEndpoint] = Field(default_factory=list, description="All discovered/crawled endpoints")
     discovered_subdomains: List[DiscoveredSubdomain] = Field(default_factory=list, description="Discovered subdomains via OSINT")
     rejected_discoveries: List[RejectedDiscovery] = Field(default_factory=list)
@@ -919,6 +954,7 @@ class ScanJob(BaseModel):
         default_factory=dict,
         description="Authoritative assessment engine that reported each tool execution state",
     )
+    tool_failure_events: List[ToolFailureEvent] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
     sbom_report: Optional[SBOMReport] = Field(default=None, description="Software Bill of Materials generated during scan")
     cis_results: List[CISBenchmarkResult] = Field(default_factory=list, description="CIS Benchmark compliance audit results")
