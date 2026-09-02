@@ -45,6 +45,7 @@ from app.adapters.sqlmap_adapter import SqlmapAdapter
 from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.hydra_adapter import HydraAdapter
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, audit_tool_manifest
+from app.core.tool_fleet import SUPPORTED_TOOL_IDS
 
 
 __all__ = [
@@ -123,6 +124,8 @@ async def discover_system_capabilities(
     """
     cfg = config or ToolAdapterConfig()
     registry = get_adapter_registry()
+    if not set(registry).issubset(SUPPORTED_TOOL_IDS):
+        raise RuntimeError("Adapter registry contains a tool outside the complete 26-tool fleet")
     tool_statuses: List[ToolStatus] = []
 
     # Map tool name to its enable flag and custom path configuration

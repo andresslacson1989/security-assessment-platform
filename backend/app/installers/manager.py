@@ -24,6 +24,7 @@ from app.installers.github_release_installer import GithubReleaseInstaller
 from app.installers.source_build_installer import SourceBuildInstaller
 from app.installers.system_installer import SystemToolHelper
 from app.installers.npm_installer import NpmToolInstaller
+from app.core.tool_fleet import SUPPORTED_TOOL_IDS
 
 logger = logging.getLogger("cyberassess.installers.manager")
 
@@ -70,6 +71,8 @@ class ToolInstallationManager:
             "hydra": SystemToolHelper("hydra"),
             "gtfobins": SystemToolHelper("gtfobins"),
         }
+        if set(self._installers) != SUPPORTED_TOOL_IDS:
+            raise RuntimeError("Installer registry does not preserve the complete 26-tool fleet")
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._tool_to_task: Dict[str, str] = {}
         self._subscribers: Set[asyncio.Queue] = set()

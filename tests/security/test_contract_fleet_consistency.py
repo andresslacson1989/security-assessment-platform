@@ -6,41 +6,17 @@ import re
 from app.adapters import get_adapter_registry
 from app.installers.manager import ToolInstallationManager
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+from app.core.tool_fleet import SUPPORTED_TOOL_COUNT, SUPPORTED_TOOL_IDS
 
 
-EXPECTED_TOOLS = {
-    "amass",
-    "bandit",
-    "checkov",
-    "dockle",
-    "ffuf",
-    "gitleaks",
-    "grype",
-    "gtfobins",
-    "httpx",
-    "hydra",
-    "katana",
-    "kube-bench",
-    "metasploit",
-    "nmap",
-    "nuclei",
-    "osv-scanner",
-    "prowler",
-    "retire",
-    "schemathesis",
-    "semgrep",
-    "sqlmap",
-    "sslyze",
-    "subfinder",
-    "syft",
-    "trivy",
-    "trufflehog",
-}
+EXPECTED_TOOLS = SUPPORTED_TOOL_IDS
 
 MATRIX_TOOL_ID_ALIASES = {"RETIRE": "RETIREJS"}
 
 
 def test_registry_manifest_and_installers_preserve_complete_26_tool_fleet():
+    assert SUPPORTED_TOOL_COUNT == 26
+    assert len(EXPECTED_TOOLS) == SUPPORTED_TOOL_COUNT
     registry_tools = set(get_adapter_registry())
     manager_tools = set(ToolInstallationManager()._installers)
 
