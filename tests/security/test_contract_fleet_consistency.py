@@ -94,7 +94,10 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert {"TOOL-AMASS", "TOOL-METASPLOIT", "TOOL-SQLMAP", "TOOL-HYDRA", "TOOL-GTFOBINS"}.issubset(traceability_ids)
     assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
     assert "all 26 available modern adapters" in models
-    assert "/ 26 Tools Active" in frontend_index
+    assert "FLEET (26):" in frontend_index
+    frontend_tool_ids = set(re.findall(r'id="tool-pill-([a-z0-9-]+)"', frontend_index))
+    assert frontend_tool_ids == EXPECTED_TOOLS
+    assert len(frontend_tool_ids) == 26
     assert "all 26 registered tool/native adapters" in (repository_root / "backend" / "app" / "adapters" / "__init__.py").read_text()
     for tool in (
         "nuclei", "ffuf", "gitleaks", "katana", "syft", "grype",
