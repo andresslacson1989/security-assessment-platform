@@ -26,7 +26,11 @@ from app.core.models import (
     UserRole,
 )
 from app.core.auth import create_access_token
-from app.installers.base_installer import BaseToolInstaller, SecurityError
+from app.installers.base_installer import (
+    BaseToolInstaller,
+    SecurityError,
+    resolve_allowed_https_redirect,
+)
 from app.installers.pip_installer import PipToolInstaller
 from app.installers.github_release_installer import GithubReleaseInstaller
 from app.installers.source_build_installer import SourceBuildInstaller, SOURCE_BUILD_CONFIG
@@ -41,6 +45,30 @@ def auth_headers():
     user = UserProfile(id="usr-adm-01", username="admin", email="admin@sec.local", role=UserRole.ADMIN)
     token = create_access_token(user)
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_installer_redirect_requires_approved_https_destination():
+    allowed = {"github.com", "release-assets.githubusercontent.com"}
+
+    assert resolve_allowed_https_redirect(
+        "https://github.com/org/tool/releases/download/v1/tool.zip",
+        "https://release-assets.githubusercontent.com/tool.zip?sig=1",
+        allowed,
+    ) == "https://release-assets.githubusercontent.com/tool.zip?sig=1"
+
+    with pytest.raises(SecurityError, match="not allowlisted"):
+        resolve_allowed_https_redirect(
+            "https://github.com/org/tool/releases/download/v1/tool.zip",
+            "https://attacker.example/tool.zip",
+            allowed,
+        )
+
+    with pytest.raises(SecurityError, match="not allowlisted"):
+        resolve_allowed_https_redirect(
+            "https://github.com/org/tool/releases/download/v1/tool.zip",
+            "http://github.com/tool.zip",
+            allowed,
+        )
 
 
 @pytest.fixture

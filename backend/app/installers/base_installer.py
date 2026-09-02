@@ -7,7 +7,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import os
 import shutil
-from typing import Callable, Awaitable, Optional
+from typing import Callable, Awaitable, Optional, Iterable
+from urllib.parse import urljoin, urlparse
 
 from app.core.models import (
     ToolInstallMethod,
@@ -23,6 +24,24 @@ ProgressCallback = Callable[[int, str], Awaitable[None]]
 class SecurityError(Exception):
     """Raised when an unsafe file or path traversal condition is detected."""
     pass
+
+
+MAX_INSTALLER_REDIRECTS = 3
+
+
+def resolve_allowed_https_redirect(
+    current_url: str,
+    location: str,
+    allowed_hosts: Iterable[str],
+) -> str:
+    """Resolve one installer redirect and fail closed outside approved HTTPS hosts."""
+    next_url = urljoin(current_url, location)
+    parsed = urlparse(next_url)
+    hosts = {str(host).lower().rstrip(".") for host in allowed_hosts}
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or parsed.port not in (None, 443) or hostname not in hosts:
+        raise SecurityError(f"Installer redirect destination is not allowlisted: {next_url}")
+    return next_url
 
 
 class BaseToolInstaller(ABC):

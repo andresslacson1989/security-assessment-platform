@@ -26,6 +26,8 @@ from app.installers.base_installer import (
     LogCallback,
     ProgressCallback,
     SecurityError,
+    MAX_INSTALLER_REDIRECTS,
+    resolve_allowed_https_redirect,
 )
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
@@ -45,6 +47,15 @@ SOURCE_BUILD_CONFIG = {
 
 class SourceBuildInstaller(BaseToolInstaller):
     """Builds an approved source tag with a pinned, verified Go toolchain."""
+
+    _ALLOWED_REDIRECT_HOSTS = frozenset({
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "go.dev",
+        "dl.google.com",
+        "storage.googleapis.com",
+    })
 
     def __init__(self, tool_name: str):
         if tool_name not in SOURCE_BUILD_CONFIG:
@@ -99,13 +110,26 @@ class SourceBuildInstaller(BaseToolInstaller):
 
     async def _download(self, client: httpx.AsyncClient, url: str, destination: str) -> str:
         digest = hashlib.sha256()
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            with open(destination, "wb") as output:
-                async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                    digest.update(chunk)
-                    output.write(chunk)
-        return digest.hexdigest()
+        current_url = url
+        for redirect_count in range(MAX_INSTALLER_REDIRECTS + 1):
+            async with client.stream("GET", current_url) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise SecurityError("Installer redirect response omitted its destination.")
+                    if redirect_count >= MAX_INSTALLER_REDIRECTS:
+                        raise SecurityError("Installer redirect limit exceeded.")
+                    current_url = resolve_allowed_https_redirect(
+                        current_url, location, self._ALLOWED_REDIRECT_HOSTS
+                    )
+                    continue
+                response.raise_for_status()
+                with open(destination, "wb") as output:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        digest.update(chunk)
+                        output.write(chunk)
+                return digest.hexdigest()
+        raise SecurityError("Installer download did not reach a terminal response.")
 
     async def _verify_source_tag(self, client: httpx.AsyncClient, manifest: dict) -> None:
         """Verify the pinned Git tag resolves to the pinned immutable commit."""
@@ -192,7 +216,7 @@ class SourceBuildInstaller(BaseToolInstaller):
         staged_trust = bin_dir / f".trivy.trust.{uuid.uuid4().hex}.staged"
         try:
             await emit_progress(10, "Downloading verified Go toolchain and Trivy source archive...")
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True, trust_env=False) as client, tempfile.TemporaryDirectory() as temp:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False, trust_env=False) as client, tempfile.TemporaryDirectory() as temp:
                 await self._verify_source_tag(client, manifest)
                 source_archive = os.path.join(temp, "trivy-source.tar.gz")
                 go_archive = os.path.join(temp, go_name)

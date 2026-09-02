@@ -28,6 +28,8 @@ from app.installers.base_installer import (
     SecurityError,
     LogCallback,
     ProgressCallback,
+    MAX_INSTALLER_REDIRECTS,
+    resolve_allowed_https_redirect,
 )
 from app.core.process_supervisor import process_supervisor
 
@@ -160,6 +162,12 @@ class GithubReleaseInstaller(BaseToolInstaller):
     """
 
     _MAX_RELEASE_BYTES = 512 * 1024 * 1024
+    _ALLOWED_REDIRECT_HOSTS = frozenset({
+        "github.com",
+        "api.github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    })
 
     def __init__(self, tool_name: str):
         if tool_name not in GITHUB_TOOL_CONFIGS:
@@ -420,24 +428,39 @@ class GithubReleaseInstaller(BaseToolInstaller):
             with tempfile.TemporaryDirectory() as tmpdir:
                 archive_path = os.path.join(tmpdir, asset_filename)
                 
-                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True, trust_env=False) as client:
-                    async with client.stream("GET", download_url) as stream:
-                        if stream.status_code != 200:
-                            raise RuntimeError(f"Download failed with HTTP {stream.status_code}")
-                        
-                        total_bytes = int(stream.headers.get("content-length", 0))
-                        if total_bytes > self._MAX_RELEASE_BYTES:
-                            raise SecurityError("Release artifact exceeds the installer size limit.")
-                        downloaded = 0
-                        with open(archive_path, "wb") as f:
-                            async for chunk in stream.aiter_bytes(chunk_size=65536):
-                                downloaded += len(chunk)
-                                if downloaded > self._MAX_RELEASE_BYTES:
-                                    raise SecurityError("Release artifact exceeds the installer size limit.")
-                                f.write(chunk)
-                                if total_bytes > 0:
-                                    pct = 30 + int((downloaded / total_bytes) * 35)
-                                    await emit_progress(pct, f"Downloading: {downloaded // 1024} KB / {total_bytes // 1024} KB")
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=False, trust_env=False) as client:
+                    current_url = download_url
+                    for redirect_count in range(MAX_INSTALLER_REDIRECTS + 1):
+                        async with client.stream("GET", current_url) as stream:
+                            if stream.status_code in {301, 302, 303, 307, 308}:
+                                location = stream.headers.get("location")
+                                if not location:
+                                    raise SecurityError("Installer redirect response omitted its destination.")
+                                if redirect_count >= MAX_INSTALLER_REDIRECTS:
+                                    raise SecurityError("Installer redirect limit exceeded.")
+                                current_url = resolve_allowed_https_redirect(
+                                    current_url, location, self._ALLOWED_REDIRECT_HOSTS
+                                )
+                                continue
+                            if stream.status_code != 200:
+                                raise RuntimeError(f"Download failed with HTTP {stream.status_code}")
+
+                            total_bytes = int(stream.headers.get("content-length", 0))
+                            if total_bytes > self._MAX_RELEASE_BYTES:
+                                raise SecurityError("Release artifact exceeds the installer size limit.")
+                            downloaded = 0
+                            with open(archive_path, "wb") as f:
+                                async for chunk in stream.aiter_bytes(chunk_size=65536):
+                                    downloaded += len(chunk)
+                                    if downloaded > self._MAX_RELEASE_BYTES:
+                                        raise SecurityError("Release artifact exceeds the installer size limit.")
+                                    f.write(chunk)
+                                    if total_bytes > 0:
+                                        pct = 30 + int((downloaded / total_bytes) * 35)
+                                        await emit_progress(pct, f"Downloading: {downloaded // 1024} KB / {total_bytes // 1024} KB")
+                            break
+                    else:
+                        raise SecurityError("Installer download did not reach a terminal response.")
 
                 # Cryptographic SHA-256 Checksum Verification
                 await emit_progress(68, "Verifying cryptographic SHA-256 checksum integrity...")
