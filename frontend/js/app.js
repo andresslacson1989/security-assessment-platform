@@ -793,21 +793,6 @@ class ScanStreamManager {
     }
   }
 
-  // Contract 04 v4.1.0: Probe GET /api/system/capabilities on page load
-  async loadSystemCapabilities() {
-    try {
-      const resp = await fetch("/api/system/capabilities");
-      if (!resp.ok) return;
-      const data = await resp.json();
-      const tools = data.tools || [];
-      tools.forEach((t) => {
-        this.updateToolPill(t.name, t.available, t.execution_mode, t.version);
-      });
-    } catch (_) {
-      // Non-fatal: pill bar defaults remain (NATIVE FALLBACK)
-    }
-  }
-
   renderDiscoveredEndpoints() {
     if (!this.endpointsHud) return;
 
@@ -1360,7 +1345,9 @@ class ScanStreamManager {
           const modeSpan = pill.querySelector(".tool-pill-mode");
           const iconSpan = pill.querySelector(".tool-pill-icon");
 
-          if (tool.execution_mode === "ADAPTER_ACTIVE" || tool.available) {
+          // Availability only means that a binary was detected.  It is not
+          // evidence that the binary passed managed trust and version gates.
+          if (tool.execution_mode === "ADAPTER_ACTIVE") {
             pill.classList.add("tool-pill--active");
             if (modeSpan) modeSpan.innerText = tool.version || "ACTIVE";
             if (iconSpan) iconSpan.innerText = "🟢";
