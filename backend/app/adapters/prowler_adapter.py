@@ -204,6 +204,15 @@ class ProwlerAdapter(BaseToolAdapter):
             for item in items:
                 status = item.get("Compliance", {}).get("Status", item.get("Status", "FAIL")).upper()
                 check_title = item.get("Title", item.get("CheckTitle", "CIS Cloud Check"))
+                severity_label = item.get("Severity", {}).get("Label", "HIGH").upper()
+                finding_severity = {
+                    "CRITICAL": Severity.CRITICAL,
+                    "HIGH": Severity.HIGH,
+                    "MEDIUM": Severity.MEDIUM,
+                    "LOW": Severity.LOW,
+                    "INFORMATIONAL": Severity.INFO,
+                    "INFO": Severity.INFO,
+                }.get(severity_label, Severity.HIGH)
                 check_id = item.get("CheckID", "cloud_check")
                 service_name = item.get("ServiceName", "Cloud Infrastructure")
                 resource_id = item.get("ResourceId", "Cloud Resource")
@@ -236,7 +245,7 @@ class ProwlerAdapter(BaseToolAdapter):
                         check_id="CLOUD-CIS-001",
                         category="Cloud Compliance",
                         title=f"CIS Cloud Benchmark Failure: {check_title}",
-                        severity=Severity.HIGH,
+                        severity=finding_severity,
                         cvss_score=7.5,
                         cwe_id="CWE-284",
                         description=f"Prowler CIS benchmark check `{check_id}` failed for resource `{resource_id}` on `{service_name}`.",

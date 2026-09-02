@@ -296,6 +296,7 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
     )
     commands = []
     environments = []
+    findings = []
 
     async def execute(command, **kwargs):
         commands.append(command)
@@ -307,8 +308,8 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
             json.dumps({
                 "Findings": [{
                     "Title": "Root account MFA",
-                    "Severity": {"Label": "INFORMATIONAL"},
-                    "Compliance": {"Status": "PASS"},
+                    "Severity": {"Label": "CRITICAL"},
+                    "Compliance": {"Status": "FAILED"},
                     "Remediation": {"Recommendation": {"Text": "Enable MFA."}},
                 }],
             }),
@@ -319,8 +320,8 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
     async def log_cb(*_args):
         return None
 
-    async def finding_cb(*_args):
-        return None
+    async def finding_cb(finding):
+        findings.append(finding)
 
     credentials = {
         "AWS_ACCESS_KEY_ID": "AKIA_TEST",
@@ -342,6 +343,7 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
 
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
     assert environments[-1] == credentials
+    assert findings[-1].severity == Severity.CRITICAL
 
 
 @pytest.mark.asyncio
