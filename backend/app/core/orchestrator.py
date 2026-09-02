@@ -419,6 +419,19 @@ class ScanOrchestrator:
                     await self._broadcast(scan_id, "tool_failed", failure_event.model_dump(mode="json"))
         await self._broadcast(scan_id, "tool_execution_state", {"tool_name": tool_name, "state": state})
 
+    async def emit_adapter_execution_state(
+        self,
+        scan_id: str,
+        adapter: object,
+        state: str,
+        engine: Optional[str] = None,
+    ) -> None:
+        """Publish execution state using the adapter's registered identity."""
+        tool_name = getattr(adapter, "tool_name", None)
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise ValueError("Adapter execution state requires a canonical adapter identity")
+        await self.emit_tool_execution_state(scan_id, tool_name, state, engine=engine)
+
     async def emit_completed(self, scan_id: str, summary: ScanJobSummary) -> None:
         job = self._active_jobs.get(scan_id)
         active_adapters = getattr(job, "active_adapters", []) if job else []
@@ -598,6 +611,9 @@ class ScanOrchestrator:
                 async def _tool_state_cb(tool_name: str, state: str) -> None:
                     await self.emit_tool_execution_state(scan_id, tool_name, state, engine=engine.name)
 
+                async def _adapter_state_cb(adapter: object, state: str) -> None:
+                    await self.emit_adapter_execution_state(scan_id, adapter, state, engine=engine.name)
+
                 def _sbom_cb(sbom: SBOMReport) -> None:
                     if job:
                         job.sbom_report = sbom
@@ -627,6 +643,8 @@ class ScanOrchestrator:
                         run_kwargs["emit_rejected_discovery"] = _rejected_cb
                     if "emit_tool_execution_state" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_tool_execution_state"] = _tool_state_cb
+                    if accepts_var_keyword:
+                        run_kwargs["emit_adapter_execution_state"] = _adapter_state_cb
                     if "record_sbom_report" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_sbom_report"] = _sbom_cb
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:

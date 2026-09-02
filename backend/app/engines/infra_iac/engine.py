@@ -62,6 +62,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         target_path = target.value
         record_cis = kwargs.get("record_cis_result")
         tool_state_cb = kwargs.get("emit_tool_execution_state")
+        adapter_state_cb = kwargs.get("emit_adapter_execution_state")
         failed_primary_tools = set()
 
         async def record_tool_failure(tool_name: str) -> None:
@@ -80,7 +81,9 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                 NormalizedExecutionState.EXECUTION_BLOCKED,
             }:
                 failed_primary_tools.add(tool_name)
-            if tool_state_cb:
+            if adapter_state_cb:
+                await adapter_state_cb(adapter, state.value)
+            elif tool_state_cb:
                 await tool_state_cb(tool_name, state.value)
 
         def mark_native_fallback(items: List[Finding], primary_tools: tuple[str, ...]) -> None:

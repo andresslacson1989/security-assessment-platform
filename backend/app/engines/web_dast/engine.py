@@ -93,6 +93,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         findings: List[Finding] = []
         existing_fps = set()
         tool_state_cb = kwargs.get("emit_tool_execution_state")
+        adapter_state_cb = kwargs.get("emit_adapter_execution_state")
 
         # Gate every E12 operation through the authoritative target validator before
         # any external adapter or native HTTP client can be invoked.
@@ -122,10 +123,13 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             return findings
 
         async def publish_tool_state(tool_name: str, adapter=None, fallback: str = "TOOL_EXECUTION_FAILED") -> None:
-            if not tool_state_cb:
+            if not tool_state_cb and not adapter_state_cb:
                 return
             state = getattr(adapter, "last_execution_state", None) if adapter is not None else None
-            await tool_state_cb(tool_name, (state.value if state else fallback))
+            if adapter_state_cb and adapter is not None:
+                await adapter_state_cb(adapter, state.value if state else fallback)
+            else:
+                await tool_state_cb(tool_name, (state.value if state else fallback))
         rate_limiter = TokenBucketRateLimiter(rate_rps=config.rate_limit_rps)
 
         headers = {

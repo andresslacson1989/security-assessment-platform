@@ -66,6 +66,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         findings: List[Finding] = []
         existing_fps = set()
         tool_state_cb = kwargs.get("emit_tool_execution_state")
+        adapter_state_cb = kwargs.get("emit_adapter_execution_state")
         try:
             workspace = resolve_authorized_workspace(
                 target.value,
@@ -101,12 +102,15 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                     item.primary_tool_failed = ",".join(failed)
 
         async def report_tool_state(tool_name: str, adapter, finding_count: int = 0) -> None:
-            if not tool_state_cb:
+            if not tool_state_cb and not adapter_state_cb:
                 return
             state = getattr(adapter, "last_execution_state", NormalizedExecutionState.TOOL_EXECUTION_FAILED)
             if finding_count and state == NormalizedExecutionState.COMPLETED_NO_FINDINGS:
                 state = NormalizedExecutionState.COMPLETED_WITH_FINDINGS
-            await tool_state_cb(tool_name, state.value)
+            if adapter_state_cb:
+                await adapter_state_cb(adapter, state.value)
+            else:
+                await tool_state_cb(tool_name, state.value)
 
         # --- Stage 0: Primary External Tool Adapters First-in-Line ---
         await emit_progress(5, "Running primary external SAST & Secret tool adapters...")

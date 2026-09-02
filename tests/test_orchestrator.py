@@ -330,6 +330,24 @@ async def test_tool_execution_identity_is_canonical_and_engine_bound():
         await orch.emit_tool_execution_state(job.id, "invented-tool", "TOOL_EXECUTION_FAILED")
 
 
+@pytest.mark.asyncio
+async def test_adapter_execution_state_uses_registered_adapter_identity():
+    orch = ScanOrchestrator()
+    job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
+    orch._active_jobs[job.id] = job
+
+    class RegisteredAdapter:
+        tool_name = "osv-scanner"
+
+    await orch.emit_adapter_execution_state(
+        job.id, RegisteredAdapter(), "TOOL_EXECUTION_FAILED", engine="code_sast"
+    )
+
+    assert job.tool_execution_states == {"osv-scanner": "TOOL_EXECUTION_FAILED"}
+    with pytest.raises(ValueError, match="requires a canonical adapter identity"):
+        await orch.emit_adapter_execution_state(job.id, object(), "TOOL_EXECUTION_FAILED")
+
+
 def test_degraded_network_evidence_survives_authoritative_persistence():
     job = ScanJob(
         target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),
