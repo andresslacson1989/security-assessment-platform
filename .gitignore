@@ -43,6 +43,8 @@ data/*.db-wal
 .pytest_cache/
 .coverage
 htmlcov/
+.pytest-temp-*/
+.pytest-tmp-*/
 
 # IDE & Editor
 .vscode/
