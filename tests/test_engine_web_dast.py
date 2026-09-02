@@ -263,6 +263,8 @@ async def test_web_dast_engine_reaches_bounded_sqlmap_path():
         async def run(self, target, config, emit_log, emit_finding, **kwargs):
             calls["sqlmap"] = kwargs
             assert Path(kwargs["output_dir"]).is_absolute()
+            assert kwargs["require_managed_binary"] is True
+            assert kwargs["validated_target"].canonical_value == target.value
             return []
 
     mock_client = AsyncMock()
@@ -307,6 +309,8 @@ async def test_web_dast_engine_reaches_bounded_sqlmap_path():
             progress_cb,
             finding_cb,
             organization_id="org-test",
+            asset_id="asset-test",
+            active_probing_granted=True,
             scan_id="scan-sqlmap-runtime",
         )
 

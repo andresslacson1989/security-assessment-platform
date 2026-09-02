@@ -32,6 +32,7 @@ from app.core.models import (
 )
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, audit_tool_manifest
 from app.core.binary_resolver import resolve_tool_binary
+from app.core.ssrf_protector import bind_url_to_validated_target
 
 
 EmitLog = Callable[[LogLevel, str], Awaitable[None]]
@@ -116,7 +117,10 @@ class GovernedExtendedAdapter(BaseToolAdapter):
         manifest = PINNED_TOOL_MANIFEST.get(self.manifest_name, {})
         expected_version = str(manifest.get("pinned_version", manifest.get("version", ""))).lstrip("v")
         try:
-            reported_version = await self.get_version(binary)
+            reported_version = await self.get_version(
+                binary,
+                pre_launch_check=lambda: self.verify_managed_binary(binary),
+            )
         except Exception as exc:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, f"{self.tool_name} execution blocked: runtime version verification failed ({type(exc).__name__}).")
@@ -222,11 +226,19 @@ class SqlmapAdapter(GovernedExtendedAdapter):
         return "sqlmap"
 
     @staticmethod
-    def build_command(binary: str, target_url: str, output_dir: str) -> List[str]:
+    def build_command(
+        binary: str,
+        target_url: str,
+        output_dir: str,
+        host_header: Optional[str] = None,
+    ) -> List[str]:
         url = _target_url(target_url)
         if not Path(output_dir).is_absolute():
             raise ValueError("Output directory must be an absolute server-derived path")
-        return [binary, "-u", url, "--batch", "--banner", "--level=1", "--risk=1", "--timeout=15", "--retries=1", "--threads=2", "--output-dir", output_dir]
+        command = [binary, "-u", url, "--batch", "--banner", "--level=1", "--risk=1", "--timeout=15", "--retries=1", "--threads=2", "--output-dir", output_dir]
+        if host_header:
+            command.extend(["--headers", f"Host: {host_header}"])
+        return command
 
     async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
@@ -237,6 +249,15 @@ class SqlmapAdapter(GovernedExtendedAdapter):
         return f"sqlmap {match.group(1)}" if match else None
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "sqlmap execution blocked: a gateway-issued ValidatedTarget is required.")
+            return []
+        if kwargs.get("require_managed_binary") and not validated_target.authorization_context.get("active_probing_granted", False):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "sqlmap execution blocked: explicit tenant active-probing authorization is required.")
+            return []
         binary = await self._binary_or_block(config, getattr(config.adapters, "sqlmap_path", None) or getattr(config.adapters, "custom_sqlmap_path", None), emit_log)
         if not binary:
             return []
@@ -245,12 +266,17 @@ class SqlmapAdapter(GovernedExtendedAdapter):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "sqlmap execution blocked: no server-derived output directory was supplied.")
             return []
-        command = self.build_command(binary, target.value, output_dir)
+        target_url = target.value
+        host_header = None
+        if validated_target is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
+        command = self.build_command(binary, target_url, output_dir, host_header=host_header)
         code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
         findings: List[Finding] = []
+        evidence_target = validated_target.canonical_value if validated_target is not None else target.value
         for match in re.finditer(r"Parameter:\s*([^\s(]+).*?Type:\s*([^\n]+)", stdout, re.IGNORECASE | re.DOTALL):
             parameter, injection_type = match.group(1), match.group(2).strip()
-            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="DAST-INJ-001", title="SQL Injection Confirmed by sqlmap", category="Injection", severity=Severity.CRITICAL, cvss_score=9.8, location=f"{target.value}#{parameter}", observed=f"Parameter: {parameter}; Type: {injection_type}", description="sqlmap confirmed an injectable request parameter under the bounded automated profile.", impact="An attacker may read or modify backend database data.", remediation="Use parameterized queries and strict server-side input validation.")
+            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="DAST-INJ-001", title="SQL Injection Confirmed by sqlmap", category="Injection", severity=Severity.CRITICAL, cvss_score=9.8, location=f"{evidence_target}#{parameter}", observed=f"Parameter: {parameter}; Type: {injection_type}", description="sqlmap confirmed an injectable request parameter under the bounded automated profile.", impact="An attacker may read or modify backend database data.", remediation="Use parameterized queries and strict server-side input validation.")
             findings.append(finding)
             await emit_finding(finding)
         self._record_execution(code, stdout, stderr, findings_count=len(findings))

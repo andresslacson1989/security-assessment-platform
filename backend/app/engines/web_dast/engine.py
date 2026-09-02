@@ -490,6 +490,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 config.fuzzing.enabled
                 and getattr(config.adapters, "enable_sqlmap", True)
                 and target.type == TargetType.URL
+                and kwargs.get("active_probing_granted", False)
             ):
                 sqlmap_adapter = SqlmapAdapter()
                 custom_path = getattr(config.adapters, "sqlmap_path", None) or getattr(config.adapters, "custom_sqlmap_path", None)
@@ -508,6 +509,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                 scan_id=kwargs.get("scan_id", "active"),
                                 organization_id=organization_id,
                                 output_dir=str(Path(workspace)),
+                                validated_target=_validated_target,
+                                require_managed_binary=True,
                             )
                             for finding in sqlmap_findings:
                                 if finding.fingerprint not in existing_fps:
@@ -522,19 +525,32 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     if tool_state_cb:
                         await tool_state_cb("sqlmap", "TOOL_EXECUTION_FAILED")
                     await emit_log(LogLevel.WARNING, f"sqlmap adapter error: {exc}")
+            elif (
+                config.fuzzing.enabled
+                and getattr(config.adapters, "enable_sqlmap", True)
+                and target.type == TargetType.URL
+                and not kwargs.get("active_probing_granted", False)
+            ):
+                if tool_state_cb:
+                    await tool_state_cb("sqlmap", "EXECUTION_BLOCKED")
+                await emit_log(LogLevel.WARNING, "sqlmap blocked: explicit tenant active-probing authorization is required.")
 
             if config.fuzzing.enabled:
-                await emit_progress(85, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
-                await emit_log(LogLevel.INFO, "Fuzzing discovered query parameters and forms with non-destructive payloads.")
-                fuzz_findings = await audit_parameter_fuzzing(
-                    target.value,
-                    discovered_endpoints=discovered_endpoints,
-                    client=client,
-                    config=config,
-                    scan_id="active",
-                    emit_finding=emit_finding,
-                    emit_log=emit_log,
-                )
+                if not kwargs.get("active_probing_granted", False):
+                    await emit_log(LogLevel.WARNING, "Native active parameter fuzzing blocked: explicit tenant active-probing authorization is required.")
+                    fuzz_findings = []
+                else:
+                    await emit_progress(85, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
+                    await emit_log(LogLevel.INFO, "Fuzzing discovered query parameters and forms with non-destructive payloads.")
+                    fuzz_findings = await audit_parameter_fuzzing(
+                        _validated_target.canonical_value,
+                        discovered_endpoints=discovered_endpoints,
+                        client=client,
+                        config=config,
+                        scan_id="active",
+                        emit_finding=emit_finding,
+                        emit_log=emit_log,
+                    )
                 for f in fuzz_findings:
                     if f.fingerprint not in existing_fps:
                         existing_fps.add(f.fingerprint)
