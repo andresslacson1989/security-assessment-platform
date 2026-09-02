@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from app.adapters.gtfobins_adapter import evaluate_host_audit
+import json
+
+from app.adapters.gtfobins_adapter import evaluate_host_audit, GTFOBINS_CATALOG_REVISION
 from app.adapters.gtfobins_adapter import GTFOBinsAdapter
 from app.core.models import LogLevel, ScanConfig, Target, TargetType, NormalizedExecutionState
 import pytest
@@ -23,6 +25,9 @@ def test_gtfobins_fixture_emits_only_canonical_privilege_findings():
     assert all(finding.source_tool == "gtfobins" for finding in findings)
     assert all(finding.organization_id == "org-test" for finding in findings)
     assert not any("systemctl" in finding.evidence.raw_response_snippet for finding in findings)
+    evidence = json.loads(findings[0].evidence.raw_response_snippet)
+    assert evidence["catalog_revision"] == GTFOBINS_CATALOG_REVISION
+    assert len(evidence["catalog_revision"]) == 64
 
 
 def test_gtfobins_does_not_execute_or_accept_non_catalog_commands():

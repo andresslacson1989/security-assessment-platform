@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -31,6 +33,9 @@ GTFOBINS_CATALOG = frozenset({
     "awk", "bash", "env", "find", "less", "more", "nmap", "perl",
     "python", "ruby", "tar", "vim", "zip",
 })
+GTFOBINS_CATALOG_REVISION = hashlib.sha256(
+    "\n".join(sorted(GTFOBINS_CATALOG)).encode("utf-8")
+).hexdigest()
 
 
 def _binary_name(value: str) -> str:
@@ -63,7 +68,10 @@ def evaluate_host_audit(
             location=sanitize_sensitive_text(location),
             observed_value=sanitize_sensitive_text(observed),
             expected_value="No exploitable GTFOBins/LOLBAS privilege path is present.",
-            raw_response_snippet=sanitize_sensitive_text(observed),
+            raw_response_snippet=sanitize_sensitive_text(json.dumps({
+                "observed": observed,
+                "catalog_revision": GTFOBINS_CATALOG_REVISION,
+            }, sort_keys=True)),
         )
         finding = Finding(
             scan_id=scan_id,
