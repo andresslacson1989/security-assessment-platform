@@ -224,11 +224,14 @@ async def resolve_host_ips(
 async def safe_probe_exposed_ip(
     ip_str: str,
     timeout_sec: float = 3.0,
+    active_probing_granted: bool = False,
 ) -> Dict[str, str]:
     """
     Non-destructive passive HTTP/HTTPS probe on an exposed IP to capture headers.
     """
     probe_details = {"server": "", "x_powered_by": "", "status_code": ""}
+    if not active_probing_granted:
+        return probe_details
     if is_private_or_loopback_ip(ip_str):
         return probe_details
 
@@ -260,6 +263,7 @@ async def audit_origin_exposure(
     emit_finding: Optional[FindingCallback] = None,
     emit_log: Optional[LogCallback] = None,
     mock_ct_results: Optional[List[Dict[str, Any]]] = None,
+    active_probing_granted: bool = False,
 ) -> List[Finding]:
     """
     Performs full Certificate Transparency Log discovery & Direct Origin Exposure auditing.
@@ -292,21 +296,27 @@ async def audit_origin_exposure(
             timeout_sec=config.osint.crtsh_timeout_seconds or 8.0,
             emit_log=emit_log,
         )
-        resolver = dns.asyncresolver.Resolver()
-        resolver.lifetime = 3.0
-
-        # Also ensure apex and www are checked
+        # CT enumeration is passive. DNS resolution and origin probing are
+        # separate active operations and require explicit authorization.
         all_hosts = sorted(discovered_subs | {apex_domain, f"www.{apex_domain}"})
-        for host in all_hosts:
-            ips = await resolve_host_ips(host, resolver)
-            if ips:
-                for ip in ips:
-                    cf_status = is_cloudflare_ip(ip)
-                    subdomain_entries.append({
-                        "subdomain": host,
-                        "ip": ip,
-                        "cloudflare": cf_status,
-                    })
+        if active_probing_granted:
+            resolver = dns.asyncresolver.Resolver()
+            resolver.lifetime = 3.0
+            for host in all_hosts:
+                ips = await resolve_host_ips(host, resolver)
+                if ips:
+                    for ip in ips:
+                        cf_status = is_cloudflare_ip(ip)
+                        subdomain_entries.append({
+                            "subdomain": host,
+                            "ip": ip,
+                            "cloudflare": cf_status,
+                        })
+        else:
+            subdomain_entries = [
+                {"subdomain": host, "ip": "", "cloudflare": False}
+                for host in all_hosts
+            ]
 
     # Step 2: Evaluate Wildcard Certificate Findings (NET-CERT-004)
     for wildcard in sorted(set(wildcard_list)):
@@ -374,11 +384,12 @@ async def audit_origin_exposure(
                     assessment_id=scan_id,
                     authorized_root=apex_domain,
                     sources=["crt.sh"],
+                    dns_status="ACTIVE" if ip else "UNRESOLVED",
                 )
             )
 
         # Flag exposed non-Cloudflare real IPs (NET-ORIGIN-001)
-        if not is_cf and ip and not is_private_or_loopback_ip(ip):
+        if active_probing_granted and not is_cf and ip and not is_private_or_loopback_ip(ip):
             pair_key = (sub, ip)
             if pair_key in seen_exposed_pairs:
                 continue
@@ -390,7 +401,7 @@ async def audit_origin_exposure(
             # Non-destructive HTTP banner probe if live scanning
             probe_info = ""
             if mock_ct_results is None:
-                probe_res = await safe_probe_exposed_ip(ip)
+                probe_res = await safe_probe_exposed_ip(ip, active_probing_granted=True)
                 if probe_res.get("server"):
                     probe_info = f" [Banner: Server={probe_res['server']}]"
 

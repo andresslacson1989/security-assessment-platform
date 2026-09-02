@@ -126,6 +126,7 @@ async def audit_subdomain_osint(
     emit_subdomain: Optional[SubdomainDiscoveredCallback] = None,
     emit_finding: Optional[FindingCallback] = None,
     emit_log: Optional[LogCallback] = None,
+    active_probing_granted: bool = False,
 ) -> List[Finding]:
     """
     Queries crt.sh Certificate Transparency logs, discovers subdomains, and evaluates takeover risks.
@@ -191,7 +192,16 @@ async def audit_subdomain_osint(
     resolver.lifetime = 3.0
 
     for sub in sorted(discovered_names):
-        sub_info = await resolve_subdomain_details(sub, resolver)
+        if active_probing_granted:
+            sub_info = await resolve_subdomain_details(sub, resolver)
+        else:
+            # CT enumeration is passive. DNS resolution and takeover
+            # verification require the separate explicit active-probing gate.
+            sub_info = DiscoveredSubdomain(
+                domain=sub,
+                discovered_via="crt.sh",
+                dns_status="UNRESOLVED",
+            )
         sub_info = sub_info.model_copy(update={
             "organization_id": organization_id,
             "assessment_id": scan_id,
@@ -203,7 +213,7 @@ async def audit_subdomain_osint(
             await emit_subdomain(sub_info)
 
         # Evaluate Dangling CNAME Takeover (NET-OSINT-001)
-        if sub_info.is_takeover_vulnerable and config.osint.subdomain_takeover_check:
+        if active_probing_granted and sub_info.is_takeover_vulnerable and config.osint.subdomain_takeover_check:
             loc = f"dns://{sub}"
             obs = f"CNAME -> {', '.join(sub_info.cname_targets)} ({sub_info.service_fingerprint or 'Unclaimed Cloud Target'})"
             findings.append(

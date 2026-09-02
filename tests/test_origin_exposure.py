@@ -104,6 +104,7 @@ async def test_audit_origin_exposure_with_mock_dataset():
         organization_id="org-origin-test",
         emit_subdomain=subdomain_cb,
         mock_ct_results=mock_ct_results,
+        active_probing_granted=True,
     )
 
     # 4 HIGH findings for exposed IPs + 1 INFO finding for wildcard cert
@@ -189,7 +190,7 @@ async def test_external_ct_and_origin_clients_require_verified_tls_without_redir
 
     with patch("app.engines.network.origin_exposure.httpx.AsyncClient", return_value=client_context) as factory:
         await fetch_ct_logs("example.com")
-        await safe_probe_exposed_ip("8.8.8.8")
+        await safe_probe_exposed_ip("8.8.8.8", active_probing_granted=True)
 
     calls = factory.call_args_list
     assert len(calls) == 2  # CT client and the first non-empty origin probe
@@ -223,6 +224,57 @@ async def test_ct_subdomain_scope_requires_label_boundary():
         await audit_subdomain_osint(
             "example.com", ScanConfig(), "scan-scope", "org-scope",
             emit_subdomain=emit,
+            active_probing_granted=True,
         )
 
     assert [item.domain for item in emitted] == ["api.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_passive_ct_does_not_resolve_or_probe_without_active_grant():
+    response = MagicMock(status_code=200)
+    response.json.return_value = [{"name_value": "api.example.com"}]
+    client = AsyncMock()
+    client.get.return_value = response
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=None)
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    with patch("app.engines.network.subdomain_recon.httpx.AsyncClient", return_value=context), \
+         patch("app.engines.network.subdomain_recon.resolve_subdomain_details", new_callable=AsyncMock) as resolver:
+        findings = await audit_subdomain_osint(
+            "example.com", ScanConfig(), "scan-passive", "org-passive",
+            emit_subdomain=emit,
+        )
+
+    resolver.assert_not_awaited()
+    assert [item.domain for item in emitted] == ["api.example.com"]
+    assert emitted[0].dns_status == "UNRESOLVED"
+    assert findings == []
+
+
+@pytest.mark.asyncio
+async def test_origin_exposure_passive_mode_does_not_resolve_or_probe():
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    with patch("app.engines.network.origin_exposure.fetch_ct_logs", new_callable=AsyncMock, return_value=(
+        {"api.example.com"}, [], []
+    )), \
+         patch("app.engines.network.origin_exposure.resolve_host_ips", new_callable=AsyncMock) as resolver, \
+         patch("app.engines.network.origin_exposure.safe_probe_exposed_ip", new_callable=AsyncMock) as probe:
+        findings = await audit_origin_exposure(
+            "example.com", ScanConfig(), emit_subdomain=emit,
+        )
+
+    resolver.assert_not_awaited()
+    probe.assert_not_awaited()
+    assert {item.domain for item in emitted} == {"api.example.com", "example.com", "www.example.com"}
+    assert all(item.dns_status == "UNRESOLVED" for item in emitted)
+    assert findings == []

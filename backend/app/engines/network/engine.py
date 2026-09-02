@@ -406,6 +406,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 emit_subdomain=subdomain_cb,
                 emit_finding=emit_finding,
                 emit_log=emit_log,
+                active_probing_granted=kwargs.get("active_probing_granted", False),
             )
             for f in origin_findings:
                 f.scan_id = scan_id
@@ -420,6 +421,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 emit_subdomain=subdomain_cb,
                 emit_finding=emit_finding,
                 emit_log=emit_log,
+                active_probing_granted=kwargs.get("active_probing_granted", False),
             )
             for f in osint_findings:
                 f.scan_id = scan_id

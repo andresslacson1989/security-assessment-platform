@@ -84,8 +84,8 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 
 ### INV-013: Subfinder Discovery Does Not Grant Authorization
 - **Contract Specification:** Contract 09, TOOL 03 Sections 13, 20, 24, 30 and 36.
-- **Implementation:** `backend/app/adapters/subfinder_adapter.py` validates the authorized root, constructs a fixed argument vector, rejects malformed/out-of-scope records, and emits only scoped discovery observations. It does not perform DNS probing or inventory admission; `/api/assets/admit-discovery` performs the separate tenant-scoped admission decision.
-- **Tests:** `tests/security/test_subfinder_assurance.py::test_discovery_never_promotes_out_of_scope_or_resolves_hosts`.
+- **Implementation:** `backend/app/adapters/subfinder_adapter.py` validates the authorized root, constructs a fixed argument vector, rejects malformed/out-of-scope records, and emits only scoped discovery observations. `backend/app/engines/network/subdomain_recon.py` and `backend/app/engines/network/origin_exposure.py` keep native CT enrichment unresolved and block DNS/takeover/origin HTTP operations without the explicit active-probing grant. It does not perform inventory admission; `/api/assets/admit-discovery` performs the separate tenant-scoped admission decision.
+- **Tests:** `tests/security/test_subfinder_assurance.py::test_discovery_never_promotes_out_of_scope_or_resolves_hosts`, `tests/test_origin_exposure.py::test_passive_ct_does_not_resolve_or_probe_without_active_grant`, `tests/test_origin_exposure.py::test_origin_exposure_passive_mode_does_not_resolve_or_probe`.
 - **Status:** VERIFIED for the non-escalation and explicit-admission boundaries and for exact destinations in platform-owned CT clients; OS-level external-process egress governance and credential injection remain pending capabilities.
 
 ### E11.3 Runtime Verification

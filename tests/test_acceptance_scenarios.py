@@ -1005,6 +1005,7 @@ async def test_scenario_12_passive_osint_subdomain_recon_and_cname_takeover():
                 scan_id="test-osint",
                 organization_id="org-osint-test",
                 emit_subdomain=mock_sub_cb,
+                active_probing_granted=True,
             )
 
             check_ids = [f.check_id for f in findings]
