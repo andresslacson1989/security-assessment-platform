@@ -149,7 +149,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         await emit_progress(5, "Running primary external DAST tool adapters...")
 
         # 0.1 FFuF Adapter (High-Speed Content Discovery)
-        if getattr(config.adapters, "enable_ffuf", True):
+        if getattr(config.adapters, "enable_ffuf", True) and kwargs.get("active_probing_granted", False):
             ffuf_adapter = FfufAdapter()
             custom_path = getattr(config.adapters, "ffuf_path", None) or getattr(config.adapters, "custom_ffuf_path", None)
             try:
@@ -178,9 +178,12 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await publish_tool_state("ffuf")
                 await emit_log(LogLevel.WARNING, f"FFuF adapter error: {e}")
+        elif getattr(config.adapters, "enable_ffuf", True):
+            await publish_tool_state("ffuf", fallback="EXECUTION_BLOCKED")
+            await emit_log(LogLevel.WARNING, "FFuF blocked: explicit tenant active-probing authorization is required.")
 
         # 0.2 Nuclei Adapter (Community CVE and Template Scanning)
-        if getattr(config.adapters, "enable_nuclei", True):
+        if getattr(config.adapters, "enable_nuclei", True) and kwargs.get("active_probing_granted", False):
             nuclei_adapter = NucleiAdapter()
             custom_path = getattr(config.adapters, "nuclei_path", None) or getattr(config.adapters, "custom_nuclei_path", None)
             try:
@@ -208,6 +211,9 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             except Exception as e:
                 await publish_tool_state("nuclei")
                 await emit_log(LogLevel.WARNING, f"Nuclei adapter error: {e}")
+        elif getattr(config.adapters, "enable_nuclei", True):
+            await publish_tool_state("nuclei", fallback="EXECUTION_BLOCKED")
+            await emit_log(LogLevel.WARNING, "Nuclei blocked: explicit tenant active-probing authorization is required.")
 
         # 0.4 Katana Adapter (Headless SPA Dynamic Crawler)
         if getattr(config.adapters, "enable_katana", True):

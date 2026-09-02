@@ -272,6 +272,73 @@ async def test_web_dast_engine_full_run():
 
 
 @pytest.mark.asyncio
+async def test_web_dast_blocks_intrusive_tools_without_active_grant():
+    """FFuF and Nuclei must not launch on a read-only authorization context."""
+    ffuf = MagicMock()
+    ffuf.is_available = AsyncMock(return_value=True)
+    ffuf.run = AsyncMock(return_value=[])
+    nuclei = MagicMock()
+    nuclei.is_available = AsyncMock(return_value=True)
+    nuclei.run = AsyncMock(return_value=[])
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    async def log_cb(_level, _message):
+        pass
+
+    async def progress_cb(_percent, _stage):
+        pass
+
+    async def finding_cb(_finding):
+        pass
+
+    with patch("app.engines.web_dast.engine.FfufAdapter", return_value=ffuf), \
+         patch("app.engines.web_dast.engine.NucleiAdapter", return_value=nuclei), \
+         patch("app.engines.web_dast.engine.httpx.AsyncClient", return_value=client), \
+         patch("app.engines.web_dast.engine.audit_security_headers_and_cookies", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_sensitive_exposure_and_methods", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_browser_posture", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.audit_graphql_endpoints", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.WebCrawler.crawl", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.web_dast.engine.AuthSessionManager.authenticate", new_callable=AsyncMock, return_value=False), \
+         patch("app.engines.web_dast.engine.AuthSessionManager.audit_auth_and_forms", new_callable=AsyncMock, return_value=[]), \
+         patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        config = ScanConfig(
+            crawler=CrawlerConfig(enabled=False),
+            fuzzing=FuzzingConfig(enabled=False),
+            adapters=ToolAdapterConfig(
+                enable_ffuf=True,
+                enable_nuclei=True,
+                enable_katana=False,
+                enable_schemathesis=False,
+            ),
+        )
+        states = []
+
+        async def state_cb(tool_name, state):
+            states.append((tool_name, state))
+
+        await WebDastAssessmentEngine().run(
+            Target(name="Web", type=TargetType.URL, value="https://example.com"),
+            config,
+            log_cb,
+            progress_cb,
+            finding_cb,
+            organization_id="org-test",
+            emit_tool_execution_state=state_cb,
+        )
+
+    ffuf.is_available.assert_not_awaited()
+    ffuf.run.assert_not_awaited()
+    nuclei.is_available.assert_not_awaited()
+    nuclei.run.assert_not_awaited()
+    assert ("ffuf", "EXECUTION_BLOCKED") in states
+    assert ("nuclei", "EXECUTION_BLOCKED") in states
+
+
+@pytest.mark.asyncio
 async def test_web_dast_engine_reaches_bounded_sqlmap_path():
     """The active-fuzzing production path invokes sqlmap with a server workspace."""
     calls = {}

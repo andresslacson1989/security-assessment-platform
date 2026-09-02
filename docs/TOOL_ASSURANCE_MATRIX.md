@@ -111,7 +111,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Approved Release Version**: `v3.2.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/nuclei).
 - **Template Trust Policy**: Uses official curated `nuclei-templates` release; arbitrary user-provided template execution is restricted to authorized admin tenants.
-- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, concurrency/rate bounds, curated fixed template tags, and sanitized reproduction evidence. Arbitrary template execution is not enabled.
+- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, explicit tenant active-probing authorization before production launch, concurrency/rate bounds, curated fixed template tags, and sanitized reproduction evidence. Arbitrary template execution is not enabled.
 - **Credential Handling**: Tenant credentials are not placed in CLI arguments; authenticated coverage is handled by the governed native HTTP session until secret-safe subprocess injection is implemented.
 - **Finding Normalization**: Maps `template-id` to canonical check catalog, extracts `reproduction_curl`, CVSS score, CWE mapping.
 - **Role Strategy**: **PRIMARY**. Complements native DAST engine.
@@ -123,7 +123,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Enterprise Maturity**: Production-Mature.
 - **Approved Release Version**: `v2.1.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: https://github.com/ffuf/ffuf.
-- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, bounded rate/concurrency, fixed server-generated wordlist, and destructive-path exclusions. DELETE/PUT fuzzing is not supported.
+- **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, explicit tenant active-probing authorization before production launch, bounded rate/concurrency, fixed server-generated wordlist, and destructive-path exclusions. DELETE/PUT fuzzing is not supported.
 - **Credential Handling**: Tenant cookies/authentication headers are not placed in FFuF CLI arguments; authenticated coverage remains in the governed native session.
 - **Output Format & Parser**: JSON output (`-o out.json -of json`).
 - **Finding Normalization**: Check IDs `DAST-INJ-001` (SQLi), `DAST-XSS-001` (Reflected XSS), `DAST-PARAM-001` (Hidden Parameter Exposure).
@@ -157,7 +157,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E12 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
 - **Managed runtime status**: Managed Nuclei, FFuF, Katana, and Schemathesis paths were verified in the Linux production image under uid 999 with exact approved versions and valid trust records; no unmanaged executable was substituted.
-- **Acceptance evidence**: The current full repository regression completed with `448 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image.
+- **Acceptance evidence**: The current full repository regression completed with `451 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image. FFuF and Nuclei launches are explicitly blocked when tenant active-probing authorization is absent.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST
@@ -211,7 +211,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E13 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented shared process-supervision, fallback-provenance, attribution, evidence-sanitization, authoritative-persistence, and 26-tool registry controls. Final section acceptance remains conditional on the limitations recorded below; no limitation is represented as a completed capability.
 - **Managed runtime status**: The current Linux production image verified managed direct-binary runtimes and trust records for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and the source-built Nmap runtime, plus the managed Retire.js package. It also verified the six isolated Python environments—SSLyze `5.2.0`, Bandit `1.7.8`, Semgrep `1.65.0`, Checkov `3.2.0`, Prowler `4.1.0`, and Schemathesis `3.20.0`—with valid lock-bound package trust records. All verification ran under UID 999; no unmanaged runtime is treated as evidence.
-- **Regression evidence**: The current focused orchestration/contract suite completed successfully; the current full repository regression completed with `450 passed, 2 skipped, 4 warnings`. Adapter subprocess environments are now filtered at the shared launch boundary, and rejected-discovery evidence is replayed in historical SSE snapshots.
+- **Regression evidence**: The current focused orchestration/contract suite completed successfully; the current full repository regression completed with `451 passed, 2 skipped, 4 warnings`. Adapter subprocess environments are now filtered at the shared launch boundary, and rejected-discovery evidence is replayed in historical SSE snapshots.
 - **Coverage limitation**: Native fallbacks are explicitly limited compared with the external tools; failed, blocked, timed-out, cancelled, or parser-degraded tools must remain visible as degraded coverage.
 
 ### 14. Trivy (Container, Filesystem & IaC Vulnerability Scanner)
