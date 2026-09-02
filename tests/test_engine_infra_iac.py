@@ -35,6 +35,11 @@ def test_native_cloud_posture_fallback_is_observation_only_and_marked_reduced_co
     assert all(finding.source_tool == "native" for finding in findings)
     assert all(finding.is_fallback and finding.primary_tool_failed == "prowler" for finding in findings)
     assert evaluate_cloud_posture_observations({}, scan_id="scan-cloud", organization_id="org-cloud") == []
+    assert evaluate_cloud_posture_observations(
+        {"public_storage_buckets": [{"secret": "must-not-be-evidence"}]},
+        scan_id="scan-cloud",
+        organization_id="org-cloud",
+    ) == []
 
 
 def test_dockerfile_auditor_rules():

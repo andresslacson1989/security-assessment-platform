@@ -35,9 +35,16 @@ def evaluate_cloud_posture_observations(
         raw = observations.get(key)
         if not raw:
             continue
-        values = [True] if raw is True else raw if isinstance(raw, list) else [raw]
+        if raw is True:
+            values = [key]
+        elif isinstance(raw, str) and raw.strip():
+            values = [raw]
+        elif isinstance(raw, list):
+            values = [value for value in raw if isinstance(value, str) and value.strip()][:100]
+        else:
+            values = []
         for value in values:
-            location = sanitize_sensitive_text(str(value)) if value is not True else key
+            location = sanitize_sensitive_text(value, max_length=512)
             observed = sanitize_sensitive_text(f"Observation key: {key}; resource: {location}")
             finding = Finding(
                 scan_id=scan_id,
