@@ -263,6 +263,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Upstream Project**: Prowler (https://github.com/prowler-cloud/prowler).
 - **Supported target boundary**: `CLOUD_ACCOUNT` and `KUBERNETES_CLUSTER` only. The assured adapter fails closed when a gateway-issued cloud `ValidatedTarget` is absent or when a local filesystem/IaC target is supplied; it is not a generic local manifest scanner.
 - **Credential Governance**: The public scan API accepts no credential material. Assured execution requires a worker-side, tenant-scoped envelope containing only the approved ephemeral AWS credential variables; the adapter validates and clears that envelope after launch. IAM Role AssumeRole / Workload Identity remains preferred, and raw long-lived static credentials are rejected.
+- **Fallback Governance**: If assured Prowler execution is unavailable, blocked, or produces an unusable report, the infrastructure engine evaluates only explicit worker-supplied posture observations through `cloud_posture.py`; missing observations are reported as degraded coverage and never treated as a clean result.
 - **Role Strategy**: **PRIMARY**. Cloud posture auditing.
 
 ### 20. Kube-Bench (CIS Kubernetes Benchmark Checker)
