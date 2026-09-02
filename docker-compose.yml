@@ -13,6 +13,13 @@ services:
     image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-platform
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
     ports:
       - "8000:8000"
     environment:
@@ -39,6 +46,13 @@ services:
     image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-platform-enterprise
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
     ports:
       - "8000:8000"
     environment:
@@ -71,6 +85,13 @@ services:
     image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-worker
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
     command: ["python", "/app/run_worker.py"]
     environment:
       PYTHONUNBUFFERED: "1"
