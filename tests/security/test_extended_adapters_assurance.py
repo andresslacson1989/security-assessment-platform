@@ -80,13 +80,36 @@ async def test_hydra_intrusive_execution_requires_validated_active_authorization
         ScanConfig(),
         emit_log,
         emit_finding,
-        require_managed_binary=True,
         explicit_credential_audit=True,
     )
 
     assert result == []
     assert adapter.last_execution_state.value == "EXECUTION_BLOCKED"
     assert "ValidatedTarget" in logs[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_active_auxiliary_adapters_cannot_bypass_authorization_flag(monkeypatch):
+    """Active adapters must enforce the gateway boundary even for direct callers."""
+    for adapter_class, target in (
+        (MetasploitAdapter, Target(name="target", type=TargetType.IP, value="192.0.2.10")),
+        (SqlmapAdapter, Target(name="target", type=TargetType.URL, value="https://example.com/item?id=1")),
+    ):
+        adapter = adapter_class()
+        execute = AsyncMock()
+        monkeypatch.setattr(adapter, "_binary_or_block", AsyncMock(return_value="C:\\managed\\tool.exe"))
+        monkeypatch.setattr(adapter, "execute_command", execute)
+        logs = []
+
+        async def emit_log(_level, message):
+            logs.append(message)
+
+        result = await adapter.run(target, ScanConfig(), emit_log, AsyncMock(), output_dir="C:\\workspace\\sqlmap")
+
+        assert result == []
+        assert adapter.last_execution_state.value == "EXECUTION_BLOCKED"
+        assert any("ValidatedTarget" in message for message in logs)
+        execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

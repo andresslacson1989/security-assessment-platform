@@ -203,11 +203,11 @@ class MetasploitAdapter(GovernedExtendedAdapter):
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
         validated_target = self.require_validated_target(kwargs)
-        if kwargs.get("require_managed_binary") and validated_target is None:
+        if validated_target is None:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Metasploit execution blocked: a gateway-issued ValidatedTarget is required.")
             return []
-        if kwargs.get("require_managed_binary") and not validated_target.authorization_context.get("active_probing_granted", False):
+        if not validated_target.authorization_context.get("active_probing_granted", False):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Metasploit execution blocked: explicit tenant active-probing authorization is required.")
             return []
@@ -261,11 +261,11 @@ class SqlmapAdapter(GovernedExtendedAdapter):
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
         validated_target = self.require_validated_target(kwargs)
-        if kwargs.get("require_managed_binary") and validated_target is None:
+        if validated_target is None:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "sqlmap execution blocked: a gateway-issued ValidatedTarget is required.")
             return []
-        if kwargs.get("require_managed_binary") and not validated_target.authorization_context.get("active_probing_granted", False):
+        if not validated_target.authorization_context.get("active_probing_granted", False):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "sqlmap execution blocked: explicit tenant active-probing authorization is required.")
             return []
@@ -318,7 +318,7 @@ class AmassAdapter(GovernedExtendedAdapter):
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
         validated_target = self.require_validated_target(kwargs)
-        if kwargs.get("require_managed_binary") and validated_target is None:
+        if validated_target is None:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Amass execution blocked: a gateway-issued ValidatedTarget is required.")
             return []
@@ -391,11 +391,11 @@ class HydraAdapter(GovernedExtendedAdapter):
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
         validated_target = self.require_validated_target(kwargs)
-        if kwargs.get("require_managed_binary") and validated_target is None:
+        if validated_target is None:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Hydra execution blocked: a gateway-issued ValidatedTarget is required.")
             return []
-        if kwargs.get("require_managed_binary") and not validated_target.authorization_context.get("active_probing_granted", False):
+        if not validated_target.authorization_context.get("active_probing_granted", False):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Hydra execution blocked: explicit tenant active-probing authorization is required.")
             return []
