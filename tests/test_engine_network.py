@@ -266,6 +266,7 @@ async def test_network_engine_reaches_governed_extended_adapters():
             return True
 
         async def run(self, target, config, emit_log, emit_finding, **kwargs):
+            calls["amass_target"] = target
             calls["amass"] = kwargs
             assert Path(kwargs["output_file"]).is_absolute()
             return []
@@ -277,6 +278,7 @@ async def test_network_engine_reaches_governed_extended_adapters():
             return True
 
         async def run(self, target, config, emit_log, emit_finding, **kwargs):
+            calls["metasploit_target"] = target
             calls["metasploit"] = kwargs
             return []
 
@@ -315,9 +317,74 @@ async def test_network_engine_reaches_governed_extended_adapters():
             progress_cb,
             finding_cb,
             organization_id="org-one",
+            asset_id="asset-one",
+            active_probing_granted=True,
             scan_id="scan-extended-runtime",
         )
 
     assert "amass" in calls
     assert "metasploit" in calls
     assert calls["metasploit"]["port"] == 443
+    assert calls["amass_target"].canonical_value == "https://example.com"
+    assert calls["metasploit_target"].selected_destination
+    assert calls["amass"]["require_managed_binary"] is True
+    assert calls["metasploit"]["require_managed_binary"] is True
+
+
+@pytest.mark.asyncio
+async def test_network_engine_blocks_metasploit_without_active_authorization():
+    calls = []
+
+    class FakeMetasploit:
+        last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+        async def is_available(self, custom_path=None):
+            return True
+
+        async def run(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return []
+
+    async def log_cb(_level, _message):
+        pass
+
+    async def progress_cb(_percent, _stage):
+        pass
+
+    async def finding_cb(_finding):
+        pass
+
+    with patch("app.engines.network.engine.MetasploitAdapter", FakeMetasploit), \
+         patch("app.engines.network.engine.audit_tls_certificates", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_tls_protocols_and_ciphers", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_dns_hygiene", new_callable=AsyncMock, return_value=[]), \
+         patch("app.engines.network.engine.audit_exposed_ports", new_callable=AsyncMock, return_value=[]):
+        config = ScanConfig(
+            adapters=ToolAdapterConfig(
+                enable_nmap=False,
+                enable_sslyze=False,
+                enable_subfinder=False,
+                enable_httpx=False,
+                enable_amass=False,
+                enable_metasploit=True,
+            ),
+            osint=OSINTConfig(subdomain_enumeration=False),
+        )
+        states = []
+
+        async def state_cb(tool_name, state):
+            states.append((tool_name, state))
+
+        await NetworkAssessmentEngine().run(
+            Target(name="Web App", type=TargetType.URL, value="https://example.com"),
+            config,
+            log_cb,
+            progress_cb,
+            finding_cb,
+            organization_id="org-one",
+            emit_tool_execution_state=state_cb,
+            scan_id="scan-metasploit-authz",
+        )
+
+    assert calls == []
+    assert ("metasploit", "EXECUTION_BLOCKED") in states

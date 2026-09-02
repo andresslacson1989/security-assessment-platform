@@ -146,3 +146,68 @@ async def test_sqlmap_binds_execution_to_validated_destination_and_host(monkeypa
     assert command[command.index("--headers") + 1] == "Host: example.com"
     assert "https://example.com/item?id=1" not in command
     assert kwargs["pre_launch_check"]() is True
+
+
+@pytest.mark.asyncio
+async def test_metasploit_binds_rhosts_to_validated_destination(monkeypatch):
+    adapter = MetasploitAdapter()
+    captured = []
+
+    async def capture_command(command, **kwargs):
+        captured.append((command, kwargs))
+        return 0, "", ""
+
+    monkeypatch.setattr(adapter, "_binary_or_block", AsyncMock(return_value="C:\\managed\\msfconsole.exe"))
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda _binary: True)
+    monkeypatch.setattr(adapter, "execute_command", capture_command)
+    target = Target(name="Example", type=TargetType.URL, value="https://example.com")
+    with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        validated = create_validated_target(target, asset_id="asset-test", active_probing_granted=True)
+
+    await adapter.run(
+        validated,
+        ScanConfig(),
+        AsyncMock(),
+        AsyncMock(),
+        validated_target=validated,
+        require_managed_binary=True,
+        port=443,
+    )
+
+    command, kwargs = captured[0]
+    assert "set RHOSTS 93.184.216.34" in command[-1]
+    assert "set RHOSTS example.com" not in command[-1]
+    assert kwargs["pre_launch_check"]() is True
+
+
+@pytest.mark.asyncio
+async def test_amass_uses_validated_canonical_discovery_root(monkeypatch, tmp_path):
+    adapter = AmassAdapter()
+    captured = []
+    output_file = tmp_path / "amass.jsonl"
+    output_file.write_text("", encoding="utf-8")
+
+    async def capture_command(command, **kwargs):
+        captured.append((command, kwargs))
+        return 0, "", ""
+
+    monkeypatch.setattr(adapter, "_binary_or_block", AsyncMock(return_value="C:\\managed\\amass.exe"))
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda _binary: True)
+    monkeypatch.setattr(adapter, "execute_command", capture_command)
+    target = Target(name="Example", type=TargetType.URL, value="https://example.com/path")
+    with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        validated = create_validated_target(target)
+
+    await adapter.run(
+        validated,
+        ScanConfig(),
+        AsyncMock(),
+        AsyncMock(),
+        validated_target=validated,
+        require_managed_binary=True,
+        output_file=str(output_file),
+    )
+
+    command, _kwargs = captured[0]
+    assert command[command.index("-d") + 1] == "example.com"
+    assert "path" not in command[command.index("-d") + 1]

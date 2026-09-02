@@ -202,16 +202,27 @@ class MetasploitAdapter(GovernedExtendedAdapter):
         return [binary, "-q", "-x", script]
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Metasploit execution blocked: a gateway-issued ValidatedTarget is required.")
+            return []
+        if kwargs.get("require_managed_binary") and not validated_target.authorization_context.get("active_probing_granted", False):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Metasploit execution blocked: explicit tenant active-probing authorization is required.")
+            return []
         binary = await self._binary_or_block(config, getattr(config.adapters, "metasploit_path", None) or getattr(config.adapters, "custom_metasploit_path", None), emit_log)
         if not binary:
             return []
-        command = self.build_command(binary, target.value, int(kwargs.get("port", 443)))
+        target_host = validated_target.selected_destination if validated_target is not None else getattr(target, "value", "")
+        target_port = validated_target.port if validated_target is not None else None
+        command = self.build_command(binary, target_host, int(kwargs.get("port", target_port or 443)))
         code, stdout, stderr = await self.execute_command(command, timeout=min(60.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
         findings: List[Finding] = []
         for line in stdout.splitlines():
             if "[+]" not in line:
                 continue
-            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="NET-TLS-001", title="Metasploit Auxiliary Verification Result", category="SSL/TLS", severity=Severity.HIGH, cvss_score=7.5, location=_host(target.value), observed=line, description="A governed Metasploit auxiliary scanner reported a TLS verification condition.", impact="The target may expose a known TLS implementation weakness.", remediation="Patch the TLS implementation and disable vulnerable protocol behavior.")
+            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="NET-TLS-001", title="Metasploit Auxiliary Verification Result", category="SSL/TLS", severity=Severity.HIGH, cvss_score=7.5, location=_host(target_host), observed=line, description="A governed Metasploit auxiliary scanner reported a TLS verification condition.", impact="The target may expose a known TLS implementation weakness.", remediation="Patch the TLS implementation and disable vulnerable protocol behavior.")
             findings.append(finding)
             await emit_finding(finding)
         self._record_execution(code, stdout, stderr, findings_count=len(findings))
@@ -306,6 +317,11 @@ class AmassAdapter(GovernedExtendedAdapter):
         return f"amass {match.group(1)}" if match else None
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Amass execution blocked: a gateway-issued ValidatedTarget is required.")
+            return []
         binary = await self._binary_or_block(config, getattr(config.adapters, "amass_path", None) or getattr(config.adapters, "custom_amass_path", None), emit_log)
         if not binary:
             return []
@@ -314,7 +330,8 @@ class AmassAdapter(GovernedExtendedAdapter):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Amass execution blocked: no server-derived output file was supplied.")
             return []
-        command = self.build_command(binary, target.value, output_file)
+        target_value = validated_target.canonical_value if validated_target is not None else getattr(target, "value", "")
+        command = self.build_command(binary, target_value, output_file)
         code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
         findings: List[Finding] = []
         emit_subdomain = kwargs.get("emit_subdomain")

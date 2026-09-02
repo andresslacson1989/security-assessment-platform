@@ -101,7 +101,7 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         except Exception as exc:
             await emit_log(LogLevel.ERROR, f"Network assessment blocked by target validation: {exc}")
             if tool_state_cb:
-                for tool_name in ("nmap", "sslyze", "httpx"):
+                for tool_name in ("nmap", "sslyze", "subfinder", "httpx", "amass", "metasploit"):
                     await tool_state_cb(tool_name, NormalizedExecutionState.EXECUTION_BLOCKED.value)
             return findings
 
@@ -264,21 +264,26 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                     findings.append(f)
                     await emit_finding(f)
 
-        if getattr(config.adapters, "enable_metasploit", True) and target.type in (TargetType.URL, TargetType.DOMAIN, TargetType.IP):
+        if (
+            getattr(config.adapters, "enable_metasploit", True)
+            and target.type in (TargetType.URL, TargetType.DOMAIN, TargetType.IP)
+            and kwargs.get("active_probing_granted", False)
+        ):
             metasploit_adapter = MetasploitAdapter()
             custom_path = getattr(config.adapters, "metasploit_path", None) or getattr(config.adapters, "custom_metasploit_path", None)
             try:
                 if await metasploit_adapter.is_available(custom_path):
                     await emit_progress(68, "Executing governed Metasploit auxiliary verification...")
-                    _, target_port = extract_host_and_port(target.value)
                     metasploit_findings = await metasploit_adapter.run(
-                        target,
+                        validated_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
                         organization_id=organization_id,
-                        port=target_port or 443,
+                        port=validated_target.port or 443,
+                        validated_target=validated_target,
+                        require_managed_binary=True,
                     )
                     findings.extend(metasploit_findings)
                     if tool_state_cb:
@@ -290,6 +295,14 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 if tool_state_cb:
                     await tool_state_cb("metasploit", "TOOL_EXECUTION_FAILED")
                 await emit_log(LogLevel.WARNING, f"Metasploit adapter error: {e}")
+        elif (
+            getattr(config.adapters, "enable_metasploit", True)
+            and target.type in (TargetType.URL, TargetType.DOMAIN, TargetType.IP)
+            and not kwargs.get("active_probing_granted", False)
+        ):
+            if tool_state_cb:
+                await tool_state_cb("metasploit", "EXECUTION_BLOCKED")
+            await emit_log(LogLevel.WARNING, "Metasploit blocked: explicit tenant active-probing authorization is required.")
 
         # --- Stage 4: High-Speed EASM & Tech Fingerprinting (Subfinder + Httpx) (70% - 85%) ---
         if getattr(config.adapters, "enable_subfinder", True):
@@ -299,12 +312,14 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                 if await subfinder_adapter.is_available(custom_path):
                     await emit_progress(72, "Executing Subfinder passive subdomain reconnaissance...")
                     sf_findings = await subfinder_adapter.run(
-                        target,
+                        validated_target,
                         config,
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
                         organization_id=organization_id,
+                        validated_target=validated_target,
+                        require_managed_binary=True,
                         emit_subdomain=subdomain_cb,
                         emit_rejected_discovery=rejected_discovery_cb,
                     )
@@ -331,12 +346,14 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                     ) as workspace:
                         output_file = str(Path(workspace) / "amass.jsonl")
                         amass_findings = await amass_adapter.run(
-                            target,
+                            validated_target,
                             config,
                             emit_log,
                             emit_finding,
                             scan_id=scan_id,
                             organization_id=organization_id,
+                            validated_target=validated_target,
+                            require_managed_binary=True,
                             output_file=output_file,
                             emit_subdomain=subdomain_cb,
                         )

@@ -123,6 +123,18 @@ class SubfinderAdapter(BaseToolAdapter):
                 state = state_map[self.last_execution_state]
                 await emit_state("subfinder", state)
 
+        validated_target = kwargs.get("validated_target")
+        if kwargs.get("require_managed_binary"):
+            from app.core.ssrf_protector import validate_validated_target
+
+            try:
+                validated_target = validate_validated_target(validated_target)
+            except Exception:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Subfinder execution blocked: a gateway-issued ValidatedTarget is required.")
+                await publish_state()
+                return findings
+
         binary = self.resolve_binary_path(config.adapters.subfinder_path or config.adapters.custom_subfinder_path)
         if not binary:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
@@ -154,7 +166,7 @@ class SubfinderAdapter(BaseToolAdapter):
             return findings
 
         # Extract apex domain
-        domain = target.value
+        domain = getattr(target, "value", None) or getattr(validated_target, "canonical_value", "")
         if "://" in domain:
             domain = urlparse(domain).hostname or domain
         if ":" in domain:
