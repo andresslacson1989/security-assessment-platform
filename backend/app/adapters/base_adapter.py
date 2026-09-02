@@ -111,6 +111,17 @@ class BaseToolAdapter(ABC):
         """Verify the installer-created identity record for a managed tool."""
         package_name = getattr(self, "package_name", None)
         if package_name:
+            package_manager = getattr(self, "package_manager", "pip")
+            if package_manager == "npm":
+                from app.core.npm_trust import verify_npm_trust
+
+                return verify_npm_trust(
+                    tool_name=self.tool_name,
+                    binary=binary,
+                    approved_version=str(getattr(self, "approved_version", "")),
+                )
+            if package_manager != "pip":
+                return False
             from app.core.package_trust import verify_package_trust
 
             return verify_package_trust(

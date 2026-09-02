@@ -16,6 +16,7 @@ from app.core.models import (
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.path_sandbox import safe_workspace_relative_path
+from app.core.npm_trust import resolve_npm_binary
 
 
 class RetireJSAdapter(BaseToolAdapter):
@@ -24,10 +25,16 @@ class RetireJSAdapter(BaseToolAdapter):
     """
     approved_version = "4.4.3"
     package_name = "retire"
+    package_manager = "npm"
 
     @property
     def tool_name(self) -> str:
         return "retire"
+
+    def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
+        if custom_path:
+            return super().resolve_binary_path(custom_path)
+        return resolve_npm_binary(self.tool_name) or super().resolve_binary_path()
 
     async def get_version(self, custom_path: Optional[str] = None, pre_launch_check=None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)
