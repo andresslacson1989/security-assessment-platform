@@ -81,7 +81,7 @@ class TestNmapIdentityAndVersion:
         assert adapter.tool_id == "TOOL-NMAP"
         assert adapter.tool_name == "nmap"
         assert adapter.approved_version == "7.95"
-        assert adapter.trust_mode == "PACKAGE_MANAGER_MODE"
+        assert adapter.trust_mode == "SOURCE_BUILD_MODE"
         assert adapter.operation_class == ToolOperationClass.ACTIVE_READ_ONLY
 
     def test_version_authority_hierarchy(self):

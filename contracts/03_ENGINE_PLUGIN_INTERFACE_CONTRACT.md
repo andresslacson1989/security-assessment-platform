@@ -92,11 +92,11 @@ Binary installation must follow this strict 8-step lifecycle:
 
 ### 2.3 Strict Verification Invariants
 - **No Silent Bypass:** If `expected_sha256` is missing or invalid, installation MUST FAIL CLOSED.
-- **Approved source-build exception:** Trivy `v0.50.0` may use `SOURCE_BUILD_MODE` because its upstream source
-  tag exists while its release binary assets are unavailable. The build MUST use the source archive and Go
-  toolchain declared in Contract 09, `go mod download` with the committed `go.sum`, reproducible build flags,
-  and a generated executable trust record. Exact runtime version and pre-launch integrity verification remain
-  mandatory.
+- **Approved source-build exceptions:** Trivy `v0.50.0` and Nmap `7.95` may use `SOURCE_BUILD_MODE` because
+  their approved upstream source distributions are available while suitable direct release assets are not.
+  Each build MUST use the immutable source identity, pinned build toolchain identity, verified build inputs,
+  reproducible build controls, and a generated executable trust record declared in Contract 09. Exact runtime
+  version and pre-launch integrity verification remain mandatory.
 - **Atomic Replacement:** Production executables are never overwritten in-place during download; promotion occurs only after 100% verification passes.
 
 ---

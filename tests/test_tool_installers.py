@@ -147,15 +147,17 @@ def test_retire_manifest_records_official_npm_tarball_identity():
     assert entry["sha256_checksums"]["npm_tarball"] == "1352bd6054d92d261b4d85dbfd75c4cee800f583573b5d9d0c45b56e3282c280"
 
 
-def test_nmap_manifest_records_package_manager_delegated_identity():
+def test_nmap_manifest_records_verified_source_build_identity():
     entry = PINNED_TOOL_MANIFEST["nmap"]
 
     assert entry["version"] == "7.95"
-    assert entry["trust_mode"] == "PACKAGE_MANAGER_MODE"
+    assert entry["trust_mode"] == "SOURCE_BUILD_MODE"
     assert entry["repo"] == "nmap/nmap"
     assert "insecure-org" not in entry["repo"]
-    assert entry["sha256_checksums"] == {}
-    assert "OS package manager" in entry["integrity_note"]
+    assert entry["source_revision"] == "svn-r39734"
+    assert entry["sha256_checksums"]["source_archive"] == "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778"
+    assert entry["build_toolchain_sha256"]["linux_amd64"] == "75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8"
+    assert "source archive" in entry["integrity_note"]
 
 
 def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
@@ -163,8 +165,8 @@ def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
         ["sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "nmap", "trivy", "unknown-tool"]
     )
 
-    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "trivy"}
-    assert status["incomplete"] == ["nmap"]
+    assert set(status["assured"]) == {"sslyze", "schemathesis", "semgrep", "bandit", "checkov", "prowler", "retire", "nmap", "trivy"}
+    assert status["incomplete"] == []
     assert status["invalid"] == []
     assert status["unregistered"] == ["unknown-tool"]
 
@@ -396,7 +398,7 @@ async def test_tool_installation_info_exposes_manifest_assurance_status():
     # host installation is not assured until the installer-created trust
     # record and runtime file verification pass.
     assert assured.assurance_status == "UNASSURED"
-    assert delegated.assurance_status == "DELEGATED"
+    assert delegated.assurance_status == "UNASSURED"
     assert unregistered.assurance_status == "INCOMPLETE"
 
 

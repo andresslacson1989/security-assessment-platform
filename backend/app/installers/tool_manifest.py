@@ -19,11 +19,22 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "repo": "nmap/nmap",
         "pinned_version": "v7.95",
         "category": "Network Perimeter",
-        "trust_mode": "PACKAGE_MANAGER_MODE",
-        "package_manager": "OS package manager",
-        "sha256_checksums": {},
-        "asset_names": {},
-        "integrity_note": "Raw release archive digest is delegated to the authenticated OS package manager.",
+        "trust_mode": "SOURCE_BUILD_MODE",
+        "source_build": True,
+        "direct_release_artifact_available": False,
+        "source_archive_url": "https://nmap.org/dist/nmap-7.95.tar.bz2",
+        "source_revision": "svn-r39734",
+        "build_toolchain": "gcc 12.2.0-14+deb12u1",
+        "build_toolchain_sha256": {
+            "linux_amd64": "75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8",
+        },
+        "sha256_checksums": {
+            "source_archive": "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778",
+        },
+        "asset_names": {
+            "source_archive": "nmap-7.95.tar.bz2",
+        },
+        "integrity_note": "Official Nmap source archive and the pinned Debian GCC toolchain are verified before promotion; no upstream release-binary provenance is claimed.",
     },
     "nuclei": {
         "tool_name": "nuclei",
@@ -524,18 +535,33 @@ def audit_tool_manifest(
             ) and bool(checksums)
         elif trust_mode == "SOURCE_BUILD_MODE":
             source_commit = str(entry.get("source_commit", "")).strip().lower()
+            source_revision = str(entry.get("source_revision", "")).strip()
+            toolchain_digests = entry.get("build_toolchain_sha256")
+            has_toolchain_digest = (
+                isinstance(toolchain_digests, dict)
+                and bool(toolchain_digests)
+                and all(
+                    isinstance(digest, str) and digest_pattern.fullmatch(digest)
+                    for digest in toolchain_digests.values()
+                )
+            )
             structurally_valid = structurally_valid and (
                 entry.get("source_build") is True
                 and entry.get("direct_release_artifact_available") is False
                 and isinstance(entry.get("source_archive_url"), str)
                 and entry["source_archive_url"].startswith("https://")
-                and bool(re.fullmatch(r"[0-9a-f]{40}", source_commit))
+                and (bool(re.fullmatch(r"[0-9a-f]{40}", source_commit)) or bool(source_revision))
                 and isinstance(entry.get("build_toolchain"), str)
                 and bool(entry["build_toolchain"].strip())
                 and "source_archive" in checksums
                 and "source_archive" in assets
-                and any(key.startswith("go_") for key in checksums)
-                and all(key in assets for key in checksums if key.startswith("go_"))
+                and (
+                    has_toolchain_digest
+                    or (
+                        any(key.startswith("go_") for key in checksums)
+                        and all(key in assets for key in checksums if key.startswith("go_"))
+                    )
+                )
             )
         elif trust_mode in {"MANUAL_MODE", "NATIVE_ENGINE_MODE"}:
             # These integrations are intentionally diagnostic/native only;

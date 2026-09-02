@@ -65,7 +65,7 @@ TOOL_ID = "TOOL-NMAP"
 TOOL_NAME = "nmap"
 APPROVED_VERSION = "7.95"
 APPROVED_VERSION_FULL = "Nmap 7.95"
-TRUST_MODE = "PACKAGE_MANAGER_MODE"
+TRUST_MODE = "SOURCE_BUILD_MODE"
 ROLE = "PRIMARY"
 SECURITY_DOMAIN = "NETWORK / PERIMETER / EASM"
 DEFAULT_OPERATION_CLASS = ToolOperationClass.ACTIVE_READ_ONLY
@@ -400,45 +400,12 @@ class NmapAdapter(BaseToolAdapter):
         return TRUST_MODE
 
     def verify_managed_binary(self, binary: str) -> bool:
-        """Accept only the application directory or canonical package paths."""
-        if not isinstance(binary, str) or not binary.strip():
-            return False
-        path = os.path.abspath(binary)
-        if not os.path.isfile(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
-            return False
-        if os.path.realpath(path) != path:
-            return False
-        if os.path.basename(path).lower() not in {"nmap", "nmap.exe"}:
-            return False
+        """Require the manifest-bound executable trust record for assured Nmap."""
+        from app.core.binary_trust import verify_managed_binary_artifact
 
-        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
-        allowed_dirs = {managed_dir}
-        if os.name == "nt":
-            for root_name in ("ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
-                root = os.environ.get(root_name)
-                if root:
-                    allowed_dirs.add(os.path.abspath(root))
-            allowed_dirs.update({
-                os.path.abspath(r"C:\ProgramData\chocolatey\bin"),
-                os.path.abspath(r"C:\ProgramData\scoop\shims"),
-            })
-        else:
-            allowed_dirs.update({
-                "/usr/bin",
-                "/usr/local/bin",
-                "/opt/homebrew/bin",
-                "/home/linuxbrew/.linuxbrew/bin",
-            })
-        path_dir = os.path.dirname(path)
-        for allowed_dir in allowed_dirs:
-            try:
-                if os.name != "nt" and path_dir == allowed_dir:
-                    return True
-                if os.name == "nt" and os.path.commonpath([path_dir, allowed_dir]) == allowed_dir:
-                    return True
-            except ValueError:
-                continue
-        return False
+        return verify_managed_binary_artifact(
+            "nmap", binary, expected_version=self.approved_version
+        )
 
     @property
     def operation_class(self) -> ToolOperationClass:

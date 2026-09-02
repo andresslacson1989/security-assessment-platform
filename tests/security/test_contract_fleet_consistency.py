@@ -68,6 +68,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "Supported 26 Tools" in contract_03
     assert "26 tools" in contract_07
     assert "`grype`: `v0.74.0`" in contract_08
+    assert "`nmap`: `7.95` -> verified official source archive" in contract_08
     assert "complete 26-tool fleet" in contract_09
     assert "21 numbered external-tool specifications" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09
@@ -81,6 +82,9 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     ):
         assert f"COPY --from=builder /tmp/bin/{tool} /app/backend/bin/{tool}" in dockerfile
     assert "write_direct_artifact_trust_record" in dockerfile
+    assert "write_source_artifact_trust_record" in dockerfile
+    assert "COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap" in dockerfile
+    assert "nmap-7.95.tar.bz2" in dockerfile
     assert "npm install -g retire" not in dockerfile
     assert "CYBERASSESS_NPM_PREFIX_DIR=/app/backend/.tool-npm" in dockerfile
     assert "build_npm_trust_record" in dockerfile

@@ -56,7 +56,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Purpose**: Network port discovery, service version detection, TLS certificate & SSH cipher enumeration.
 - **Enterprise Maturity**: Production-Mature (Industry Standard).
 - **Approved Release Version**: `7.95` (`Nmap 7.95` exact pinning; `actual_version == approved_version`).
-- **Supply-Chain Trust Mode**: `PACKAGE_MANAGER_MODE` (System Package Manager / WinGet / apt).
+- **Supply-Chain Trust Mode**: `SOURCE_BUILD_MODE` (official Nmap source archive with pinned GCC toolchain for the Linux production image).
 - **Upstream Project**: https://nmap.org (Insecure.Org).
 - **Execution Method**: Sandboxed subprocess via `ProcessSupervisor` with process tree tracking and 60s bounded timeout.
 - **Target Types**: `IP`, `DOMAIN`, `URL` via immutable `ValidatedTarget`. Invokes target `ValidatedTarget.selected_destination` (IP) with `--script-args http.host=<canonical_value>`.
@@ -68,7 +68,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Failure Handling**: Zero cascade failure; missing or failed Nmap preserves `tool_failed` event log, degrades assessment coverage (`COVERAGE_DEGRADED`), and activates native fallback tagged with `source_tool="native"`.
 - **Role Strategy**: **PRIMARY**. Retain native port checker as non-blocking fallback.
 - **Implementation Status**: `REPOSITORY_VERIFIED` (Passed all 13 security assurance tests, 53 adapter tests, 30 adversarial tests, and 32 acceptance scenarios).
-- **Runtime Evidence**: The host Nmap executable reports `7.991`, not the approved `7.95`; approved managed Nmap runtime verification is `UNAVAILABLE`.
+- **Runtime Evidence**: The production image verifies and runs the managed source-built Nmap `7.95` executable with its source archive, GCC toolchain, and executable trust record; unmanaged host Nmap versions remain non-assured.
 
 ### 2. SSLyze (TLS/SSL Cipher Suite & Protocol Analyzer)
 - **Security Domain**: Network / TLS

@@ -160,8 +160,11 @@ def verify_managed_binary_artifact(
         if trust_mode == "SOURCE_BUILD_MODE":
             source_sha = checksums.get("source_archive")
             source_name = assets.get("source_archive")
-            go_key = f"go_{platform_key}"
-            expected_go_sha = checksums.get(go_key)
+            expected_toolchain_sha = (
+                manifest.get("build_toolchain_sha256", {}).get(platform_key)
+                if isinstance(manifest.get("build_toolchain_sha256"), dict)
+                else checksums.get(f"go_{platform_key}")
+            )
             if not {
                 "SOURCE_ARCHIVE_INTEGRITY_VERIFIED",
                 "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED",
@@ -169,11 +172,13 @@ def verify_managed_binary_artifact(
                 return False
             if record.get("artifact_filename") != source_name or record.get("artifact_sha256") != source_sha:
                 return False
-            if record.get("source_commit") != manifest.get("source_commit"):
+            source_identity = manifest.get("source_commit", manifest.get("source_revision"))
+            record_identity = record.get("source_commit", record.get("source_revision"))
+            if record_identity != source_identity:
                 return False
             if record.get("build_toolchain") != manifest.get("build_toolchain"):
                 return False
-            if not expected_go_sha or record.get("build_toolchain_sha256") != expected_go_sha:
+            if not expected_toolchain_sha or record.get("build_toolchain_sha256") != expected_toolchain_sha:
                 return False
             if record.get("upstream_provenance_verified") is True:
                 return False
@@ -248,6 +253,93 @@ def write_direct_artifact_trust_record(
     record = build_direct_artifact_trust_record(
         tool_name,
         binary,
+        installer_version=installer_version,
+    )
+    destination = Path(f"{os.path.abspath(binary)}.trust.json")
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, destination)
+    return destination
+
+
+def build_source_artifact_trust_record(
+    tool_name: str,
+    binary: str,
+    *,
+    source_identity: str,
+    build_toolchain_sha256: str,
+    installer_version: str,
+) -> dict[str, Any]:
+    """Create a managed record for an explicitly approved verified source build."""
+    from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+
+    manifest = PINNED_TOOL_MANIFEST.get(tool_name)
+    if not isinstance(manifest, dict) or manifest.get("trust_mode") != "SOURCE_BUILD_MODE":
+        raise ValueError("source-build trust requires an approved source-build manifest entry")
+    path = Path(os.path.abspath(binary))
+    managed_dir = get_managed_bin_dir()
+    if managed_dir.is_symlink() or not _is_regular_non_symlink(path):
+        raise ValueError("managed executable must be a regular file")
+    if path.parent != managed_dir or path.name not in {tool_name, f"{tool_name}.exe"}:
+        raise ValueError("executable is outside the managed tool directory")
+    if os.name != "nt" and not os.access(path, os.X_OK):
+        raise ValueError("managed executable is not executable")
+    platform_name, architecture, platform_key = _platform_key()
+    checksums = manifest.get("sha256_checksums")
+    assets = manifest.get("asset_names")
+    if not isinstance(checksums, dict) or not isinstance(assets, dict):
+        raise ValueError("source-build manifest is missing source identity")
+    expected_toolchain = manifest.get("build_toolchain_sha256", {})
+    if isinstance(expected_toolchain, dict):
+        expected_toolchain = expected_toolchain.get(platform_key)
+    else:
+        expected_toolchain = checksums.get(f"go_{platform_key}")
+    if (
+        source_identity != manifest.get("source_commit", manifest.get("source_revision"))
+        or not checksums.get("source_archive")
+        or not assets.get("source_archive")
+        or build_toolchain_sha256 != expected_toolchain
+    ):
+        raise ValueError("source-build identity does not match the manifest")
+    record = {
+        "tool_id": f"TOOL-{tool_name.upper()}",
+        "tool_version": f"v{manifest['version']}",
+        "artifact_filename": assets["source_archive"],
+        "artifact_sha256": checksums["source_archive"],
+        "executable_relative_path": path.name,
+        "executable_sha256": _sha256_file(path),
+        "platform": platform_name,
+        "architecture": architecture,
+        "installer_version": installer_version,
+        "trust_status": "VALID",
+        "claims": [
+            "SOURCE_ARCHIVE_INTEGRITY_VERIFIED",
+            "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED",
+            "EXECUTABLE_INTEGRITY_VERIFIED",
+        ],
+        "build_toolchain": manifest["build_toolchain"],
+        "build_toolchain_sha256": build_toolchain_sha256,
+        "upstream_provenance_verified": False,
+    }
+    identity_field = "source_commit" if "source_commit" in manifest else "source_revision"
+    record[identity_field] = source_identity
+    return record
+
+
+def write_source_artifact_trust_record(
+    tool_name: str,
+    binary: str,
+    *,
+    source_identity: str,
+    build_toolchain_sha256: str,
+    installer_version: str,
+) -> Path:
+    """Atomically persist a source-build trust record beside its executable."""
+    record = build_source_artifact_trust_record(
+        tool_name,
+        binary,
+        source_identity=source_identity,
+        build_toolchain_sha256=build_toolchain_sha256,
         installer_version=installer_version,
     )
     destination = Path(f"{os.path.abspath(binary)}.trust.json")

@@ -65,6 +65,7 @@ def authorize_scan_access(user: UserProfile, scan: ScanJob, action: str = "read"
 All direct-release binary artifacts in `tool_manifest.py` MUST specify authentic SHA-256 hashes matching official upstream releases. An explicitly approved `SOURCE_BUILD_MODE` entry is permitted only when its immutable source archive, build toolchain, build inputs, and resulting executable are pinned and verified under Contract 03:
 - `nuclei`: `v3.2.0` -> `sha256` verified
 - `trivy`: `v0.50.0` -> verified source archive and pinned Go toolchain SHA-256 values; reproducible `SOURCE_BUILD_MODE`
+- `nmap`: `7.95` -> verified official source archive and pinned GCC toolchain identity; reproducible Linux `SOURCE_BUILD_MODE`
 - `gitleaks`: `v8.18.2` -> `sha256` verified
 - `ffuf`: `v2.1.0` -> `sha256` verified
 - `katana`: `v1.0.5` -> `sha256` verified
@@ -75,7 +76,7 @@ All direct-release binary artifacts in `tool_manifest.py` MUST specify authentic
 - `osv-scanner`: `v1.7.0` -> `sha256` verified
 - `dockle`: `v0.4.14` -> `sha256` verified
 
-The approved source-build exception is Trivy `v0.50.0`: its immutable upstream source tag and pinned Go toolchain are verified before a reproducible build, and the resulting executable is hashed and bound to its installation record. A verified source build does not claim upstream release-binary provenance and MUST NOT replace an available direct release artifact.
+The approved source-build exceptions are Trivy `v0.50.0` and Nmap `7.95`: their immutable source identities and pinned build toolchains are verified before reproducible builds, and the resulting executables are hashed and bound to their installation records. A verified source build does not claim upstream release-binary provenance and MUST NOT replace an available direct release artifact.
 
 If an archive checksum does not match, the installer MUST abort immediately, delete quarantined files, and emit an audit event.
 

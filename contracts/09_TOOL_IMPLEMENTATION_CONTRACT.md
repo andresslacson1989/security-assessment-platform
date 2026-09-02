@@ -216,14 +216,15 @@ ToolDefinition
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `nmap --version` -> Regex `Nmap version\s+([0-9\.]+)`
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
-- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` (System binary installed via WinGet / apt / yum / brew) or managed binary in `backend/bin/nmap.exe`.
-- **Resolver Path:** Tier 1: `config.adapters.nmap_path`, Tier 2: `backend/bin/nmap.exe`, Tier 4: `shutil.which("nmap")`, Tier 5: Windows `C:\Program Files (x86)\Nmap\nmap.exe`.
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `SOURCE_BUILD_MODE` for the approved Linux production image, using the official Nmap source archive and pinned GCC toolchain; unmanaged package-manager binaries remain diagnostic-only unless a separately verified installation record exists.
+- **Resolver Path:** Tier 1: custom diagnostic path, Tier 2: managed `backend/bin/nmap[.exe]`, later tiers diagnostic-only and never sufficient for assured execution.
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` `nmap --version` runtime probe.
-- **Artifact Integrity (SHA-256):** `[CYBERASSESS_REQUIRED]` `PACKAGE_MANAGER_MODE` delegates binary verification to the OS package manager trust boundary. Raw release archive digest is `[UNVERIFIED (Package Manager Delegated)]`.
+- **Artifact Integrity (SHA-256):** `[REPOSITORY_VERIFIED]` The official `nmap-7.95.tar.bz2` source archive is pinned to `e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778` and verified before compilation.
+- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved Linux build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation.
 - **Provenance / Attestation:** `[UPSTREAM_VERIFIED]` Insecure.Org GPG signing key (`43D0F654`).
-- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Authenticated system package manager or verified local binary directory.
+- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Verified managed source-built executable in `backend/bin/`.
 
 ### 10. Required Permissions & Privileges
 - `[UPSTREAM_VERIFIED]` Unprivileged TCP connect scanning (`-sT` mode via standard user socket). Root/Administrator raw socket privileges (`-sS` SYN stealth) are strictly PROHIBITED in automated background scans to prevent privilege escalation risks.
@@ -364,7 +365,7 @@ Stderr: Captures runtime diagnostics and errors
   - Approved NSE Scripts: `SUPPORTED`
   - OS Fingerprinting (Raw Sockets): `NOT_SUPPORTED` (Requires root privileges)
   - Intrusive Exploit Scripts: `NOT_SUPPORTED` (Safety policy violation)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/nmap_adapter.py`); approved managed `7.95` runtime execution is `UNAVAILABLE` because the host reports `7.991`.
+- **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/nmap_adapter.py`, `backend/app/core/binary_trust.py`); approved managed `7.95` source-built runtime is verified in the production image, while unmanaged host versions remain non-assured.
 
 ---
 

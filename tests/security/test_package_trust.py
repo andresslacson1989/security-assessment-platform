@@ -201,3 +201,33 @@ def test_direct_artifact_record_binds_managed_executable_to_manifest(tmp_path, m
     assert binary_trust.verify_managed_binary_artifact(
         "nuclei", str(binary), expected_version="3.2.0"
     ) is False
+
+
+def test_source_artifact_record_binds_nmap_source_and_toolchain(tmp_path, monkeypatch):
+    import app.core.binary_trust as binary_trust
+
+    if platform.system().lower() != "linux" or platform.machine().lower() not in {"amd64", "x86_64", "x64"}:
+        return
+    managed_dir = tmp_path / "managed-bin"
+    managed_dir.mkdir()
+    binary = managed_dir / "nmap"
+    binary.write_bytes(b"verified Nmap source build")
+    binary.chmod(0o755)
+    monkeypatch.setattr(binary_trust, "get_managed_bin_dir", lambda: managed_dir)
+    toolchain_sha = PINNED_TOOL_MANIFEST["nmap"]["build_toolchain_sha256"]["linux_amd64"]
+
+    binary_trust.write_source_artifact_trust_record(
+        "nmap",
+        str(binary),
+        source_identity="svn-r39734",
+        build_toolchain_sha256=toolchain_sha,
+        installer_version="14.3.0",
+    )
+    assert binary_trust.verify_managed_binary_artifact(
+        "nmap", str(binary), expected_version="7.95"
+    ) is True
+
+    binary.write_bytes(b"tampered Nmap source build")
+    assert binary_trust.verify_managed_binary_artifact(
+        "nmap", str(binary), expected_version="7.95"
+    ) is False

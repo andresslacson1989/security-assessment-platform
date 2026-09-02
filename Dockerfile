@@ -163,6 +163,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 # built from the official upstream source and verified before promotion.
 RUN curl -fsSL https://nmap.org/dist/nmap-7.95.tar.bz2 -o nmap.tar.bz2 && \
     echo "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778  nmap.tar.bz2" | sha256sum -c - && \
+    echo "75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8  /usr/bin/gcc" | sha256sum -c - && \
     tar -xjf nmap.tar.bz2 && \
     cd nmap-7.95 && \
     ./configure --prefix=/usr/local --without-zenmap && \
@@ -187,14 +188,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PORT=8000 \
     HOME=/app/data
 
-# Install runtime system packages: Nmap, Git, Curl, Node.js (for Retire.js), procps
+# Install runtime system packages: Git, Curl, Node.js (for Retire.js), Nmap runtime libraries, procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nmap \
     nodejs \
     npm \
     git \
     curl \
     ca-certificates \
+    libpcap0.8 \
+    libpcre2-8-0 \
+    liblua5.3-0 \
+    libssl3 \
+    zlib1g \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
@@ -245,11 +250,8 @@ COPY --from=builder /tmp/bin/osv-scanner /app/backend/bin/osv-scanner
 COPY --from=builder /tmp/bin/trufflehog /app/backend/bin/trufflehog
 COPY --from=builder /tmp/bin/dockle /app/backend/bin/dockle
 COPY --from=builder /tmp/bin/kube-bench /app/backend/bin/kube-bench
-COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /usr/local/bin/nmap
+COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap
 COPY --from=builder /tmp/nmap-root/usr/local/share/nmap /usr/local/share/nmap
-
-# Fail the image build if the runtime resolves a different Nmap release.
-RUN nmap --version | grep -q "^Nmap version 7.95 "
 
 # Pre-bake Nuclei community vulnerability templates into container image
 RUN nuclei -update-templates || true
@@ -259,6 +261,9 @@ COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY run_platform.py /app/
 COPY run_worker.py /app/
+
+# Fail the image build if the managed source-built runtime reports a different release.
+RUN /app/backend/bin/nmap --version | grep -q "^Nmap version 7.95 "
 
 # Install Retire.js from the pinned npm tarball into the server-managed prefix.
 # The tarball is verified before npm expands it; the resulting package tree,
@@ -277,6 +282,7 @@ RUN mkdir -p /tmp/retire-npm && \
 # records are required by the runtime managed-binary gate immediately before
 # each subprocess launch.
 RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_direct_artifact_trust_record; [write_direct_artifact_trust_record(tool, '/app/backend/bin/' + tool, installer_version='14.3.0') for tool in ('nuclei', 'ffuf', 'gitleaks', 'katana', 'syft', 'grype', 'osv-scanner', 'trufflehog', 'dockle', 'kube-bench')]"
+RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_source_artifact_trust_record; write_source_artifact_trust_record('nmap', '/app/backend/bin/nmap', source_identity='svn-r39734', build_toolchain_sha256='75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8', installer_version='14.3.0')"
 
 # Run the control plane as an unprivileged service account. Tool execution,
 # scan workspaces, and runtime data remain writable only where explicitly
