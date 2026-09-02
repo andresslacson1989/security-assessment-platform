@@ -42,6 +42,7 @@ _ENGINE_TOOL_IDS = {
     "network": {"sslyze", "nmap", "metasploit", "subfinder", "amass", "httpx"},
     "web_dast": {"ffuf", "nuclei", "katana", "schemathesis", "sqlmap"},
 }
+_CANONICAL_TOOL_IDS = set().union(*_ENGINE_TOOL_IDS.values())
 
 
 class ScanOrchestrator:
@@ -347,6 +348,8 @@ class ScanOrchestrator:
         engine: Optional[str] = None,
     ) -> None:
         canonical_tool_name = _TOOL_ID_ALIASES.get(tool_name, tool_name)
+        if canonical_tool_name not in _CANONICAL_TOOL_IDS:
+            raise ValueError(f"Unknown canonical tool identity: {tool_name!r}")
         allowed_tools = _ENGINE_TOOL_IDS.get(engine) if engine else None
         if allowed_tools is not None and canonical_tool_name not in allowed_tools:
             raise ValueError(

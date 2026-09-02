@@ -326,6 +326,9 @@ async def test_tool_execution_identity_is_canonical_and_engine_bound():
     with pytest.raises(ValueError, match="not authorized"):
         await orch.emit_tool_execution_state(job.id, "sqlmap", "TOOL_EXECUTION_FAILED", engine="network")
 
+    with pytest.raises(ValueError, match="Unknown canonical tool identity"):
+        await orch.emit_tool_execution_state(job.id, "invented-tool", "TOOL_EXECUTION_FAILED")
+
 
 def test_degraded_network_evidence_survives_authoritative_persistence():
     job = ScanJob(
