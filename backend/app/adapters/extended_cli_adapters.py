@@ -141,6 +141,7 @@ class GovernedExtendedAdapter(BaseToolAdapter):
         *,
         scan_id: str,
         organization_id: Optional[str],
+        engine: str,
         check_id: str,
         title: str,
         category: str,
@@ -162,7 +163,7 @@ class GovernedExtendedAdapter(BaseToolAdapter):
         return Finding(
             scan_id=scan_id,
             organization_id=organization_id or "org-default",
-            engine="network",
+            engine=engine,
             source_tool=self.tool_name,
             check_id=check_id,
             category=category,
@@ -222,7 +223,7 @@ class MetasploitAdapter(GovernedExtendedAdapter):
         for line in stdout.splitlines():
             if "[+]" not in line:
                 continue
-            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="NET-TLS-001", title="Metasploit Auxiliary Verification Result", category="SSL/TLS", severity=Severity.HIGH, cvss_score=7.5, location=_host(target_host), observed=line, description="A governed Metasploit auxiliary scanner reported a TLS verification condition.", impact="The target may expose a known TLS implementation weakness.", remediation="Patch the TLS implementation and disable vulnerable protocol behavior.")
+            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), engine="network", check_id="NET-TLS-001", title="Metasploit Auxiliary Verification Result", category="SSL/TLS", severity=Severity.HIGH, cvss_score=7.5, location=_host(target_host), observed=line, description="A governed Metasploit auxiliary scanner reported a TLS verification condition.", impact="The target may expose a known TLS implementation weakness.", remediation="Patch the TLS implementation and disable vulnerable protocol behavior.")
             findings.append(finding)
             await emit_finding(finding)
         self._record_execution(code, stdout, stderr, findings_count=len(findings))
@@ -287,7 +288,7 @@ class SqlmapAdapter(GovernedExtendedAdapter):
         evidence_target = validated_target.canonical_value if validated_target is not None else target.value
         for match in re.finditer(r"Parameter:\s*([^\s(]+).*?Type:\s*([^\n]+)", stdout, re.IGNORECASE | re.DOTALL):
             parameter, injection_type = match.group(1), match.group(2).strip()
-            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="DAST-INJ-001", title="SQL Injection Confirmed by sqlmap", category="Injection", severity=Severity.CRITICAL, cvss_score=9.8, location=f"{evidence_target}#{parameter}", observed=f"Parameter: {parameter}; Type: {injection_type}", description="sqlmap confirmed an injectable request parameter under the bounded automated profile.", impact="An attacker may read or modify backend database data.", remediation="Use parameterized queries and strict server-side input validation.")
+            finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), engine="web_dast", check_id="DAST-INJ-001", title="SQL Injection Confirmed by sqlmap", category="Injection", severity=Severity.CRITICAL, cvss_score=9.8, location=f"{evidence_target}#{parameter}", observed=f"Parameter: {parameter}; Type: {injection_type}", description="sqlmap confirmed an injectable request parameter under the bounded automated profile.", impact="An attacker may read or modify backend database data.", remediation="Use parameterized queries and strict server-side input validation.")
             findings.append(finding)
             await emit_finding(finding)
         self._record_execution(code, stdout, stderr, findings_count=len(findings))
@@ -352,7 +353,7 @@ class AmassAdapter(GovernedExtendedAdapter):
                                 assessment_id=kwargs.get("scan_id"),
                                 sources=[str(source) for source in data.get("sources", []) if source],
                             ))
-                        finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="EASM-SUB-001", title="Amass Passive Subdomain Discovery", category="OSINT", severity=Severity.INFO, cvss_score=0.0, location=name, observed=json.dumps({"name": name, "sources": data.get("sources", [])}, sort_keys=True), description="Amass passively reported a subdomain from configured public sources.", impact="The hostname expands the observed external attack surface.", remediation="Review and explicitly admit the hostname to inventory before any active assessment.")
+                        finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), engine="network", check_id="EASM-SUB-001", title="Amass Passive Subdomain Discovery", category="OSINT", severity=Severity.INFO, cvss_score=0.0, location=name, observed=json.dumps({"name": name, "sources": data.get("sources", [])}, sort_keys=True), description="Amass passively reported a subdomain from configured public sources.", impact="The hostname expands the observed external attack surface.", remediation="Review and explicitly admit the hostname to inventory before any active assessment.")
                         findings.append(finding)
                         await emit_finding(finding)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -423,7 +424,7 @@ class HydraAdapter(GovernedExtendedAdapter):
                     # Never persist the recovered password; retain only the fact
                     # that a credential pair succeeded and its login identifier.
                     login = sanitize_sensitive_text(str(result["login"]))
-                    finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), check_id="AUTH-STUFF-001", title="Weak Authentication Credential Accepted", category="Authentication Resilience", severity=Severity.HIGH, cvss_score=8.1, location=f"{_host(target.value)}:{kwargs.get('port', 22)}", observed=f"Successful credential for login '{login}'", description="Hydra confirmed that a bounded authorized credential-audit list succeeded.", impact="Weak credentials may permit unauthorized access to the service.", remediation="Remove default credentials, require strong unique passwords, and enforce MFA where supported.")
+                    finding = self._finding(scan_id=kwargs.get("scan_id", "local-scan"), organization_id=kwargs.get("organization_id"), engine="manual", check_id="AUTH-STUFF-001", title="Weak Authentication Credential Accepted", category="Authentication Resilience", severity=Severity.HIGH, cvss_score=8.1, location=f"{_host(target.value)}:{kwargs.get('port', 22)}", observed=f"Successful credential for login '{login}'", description="Hydra confirmed that a bounded authorized credential-audit list succeeded.", impact="Weak credentials may permit unauthorized access to the service.", remediation="Remove default credentials, require strong unique passwords, and enforce MFA where supported.")
                     findings.append(finding)
                     await emit_finding(finding)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
