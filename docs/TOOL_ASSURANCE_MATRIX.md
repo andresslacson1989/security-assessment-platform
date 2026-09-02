@@ -157,7 +157,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E12 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
 - **Managed runtime status**: Managed Nuclei, FFuF, Katana, and Schemathesis paths were verified in the Linux production image under uid 999 with exact approved versions and valid trust records; no unmanaged executable was substituted.
-- **Acceptance evidence**: The current full repository regression completed with `435 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image.
+- **Acceptance evidence**: The current full repository regression completed with `440 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST
@@ -211,7 +211,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E13 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented shared process-supervision, fallback-provenance, attribution, evidence-sanitization, authoritative-persistence, and 26-tool registry controls. Final section acceptance remains conditional on the limitations recorded below; no limitation is represented as a completed capability.
 - **Managed runtime status**: The current Linux production image verified managed direct-binary runtimes and trust records for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and the source-built Nmap runtime, plus the managed Retire.js package. It also verified the six isolated Python environments—SSLyze `5.2.0`, Bandit `1.7.8`, Semgrep `1.65.0`, Checkov `3.2.0`, Prowler `4.1.0`, and Schemathesis `3.20.0`—with valid lock-bound package trust records. All verification ran under UID 999; no unmanaged runtime is treated as evidence.
-- **Regression evidence**: The current focused orchestration/contract suite completed with `16 passed`; the current full repository regression completed with `435 passed, 2 skipped, 4 warnings`.
+- **Regression evidence**: The current focused orchestration/contract suite completed with `16 passed`; the current full repository regression completed with `440 passed, 2 skipped, 4 warnings`.
 - **Coverage limitation**: Native fallbacks are explicitly limited compared with the external tools; failed, blocked, timed-out, cancelled, or parser-degraded tools must remain visible as degraded coverage.
 
 ### 14. Trivy (Container, Filesystem & IaC Vulnerability Scanner)
@@ -277,6 +277,56 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Enterprise Maturity**: Production-Mature.
 - **Upstream Project**: GoodWithTech (https://github.com/goodwithtech/dockle).
 - **Role Strategy**: **SPECIALIZED**. Dedicated Dockerfile and container image hardening.
+
+### 22. Amass (Passive External Attack-Surface Discovery)
+- **Security Domain**: Perimeter / EASM
+- **Tool ID**: `TOOL-AMASS`
+- **Purpose**: Passive subdomain discovery using the managed Amass v5.1.1 artifact.
+- **Operating Mode**: `DIRECT_ARTIFACT_MODE`; unmanaged installations are diagnostic-only.
+- **Safety Controls**: Fixed passive enumeration command, server-derived output path, managed executable trust, exact version gate, bounded supervised process, and no active DNS resolution.
+- **Evidence**: Emits normalized `DiscoveredSubdomain` records with `UNRESOLVED` DNS state and source attribution; discovery does not authorize active assessment.
+- **Role Strategy**: **AUXILIARY**. Passive discovery evidence for explicit inventory review.
+- **Verification Status**: Repository implementation and pinned artifact path verified; live managed-runtime proof remains environment-dependent.
+
+### 23. Metasploit (Constrained Auxiliary Verification)
+- **Security Domain**: Exploitation / Auxiliary Verification
+- **Tool ID**: `TOOL-METASPLOIT`
+- **Purpose**: Governed TLS auxiliary verification only.
+- **Operating Mode**: `MANUAL_MODE`; unmanaged binaries cannot satisfy enterprise-assured execution.
+- **Safety Controls**: Fixed Heartbleed auxiliary scanner, no payloads/exploit modules/resource scripts, validated target and explicit active-probing authorization, bounded supervisor, and pre-launch trust verification.
+- **Evidence**: Affirmative auxiliary output is normalized to canonical findings with sanitized evidence and tenant/scan attribution.
+- **Role Strategy**: **AUXILIARY**. Diagnostic constrained capability, not an exploit runner.
+- **Verification Status**: Repository command and authorization controls verified; managed live-runtime proof remains environment-dependent.
+
+### 24. sqlmap (Bounded SQL Injection Verification)
+- **Security Domain**: Web DAST
+- **Tool ID**: `TOOL-SQLMAP`
+- **Purpose**: Low-risk SQL injection verification and DBMS banner observation.
+- **Operating Mode**: `MANUAL_MODE`; assured execution requires managed trust, validated target, and explicit active authorization.
+- **Safety Controls**: Fixed batch profile with level 1, risk 1, timeout/retry/thread bounds; dumping, OS shell, takeover, and arbitrary flags are forbidden.
+- **Evidence**: Bounded console/report parsing produces canonical injection findings with sanitized evidence and scan/tenant attribution.
+- **Role Strategy**: **AUXILIARY**. Constrained diagnostic verification.
+- **Verification Status**: Repository command, path, target, and authorization controls verified; managed live-runtime proof remains environment-dependent.
+
+### 25. Hydra (Explicit Credential-Resilience Audit)
+- **Security Domain**: Authentication / Password Resilience
+- **Tool ID**: `TOOL-HYDRA`
+- **Purpose**: Small, explicitly authorized credential-resilience checks.
+- **Operating Mode**: `MANUAL_MODE`; no unrestricted brute-force execution is authorized.
+- **Safety Controls**: Allowlisted protocols, server-derived credential files, fixed `-t 2 -W 1 -f -b json` profile, validated target, explicit credential-audit authorization, bounded output, and supervised process termination.
+- **Evidence**: JSON report results are parsed as untrusted input; passwords are never persisted and findings carry tenant/scan attribution.
+- **Role Strategy**: **AUXILIARY**. Constrained credential-audit capability.
+- **Verification Status**: Repository command, protocol, rate, path, and authorization controls verified; managed live-runtime proof remains environment-dependent.
+
+### 26. GTFOBins / LOLBAS (Native Privilege Rule Engine)
+- **Security Domain**: Knowledge / Auxiliary Verification
+- **Tool ID**: `TOOL-GTFOBINS`
+- **Purpose**: Native evaluation of supplied SUID, sudo, capability, and container observations.
+- **Operating Mode**: `NATIVE_ENGINE_MODE`; no external executable or subprocess is used.
+- **Safety Controls**: Rule evaluation only, no escalation recipe execution, mandatory authoritative organization identity, bounded findings/evidence, and explicit failure when tenant context is absent.
+- **Evidence**: Canonical host privilege findings include sanitized rule and observation evidence; a match is not active authorization.
+- **Role Strategy**: **AUXILIARY**. Native diagnostic rule evaluation.
+- **Verification Status**: Repository implementation and tenant-bound native execution state verified; coverage depends on supplied host observations.
 
 ---
 

@@ -72,6 +72,10 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "complete 26-tool fleet" in contract_09
     assert "one assurance entry for each supported tool" in assurance_matrix
     assert "numbered external-tool reviews" not in assurance_matrix
+    assurance_review_sections = re.findall(
+        r"^### (\d+)\.", assurance_matrix, re.MULTILINE
+    )
+    assert assurance_review_sections == [str(index) for index in range(1, 27)]
     matrix_tool_ids = set(re.findall(r"\| `(TOOL-[A-Z0-9_-]+)` \|", assurance_matrix))
     assert len(matrix_tool_ids) == 26
     expected_matrix_ids = {
