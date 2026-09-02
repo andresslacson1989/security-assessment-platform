@@ -12,6 +12,8 @@ import hmac
 import json
 import httpx
 import httpcore
+import os
+import secrets
 from typing import Any, List, Tuple, Optional
 from app.core.version import APP_VERSION
 
@@ -56,6 +58,43 @@ BLOCKED_HOSTNAMES = {
 class SSRFProtectionError(ValueError):
     """Raised when a target URL or resolved IP violates SSRF protection policy."""
     pass
+
+
+_GATEWAY_SEAL_DOMAIN = b"cyberassess:validated-target-seal:v1"
+_EPHEMERAL_GATEWAY_SEAL_KEY = secrets.token_bytes(32)
+
+
+def _gateway_seal_key() -> bytes:
+    """Return a key dedicated to validated-target authorization seals.
+
+    Production deployments should provide TARGET_GATEWAY_SEAL_SECRET.  The
+    JWT secret is an explicitly derived fallback so key material is separated
+    by domain; the ephemeral fallback keeps test/development processes
+    self-contained while production authentication still requires a durable
+    configured secret.
+    """
+    configured = os.getenv("TARGET_GATEWAY_SEAL_SECRET") or os.getenv("JWT_SECRET")
+    if configured and configured.strip():
+        return hmac.new(
+            configured.strip().encode("utf-8"),
+            _GATEWAY_SEAL_DOMAIN,
+            hashlib.sha256,
+        ).digest()
+    return _EPHEMERAL_GATEWAY_SEAL_KEY
+
+
+def _compute_gateway_seal(
+    target_id: str,
+    authorization_decision_id: str,
+    policy_version: str,
+    context_digest: str,
+) -> str:
+    """Compute the authenticated integrity seal for a validated target."""
+    payload = (
+        f"GATEWAY_SEAL:{target_id}:{authorization_decision_id}:"
+        f"{policy_version}:{context_digest}"
+    ).encode("utf-8")
+    return hmac.new(_gateway_seal_key(), payload, hashlib.sha256).hexdigest()
 
 
 def _validated_target_context_digest(validated_target: Any) -> str:
@@ -134,10 +173,12 @@ def validate_validated_target(validated_target: Any) -> Any:
     if not validated_target.selected_destination:
         raise SSRFProtectionError("Validated target has no selected destination.")
 
-    expected_seal = hashlib.sha256(
-        f"GATEWAY_SEAL:{validated_target.target_id}:{validated_target.authorization_decision_id}:"
-        f"{validated_target.policy_version}:{_validated_target_context_digest(validated_target)}".encode("utf-8")
-    ).hexdigest()
+    expected_seal = _compute_gateway_seal(
+        validated_target.target_id,
+        validated_target.authorization_decision_id,
+        validated_target.policy_version,
+        _validated_target_context_digest(validated_target),
+    )
     if not hmac.compare_digest(validated_target.integrity_seal, expected_seal):
         raise SSRFProtectionError("Validated target integrity seal is invalid.")
     return validated_target
@@ -566,9 +607,12 @@ def create_validated_target(
     context_digest = hashlib.sha256(
         json.dumps(context_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    integrity_seal = hashlib.sha256(
-        f"GATEWAY_SEAL:{target_id}:{auth_decision_id}:{policy_version}:{context_digest}".encode("utf-8")
-    ).hexdigest()
+    integrity_seal = _compute_gateway_seal(
+        target_id,
+        auth_decision_id,
+        policy_version,
+        context_digest,
+    )
 
     return ValidatedTarget(
         target_id=target_id,
