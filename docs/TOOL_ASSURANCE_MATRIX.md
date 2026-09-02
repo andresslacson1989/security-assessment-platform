@@ -102,7 +102,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Safety Controls**: Engine-level validated-target handoff, selected-destination binding with Host/SNI preservation, exact-version gate, managed-binary preflight, bounded execution, and SSRF blocklist enforcement.
 - **Output Format & Parser**: JSON Lines parsed safely line by line.
 - **Role Strategy**: **VALIDATION**. Enriches discovered attack surface before DAST execution.
-- **Runtime Evidence**: Approved managed httpx `v1.6.0` executable was unavailable in this verification environment; real managed-runtime execution is `UNAVAILABLE`.
+- **Runtime Evidence**: The production image resolves the managed httpx `v1.6.0` executable from `/app/backend/bin/`, and its trust record verifies under the unprivileged `cyberassess` runtime.
 
 ### 5. Nuclei (Template-Based DAST & Vulnerability Scanner)
 - **Security Domain**: Web DAST
@@ -115,7 +115,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Credential Handling**: Tenant credentials are not placed in CLI arguments; authenticated coverage is handled by the governed native HTTP session until secret-safe subprocess injection is implemented.
 - **Finding Normalization**: Maps `template-id` to canonical check catalog, extracts `reproduction_curl`, CVSS score, CWE mapping.
 - **Role Strategy**: **PRIMARY**. Complements native DAST engine.
-- **Runtime Evidence**: Approved managed Nuclei runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
+- **Runtime Evidence**: On 2026-09-02, the production image executed the managed Nuclei `v3.2.0` version probe as uid 999; the managed executable trust record verified successfully.
 
 ### 6. FFuF (Fast Web Parameter & Endpoint Fuzzer)
 - **Security Domain**: Web Fuzzing
@@ -128,7 +128,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Output Format & Parser**: JSON output (`-o out.json -of json`).
 - **Finding Normalization**: Check IDs `DAST-INJ-001` (SQLi), `DAST-XSS-001` (Reflected XSS), `DAST-PARAM-001` (Hidden Parameter Exposure).
 - **Role Strategy**: **SPECIALIZED**. Runs under active fuzzing profile.
-- **Runtime Evidence**: Approved managed FFuF runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
+- **Runtime Evidence**: On 2026-09-02, the production image executed the managed FFuF `2.1.0` version probe as uid 999; the managed executable trust record verified successfully.
 
 ### 7. Katana (Next-Gen Headless & DOM Web Crawler)
 - **Security Domain**: Web Crawling & Discovery
@@ -140,7 +140,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Credential Handling**: Tenant credentials are not placed in Katana CLI arguments; authenticated coverage remains in the governed native session.
 - **Output Format & Parser**: JSON stream parsed into `DiscoveredEndpoint` objects.
 - **Role Strategy**: **PRIMARY**. Feeds endpoints to DAST and fuzzing engines.
-- **Runtime Evidence**: Approved managed Katana runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
+- **Runtime Evidence**: On 2026-09-02, the production image executed the managed Katana `1.0.5` version probe as uid 999; the managed executable trust record verified successfully.
 
 ### 8. Schemathesis (Property-Based API Contract Security)
 - **Security Domain**: API Security
@@ -152,12 +152,12 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Credential Handling**: Tenant bearer tokens are not placed in Schemathesis CLI arguments; authenticated state-changing external execution remains fail-closed until secret-safe subprocess injection exists.
 - **Finding Normalization**: Check IDs `API-SPEC-001` (Schema Violation), `API-FLAW-001` (Unhandled 500 Server Error).
 - **Role Strategy**: **SPECIALIZED**. Executed during API-focused assessment profiles.
-- **Runtime Evidence**: Approved managed Schemathesis runtime was unavailable in this verification environment; repository execution-path and adversarial controls are verified, real managed-runtime execution is `UNAVAILABLE`.
+- **Runtime Evidence**: On 2026-09-02, the production image executed the managed Schemathesis `3.20.0` version probe as uid 999; the isolated package trust record verified successfully.
 
 ### E12 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
-- **Managed runtime status**: `UNAVAILABLE` for all four approved managed E12 runtimes in the current environment; no unmanaged executable was substituted.
-- **Acceptance evidence**: Full repository regression completed with `280 passed, 1 skipped`; runtime execution remains separately reported as `UNAVAILABLE` for all four approved managed E12 runtimes.
+- **Managed runtime status**: Managed Nuclei, FFuF, Katana, and Schemathesis paths were verified in the Linux production image under uid 999 with exact approved versions and valid trust records; no unmanaged executable was substituted.
+- **Acceptance evidence**: The current full repository regression completed with `430 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST
