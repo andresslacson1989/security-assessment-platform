@@ -190,6 +190,15 @@ def test_nmap_uses_the_verified_source_build_installer():
     assert SOURCE_BUILD_CONFIG["nmap"]["source_revision"] == PINNED_TOOL_MANIFEST["nmap"]["source_revision"]
 
 
+def test_amass_manifest_uses_verified_platform_release_archives():
+    entry = PINNED_TOOL_MANIFEST["amass"]
+    assert entry["trust_mode"] == "DIRECT_ARTIFACT_MODE"
+    assert entry["pinned_version"] == "v5.1.1"
+    assert set(entry["sha256_checksums"]) == set(entry["asset_names"]) == {
+        "linux_amd64", "linux_arm64", "windows_amd64", "darwin_amd64", "darwin_arm64"
+    }
+
+
 @pytest.mark.asyncio
 async def test_nmap_source_identity_is_checked_against_installer_policy():
     installer = SourceBuildInstaller("nmap")

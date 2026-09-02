@@ -158,7 +158,15 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     chmod +x kube-bench
 
-# 14. Nmap (7.95)
+# 14. Amass (v5.1.1)
+RUN curl -fsSL https://github.com/owasp-amass/amass/releases/download/v5.1.1/amass_linux_amd64.tar.gz -o amass.tar.gz && \
+    echo "5e22b5f0239e7eb79439d60d43d3cd20dca2478588bc2242e91ab0c4f8fa40dd  amass.tar.gz" | sha256sum -c - && \
+    tar -xzf amass.tar.gz amass_linux_amd64/amass amass_linux_amd64/resources && \
+    mv amass_linux_amd64/amass amass && \
+    mv amass_linux_amd64/resources resources && \
+    chmod +x amass
+
+# 15. Nmap (7.95)
 # Debian Bookworm provides Nmap 7.93, so the contract-pinned release is
 # built from the official upstream source and verified before promotion.
 RUN if [ "$TARGETARCH" != "amd64" ]; then \
@@ -254,6 +262,8 @@ COPY --from=builder /tmp/bin/osv-scanner /app/backend/bin/osv-scanner
 COPY --from=builder /tmp/bin/trufflehog /app/backend/bin/trufflehog
 COPY --from=builder /tmp/bin/dockle /app/backend/bin/dockle
 COPY --from=builder /tmp/bin/kube-bench /app/backend/bin/kube-bench
+COPY --from=builder /tmp/bin/amass /app/backend/bin/amass
+COPY --from=builder /tmp/bin/resources /app/backend/bin/resources
 COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap
 COPY --from=builder /tmp/nmap-root/usr/local/share/nmap /usr/local/share/nmap
 
@@ -285,7 +295,7 @@ RUN mkdir -p /tmp/retire-npm && \
 # digest after the builder has already verified the downloaded archive. These
 # records are required by the runtime managed-binary gate immediately before
 # each subprocess launch.
-RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_direct_artifact_trust_record; [write_direct_artifact_trust_record(tool, '/app/backend/bin/' + tool, installer_version='14.3.0') for tool in ('nuclei', 'ffuf', 'gitleaks', 'katana', 'syft', 'grype', 'osv-scanner', 'trufflehog', 'dockle', 'kube-bench')]"
+RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_direct_artifact_trust_record; [write_direct_artifact_trust_record(tool, '/app/backend/bin/' + tool, installer_version='14.3.0') for tool in ('nuclei', 'ffuf', 'gitleaks', 'katana', 'syft', 'grype', 'osv-scanner', 'trufflehog', 'dockle', 'kube-bench', 'amass')]"
 RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_source_artifact_trust_record; write_source_artifact_trust_record('nmap', '/app/backend/bin/nmap', source_identity='svn-r39734', build_toolchain_sha256='75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8', installer_version='14.3.0')"
 
 # Run the control plane as an unprivileged service account. Tool execution,

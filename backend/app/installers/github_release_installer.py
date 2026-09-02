@@ -520,6 +520,17 @@ class GithubReleaseInstaller(BaseToolInstaller):
                 if not found_bin:
                     raise FileNotFoundError(f"Could not find executable '{bin_name}' inside downloaded archive")
 
+                # Amass release archives include runtime data files beside the
+                # executable. Promote those verified resources with the binary
+                # so a managed installation has the same runtime layout as
+                # the production image.
+                amass_resources = None
+                if self.tool_name == "amass":
+                    candidate = os.path.join(os.path.dirname(found_bin), "resources")
+                    if not os.path.isdir(candidate):
+                        raise SecurityError("Amass release archive is missing its verified resources directory")
+                    amass_resources = candidate
+
                 # Validate the quarantined executable before it can enter the
                 # managed directory. The production resolver must never be
                 # used to validate an artifact that has not been promoted.
@@ -559,6 +570,9 @@ class GithubReleaseInstaller(BaseToolInstaller):
                     json.dump(trust_record, trust_file, sort_keys=True)
                     trust_file.flush()
                     os.fsync(trust_file.fileno())
+
+                if amass_resources:
+                    shutil.copytree(amass_resources, os.path.join(local_bin_dir, "resources"), dirs_exist_ok=True)
 
                 # Promotion is atomic. If the process stops between these two
                 # replacements, the executable/sidecar mismatch fails trust
