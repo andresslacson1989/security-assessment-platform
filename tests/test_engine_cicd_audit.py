@@ -91,3 +91,39 @@ jobs:
         assert progress_updates[-1][0] == 100
     finally:
         shutil.rmtree(temp_dir)
+
+
+@pytest.mark.asyncio
+async def test_cicd_audit_engine_propagates_authoritative_scan_id(tmp_path):
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(
+        """
+name: CI
+on:
+  pull_request_target:
+permissions: write-all
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: echo \"${{ github.event.pull_request.title }}\"
+""",
+        encoding="utf-8",
+    )
+
+    async def noop(*_args):
+        return None
+
+    findings = await CicdAuditAssessmentEngine().run(
+        Target(name="CI Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
+        ScanConfig(),
+        noop,
+        noop,
+        noop,
+        scan_id="scan-cicd-propagation",
+    )
+
+    assert findings
+    assert all(finding.scan_id == "scan-cicd-propagation" for finding in findings)

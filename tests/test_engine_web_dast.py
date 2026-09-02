@@ -10,6 +10,8 @@ import pytest
 from app.core.models import (
     Target,
     TargetType,
+    Finding,
+    Evidence,
     ScanConfig,
     Severity,
     CrawlerConfig,
@@ -209,7 +211,25 @@ async def test_web_dast_engine_full_run():
          patch("app.engines.web_dast.engine.AuthSessionManager.authenticate", new_callable=AsyncMock) as mock_auth, \
          patch("app.engines.web_dast.engine.AuthSessionManager.audit_auth_and_forms", new_callable=AsyncMock) as mock_auth_audit:
 
-        mock_hdr.return_value = []
+        mock_hdr.return_value = [Finding(
+            scan_id="placeholder",
+            organization_id="org-test",
+            engine="web_dast",
+            source_tool="native",
+            check_id="DAST-HEADER-001",
+            category="Configuration",
+            title="Missing security header",
+            severity=Severity.MEDIUM,
+            cvss_score=5.3,
+            description="A required security header was not present.",
+            impact="Browser protections are reduced.",
+            remediation="Configure the required security header.",
+            evidence=Evidence(
+                location="https://example.com",
+                observed_value="missing",
+                expected_value="present",
+            ),
+        )]
         mock_cors.return_value = []
         mock_exp.return_value = []
         mock_browser.return_value = []
@@ -240,8 +260,10 @@ async def test_web_dast_engine_full_run():
             emit_auth_status=auth_cb,
             emit_endpoint_discovered=ep_cb,
             organization_id="org-test",
+            scan_id="scan-web-propagation",
         )
-        assert res == []
+        assert res
+        assert all(finding.scan_id == "scan-web-propagation" for finding in res)
         assert len(progress_updates) >= 4
         assert progress_updates[-1][0] == 100
         assert len(auth_statuses) == 1

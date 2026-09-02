@@ -44,8 +44,10 @@ class CicdAuditAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        scan_id = kwargs.get("scan_id", "active")
         repo_path = target.value
 
         # --- Stage 1: GitHub Actions CI/CD Workflow Audit (0% - 100%) ---
@@ -54,7 +56,7 @@ class CicdAuditAssessmentEngine(BaseAssessmentEngine):
 
         gha_findings = await audit_github_workflows(repo_path, emit_log=emit_log)
         for f in gha_findings:
-            f.scan_id = "active"
+            f.scan_id = scan_id
             findings.append(f)
             await emit_finding(f)
 

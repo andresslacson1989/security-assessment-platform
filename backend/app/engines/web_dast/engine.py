@@ -91,6 +91,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        scan_id = kwargs.get("scan_id", "active")
         existing_fps = set()
         tool_state_cb = kwargs.get("emit_tool_execution_state")
         adapter_state_cb = kwargs.get("emit_adapter_execution_state")
@@ -160,7 +161,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         emit_endpoint=emit_endpoint_discovered,
-                        scan_id="active",
+                        scan_id=scan_id,
                         validated_target=_validated_target,
                         require_managed_binary=True,
                     )
@@ -168,7 +169,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "ffuf"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                     await publish_tool_state("ffuf", ffuf_adapter)
                 else:
@@ -190,7 +191,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         validated_target=_validated_target,
                         require_managed_binary=True,
                     )
@@ -198,7 +199,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "nuclei"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                     await publish_tool_state("nuclei", nuclei_adapter)
                 else:
@@ -221,7 +222,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         emit_endpoint=emit_endpoint_discovered,
-                        scan_id="active",
+                        scan_id=scan_id,
                         validated_target=_validated_target,
                         require_managed_binary=True,
                     )
@@ -229,7 +230,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "katana"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                     await publish_tool_state("katana", katana_adapter)
                 else:
@@ -258,7 +259,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             config,
                             emit_log,
                             emit_finding,
-                            scan_id="active",
+                            scan_id=scan_id,
                             validated_target=_validated_target,
                             require_managed_binary=True,
                         )
@@ -266,7 +267,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             if f.fingerprint not in existing_fps:
                                 existing_fps.add(f.fingerprint)
                                 f.source_tool = "schemathesis"
-                                f.scan_id = "active"
+                                f.scan_id = scan_id
                                 findings.append(f)
                         await publish_tool_state("schemathesis", schemathesis_adapter)
                     else:
@@ -287,7 +288,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 target_url=target.value,
                 config=config.auth,
                 client=client,
-                scan_id="active",
+                scan_id=scan_id,
                 emit_log=emit_log,
                 transport_factory=lambda: ValidatedTargetTransport(_validated_target),
             )
@@ -378,7 +379,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 for f in header_findings:
                     if f.fingerprint not in existing_fps:
                         existing_fps.add(f.fingerprint)
-                        f.scan_id = "active"
+                        f.scan_id = scan_id
                         findings.append(f)
                         if f.id not in ep.finding_ids:
                             ep.finding_ids.append(f.id)
@@ -406,7 +407,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             for f in auth_form_findings:
                 if f.fingerprint not in existing_fps:
                     existing_fps.add(f.fingerprint)
-                    f.scan_id = "active"
+                    f.scan_id = scan_id
                     findings.append(f)
                     await emit_finding(f)
 
@@ -443,7 +444,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 for f in cors_findings:
                     if f.fingerprint not in existing_fps:
                         existing_fps.add(f.fingerprint)
-                        f.scan_id = "active"
+                        f.scan_id = scan_id
                         findings.append(f)
                         if f.id not in ep.finding_ids:
                             ep.finding_ids.append(f.id)
@@ -459,7 +460,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             for f in exposure_findings:
                 if f.fingerprint not in existing_fps:
                     existing_fps.add(f.fingerprint)
-                    f.scan_id = "active"
+                    f.scan_id = scan_id
                     findings.append(f)
                     await emit_finding(f)
 
@@ -474,7 +475,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 for f in browser_findings:
                     if f.fingerprint not in existing_fps:
                         existing_fps.add(f.fingerprint)
-                        f.scan_id = "active"
+                        f.scan_id = scan_id
                         findings.append(f)
                         await emit_finding(f)
 
@@ -486,7 +487,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             for f in gql_findings:
                 if f.fingerprint not in existing_fps:
                     existing_fps.add(f.fingerprint)
-                    f.scan_id = "active"
+                    f.scan_id = scan_id
                     findings.append(f)
                     await emit_finding(f)
 
@@ -503,7 +504,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                     if await sqlmap_adapter.is_available(custom_path):
                         await emit_progress(84, "Executing bounded sqlmap SQL injection verification...")
                         with TemporaryDirectory(
-                            prefix=f"sqlmap-{kwargs.get('scan_id', 'active')}-",
+                            prefix=f"sqlmap-{scan_id}-",
                             dir=str(get_default_workspace_dir()),
                         ) as workspace:
                             sqlmap_findings = await sqlmap_adapter.run(
@@ -511,7 +512,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                 config,
                                 emit_log,
                                 emit_finding,
-                                scan_id=kwargs.get("scan_id", "active"),
+                                scan_id=scan_id,
                                 organization_id=organization_id,
                                 output_dir=str(Path(workspace)),
                                 validated_target=_validated_target,
@@ -552,14 +553,14 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         discovered_endpoints=discovered_endpoints,
                         client=client,
                         config=config,
-                        scan_id="active",
+                        scan_id=scan_id,
                         emit_finding=emit_finding,
                         emit_log=emit_log,
                     )
                 for f in fuzz_findings:
                     if f.fingerprint not in existing_fps:
                         existing_fps.add(f.fingerprint)
-                        f.scan_id = "active"
+                        f.scan_id = scan_id
                         findings.append(f)
 
                 for ep in discovered_endpoints:

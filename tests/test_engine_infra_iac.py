@@ -327,10 +327,12 @@ async def test_infra_iac_native_findings_preserve_primary_failure_provenance(mon
         log_cb,
         progress_cb,
         finding_cb,
+        scan_id="scan-infra-fallback",
     )
 
     fallback_findings = [finding for finding in findings if finding.source_tool == "native"]
     assert fallback_findings
     assert all(finding.is_fallback for finding in fallback_findings)
     assert all(finding.primary_tool_failed for finding in fallback_findings)
+    assert all(finding.scan_id == "scan-infra-fallback" for finding in findings)
     assert any("checkov" in finding.primary_tool_failed and "trivy" in finding.primary_tool_failed for finding in fallback_findings)

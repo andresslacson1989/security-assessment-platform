@@ -58,6 +58,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
+        scan_id = kwargs.get("scan_id", "active")
         existing_fps = set()
         target_path = target.value
         record_cis = kwargs.get("record_cis_result")
@@ -110,7 +111,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=True,
                     )
                     await report_tool_state("checkov", checkov_adapter, len(checkov_findings))
@@ -118,7 +119,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "checkov"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     await record_tool_failure("checkov")
@@ -139,7 +140,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=True,
                     )
                     await report_tool_state("trivy", trivy_adapter, len(trivy_findings))
@@ -147,7 +148,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "trivy"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     await record_tool_failure("trivy")
@@ -168,7 +169,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         record_cis_result=record_cis,
                         require_managed_binary=True,
                     )
@@ -177,7 +178,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "dockle"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     await record_tool_failure("dockle")
@@ -197,7 +198,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         record_cis_result=record_cis,
                         require_managed_binary=True,
                     )
@@ -206,7 +207,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "kube-bench"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     await record_tool_failure("kube-bench")
@@ -226,7 +227,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         record_cis_result=record_cis,
                         require_managed_binary=True,
                     )
@@ -235,7 +236,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "prowler"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     await record_tool_failure("prowler")
@@ -252,7 +253,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                     config,
                     emit_log,
                     emit_finding,
-                    scan_id=kwargs.get("scan_id", "active"),
+                    scan_id=scan_id,
                     organization_id=kwargs.get("organization_id"),
                     host_audit_input=kwargs.get("host_audit_input"),
                 )
@@ -272,7 +273,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         for f in dock_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -283,7 +284,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         for f in cmp_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -294,7 +295,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         for f in k8s_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -305,7 +306,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         for f in tf_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
