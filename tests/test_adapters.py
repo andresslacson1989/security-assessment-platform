@@ -511,6 +511,38 @@ class TestNucleiAdapter:
         assert env_exp.severity == Severity.CRITICAL
         assert "https://target.example.com/.env" in env_exp.evidence.location
 
+    @pytest.mark.asyncio
+    async def test_run_uses_contract_bounded_invocation(self):
+        adapter = NucleiAdapter()
+        target = Target(name="Web Target", type=TargetType.URL, value="https://target.example.com")
+        config = ScanConfig(timeout_seconds=15)
+        executed = {}
+
+        async def mock_log(_level, _message):
+            pass
+
+        async def mock_finding(_finding):
+            pass
+
+        async def capture_command(command, **kwargs):
+            executed["command"] = command
+            executed["kwargs"] = kwargs
+            return 0, "", ""
+
+        with patch.object(adapter, "resolve_binary_path", return_value="/managed/nuclei"), \
+             patch.object(adapter, "get_version", new=AsyncMock(return_value="nuclei v3.2.0")), \
+             patch.object(adapter, "execute_command", new=capture_command):
+            result = await adapter.run(target, config, mock_log, mock_finding)
+
+        assert result == []
+        command = executed["command"]
+        assert command[command.index("-tags") + 1] == "cve,misconfig"
+        assert command[command.index("-c") + 1] == "5"
+        assert command[command.index("-rate-limit") + 1] == "10"
+        assert command[command.index("-timeout") + 1] == "10"
+        assert executed["kwargs"]["timeout"] == 90.0
+        assert executed["kwargs"]["max_output_bytes"] == 10 * 1024 * 1024
+
 
 # ============================================================================
 # 4. SemgrepAdapter Tests

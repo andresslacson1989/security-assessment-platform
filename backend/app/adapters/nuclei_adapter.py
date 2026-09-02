@@ -169,6 +169,9 @@ class NucleiAdapter(BaseToolAdapter):
             "-silent",
             "-tags", "cve,misconfig",
             "-severity", "low,medium,high,critical",
+            "-c", "5",
+            "-rate-limit", "10",
+            "-timeout", "10",
         ]
         if host_header:
             cmd.extend(["-H", f"Host: {host_header}", "-sni", host_header])
@@ -176,9 +179,10 @@ class NucleiAdapter(BaseToolAdapter):
         await emit_log(LogLevel.INFO, f"Starting Nuclei DAST vulnerability scan on target '{target_url}'...")
         returncode, stdout, stderr = await self.execute_command(
             cmd,
-            timeout=float(min(60.0, config.timeout_seconds * 6)),
+            timeout=float(min(90.0, max(1.0, config.timeout_seconds * 6))),
             emit_log=emit_log,
             pre_launch_check=(lambda: self.verify_managed_binary(nuclei_path)) if kwargs.get("require_managed_binary") else None,
+            max_output_bytes=10 * 1024 * 1024,
         )
 
         if not stdout.strip():

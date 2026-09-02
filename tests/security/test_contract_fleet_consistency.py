@@ -90,6 +90,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
         assert f"COPY --from=builder /tmp/bin/{tool} /app/backend/bin/{tool}" in dockerfile
     assert "write_direct_artifact_trust_record" in dockerfile
     assert "write_source_artifact_trust_record" in dockerfile
+    assert "-update-templates" not in dockerfile
     assert "COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap" in dockerfile
     assert "COPY --from=builder /tmp/bin/amass /app/backend/bin/amass" in dockerfile
     assert "COPY --from=builder /tmp/bin/resources /app/backend/bin/resources" in dockerfile

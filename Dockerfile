@@ -268,9 +268,6 @@ COPY --from=builder /tmp/bin/resources /app/backend/bin/resources
 COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap
 COPY --from=builder /tmp/nmap-root/usr/local/share/nmap /usr/local/share/nmap
 
-# Pre-bake Nuclei community vulnerability templates into container image
-RUN nuclei -update-templates || true
-
 # Copy backend application, frontend HUD assets, and root runner
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
