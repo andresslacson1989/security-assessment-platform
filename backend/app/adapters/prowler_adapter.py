@@ -28,6 +28,41 @@ class ProwlerAdapter(BaseToolAdapter):
     approved_version = "4.1.0"
     package_name = "prowler"
 
+    @staticmethod
+    def _parse_asff_report(payload: str) -> List[Dict[str, Any]]:
+        """Parse the bounded ASFF envelope emitted by assured Prowler runs."""
+        try:
+            document = json.loads(payload)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Prowler ASFF report is not valid JSON") from exc
+        if not isinstance(document, dict) or not isinstance(document.get("Findings"), list):
+            raise ValueError("Prowler ASFF report must contain a Findings array")
+
+        findings = document["Findings"]
+        required = ("Title", "Severity", "Compliance", "Remediation")
+        for item in findings:
+            if not isinstance(item, dict) or any(key not in item for key in required):
+                raise ValueError("Prowler ASFF finding is missing required fields")
+            if not isinstance(item["Title"], str) or not item["Title"].strip():
+                raise ValueError("Prowler ASFF finding has an invalid Title")
+            severity = item["Severity"]
+            compliance = item["Compliance"]
+            remediation = item["Remediation"]
+            if (
+                not isinstance(severity, dict)
+                or not isinstance(severity.get("Label"), str)
+                or not severity["Label"].strip()
+                or not isinstance(compliance, dict)
+                or not isinstance(compliance.get("Status"), str)
+                or not compliance["Status"].strip()
+                or not isinstance(remediation, dict)
+                or not isinstance(remediation.get("Recommendation"), dict)
+                or not isinstance(remediation["Recommendation"].get("Text"), str)
+                or not remediation["Recommendation"]["Text"].strip()
+            ):
+                raise ValueError("Prowler ASFF finding has an invalid required schema field")
+        return findings
+
     @property
     def tool_name(self) -> str:
         return "prowler"
@@ -108,6 +143,7 @@ class ProwlerAdapter(BaseToolAdapter):
 
         await emit_log(LogLevel.INFO, "Executing Prowler CIS Cloud Foundations compliance assessment...")
         output_path = None
+        report_payload = None
         temp_output_dir = None
         execution_env = None
         sensitive_env_keys = None
@@ -135,7 +171,8 @@ class ProwlerAdapter(BaseToolAdapter):
                 try:
                     report = Path(output_path)
                     if report.is_file() and report.stat().st_size <= 10 * 1024 * 1024:
-                        stdout = stdout + "\n" + report.read_text(encoding="utf-8")
+                        report_payload = report.read_text(encoding="utf-8")
+                        stdout = stdout + "\n" + report_payload
                 except (OSError, UnicodeError):
                     await emit_log(LogLevel.WARNING, "Prowler report file could not be read; retaining supervised stdout only.")
         finally:
@@ -150,18 +187,23 @@ class ProwlerAdapter(BaseToolAdapter):
             return findings
 
         try:
-            items = []
-            for line in stdout.splitlines():
-                line = line.strip()
-                if line.startswith("{"):
-                    try:
-                        items.append(json.loads(line))
-                    except Exception as exc:
-                        logger.debug("Prowler result item could not be normalized: error_type=%s", type(exc).__name__)
+            if kwargs.get("require_managed_binary"):
+                if not report_payload:
+                    raise ValueError("Prowler ASFF report was not produced")
+                items = self._parse_asff_report(report_payload)
+            else:
+                items = []
+                for line in stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("{"):
+                        try:
+                            items.append(json.loads(line))
+                        except Exception as exc:
+                            logger.debug("Prowler result item could not be normalized: error_type=%s", type(exc).__name__)
 
             for item in items:
-                status = item.get("Status", "FAIL").upper()
-                check_title = item.get("CheckTitle", "CIS Cloud Check")
+                status = item.get("Compliance", {}).get("Status", item.get("Status", "FAIL")).upper()
+                check_title = item.get("Title", item.get("CheckTitle", "CIS Cloud Check"))
                 check_id = item.get("CheckID", "cloud_check")
                 service_name = item.get("ServiceName", "Cloud Infrastructure")
                 resource_id = item.get("ResourceId", "Cloud Resource")
@@ -179,7 +221,7 @@ class ProwlerAdapter(BaseToolAdapter):
                 if record_cis_result:
                     record_cis_result(cis_model)
 
-                if status == "FAIL":
+                if status in {"FAIL", "FAILED", "FAILURE"}:
                     evidence = Evidence(
                         location=f"{service_name}:{resource_id}",
                         observed_value=f"Failed CIS Check: {check_title}",

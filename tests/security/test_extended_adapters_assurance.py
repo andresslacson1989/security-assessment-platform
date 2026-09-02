@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -84,6 +85,25 @@ def test_extended_findings_preserve_production_engine_attribution():
     assert adapter._finding(engine="network", **common).engine == "network"
     assert adapter._finding(engine="web_dast", **common).engine == "web_dast"
     assert adapter._finding(engine="manual", **common).engine == "manual"
+
+
+def test_prowler_assured_parser_requires_asff_envelope_and_required_fields():
+    from app.adapters.prowler_adapter import ProwlerAdapter
+
+    valid = {
+        "Findings": [{
+            "Title": "MFA check",
+            "Severity": {"Label": "HIGH"},
+            "Compliance": {"Status": "FAILED"},
+            "Remediation": {"Recommendation": {"Text": "Enable MFA."}},
+        }],
+    }
+    assert ProwlerAdapter._parse_asff_report(json.dumps(valid))[0]["Title"] == "MFA check"
+
+    with pytest.raises(ValueError):
+        ProwlerAdapter._parse_asff_report('{"CheckID":"legacy"}')
+    with pytest.raises(ValueError):
+        ProwlerAdapter._parse_asff_report(json.dumps({"Findings": [{"Title": "missing fields"}]}))
 
 
 @pytest.mark.asyncio

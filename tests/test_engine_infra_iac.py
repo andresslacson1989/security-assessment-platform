@@ -2,6 +2,7 @@
 Unit tests for Engine 4: Infrastructure-as-Code & Container Auditor.
 """
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -301,7 +302,19 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
         environments.append(dict(kwargs.get("env") or {}))
         if command[-1] == "-v":
             return 0, "prowler 4.1.0", ""
-        return 0, '{"CheckID":"iam_root_mfa_enabled","Status":"PASS"}', ""
+        report_path = command[command.index("--output-filename") + 1]
+        Path(report_path).write_text(
+            json.dumps({
+                "Findings": [{
+                    "Title": "Root account MFA",
+                    "Severity": {"Label": "INFORMATIONAL"},
+                    "Compliance": {"Status": "PASS"},
+                    "Remediation": {"Recommendation": {"Text": "Enable MFA."}},
+                }],
+            }),
+            encoding="utf-8",
+        )
+        return 0, "", ""
 
     async def log_cb(*_args):
         return None
