@@ -382,7 +382,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
         staged_binary_path = None
         staged_trust_path = None
         try:
-            async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            async with httpx.AsyncClient(timeout=15.0, headers=headers, trust_env=False) as client:
                 resp = await client.get(rel_url)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -420,7 +420,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
             with tempfile.TemporaryDirectory() as tmpdir:
                 archive_path = os.path.join(tmpdir, asset_filename)
                 
-                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True, trust_env=False) as client:
                     async with client.stream("GET", download_url) as stream:
                         if stream.status_code != 200:
                             raise RuntimeError(f"Download failed with HTTP {stream.status_code}")

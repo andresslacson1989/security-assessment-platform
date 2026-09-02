@@ -192,7 +192,7 @@ class SourceBuildInstaller(BaseToolInstaller):
         staged_trust = bin_dir / f".trivy.trust.{uuid.uuid4().hex}.staged"
         try:
             await emit_progress(10, "Downloading verified Go toolchain and Trivy source archive...")
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client, tempfile.TemporaryDirectory() as temp:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True, trust_env=False) as client, tempfile.TemporaryDirectory() as temp:
                 await self._verify_source_tag(client, manifest)
                 source_archive = os.path.join(temp, "trivy-source.tar.gz")
                 go_archive = os.path.join(temp, go_name)
