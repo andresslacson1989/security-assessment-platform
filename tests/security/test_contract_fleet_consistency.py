@@ -54,6 +54,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     contract_01 = (canonical / "01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md").read_text()
     contract_03 = (canonical / "03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md").read_text()
     contract_07 = (canonical / "07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md").read_text()
+    contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text()
     contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text()
     assurance_matrix = (repository_root / "docs" / "TOOL_ASSURANCE_MATRIX.md").read_text()
 
@@ -63,6 +64,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "john" not in contract_01
     assert "Supported 26 Tools" in contract_03
     assert "26 tools" in contract_07
+    assert "`grype`: `v0.74.0`" in contract_08
     assert "complete 26-tool fleet" in contract_09
     assert "21 numbered external-tool specifications" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09

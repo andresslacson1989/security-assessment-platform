@@ -71,7 +71,7 @@ All direct-release binary artifacts in `tool_manifest.py` MUST specify authentic
 - `subfinder`: `v2.6.5` -> `sha256` verified
 - `httpx`: `v1.6.0` -> `sha256` verified
 - `syft`: `v1.0.1` -> `sha256` verified
-- `grype`: `v0.75.0` -> `sha256` verified
+- `grype`: `v0.74.0` -> `sha256` verified
 - `osv-scanner`: `v1.7.0` -> `sha256` verified
 - `dockle`: `v0.4.14` -> `sha256` verified
 
