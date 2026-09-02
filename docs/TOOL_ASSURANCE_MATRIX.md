@@ -79,7 +79,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Safety Controls**: Universal target gateway, pre-resolved hostname verification.
 - **Finding Normalization**: Check IDs `NET-TLS-001` (Insecure TLS 1.0/1.1), `NET-TLS-002` (Weak Ciphers), `NET-TLS-003` (Expiring/Expired Certs), CWE-326, CWE-327.
 - **Role Strategy**: **PRIMARY**. Complemented by native TLS auditor.
-- **Runtime Evidence**: The host SSLyze package reports `6.3.1`, not the approved `5.2.0`; approved managed SSLyze runtime verification is `UNAVAILABLE`.
+- **Runtime Evidence**: The production image verified the isolated managed SSLyze `5.2.0` package, console path, and lock-bound trust record under uid 999; the host package reporting `6.3.1` remains non-assured.
 
 ### 3. Subfinder (Passive Subdomain Enumeration)
 - **Security Domain**: Perimeter / EASM
@@ -97,7 +97,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### 4. httpx (High-Speed Multi-Purpose HTTP Prober)
 - **Security Domain**: HTTP Probing & Discovery
 - **Purpose**: Probes discovered subdomains/IPs for live HTTP/HTTPS services, status codes, title, technology stack, and TLS SANs.
-- **Enterprise Maturity**: Repository controls verified; approved managed-runtime evidence remains unavailable in this environment.
+- **Enterprise Maturity**: Repository controls and managed-runtime evidence verified for the approved production-image path.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/httpx).
 - **Safety Controls**: Engine-level validated-target handoff, selected-destination binding with Host/SNI preservation, exact-version gate, managed-binary preflight, bounded execution, and SSRF blocklist enforcement.
 - **Output Format & Parser**: JSON Lines parsed safely line by line.

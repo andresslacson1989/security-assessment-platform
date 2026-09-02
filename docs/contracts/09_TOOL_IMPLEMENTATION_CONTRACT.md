@@ -546,7 +546,7 @@ Stderr: Diagnostic logs
   - Cipher Suite Enumeration: `SUPPORTED`
   - Certificate Chain Trust: `SUPPORTED`
   - Early Data (0-RTT) Probing: `DEFERRED`
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/sslyze_adapter.py`); approved managed `5.2.0` runtime execution is `UNAVAILABLE` because the host reports `6.3.1`.
+- **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/sslyze_adapter.py`, `backend/app/core/package_trust.py`); the production image verified the isolated managed `5.2.0` runtime and trust record under uid 999. The host package remains non-assured.
 
 ---
 
@@ -876,7 +876,7 @@ Stderr: Diagnostic logs
   - HTTP Probe & Status: `SUPPORTED`
   - Technology Fingerprinting: `SUPPORTED`
   - Raw Request Fuzzing: `NOT_SUPPORTED` (Handled by FFuF)
-- **Verification Status:** `VERIFIED FROM REPOSITORY` (`backend/app/adapters/httpx_adapter.py`); approved managed `v1.6.0` runtime execution is `UNAVAILABLE` in the current environment.
+- **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/httpx_adapter.py`, `backend/app/core/binary_trust.py`); the production image verified the managed `v1.6.0` runtime and trust record under uid 999.
 
 ---
 
@@ -1037,7 +1037,7 @@ Stderr: Diagnostic logs
   - Curated CVE Scanning: `SUPPORTED`
   - Misconfiguration Detection: `SUPPORTED`
   - Custom Remote Templates: `DEFERRED`
-- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/nuclei_adapter.py`).
+- **Verification Status:** Repository controls and managed runtime verified (`backend/app/adapters/nuclei_adapter.py`, `backend/app/core/binary_trust.py`); the production image executed the managed `v3.2.0` version probe and verified its trust record under uid 999.
 
 ---
 
@@ -1194,7 +1194,7 @@ Stderr: Diagnostic logs
   - Route / Directory Fuzzing: `SUPPORTED`
   - Query Parameter Fuzzing: `SUPPORTED`
   - Destructive Method Fuzzing (DELETE/PUT): `NOT_SUPPORTED`
-- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/ffuf_adapter.py`).
+- **Verification Status:** Repository controls and managed runtime verified (`backend/app/adapters/ffuf_adapter.py`, `backend/app/core/binary_trust.py`); the production image executed the managed `v2.1.0` version probe and verified its trust record under uid 999.
 
 ---
 
@@ -1350,7 +1350,7 @@ Stderr: Diagnostic logs
   - Standard DOM Crawling: `SUPPORTED`
   - JavaScript Endpoint Extraction: `SUPPORTED`
   - Headless Browser Rendering: `LIMITED` (Requires system Chromium)
-- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/katana_adapter.py`).
+- **Verification Status:** Repository controls and managed runtime verified (`backend/app/adapters/katana_adapter.py`, `backend/app/core/binary_trust.py`); the production image executed the managed `v1.0.5` version probe and verified its trust record under uid 999.
 
 ---
 
@@ -1504,7 +1504,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - OpenAPI Schema Fuzzing: `SUPPORTED`
   - GraphQL Schema Fuzzing: `DEFERRED`
-- **Verification Status:** Repository controls verified; managed runtime execution is `UNAVAILABLE` in the current environment (`backend/app/adapters/schemathesis_adapter.py`).
+- **Verification Status:** Repository controls and managed runtime verified (`backend/app/adapters/schemathesis_adapter.py`, `backend/app/core/package_trust.py`); the production image executed the managed `3.20.0` version probe and verified its package trust record under uid 999.
 - **State-Changing Gate:** State-changing execution requires an API-focused profile and an explicit tenant authorization grant in the validated target context; absent either gate, the adapter records `EXECUTION_BLOCKED` and does not launch.
 
 ---
