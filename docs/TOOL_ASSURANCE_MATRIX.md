@@ -36,7 +36,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 26 support
 
 ---
 
-The following five auxiliary adapters are part of the same 26-tool fleet. Their constrained operating modes are specified in Contract 03 rather than as numbered external-tool reviews in Contract 09.
+The following five auxiliary adapters are part of the same 26-tool fleet. Their constrained operating modes are specified in Contract 03 alongside the primary tool specifications.
 
 | Security Domain | Tool Name | Tool ID | Tool Role | Operating Mode |
 |---|---|---|---|---|
