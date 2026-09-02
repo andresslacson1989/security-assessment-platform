@@ -46,7 +46,7 @@ class ToolInstallationManager:
             "prowler": PipToolInstaller("prowler"),
             "schemathesis": PipToolInstaller("schemathesis"),
 
-            # Standalone GitHub release binaries (13 tools)
+            # Standalone GitHub release binaries (14 tools)
             "nuclei": GithubReleaseInstaller("nuclei"),
             "ffuf": GithubReleaseInstaller("ffuf"),
             "gitleaks": GithubReleaseInstaller("gitleaks"),
