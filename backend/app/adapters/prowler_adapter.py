@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import tempfile
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
@@ -73,6 +75,24 @@ class ProwlerAdapter(BaseToolAdapter):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: only cloud-account or Kubernetes targets are supported.")
                 return findings
+            if not validated_target.authorization_context.get("active_probing_granted"):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: explicit active cloud-audit authorization is required.")
+                return findings
+
+            credentials = kwargs.get("cloud_credentials")
+            allowed_credentials = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+            if not isinstance(credentials, dict) or not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}.issubset(credentials):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: scoped read-only cloud credentials are required.")
+                return findings
+            if set(credentials) - allowed_credentials or any(
+                not isinstance(value, str) or not value or any(ord(char) < 32 for char in value)
+                for value in credentials.values()
+            ):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: cloud credential envelope is invalid.")
+                return findings
 
         managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
         if kwargs.get("require_managed_binary") and not managed_check():
@@ -87,9 +107,42 @@ class ProwlerAdapter(BaseToolAdapter):
             return findings
 
         await emit_log(LogLevel.INFO, "Executing Prowler CIS Cloud Foundations compliance assessment...")
-        cmd = [binary, "aws", "-M", "json", "--quiet"]
+        output_path = None
+        temp_output_dir = None
+        execution_env = None
+        sensitive_env_keys = None
+        if kwargs.get("require_managed_binary"):
+            provider = validated_target.authorization_context.get("cloud_provider")
+            temp_output_dir = tempfile.TemporaryDirectory(prefix="cyberassess-prowler-")
+            output_path = str(Path(temp_output_dir.name) / "prowler-asff.json")
+            cmd = [binary, provider, "-M", "json-asff", "--output-filename", output_path, "--quiet"]
+            execution_env = dict(credentials)
+            sensitive_env_keys = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+        else:
+            cmd = [binary, "aws", "-M", "json", "--quiet"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
+        try:
+            code, stdout, stderr = await self.execute_command(
+                cmd,
+                timeout=120.0 if kwargs.get("require_managed_binary") else 60.0,
+                emit_log=emit_log,
+                pre_launch_check=managed_check,
+                env=execution_env,
+                sensitive_env_keys=sensitive_env_keys,
+                max_output_bytes=10 * 1024 * 1024,
+            )
+            if output_path:
+                try:
+                    report = Path(output_path)
+                    if report.is_file() and report.stat().st_size <= 10 * 1024 * 1024:
+                        stdout = stdout + "\n" + report.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    await emit_log(LogLevel.WARNING, "Prowler report file could not be read; retaining supervised stdout only.")
+        finally:
+            if execution_env is not None:
+                execution_env.clear()
+            if temp_output_dir is not None:
+                temp_output_dir.cleanup()
 
         if not stdout.strip():
             self._record_execution(code, stdout, stderr)

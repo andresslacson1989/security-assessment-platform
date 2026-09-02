@@ -68,6 +68,7 @@ def _validated_target_context_digest(validated_target: Any) -> str:
         "active_probing_granted": context.get("active_probing_granted"),
         "state_changing_granted": context.get("state_changing_granted"),
         "dns_zone_authorized": context.get("dns_zone_authorized"),
+        "cloud_provider": context.get("cloud_provider"),
         "authorized_scope": list(getattr(validated_target, "authorized_scope", [])),
         "workspace_id": getattr(validated_target, "workspace_id", None) or "",
     }
@@ -125,6 +126,9 @@ def validate_validated_target(validated_target: Any) -> Any:
         raise SSRFProtectionError("Validated target authorization context is invalid.")
     if context["dns_zone_authorized"] != (validated_target.target_type == TargetType.DOMAIN):
         raise SSRFProtectionError("Validated target DNS authorization context is inconsistent.")
+    if validated_target.target_type in (TargetType.CLOUD_ACCOUNT, TargetType.KUBERNETES_CLUSTER):
+        if context.get("cloud_provider") not in {"aws", "azure", "gcp", "kubernetes"}:
+            raise SSRFProtectionError("Validated cloud target provider is invalid.")
     if (context["active_probing_granted"] or context["state_changing_granted"]) and not validated_target.asset_id:
         raise SSRFProtectionError("Intrusive authorization is not bound to an inventory asset.")
     if not validated_target.selected_destination:
@@ -415,6 +419,14 @@ def validate_target_security(
             return False, f"Dangerous characters detected in {t_type} specification: '{val}'"
         if t_type == "KUBERNETES_CLUSTER" and (val.startswith("http://") or val.startswith("https://")):
             return validate_target_url(val, allow_internal=allow_internal)
+        if t_type == "CLOUD_ACCOUNT":
+            provider, separator, identifier = val.partition("://")
+            if provider.lower() not in {"aws", "azure", "gcp"} or not separator or not identifier or "/" in identifier:
+                return False, "Cloud account targets must use aws://, azure://, or gcp:// followed by an account identifier."
+        if t_type == "KUBERNETES_CLUSTER":
+            provider, separator, identifier = val.partition("://")
+            if provider.lower() != "kubernetes" or not separator or not identifier:
+                return False, "Kubernetes targets must use kubernetes:// followed by a cluster identifier or API endpoint."
         return True, None
     else:
         return False, f"Unsupported target type: '{target_type}'"
@@ -500,6 +512,8 @@ def create_validated_target(
     elif t_type_str in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"):
         import os
         selected_dest = os.path.abspath(canonical_val)
+    elif t_type_str in ("CLOUD_ACCOUNT", "KUBERNETES_CLUSTER"):
+        selected_dest = canonical_val
 
     # The authoritative constructor performs a second DNS lookup after the
     # initial input gate. Re-apply the address policy here so a DNS answer
@@ -525,6 +539,11 @@ def create_validated_target(
         "active_probing_granted": bool(active_probing_granted),
         "state_changing_granted": bool(state_changing_granted),
         "dns_zone_authorized": (t_type_str == "DOMAIN"),
+        "cloud_provider": (
+            canonical_val.split("://", 1)[0].lower()
+            if t_type_str in ("CLOUD_ACCOUNT", "KUBERNETES_CLUSTER") and "://" in canonical_val
+            else None
+        ),
     }
 
     # Compute cryptographic identity digests per Contract 09 §1.1. The seal
@@ -540,6 +559,7 @@ def create_validated_target(
         "active_probing_granted": auth_ctx["active_probing_granted"],
         "state_changing_granted": auth_ctx["state_changing_granted"],
         "dns_zone_authorized": auth_ctx["dns_zone_authorized"],
+        "cloud_provider": auth_ctx["cloud_provider"],
         "authorized_scope": list(authorized_scope or []),
         "workspace_id": workspace_id or "",
     }

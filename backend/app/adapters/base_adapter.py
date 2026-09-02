@@ -53,13 +53,17 @@ class BaseToolAdapter(ABC):
     })
 
     @classmethod
-    def _governed_environment(cls, supplied: Optional[dict]) -> dict:
+    def _governed_environment(cls, supplied: Optional[dict], sensitive_keys: Optional[set[str]] = None) -> dict:
         """Return a server-governed environment without ambient secrets/egress settings."""
         source = supplied if supplied is not None else os.environ
+        allowed_sensitive = {str(key).upper() for key in (sensitive_keys or set())}
         return {
             str(key): str(value)
             for key, value in source.items()
-            if str(key).upper() in cls._SAFE_ENVIRONMENT_KEYS
+            if (
+                str(key).upper() in cls._SAFE_ENVIRONMENT_KEYS
+                or (supplied is not None and str(key).upper() in allowed_sensitive)
+            )
             and value is not None
         }
 
@@ -142,6 +146,7 @@ class BaseToolAdapter(ABC):
         custom_path: Optional[str] = None,
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
         pre_launch_check: Optional[Callable[[], bool]] = None,
+        sensitive_env_keys: Optional[set[str]] = None,
     ) -> bool:
         """Fail closed unless the resolved executable reports its exact approved version."""
         expected = getattr(self, "approved_version", None)
@@ -241,6 +246,7 @@ class BaseToolAdapter(ABC):
         max_output_bytes: int = 10 * 1024 * 1024,
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
         pre_launch_check: Optional[Callable[[], bool]] = None,
+        sensitive_env_keys: Optional[set[str]] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -257,7 +263,7 @@ class BaseToolAdapter(ABC):
             cmd=cmd,
             timeout=timeout,
             cwd=cwd,
-            env=self._governed_environment(env),
+            env=self._governed_environment(env, sensitive_keys=sensitive_env_keys),
             max_output_bytes=max_output_bytes,
             pre_launch_check=pre_launch_check,
         )

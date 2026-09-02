@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.core.models import Target, TargetType, ScanConfig, Severity, NormalizedExecutionState
+from app.core.ssrf_protector import create_validated_target
 from app.engines.infra_iac.dockerfile_auditor import audit_dockerfile_content, audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_yaml, audit_compose_files
 from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_yaml, audit_k8s_manifests
@@ -280,6 +281,54 @@ async def test_prowler_rejects_non_cloud_target_at_assured_boundary(tmp_path):
     assert findings == []
     assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
     execute_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_credentials(tmp_path):
+    adapter = ProwlerAdapter()
+    target = Target(name="AWS account", type=TargetType.CLOUD_ACCOUNT, value="aws://123456789012")
+    validated = create_validated_target(
+        target,
+        organization_id="org-a",
+        asset_id="asset-a",
+        active_probing_granted=True,
+    )
+    commands = []
+    environments = []
+
+    async def execute(command, **kwargs):
+        commands.append(command)
+        environments.append(dict(kwargs.get("env") or {}))
+        if command[-1] == "-v":
+            return 0, "prowler 4.1.0", ""
+        return 0, '{"CheckID":"iam_root_mfa_enabled","Status":"PASS"}', ""
+
+    async def log_cb(*_args):
+        return None
+
+    async def finding_cb(*_args):
+        return None
+
+    credentials = {
+        "AWS_ACCESS_KEY_ID": "AKIA_TEST",
+        "AWS_SECRET_ACCESS_KEY": "secret-test",
+        "AWS_SESSION_TOKEN": "session-test",
+    }
+    with patch.object(adapter, "resolve_binary_path", return_value=str(tmp_path / "prowler")), \
+         patch.object(adapter, "verify_managed_binary", return_value=True), \
+         patch.object(adapter, "execute_command", side_effect=execute):
+        await adapter.run(
+            target,
+            ScanConfig(),
+            log_cb,
+            finding_cb,
+            require_managed_binary=True,
+            validated_target=validated,
+            cloud_credentials=credentials,
+        )
+
+    assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
+    assert environments[-1] == credentials
 
 
 @pytest.mark.asyncio

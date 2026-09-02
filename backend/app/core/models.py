@@ -54,6 +54,8 @@ class TargetType(str, Enum):
     LOCAL_PATH = "LOCAL_PATH"      # Local Source Code Repository
     DOCKERFILE = "DOCKERFILE"      # Dockerfile Specification
     IAC_MANIFEST = "IAC_MANIFEST"  # Kubernetes, Compose, or Terraform Manifest
+    CLOUD_ACCOUNT = "CLOUD_ACCOUNT"  # Cloud provider account/subscription/project
+    KUBERNETES_CLUSTER = "KUBERNETES_CLUSTER"  # Kubernetes API/control-plane target
 
 
 class ScanProfile(str, Enum):
@@ -951,6 +953,9 @@ class ScanJob(BaseModel):
     organization_id: str = Field(default="org-default")
     project_id: Optional[str] = Field(default=None)
     asset_id: Optional[str] = Field(default=None)
+    # Worker-side credential material is never accepted in public request
+    # models and is excluded from persistence/serialization.
+    cloud_credentials: Optional[Dict[str, str]] = Field(default=None, exclude=True, repr=False)
     active_probing_granted: bool = Field(default=False, description="Explicit tenant asset authorization for intrusive probing")
     state_changing_granted: bool = Field(default=False, description="Explicit authorization for state-changing checks")
     live_secret_verification_granted: bool = Field(default=False, description="Explicit tenant authorization for live secret verification")

@@ -188,7 +188,7 @@ def test_enums_completeness():
     assert [s.value for s in Severity] == ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 
     # TargetType
-    assert set(t.value for t in TargetType) == {"URL", "DOMAIN", "IP", "LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"}
+    assert set(t.value for t in TargetType) == {"URL", "DOMAIN", "IP", "LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST", "CLOUD_ACCOUNT", "KUBERNETES_CLUSTER"}
 
     # ScanProfile
     expected_profiles = {

@@ -61,7 +61,7 @@ def _organization_scope(user: UserProfile) -> Optional[str]:
 
 class StartScanRequest(BaseModel):
     target_type: TargetType = Field(..., description="Classification of target asset")
-    target_value: str = Field(..., description="Target URI, domain, IP, or filesystem path")
+    target_value: str = Field(..., description="Target URI, domain, IP, filesystem path, cloud account, or Kubernetes cluster")
     target_name: Optional[str] = Field(None, description="Friendly display label for the target")
     profile: ScanProfile = Field(default=ScanProfile.FULL_STACK, description="Scanning depth and profile")
     asset_id: Optional[str] = Field(None, description="Monitored asset UUID")
@@ -120,6 +120,8 @@ async def start_security_scan(
             AssetType.DOMAIN: TargetType.DOMAIN,
             AssetType.IP_ADDRESS: TargetType.IP,
             AssetType.IAC_TEMPLATE: TargetType.IAC_MANIFEST,
+            AssetType.CLOUD_ACCOUNT: TargetType.CLOUD_ACCOUNT,
+            AssetType.KUBERNETES_CLUSTER: TargetType.KUBERNETES_CLUSTER,
         }.get(asset.type)
         if asset_target_type != payload.target_type or asset.target_value.strip().lower() != payload.target_value.strip().lower():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan target does not match the selected asset.")

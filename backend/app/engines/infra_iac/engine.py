@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import List
 
 from app.core.models import Target, Finding, ScanConfig, TargetType, LogLevel, NormalizedExecutionState
+from app.core.ssrf_protector import create_validated_target, SSRFProtectionError
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.engines.infra_iac.dockerfile_auditor import audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_files
@@ -46,7 +47,13 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         """
         Applicable to Dockerfiles, IaC manifests, and local repository directories.
         """
-        return target.type in (TargetType.DOCKERFILE, TargetType.IAC_MANIFEST, TargetType.LOCAL_PATH)
+        return target.type in (
+            TargetType.DOCKERFILE,
+            TargetType.IAC_MANIFEST,
+            TargetType.LOCAL_PATH,
+            TargetType.CLOUD_ACCOUNT,
+            TargetType.KUBERNETES_CLUSTER,
+        )
 
     async def run(
         self,
@@ -95,6 +102,60 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                 item.source_tool = "native"
                 item.is_fallback = True
                 item.primary_tool_failed = ",".join(failed)
+
+        # Cloud posture targets have no local workspace. Keep them on a
+        # dedicated path so filesystem/IaC adapters cannot receive a cloud
+        # identifier or inspect ambient worker state.
+        if target.type in (TargetType.CLOUD_ACCOUNT, TargetType.KUBERNETES_CLUSTER):
+            await emit_progress(5, "Validating cloud posture target and authorization...")
+            try:
+                validated_target = create_validated_target(
+                    target,
+                    organization_id=kwargs.get("organization_id", "org-default"),
+                    project_id=kwargs.get("project_id"),
+                    asset_id=kwargs.get("asset_id"),
+                    active_probing_granted=bool(kwargs.get("active_probing_granted", False)),
+                )
+            except (SSRFProtectionError, ValueError, TypeError) as exc:
+                if tool_state_cb:
+                    await tool_state_cb("prowler", NormalizedExecutionState.EXECUTION_BLOCKED.value)
+                await emit_log(LogLevel.ERROR, f"Cloud posture execution blocked by authorization validation: {type(exc).__name__}")
+                return findings
+
+            if not kwargs.get("active_probing_granted", False):
+                if tool_state_cb:
+                    await tool_state_cb("prowler", NormalizedExecutionState.EXECUTION_BLOCKED.value)
+                await emit_log(LogLevel.ERROR, "Cloud posture execution blocked: explicit asset authorization is required.")
+                return findings
+
+            prowler_adapter = ProwlerAdapter()
+            custom_path = getattr(config.adapters, "prowler_path", None) or getattr(config.adapters, "custom_prowler_path", None)
+            try:
+                if not getattr(config.adapters, "enable_prowler", True) or not await prowler_adapter.is_available(custom_path):
+                    await record_tool_failure("prowler")
+                    return findings
+                prowler_findings = await prowler_adapter.run(
+                    target,
+                    config,
+                    emit_log,
+                    emit_finding,
+                    scan_id=scan_id,
+                    record_cis_result=record_cis,
+                    require_managed_binary=True,
+                    validated_target=validated_target,
+                    cloud_credentials=kwargs.get("cloud_credentials"),
+                )
+                await report_tool_state("prowler", prowler_adapter, len(prowler_findings))
+                for finding in prowler_findings:
+                    if finding.fingerprint not in existing_fps:
+                        existing_fps.add(finding.fingerprint)
+                        finding.source_tool = "prowler"
+                        finding.scan_id = scan_id
+                        findings.append(finding)
+            except Exception as exc:
+                await record_tool_failure("prowler")
+                await emit_log(LogLevel.WARNING, f"Prowler adapter error: {type(exc).__name__}")
+            return findings
 
         # --- Stage 0: Primary External IaC & CIS Tool Adapters First-in-Line ---
         await emit_progress(5, "Running primary external IaC & CIS benchmark tool adapters...")
