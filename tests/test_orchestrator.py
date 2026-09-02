@@ -260,6 +260,23 @@ async def test_final_grading_preserves_subfinder_coverage_degradation():
 
 
 @pytest.mark.asyncio
+async def test_active_adapters_tracks_execution_not_capability_discovery():
+    orch = ScanOrchestrator()
+    job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
+    job.active_adapters = ["semgrep"]
+    job.summary.active_adapters = ["semgrep"]
+    orch._active_jobs[job.id] = job
+
+    await orch.emit_tool_execution_state(job.id, "semgrep", "TOOL_EXECUTION_FAILED", engine="code_sast")
+    assert job.active_adapters == []
+    assert job.summary.active_adapters == []
+
+    await orch.emit_tool_execution_state(job.id, "semgrep", "COMPLETED_NO_FINDINGS", engine="code_sast")
+    assert job.active_adapters == ["semgrep"]
+    assert job.summary.active_adapters == ["semgrep"]
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_state_fails_closed():
     orch = ScanOrchestrator()
     job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))

@@ -368,6 +368,19 @@ class ScanOrchestrator:
             job.tool_execution_states[tool_name] = state
             if engine:
                 job.tool_execution_engines[tool_name] = engine
+            executed_states = {
+                "COMPLETED_NO_FINDINGS",
+                "COMPLETED_WITH_FINDINGS",
+                "PARTIAL_RESULTS_WITH_WARNING",
+            }
+            if state in executed_states:
+                if tool_name not in job.active_adapters:
+                    job.active_adapters.append(tool_name)
+            else:
+                job.active_adapters = [
+                    name for name in job.active_adapters if name != tool_name
+                ]
+            job.summary.active_adapters = list(job.active_adapters)
             degraded_states = {
                 "PARTIAL_RESULTS_WITH_WARNING",
                 "TOOL_EXECUTION_FAILED",
@@ -474,7 +487,7 @@ class ScanOrchestrator:
         # --- Adapter Discovery & tool_status SSE (Contract 04 v4.1.0) ---
         try:
             capabilities = await discover_system_capabilities(job.config.adapters)
-            active_adapters: List[str] = []
+            assured_adapters: List[str] = []
             job.summary.coverage.tools_unavailable = []
             for tool_status in capabilities.tools:
                 await self.emit_tool_status(
@@ -486,15 +499,20 @@ class ScanOrchestrator:
                     assurance_status=tool_status.assurance_status,
                 )
                 if tool_status.execution_mode == ToolExecutionMode.ADAPTER_ACTIVE:
-                    active_adapters.append(tool_status.name)
-                elif tool_status.name not in job.summary.coverage.tools_unavailable:
+                    assured_adapters.append(tool_status.name)
+                else:
+                    # A detected but unassured binary is unavailable to the
+                    # enterprise execution path and must not be reported as
+                    # an active adapter.
                     job.summary.coverage.tools_unavailable.append(tool_status.name)
-            job.active_adapters = active_adapters
-            job.summary.active_adapters = active_adapters
-            if active_adapters:
-                await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", f"Active tool adapters: {', '.join(active_adapters)}")
+            # Capability discovery establishes readiness only.  The active
+            # list is populated later by actual execution-state callbacks.
+            job.active_adapters = []
+            job.summary.active_adapters = []
+            if assured_adapters:
+                await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", f"Assured tool adapters available: {', '.join(assured_adapters)}")
             else:
-                await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", "No external tool adapters detected - native Python engines will be used for all assessments.")
+                await self.emit_log(scan_id, LogLevel.INFO, "orchestrator", "No assured external tool adapters available - native Python engines will be used for all assessments.")
         except Exception as e:
             await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", f"Adapter discovery error (non-fatal): {e}")
             job.active_adapters = []
