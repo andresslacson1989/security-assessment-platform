@@ -5,11 +5,12 @@ Unit tests for Engine 4: Infrastructure-as-Code & Container Auditor.
 import json
 import shutil
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 import pytest
 
-from app.core.models import Target, TargetType, ScanConfig, Severity, NormalizedExecutionState
+from app.core.models import Target, TargetType, ScanConfig, Severity, NormalizedExecutionState, CloudCredentialEnvelope
 from app.core.ssrf_protector import create_validated_target
 from app.engines.infra_iac.dockerfile_auditor import audit_dockerfile_content, audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_yaml, audit_compose_files
@@ -342,11 +343,17 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
     async def finding_cb(finding):
         findings.append(finding)
 
-    credentials = {
-        "AWS_ACCESS_KEY_ID": "AKIA_TEST",
-        "AWS_SECRET_ACCESS_KEY": "secret-test",
-        "AWS_SESSION_TOKEN": "session-test",
-    }
+    credentials = CloudCredentialEnvelope(
+        organization_id="org-a",
+        asset_id="asset-a",
+        provider="aws",
+        credentials={
+            "AWS_ACCESS_KEY_ID": "AKIA_TEST",
+            "AWS_SECRET_ACCESS_KEY": "secret-test",
+            "AWS_SESSION_TOKEN": "session-test",
+        },
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
     with patch.object(adapter, "resolve_binary_path", return_value=str(tmp_path / "prowler")), \
          patch.object(adapter, "verify_managed_binary", return_value=True), \
          patch.object(adapter, "execute_command", side_effect=execute):
@@ -361,7 +368,7 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
         )
 
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
-    assert environments[-1] == credentials
+    assert environments[-1] == credentials.credentials
     assert findings[-1].severity == Severity.CRITICAL
 
 
@@ -406,6 +413,40 @@ async def test_cloud_posture_failure_uses_observation_only_native_fallback(monke
     assert findings[0].source_tool == "native"
     assert findings[0].is_fallback is True
     assert states == [("prowler", "TOOL_EXECUTION_FAILED")]
+
+
+@pytest.mark.asyncio
+async def test_prowler_rejects_mis_scoped_or_expired_credential_envelope(monkeypatch):
+    adapter = ProwlerAdapter()
+    target = Target(name="AWS account", type=TargetType.CLOUD_ACCOUNT, value="aws://123456789012")
+    validated = create_validated_target(target, organization_id="org-a", asset_id="asset-a", active_probing_granted=True)
+    execute = AsyncMock()
+
+    async def log_cb(*_args):
+        return None
+
+    with patch.object(adapter, "resolve_binary_path", return_value="C:\\managed\\prowler"), \
+         patch.object(adapter, "verify_managed_binary", return_value=True), \
+         patch.object(adapter, "execute_command", execute):
+        findings = await adapter.run(
+            target,
+            ScanConfig(),
+            log_cb,
+            AsyncMock(),
+            require_managed_binary=True,
+            validated_target=validated,
+            cloud_credentials=CloudCredentialEnvelope(
+                organization_id="org-other",
+                asset_id="asset-a",
+                provider="aws",
+                credentials={"AWS_ACCESS_KEY_ID": "key", "AWS_SECRET_ACCESS_KEY": "secret"},
+                expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            ),
+        )
+
+    assert findings == []
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

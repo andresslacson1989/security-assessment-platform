@@ -944,6 +944,18 @@ class ScanTelemetryReport(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
 
 
+class CloudCredentialEnvelope(BaseModel):
+    """Worker-only, tenant-bound credentials for an authorized cloud run."""
+
+    model_config = {"extra": "forbid"}
+
+    organization_id: str
+    asset_id: str
+    provider: str
+    credentials: Dict[str, str] = Field(..., repr=False)
+    expires_at: datetime
+
+
 class ScanJob(BaseModel):
     """
     Complete state representation of a scan job.
@@ -955,7 +967,7 @@ class ScanJob(BaseModel):
     asset_id: Optional[str] = Field(default=None)
     # Worker-side credential material is never accepted in public request
     # models and is excluded from persistence/serialization.
-    cloud_credentials: Optional[Dict[str, str]] = Field(default=None, exclude=True, repr=False)
+    cloud_credentials: Optional["CloudCredentialEnvelope"] = Field(default=None, exclude=True, repr=False)
     # Optional worker-side observations support the observation-only native
     # cloud fallback; public scan requests cannot populate this field.
     cloud_posture_observations: Optional[Dict[str, Any]] = Field(default=None, exclude=True, repr=False)

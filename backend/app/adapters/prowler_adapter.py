@@ -14,7 +14,8 @@ from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
     Target, Finding, Evidence, ScanConfig, LogLevel, Severity,
-    calculate_fingerprint, CISBenchmarkResult, NormalizedExecutionState
+    calculate_fingerprint, CISBenchmarkResult, NormalizedExecutionState,
+    CloudCredentialEnvelope, utc_now,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 
@@ -115,7 +116,22 @@ class ProwlerAdapter(BaseToolAdapter):
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: explicit active cloud-audit authorization is required.")
                 return findings
 
-            credentials = kwargs.get("cloud_credentials")
+            envelope = kwargs.get("cloud_credentials")
+            if not isinstance(envelope, CloudCredentialEnvelope):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: a typed tenant-scoped credential envelope is required.")
+                return findings
+            if (
+                envelope.organization_id != validated_target.organization_id
+                or envelope.asset_id != validated_target.asset_id
+                or envelope.provider != validated_target.authorization_context.get("cloud_provider")
+                or envelope.expires_at.tzinfo is None
+                or envelope.expires_at <= utc_now()
+            ):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: credential envelope scope or expiry is invalid.")
+                return findings
+            credentials = envelope.credentials
             allowed_credentials = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
             if not isinstance(credentials, dict) or not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}.issubset(credentials):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
