@@ -202,8 +202,10 @@ External tool subprocesses must be executed and governed exclusively through the
 ### 4.8 Subfinder (`SubfinderAdapter`)
 - **Tool Binary:** `subfinder`
 - **Domain:** Passive Multi-Source Subdomain Enumeration
-- **Execution Command:** `subfinder -d <target_domain> -silent -json`
-- **Output Parsing:** Line-delimited JSON extracting subdomains and executing active A/AAAA/CNAME DNS resolution.
+- **Execution Command:** `subfinder -d <authorized_root> -s crtsh -silent -json -timeout 10 -max-time 1`
+- **Provider Boundary:** The governed baseline forces the public `crtsh` provider, excludes provider credentials and client-supplied provider selections, and does not claim all process egress is restricted to that provider without a separate egress control.
+- **Output Parsing:** Line-delimited JSON extracting normalized subdomain observations and source attribution. No active A/AAAA/CNAME DNS resolution is performed by Subfinder; every discovery remains `UNRESOLVED` until a separate authorized stage.
+- **Authorization Boundary:** A discovery is an untrusted candidate observation and does not create an inventory asset, `ValidatedTarget`, or active assessment authorization.
 - **Native Fallback:** Native Certificate Transparency log auditor.
 
 ### 4.9 Httpx (`HttpxAdapter`)
