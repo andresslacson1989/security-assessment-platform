@@ -26,6 +26,9 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Mapping, Optional
 
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+
 
 PACKAGE_TRUST_SCHEMA_VERSION = 1
 PACKAGE_TRUST_RECORD_SUFFIX = ".trust.json"
@@ -40,7 +43,7 @@ PACKAGE_TRUST_CLAIMS = frozenset(
 _BOOTSTRAP_DISTRIBUTIONS = frozenset({"pip", "setuptools", "wheel"})
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _REQUIREMENT_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)")
-_HASH_PATTERN = re.compile(r"^--hash=sha256:([0-9a-fA-F]{64})$")
+_HASH_PATTERN = re.compile(r"^--hash=sha256:([0-9a-fA-F]{64})\s*(?:\\)?$")
 
 
 class PackageTrustError(ValueError):
@@ -143,6 +146,7 @@ def parse_locked_requirements(lock_path: Path) -> Dict[str, Dict[str, Any]]:
 
     requirements: Dict[str, Dict[str, Any]] = {}
     current: Optional[Dict[str, Any]] = None
+    ignored_requirement_hashes = False
     try:
         lines = lock_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
@@ -152,9 +156,18 @@ def parse_locked_requirements(lock_path: Path) -> Dict[str, Dict[str, Any]]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        match = _REQUIREMENT_PATTERN.match(line)
+        requirement_text = line[:-1].rstrip() if line.endswith("\\") else line
+        match = _REQUIREMENT_PATTERN.match(requirement_text)
         if match:
             canonical = canonical_package_name(match.group(1))
+            try:
+                parsed_requirement = Requirement(requirement_text)
+            except (TypeError, ValueError) as exc:
+                raise PackageTrustError("unsupported or malformed hash-locked requirement line") from exc
+            if parsed_requirement.marker is not None and not parsed_requirement.marker.evaluate(default_environment()):
+                current = None
+                ignored_requirement_hashes = True
+                continue
             if canonical in requirements:
                 raise PackageTrustError("duplicate package in hash-locked requirements")
             current = {
@@ -162,11 +175,14 @@ def parse_locked_requirements(lock_path: Path) -> Dict[str, Dict[str, Any]]:
                 "version": match.group(2),
                 "hashes": [],
             }
+            ignored_requirement_hashes = False
             requirements[canonical] = current
             continue
         hash_match = _HASH_PATTERN.match(line)
         if hash_match and current is not None:
             current["hashes"].append(hash_match.group(1).lower())
+            continue
+        if hash_match and ignored_requirement_hashes:
             continue
         raise PackageTrustError("unsupported or malformed hash-locked requirement line")
 
@@ -231,6 +247,34 @@ def _find_distributions(venv_dir: Path) -> Dict[str, metadata.Distribution]:
     return found
 
 
+def _shared_record_digest_index(
+    distributions: Mapping[str, metadata.Distribution],
+    venv_dir: Path,
+) -> Dict[str, frozenset[bytes]]:
+    """Collect approved digests for files shared by multiple distributions."""
+    digests: Dict[str, set[bytes]] = {}
+    for distribution in distributions.values():
+        record_path = _distribution_record_path(distribution)
+        try:
+            rows = list(csv.reader(io.StringIO(record_path.read_text(encoding="utf-8"), newline="")))
+        except (OSError, UnicodeError, csv.Error) as exc:
+            raise PackageTrustError("managed distribution RECORD is malformed") from exc
+        for row in rows:
+            if len(row) != 3 or not row[1] or not row[1].startswith("sha256="):
+                continue
+            relative = PurePosixPath(row[0].replace("\\", "/"))
+            if relative.is_absolute() or not relative.parts:
+                continue
+            candidate = Path(distribution.locate_file(relative))
+            resolved_candidate = Path(os.path.realpath(str(candidate)))
+            if not _is_under(venv_dir, resolved_candidate) or not _is_non_symlink_file(candidate):
+                continue
+            digest = _decode_record_digest(row[1].split("=", 1)[1])
+            key = os.path.normcase(str(Path(os.path.abspath(str(candidate)))))
+            digests.setdefault(key, set()).add(digest)
+    return {key: frozenset(values) for key, values in digests.items()}
+
+
 def _distribution_record_path(distribution: metadata.Distribution) -> Path:
     files = distribution.files or []
     record_candidates = [
@@ -261,6 +305,7 @@ def _verify_distribution_record(
     distribution: metadata.Distribution,
     venv_dir: Path,
     expected_record_sha256: Optional[str] = None,
+    shared_digest_index: Optional[Mapping[str, frozenset[bytes]]] = None,
 ) -> str:
     """Verify every hashed file named by a distribution's RECORD."""
     record_path = _distribution_record_path(distribution)
@@ -283,13 +328,13 @@ def _verify_distribution_record(
     if not rows:
         raise PackageTrustError("managed distribution RECORD is empty")
 
-    blank_digest_rows = 0
+    record_blank_digest_rows = 0
     for row in rows:
         if len(row) != 3:
             raise PackageTrustError("managed distribution RECORD has an invalid row")
         relative_text, digest_text, _size = row
         relative = PurePosixPath(relative_text.replace("\\", "/"))
-        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        if relative.is_absolute() or not relative.parts:
             raise PackageTrustError("managed distribution RECORD contains an unsafe path")
         candidate = Path(distribution.locate_file(relative))
         absolute_candidate = Path(os.path.abspath(str(candidate)))
@@ -298,17 +343,26 @@ def _verify_distribution_record(
             raise PackageTrustError("managed distribution RECORD references an unsafe file")
 
         if not digest_text:
-            blank_digest_rows += 1
             if relative.name != "RECORD":
-                raise PackageTrustError("managed distribution RECORD omits a file digest")
+                if relative.suffix != ".pyc" or "__pycache__" not in relative.parts:
+                    raise PackageTrustError("managed distribution RECORD omits a file digest")
+            else:
+                record_blank_digest_rows += 1
             continue
         if not digest_text.startswith("sha256="):
             raise PackageTrustError("managed distribution RECORD uses an unsupported digest algorithm")
         expected_digest = _decode_record_digest(digest_text.split("=", 1)[1])
-        if hashlib.sha256(absolute_candidate.read_bytes()).digest() != expected_digest:
-            raise PackageTrustError("managed distribution file integrity verification failed")
+        actual_digest = hashlib.sha256(absolute_candidate.read_bytes()).digest()
+        accepted_shared_digests = (shared_digest_index or {}).get(
+            os.path.normcase(str(absolute_candidate)),
+            frozenset(),
+        )
+        if actual_digest != expected_digest and actual_digest not in accepted_shared_digests:
+            raise PackageTrustError(
+                f"managed distribution file integrity verification failed: {distribution.metadata.get('Name', 'unknown')}:{relative_text}"
+            )
 
-    if blank_digest_rows != 1:
+    if record_blank_digest_rows != 1:
         raise PackageTrustError("managed distribution RECORD must have exactly one unhashed RECORD entry")
     return record_sha256
 
@@ -356,12 +410,19 @@ def _distribution_inventory(
 ) -> Dict[str, Dict[str, Any]]:
     distributions = _find_distributions(venv_dir)
     locked_names = set(requirements)
+    managed_locked_names = locked_names - _BOOTSTRAP_DISTRIBUTIONS
     extras = set(distributions) - locked_names - _BOOTSTRAP_DISTRIBUTIONS
     if extras:
         raise PackageTrustError("managed package environment contains an unapproved distribution")
 
+    locked_distributions = {
+        canonical: distribution
+        for canonical, distribution in distributions.items()
+        if canonical in managed_locked_names
+    }
+    shared_digest_index = _shared_record_digest_index(locked_distributions, venv_dir)
     inventory: Dict[str, Dict[str, Any]] = {}
-    for canonical in sorted(locked_names):
+    for canonical in sorted(managed_locked_names):
         distribution = distributions.get(canonical)
         if distribution is None:
             raise PackageTrustError("a hash-locked package is not installed")
@@ -370,7 +431,12 @@ def _distribution_inventory(
             raise PackageTrustError("installed package version differs from its lock file")
         expected = (expected_records or {}).get(canonical)
         expected_record_hash = expected.get("record_sha256") if expected else None
-        record_sha256 = _verify_distribution_record(distribution, venv_dir, expected_record_hash)
+        record_sha256 = _verify_distribution_record(
+            distribution,
+            venv_dir,
+            expected_record_hash,
+            shared_digest_index,
+        )
         inventory[canonical] = {
             "name": canonical,
             "version": str(distribution.version),

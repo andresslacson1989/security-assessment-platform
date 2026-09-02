@@ -187,6 +187,7 @@ class PipToolInstaller(BaseToolInstaller):
             binary_dir / f"{self._cfg['binary_name']}.exe",
             binary_dir / self._cfg["binary_name"],
         )
+        binary_path: Optional[Path] = next((candidate for candidate in binary_candidates if candidate.is_file()), None)
 
         # A reinstall invalidates the previous assertion before any package
         # files are changed.  A failed or interrupted install therefore
@@ -204,7 +205,7 @@ class PipToolInstaller(BaseToolInstaller):
         if not venv_python.is_file() or force:
             await emit_progress(20, f"Creating isolated environment for {pkg}...")
             create_ret, _, create_err = await process_supervisor.execute(
-                [sys.executable, "-m", "venv", str(venv_dir)],
+                [sys.executable, "-m", "venv", "--copies", str(venv_dir)],
                 timeout=120.0,
                 max_output_bytes=10 * 1024 * 1024,
             )
@@ -213,7 +214,7 @@ class PipToolInstaller(BaseToolInstaller):
                 await emit_progress(100, f"Environment creation failed for {pkg}")
                 return False
 
-        cmd = [str(venv_python), "-m", "pip", "install", "--require-hashes", "-r", str(lock_path)]
+        cmd = [str(venv_python), "-m", "pip", "install", "--no-compile", "--require-hashes", "-r", str(lock_path)]
         if force:
             cmd.insert(5, "--force-reinstall")
 
@@ -267,10 +268,11 @@ class PipToolInstaller(BaseToolInstaller):
                 await emit_log(f"Package '{pkg}' installed successfully at the pinned version.")
                 return True
 
-            try:
-                invalidate_package_trust_record(str(binary_path))
-            except (OSError, PackageTrustError) as exc:
-                logger.warning("Failed to invalidate package trust after pip failure: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
+            for candidate in binary_candidates:
+                try:
+                    invalidate_package_trust_record(str(candidate))
+                except (OSError, PackageTrustError) as exc:
+                    logger.warning("Failed to invalidate package trust after pip failure: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
             await emit_progress(100, f"Pip installation failed with exit code {ret}")
             await emit_log(f"Pip installation failed with exit code {ret}.")
             return False

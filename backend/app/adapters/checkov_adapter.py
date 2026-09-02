@@ -42,7 +42,10 @@ class CheckovAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "-v"], timeout=5.0, pre_launch_check=pre_launch_check)
+        # Checkov is a Python CLI and may spend several seconds importing its
+        # policy/check framework before it emits the version. Keep the probe
+        # bounded, but allow the managed runtime enough startup time.
+        returncode, stdout, stderr = await self.execute_command([path, "-v"], timeout=30.0, pre_launch_check=pre_launch_check)
         output = stdout.strip() or stderr.strip()
         if output:
             match = re.search(r"(\d+\.\d+(\.\d+)?)", output)

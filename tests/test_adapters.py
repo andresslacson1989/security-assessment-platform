@@ -947,9 +947,14 @@ class TestCheckovAdapter:
     async def test_get_version(self):
         adapter = CheckovAdapter()
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/checkov"):
-            with patch.object(adapter, "execute_command", return_value=(0, "3.2.50\n", "")):
+            with patch.object(adapter, "execute_command", return_value=(0, "3.2.50\n", "")) as execute_command:
                 ver = await adapter.get_version()
                 assert "3.2.50" in ver
+                execute_command.assert_awaited_once_with(
+                    ["/usr/bin/checkov", "-v"],
+                    timeout=30.0,
+                    pre_launch_check=None,
+                )
 
     @pytest.mark.asyncio
     async def test_run_checkov_json_findings(self):

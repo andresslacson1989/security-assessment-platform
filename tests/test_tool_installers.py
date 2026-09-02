@@ -322,6 +322,7 @@ async def test_pip_tool_installer_success(monkeypatch, tmp_path):
             assert progress_records[-1][0] == 100
     assert execute_mock.await_args.kwargs["timeout"] == 600.0
     assert execute_mock.await_args.kwargs["max_output_bytes"] == 10 * 1024 * 1024
+    assert any("--no-compile" in call.args[0] for call in execute_mock.await_args_list)
 
 
 @pytest.mark.asyncio

@@ -210,11 +210,15 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 
 # Install each contract-pinned Python tool into its own hash-locked venv.
 COPY backend/tool-requirements /app/backend/tool-requirements
+COPY backend/app /app/backend/app
 ENV CYBERASSESS_TOOL_VENV_DIR=/opt/cyberassess/tool-venvs
 RUN mkdir -p "$CYBERASSESS_TOOL_VENV_DIR" && \
     for tool in sslyze bandit semgrep checkov prowler schemathesis; do \
-        python -m venv "$CYBERASSESS_TOOL_VENV_DIR/$tool" && \
-        "$CYBERASSESS_TOOL_VENV_DIR/$tool/bin/python" -m pip install --no-cache-dir --require-hashes --timeout 1000 --retries 10 -r "/app/backend/tool-requirements/$tool.lock" || exit 1; \
+        python -m venv --copies "$CYBERASSESS_TOOL_VENV_DIR/$tool" && \
+        "$CYBERASSESS_TOOL_VENV_DIR/$tool/bin/python" -m pip install --no-cache-dir --no-compile --require-hashes --timeout 1000 --retries 10 -r "/app/backend/tool-requirements/$tool.lock" || exit 1; \
+    done && \
+    for tool in sslyze bandit semgrep checkov prowler schemathesis; do \
+        PYTHONPATH=/app/backend python -c "from app.installers.pip_installer import PIP_TOOL_CONFIGS; from app.core.package_trust import build_package_trust_record, write_package_trust_record, get_tool_venv_dir; t='$tool'; c=PIP_TOOL_CONFIGS[t]; b=str(get_tool_venv_dir(t) / 'bin' / c['binary_name']); write_package_trust_record(build_package_trust_record(tool_name=t, package_name=c['package_name'], binary_name=c['binary_name'], binary=b, installer_version='14.3.0'), b)" || { echo "package trust generation failed for $tool"; exit 1; }; \
     done
 # Keep the platform interpreter first. Adapters resolve each managed Python
 # tool from CYBERASSESS_TOOL_VENV_DIR, so tool environments never shadow the
@@ -262,7 +266,7 @@ COPY run_worker.py /app/
 # provisioned above; the application never needs container-root privileges.
 RUN groupadd --system cyberassess && \
     useradd --system --gid cyberassess --home-dir /nonexistent --shell /usr/sbin/nologin cyberassess && \
-    chown -R cyberassess:cyberassess /app/data /app/backend /app/frontend /app/run_platform.py /app/run_worker.py
+    chown -R cyberassess:cyberassess /app/data /app/backend /app/frontend /opt/cyberassess/tool-venvs /app/run_platform.py /app/run_worker.py
 USER cyberassess
 
 # Expose Web SOC HUD port
