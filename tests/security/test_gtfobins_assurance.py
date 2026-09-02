@@ -82,3 +82,24 @@ async def test_gtfobins_adapter_requires_authoritative_tenant_context():
     assert findings == []
     assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
     assert any("organization context" in message for _, message in logs)
+
+
+@pytest.mark.asyncio
+async def test_gtfobins_missing_observations_cannot_report_clean_assessment():
+    adapter = GTFOBinsAdapter()
+    logs = []
+
+    async def emit_log(level: LogLevel, message: str):
+        logs.append((level, message))
+
+    findings = await adapter.run(
+        Target(name="Local", type=TargetType.LOCAL_PATH, value="C:\\workspace"),
+        ScanConfig(),
+        emit_log,
+        lambda _finding: None,
+        organization_id="org-test",
+    )
+
+    assert findings == []
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    assert any("coverage is degraded" in message for _, message in logs)

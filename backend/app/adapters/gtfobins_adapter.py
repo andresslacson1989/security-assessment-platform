@@ -163,8 +163,11 @@ class GTFOBinsAdapter(BaseToolAdapter):
             return []
         audit_input = kwargs.get("host_audit_input")
         if not isinstance(audit_input, dict):
-            self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
-            await emit_log(LogLevel.INFO, "No host privilege metadata was supplied; GTFOBins evaluation produced no findings.")
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(
+                LogLevel.WARNING,
+                "GTFOBins evaluation blocked: authoritative host privilege observations were not supplied; coverage is degraded.",
+            )
             return []
         organization_id = kwargs.get("organization_id")
         if not isinstance(organization_id, str) or not organization_id.strip():
