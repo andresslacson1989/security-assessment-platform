@@ -1510,7 +1510,7 @@ async def test_scenario_19_batch_tool_installer_and_sse_streaming():
 
 def test_scenario_20_containerization_dockerfile_and_compose_validation():
     """
-    Scenario 20: Production Containerization, Health Probes & Managed Tool Pre-installation Parity (Contract 05 v7.0.0 & Contract 08 Section 10)
+    Scenario 20: Production Containerization, Health Probes & Managed Tool Pre-installation Parity (Contract 05 §1, Contract 01 §4.2 & Contract 03 §§2–3)
     - Verifies Dockerfile contains multi-stage build, managed tool runtimes, CPAN Perl modules, and healthcheck.
     - Verifies docker-compose.yml configuration with persistent data volume and port 8000.
     - Verifies .dockerignore excludes and GitHub Actions multi-arch workflow.
