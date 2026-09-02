@@ -84,15 +84,15 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### 3. Subfinder (Passive Subdomain Enumeration)
 - **Security Domain**: Perimeter / EASM
 - **Purpose**: Discovers valid subdomains passively through the governed public `crtsh` provider baseline without active probing. Additional credentialed providers remain disabled.
-- **Enterprise Maturity**: Repository controls and managed-runtime evidence verified for the approved Subfinder path; provider egress governance and explicit inventory admission remain broader pending capabilities.
+- **Enterprise Maturity**: Repository controls and managed-runtime evidence verified for the approved Subfinder path; provider egress governance remains a broader pending capability.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/subfinder).
 - **Version Pinning & Integrity**: Pinned in `PINNED_TOOL_MANIFEST` with exact SHA-256 binary digests.
-- **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, no credential injection, and no automatic DNS probing or inventory admission. Broader provider egress policy/credential injection remains unimplemented.
+- **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, no credential injection, and no automatic DNS probing or inventory admission. Explicit admission is separately tenant-scoped at `/api/assets/admit-discovery`; broader provider egress policy/credential injection remains unimplemented.
 - **Output Format & Parser**: Line-by-line JSON output (`-json -silent`).
 - **Finding Normalization**: Emits discovery observations and `NET-OSINT-001` informational findings; out-of-scope and malformed records are rejected with warnings and are not emitted as candidates.
 - **Role Strategy**: **PRIMARY**. Complemented by an independent native `crt.sh` enrichment path. Discovery is not authorization and does not itself create an active scan target.
 - **Runtime Evidence**: On 2026-09-01, the production adapter executed the approved managed `backend/bin/subfinder.exe`, verified its managed trust record and SHA-256 binding, confirmed `subfinder v2.6.5`, and completed a governed `example.com` run with normalized state `COMPLETED_NO_FINDINGS`.
-- **Architectural Limitation**: Explicit inventory admission and active-target authorization are broader product capabilities and are not implemented by this adapter.
+- **Architectural Boundary**: The adapter emits untrusted observations only. Explicit inventory admission is separately tenant-scoped at `/api/assets/admit-discovery`, and active-target authorization remains a distinct administrator-controlled asset decision.
 
 ### 4. httpx (High-Speed Multi-Purpose HTTP Prober)
 - **Security Domain**: HTTP Probing & Discovery
