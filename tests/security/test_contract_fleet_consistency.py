@@ -72,6 +72,14 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "complete 26-tool fleet" in contract_09
     assert "one assurance entry for each supported tool" in assurance_matrix
     assert "numbered external-tool reviews" not in assurance_matrix
+    matrix_tool_ids = set(re.findall(r"\| `(TOOL-[A-Z0-9_-]+)` \|", assurance_matrix))
+    assert len(matrix_tool_ids) == 26
+    expected_matrix_ids = {
+        f"TOOL-{tool.upper().replace('_', '-')}" for tool in EXPECTED_TOOLS
+    }
+    expected_matrix_ids.discard("TOOL-RETIRE")
+    expected_matrix_ids.add("TOOL-RETIREJS")
+    assert matrix_tool_ids == expected_matrix_ids
     assert "Part II defines all 26 supported tools" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09
     traceability_rows = [line for line in contract_09.splitlines() if line.startswith("| `TOOL-")]
