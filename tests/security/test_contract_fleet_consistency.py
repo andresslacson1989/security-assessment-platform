@@ -117,6 +117,8 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert 'TARGETARCH" != "amd64"' in dockerfile
     assert "does not claim upstream release-binary provenance" in contract_09.lower()
     assert "no active a/aaaa/cname dns resolution" in contract_03.lower()
+    assert 'correlates active IP DNS resolutions' not in contract_03
+    assert 'dns_status="UNRESOLVED"' in contract_03
     assert "-s crtsh" in contract_03
     assert "npm install -g retire" not in dockerfile
     assert "CYBERASSESS_NPM_PREFIX_DIR=/app/backend/.tool-npm" in dockerfile

@@ -160,9 +160,9 @@ External tool subprocesses must be executed and governed exclusively through the
   amass enum -passive -d <target_domain> -json <output_file> -timeout 30
   ```
 - **Output Parsing:** Streaming line-delimited JSON parsing of `<output_file>`:
-  - Extracts `name` (FQDN), `domain`, `addresses[].ip`, `addresses[].cidr`, `sources`.
-  - Enriches `DiscoveredSubdomain` records and correlates active IP DNS resolutions with `source_tool="amass"`.
-- **Native Fallback:** Native `crt.sh` + `certspotter` CT log scrapers and asynchronous DNS A/AAAA resolvers.
+  - Extracts the reported `name` (FQDN), `domain`, and `sources` fields.
+  - Enriches untrusted `DiscoveredSubdomain` observations with `dns_status="UNRESOLVED"`; reported address data is not promoted to resolved or authorized target state.
+- **Native Fallback:** Independent passive CT enrichment. Any later DNS resolution is a separate authorized stage and is not represented as Amass execution or fallback coverage.
 
 ### 4.4 THC-Hydra (`HydraAdapter`)
 - **Tool Binary:** `hydra`
