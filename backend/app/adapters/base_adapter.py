@@ -13,6 +13,7 @@ from typing import Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
+from app.core.process_supervisor import ProcessExecutionStatus
 
 
 class BaseToolAdapter(ABC):
@@ -39,7 +40,7 @@ class BaseToolAdapter(ABC):
             return
         elif "timed out" in (stderr or "").lower():
             self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
-        elif returncode == 126 and "security check" in (stderr or "").lower():
+        elif (stderr or "").startswith("PROCESS_LAUNCH_REJECTED_SECURITY"):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
         elif returncode != 0 and not stdout.strip():
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
@@ -184,7 +185,7 @@ class BaseToolAdapter(ABC):
         if not cmd:
             return -1, "", "Empty command provided"
 
-        code, stdout, stderr = await self.safe_execute_subprocess(
+        result = await self.safe_execute_subprocess(
             cmd=cmd,
             timeout=timeout,
             cwd=cwd,
@@ -192,6 +193,9 @@ class BaseToolAdapter(ABC):
             max_output_bytes=max_output_bytes,
             pre_launch_check=pre_launch_check,
         )
+        code, stdout, stderr = result
+        if getattr(result, "execution_status", None) == ProcessExecutionStatus.SECURITY_REJECTED:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
 
         if code != 0 and emit_log:
             if "timed out" in stderr.lower():

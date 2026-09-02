@@ -22,7 +22,7 @@ import shutil
 import string
 import subprocess
 import sys
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Optional, List
 
 logger = logging.getLogger("cyberassess.binary_resolver")
 
@@ -231,7 +231,7 @@ async def safe_execute_subprocess(
     env: Optional[dict] = None,
     max_output_bytes: int = 10 * 1024 * 1024,
     pre_launch_check: Optional[Callable[[], bool]] = None,
-) -> Tuple[int, str, str]:
+) -> "ProcessExecutionResult":
     """
     Loop-agnostic safe subprocess execution helper.
     Delegates to central ProcessSupervisor to track subprocesses and guarantee
@@ -240,8 +240,8 @@ async def safe_execute_subprocess(
     if not cmd:
         return -1, "", "Empty command provided"
 
-    from app.core.process_supervisor import process_supervisor
-    code, stdout, stderr = await process_supervisor.execute(
+    from app.core.process_supervisor import ProcessExecutionResult, process_supervisor
+    result = await process_supervisor.execute(
         cmd=cmd,
         timeout=timeout,
         cwd=cwd,
@@ -249,7 +249,9 @@ async def safe_execute_subprocess(
         max_output_bytes=max_output_bytes,
         pre_launch_check=pre_launch_check,
     )
+    code, stdout, stderr = result
     if "<3>WSL" in stderr:
         cleaned_lines = [line for line in stderr.splitlines() if not line.startswith("<3>WSL")]
         stderr = "\n".join(cleaned_lines)
-    return code, stdout, stderr
+        return ProcessExecutionResult(code, stdout, stderr)
+    return result

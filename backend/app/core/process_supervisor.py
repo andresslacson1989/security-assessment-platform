@@ -12,9 +12,46 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from enum import Enum
+from typing import Callable, NamedTuple, Optional, Set
 
 logger = logging.getLogger("cyberassess.process_supervisor")
+
+
+class ProcessExecutionStatus(str, Enum):
+    """Typed outcome for a supervised subprocess invocation."""
+
+    COMPLETED = "COMPLETED"
+    SECURITY_REJECTED = "SECURITY_REJECTED"
+    TIMED_OUT = "TIMED_OUT"
+    OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"
+    NOT_FOUND = "NOT_FOUND"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    FAILED = "FAILED"
+
+
+class ProcessExecutionResult(NamedTuple):
+    """Three-value-compatible process result with a typed execution status."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+    @property
+    def execution_status(self) -> ProcessExecutionStatus:
+        if self.stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY"):
+            return ProcessExecutionStatus.SECURITY_REJECTED
+        if self.stderr.startswith("Output exceeded maximum"):
+            return ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED
+        if self.stderr.startswith("Execution timed out"):
+            return ProcessExecutionStatus.TIMED_OUT
+        if self.returncode == 127 and self.stderr.startswith("Executable not found"):
+            return ProcessExecutionStatus.NOT_FOUND
+        if self.returncode == 126 and self.stderr.startswith("Permission denied"):
+            return ProcessExecutionStatus.PERMISSION_DENIED
+        if self.returncode == 0:
+            return ProcessExecutionStatus.COMPLETED
+        return ProcessExecutionStatus.FAILED
 
 
 class ProcessSupervisor:
@@ -82,7 +119,7 @@ class ProcessSupervisor:
         env: Optional[Dict[str, str]] = None,
         max_output_bytes: int = 10 * 1024 * 1024,
         pre_launch_check: Optional[Callable[[], bool]] = None,
-    ) -> Tuple[int, str, str]:
+    ) -> ProcessExecutionResult:
         """
         Executes a subprocess with execution tracking, timeout enforcement,
         and guaranteed process tree cleanup on cancellation or timeout.
@@ -159,11 +196,15 @@ class ProcessSupervisor:
                 stderr = f"Execution timed out after {timeout} seconds" + (f"\n{stderr}" if stderr else "")
             return stdout, stderr, limit_reached.is_set() or timed_out
 
-        def _run_sync() -> Tuple["int", "str", "str"]:
+        def _run_sync() -> ProcessExecutionResult:
             proc = None
             try:
                 if pre_launch_check is not None and not pre_launch_check():
-                    return 126, "", "Process launch rejected by pre-launch security check"
+                    return ProcessExecutionResult(
+                        126,
+                        "",
+                        "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
+                    )
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -177,18 +218,18 @@ class ProcessSupervisor:
 
                 stdout, stderr, bounded_failure = _bounded_communicate(proc)
                 if "Output exceeded maximum" in stderr:
-                    return -1, stdout, stderr
+                    return ProcessExecutionResult(-1, stdout, stderr)
                 if bounded_failure and "Execution timed out" in stderr:
-                    return -1, stdout, stderr
-                return proc.returncode, stdout, stderr
+                    return ProcessExecutionResult(-1, stdout, stderr)
+                return ProcessExecutionResult(proc.returncode, stdout, stderr)
             except FileNotFoundError as e:
-                return 127, "", f"Executable not found: {e}"
+                return ProcessExecutionResult(127, "", f"Executable not found: {e}")
             except PermissionError as e:
-                return 126, "", f"Permission denied: {e}"
+                return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
-                return -1, "", str(e)
+                return ProcessExecutionResult(-1, "", str(e))
             finally:
                 if proc and proc.pid:
                     self._unregister_pid(proc.pid)

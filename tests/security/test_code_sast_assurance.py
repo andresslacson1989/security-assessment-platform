@@ -10,7 +10,7 @@ from app.adapters.semgrep_adapter import SemgrepAdapter
 from app.adapters.trufflehog_adapter import TruffleHogAdapter
 from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType
 from app.core.path_sandbox import PathSandboxViolation, resolve_authorized_workspace
-from app.core.process_supervisor import ProcessSupervisor
+from app.core.process_supervisor import ProcessExecutionStatus, ProcessSupervisor
 from app.engines.code_sast.ast_taint_analyzer import audit_ast_taint_flow
 from app.engines.code_sast.engine import CodeSastAssessmentEngine
 
@@ -144,6 +144,28 @@ async def test_e13_process_supervisor_enforces_combined_output_limit():
     assert returncode == -1
     assert len(stdout.encode("utf-8")) <= 4096
     assert "Output exceeded maximum" in stderr
+
+
+@pytest.mark.asyncio
+async def test_e13_process_supervisor_exposes_typed_security_rejection():
+    supervisor = ProcessSupervisor()
+    result = await supervisor.execute(
+        [sys.executable, "-c", "raise SystemExit(0)"],
+        timeout=5,
+        pre_launch_check=lambda: False,
+    )
+    returncode, stdout, stderr = result
+    assert (returncode, stdout) == (126, "")
+    assert result.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
+    assert stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY")
+
+    from app.core.binary_resolver import safe_execute_subprocess
+    wrapped = await safe_execute_subprocess(
+        [sys.executable, "-c", "raise SystemExit(0)"],
+        timeout=5,
+        pre_launch_check=lambda: False,
+    )
+    assert wrapped.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
 
 
 @pytest.mark.asyncio
