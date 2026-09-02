@@ -60,13 +60,13 @@ class ToolInstallationManager:
             "trufflehog": GithubReleaseInstaller("trufflehog"),
             "dockle": GithubReleaseInstaller("dockle"),
             "kube-bench": GithubReleaseInstaller("kube-bench"),
+            "amass": GithubReleaseInstaller("amass"),
 
-            # Approved verified source-build and package-manager tools
+            # Approved verified source-build, direct-artifact, and package-manager tools
             "nmap": SourceBuildInstaller("nmap"),
             "retire": NpmToolInstaller("retire"),
             "metasploit": SystemToolHelper("metasploit"),
             "sqlmap": SystemToolHelper("sqlmap"),
-            "amass": SystemToolHelper("amass"),
             "hydra": SystemToolHelper("hydra"),
             "gtfobins": SystemToolHelper("gtfobins"),
         }

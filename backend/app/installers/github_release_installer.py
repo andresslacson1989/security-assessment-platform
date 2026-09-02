@@ -152,6 +152,15 @@ GITHUB_TOOL_CONFIGS: Dict[str, dict] = {
         "download_url": "https://github.com/aquasecurity/kube-bench/releases",
         "version_cmd": ["version"],
     },
+    "amass": {
+        "display_name": "OWASP Amass Passive Attack Surface Enumerator",
+        "category": "Network EASM",
+        "repo": "owasp-amass/amass",
+        "binary_name": "amass",
+        "command_hint": "Install through the managed CyberAssess installer.",
+        "download_url": "https://github.com/owasp-amass/amass/releases",
+        "version_cmd": ["-version"],
+    },
 }
 
 

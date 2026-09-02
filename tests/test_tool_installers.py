@@ -119,6 +119,7 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["kube-bench"].install_method == ToolInstallMethod.STANDALONE_BINARY
 
     assert tool_map["nmap"].install_method == ToolInstallMethod.STANDALONE_BINARY
+    assert tool_map["amass"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
 
 
@@ -265,7 +266,8 @@ def test_manifest_covers_every_registered_tool_without_assuring_manual_tools():
     manager_names = set(ToolInstallationManager()._installers)
     assert manager_names == set(PINNED_TOOL_MANIFEST)
     status = audit_tool_manifest(sorted(manager_names))
-    assert {"metasploit", "sqlmap", "amass", "hydra", "gtfobins"}.issubset(status["incomplete"])
+    assert {"metasploit", "sqlmap", "hydra", "gtfobins"}.issubset(status["incomplete"])
+    assert "amass" in status["assured"]
 
 
 def test_manifest_audit_rejects_malformed_digest_metadata():

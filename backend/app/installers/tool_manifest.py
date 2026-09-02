@@ -127,10 +127,9 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
             "go_linux_arm64": "go1.21.13.linux-arm64.tar.gz",
         },
     },
-    # These tools are supported as diagnostic/manual or native-engine
-    # integrations, but their contracts do not define immutable release
-    # identities. Keep them explicit in the registry and fail closed rather
-    # than treating an unpinned host installation as assured.
+    # Auxiliary tools without an approved immutable artifact remain explicit
+    # in the registry and fail closed rather than treating host installations
+    # as enterprise-assured.
     "metasploit": {
         "tool_name": "metasploit",
         "version": "UNPINNED_MANUAL",
@@ -155,14 +154,27 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
     },
     "amass": {
         "tool_name": "amass",
-        "version": "UNPINNED_MANUAL",
-        "release_tag": "MANUAL",
+        "version": "5.1.1",
+        "release_tag": "v5.1.1",
         "repo": "owasp-amass/amass",
         "category": "Network Perimeter",
-        "trust_mode": "MANUAL_MODE",
-        "sha256_checksums": {},
-        "asset_names": {},
-        "integrity_note": "Diagnostic-only manual installation; no immutable artifact identity is authorized.",
+        "trust_mode": "DIRECT_ARTIFACT_MODE",
+        "pinned_version": "v5.1.1",
+        "sha256_checksums": {
+            "linux_amd64": "5e22b5f0239e7eb79439d60d43d3cd20dca2478588bc2242e91ab0c4f8fa40dd",
+            "linux_arm64": "d05aace46ca5216f91226ffd23eeb4ce8ad2aa2548efe3a2bd59e81e6b0765b5",
+            "windows_amd64": "734aee6ce014c246e21f682bd49a42739e8c5feae32f6ec8a13fa2b8dc547b9f",
+            "darwin_amd64": "a27afa05b41f3245627047796a52d2d3ffac8597b4c640406c81e1759b84a572",
+            "darwin_arm64": "80d4790fde96647638111bb4d984098f36e08f4323a0823df0e939570a0a256f",
+        },
+        "asset_names": {
+            "linux_amd64": "amass_linux_amd64.tar.gz",
+            "linux_arm64": "amass_linux_arm64.tar.gz",
+            "windows_amd64": "amass_windows_amd64.tar.gz",
+            "darwin_amd64": "amass_darwin_amd64.tar.gz",
+            "darwin_arm64": "amass_darwin_arm64.tar.gz",
+        },
+        "integrity_note": "Official Amass v5.1.1 release archives are pinned by platform and verified before managed promotion.",
     },
     "hydra": {
         "tool_name": "hydra",

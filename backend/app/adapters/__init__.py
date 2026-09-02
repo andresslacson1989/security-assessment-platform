@@ -181,7 +181,7 @@ async def discover_system_capabilities(
         "gtfobins": ToolInstallMethod.MANUAL,
         "metasploit": ToolInstallMethod.MANUAL,
         "sqlmap": ToolInstallMethod.MANUAL,
-        "amass": ToolInstallMethod.MANUAL,
+        "amass": ToolInstallMethod.STANDALONE_BINARY,
         "hydra": ToolInstallMethod.MANUAL,
     }
 

@@ -40,7 +40,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 
 | Security Domain | Tool Name | Tool ID | Tool Role | Operating Mode |
 |---|---|---|---|---|
-| **Perimeter / EASM** | Amass | `TOOL-AMASS` | AUXILIARY | `MANUAL_MODE` |
+| **Perimeter / EASM** | Amass | `TOOL-AMASS` | AUXILIARY | `DIRECT_ARTIFACT_MODE` |
 | **Exploitation / Auxiliary Verification** | Metasploit | `TOOL-METASPLOIT` | AUXILIARY | `MANUAL_MODE` |
 | **Web DAST** | sqlmap | `TOOL-SQLMAP` | AUXILIARY | `MANUAL_MODE` |
 | **Authentication / Password Resilience** | Hydra | `TOOL-HYDRA` | AUXILIARY | `MANUAL_MODE` |

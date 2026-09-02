@@ -152,6 +152,8 @@ External tool subprocesses must be executed and governed exclusively through the
 ### 4.3 OWASP Amass (`AmassAdapter`)
 - **Tool Binary:** `amass`
 - **Domain:** External Attack Surface Management & Subdomain Enumeration
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `DIRECT_ARTIFACT_MODE` using the pinned official v5.1.1 platform release archive; host/PATH installations remain diagnostic-only.
+- **Version Verification:** `amass -version` MUST report exact version `5.1.1` before execution.
 - **Version Probing:** `amass -version` -> Regex `v?([0-9\.]+)`
 - **Execution Command:**
   ```bash
