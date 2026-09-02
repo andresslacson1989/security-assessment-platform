@@ -177,3 +177,27 @@ def test_standalone_trust_requires_manifest_bound_archive_and_exact_identity(tmp
     record["artifact_sha256"] = "0" * 64
     (managed_dir / f"{binary.name}.trust.json").write_text(json.dumps(record), encoding="utf-8")
     assert binary_trust.verify_managed_binary_artifact("nuclei", str(binary), expected_version="3.2.0") is False
+
+
+def test_direct_artifact_record_binds_managed_executable_to_manifest(tmp_path, monkeypatch):
+    import app.core.binary_trust as binary_trust
+
+    managed_dir = tmp_path / "managed-bin"
+    managed_dir.mkdir()
+    binary = managed_dir / "nuclei"
+    binary.write_bytes(b"verified direct release executable")
+    if os.name != "nt":
+        binary.chmod(0o755)
+    monkeypatch.setattr(binary_trust, "get_managed_bin_dir", lambda: managed_dir)
+
+    binary_trust.write_direct_artifact_trust_record(
+        "nuclei", str(binary), installer_version="14.3.0"
+    )
+    assert binary_trust.verify_managed_binary_artifact(
+        "nuclei", str(binary), expected_version="3.2.0"
+    ) is True
+
+    binary.write_bytes(b"tampered direct release executable")
+    assert binary_trust.verify_managed_binary_artifact(
+        "nuclei", str(binary), expected_version="3.2.0"
+    ) is False

@@ -82,7 +82,7 @@ __all__ = [
 
 def get_adapter_registry() -> Dict[str, BaseToolAdapter]:
     """
-    Returns an initialized registry of all 22 registered tool/native adapters.
+    Returns an initialized registry of all 26 registered tool/native adapters.
     """
     return {
         "nmap": NmapAdapter(),

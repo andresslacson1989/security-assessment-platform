@@ -74,6 +74,13 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
     assert "all 26 available modern adapters" in models
     assert "/ 26 Tools Active" in frontend_index
+    assert "all 26 registered tool/native adapters" in (repository_root / "backend" / "app" / "adapters" / "__init__.py").read_text()
+    for tool in (
+        "nuclei", "ffuf", "gitleaks", "katana", "syft", "grype",
+        "osv-scanner", "trufflehog", "dockle", "kube-bench",
+    ):
+        assert f"COPY --from=builder /tmp/bin/{tool} /app/backend/bin/{tool}" in dockerfile
+    assert "write_direct_artifact_trust_record" in dockerfile
     matrix_ids = set(re.findall(r"`(TOOL-[A-Z0-9-]+)`", assurance_matrix))
     assert len(matrix_ids) == 26
     expected_matrix_names = {

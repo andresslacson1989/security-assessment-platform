@@ -227,9 +227,9 @@ ENV PATH="$PATH:/opt/cyberassess/tool-venvs/sslyze/bin:/opt/cyberassess/tool-ven
 
 # Copy pre-compiled standalone Go binaries AFTER pip so pip packages cannot overwrite CLI tools (e.g. ProjectDiscovery httpx)
 RUN mkdir -p /app/backend/bin
-COPY --from=builder /tmp/bin/nuclei /usr/local/bin/nuclei
-COPY --from=builder /tmp/bin/ffuf /usr/local/bin/ffuf
-COPY --from=builder /tmp/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=builder /tmp/bin/nuclei /app/backend/bin/nuclei
+COPY --from=builder /tmp/bin/ffuf /app/backend/bin/ffuf
+COPY --from=builder /tmp/bin/gitleaks /app/backend/bin/gitleaks
 # Trivy v0.50.0 has no currently downloadable official binary artifact;
 # installation is intentionally blocked by the runtime manifest until one is
 # available, so no unverified replacement is copied into the image.
@@ -239,13 +239,13 @@ COPY --from=builder /tmp/bin/httpx /app/backend/bin/httpx
 COPY --from=builder /tmp/bin/httpx.trust.json /app/backend/bin/httpx.trust.json
 COPY --from=builder /tmp/bin/trivy /app/backend/bin/trivy
 COPY --from=builder /tmp/bin/trivy.trust.json /app/backend/bin/trivy.trust.json
-COPY --from=builder /tmp/bin/katana /usr/local/bin/katana
-COPY --from=builder /tmp/bin/syft /usr/local/bin/syft
-COPY --from=builder /tmp/bin/grype /usr/local/bin/grype
-COPY --from=builder /tmp/bin/osv-scanner /usr/local/bin/osv-scanner
-COPY --from=builder /tmp/bin/trufflehog /usr/local/bin/trufflehog
-COPY --from=builder /tmp/bin/dockle /usr/local/bin/dockle
-COPY --from=builder /tmp/bin/kube-bench /usr/local/bin/kube-bench
+COPY --from=builder /tmp/bin/katana /app/backend/bin/katana
+COPY --from=builder /tmp/bin/syft /app/backend/bin/syft
+COPY --from=builder /tmp/bin/grype /app/backend/bin/grype
+COPY --from=builder /tmp/bin/osv-scanner /app/backend/bin/osv-scanner
+COPY --from=builder /tmp/bin/trufflehog /app/backend/bin/trufflehog
+COPY --from=builder /tmp/bin/dockle /app/backend/bin/dockle
+COPY --from=builder /tmp/bin/kube-bench /app/backend/bin/kube-bench
 COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /usr/local/bin/nmap
 COPY --from=builder /tmp/nmap-root/usr/local/share/nmap /usr/local/share/nmap
 
@@ -260,6 +260,12 @@ COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY run_platform.py /app/
 COPY run_worker.py /app/
+
+# Bind every direct-release executable to its manifest artifact and executable
+# digest after the builder has already verified the downloaded archive. These
+# records are required by the runtime managed-binary gate immediately before
+# each subprocess launch.
+RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_direct_artifact_trust_record; [write_direct_artifact_trust_record(tool, '/app/backend/bin/' + tool, installer_version='14.3.0') for tool in ('nuclei', 'ffuf', 'gitleaks', 'katana', 'syft', 'grype', 'osv-scanner', 'trufflehog', 'dockle', 'kube-bench')]"
 
 # Run the control plane as an unprivileged service account. Tool execution,
 # scan workspaces, and runtime data remain writable only where explicitly
