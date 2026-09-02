@@ -25,6 +25,7 @@ from app.core.models import (
     LogLevel,
     Finding,
     Evidence,
+    RejectedDiscovery,
     calculate_fingerprint,
 )
 from app.core.auth import create_access_token
@@ -284,6 +285,14 @@ async def test_sse_streaming_endpoint(auth_headers):
         profile=ScanProfile.FULL_STACK,
         status=ScanStatus.COMPLETED,
         progress_percent=100,
+        rejected_discoveries=[RejectedDiscovery(
+            domain="outside.example.net",
+            reason="OUT_OF_SCOPE",
+            sources=["crtsh"],
+            authorized_root="example.com",
+            assessment_id="sse-rejected-evidence",
+            organization_id="org-default",
+        )],
     )
     job.summary = calculate_scan_grade([], duration_seconds=1.0)
     save_scan(job)
@@ -303,6 +312,7 @@ async def test_sse_streaming_endpoint(auth_headers):
             
             assert len(lines) >= 2
             assert any("event: completed" in l or "event: connected" in l for l in lines)
+            assert any("event: discovery_rejected" in l for l in lines)
 
 
 @pytest.mark.asyncio

@@ -560,6 +560,8 @@ async def stream_scan_events(
                 yield f"event: log\ndata: {log.model_dump_json()}\n\n"
             for finding in job.findings:
                 yield f"event: finding\ndata: {finding.model_dump_json()}\n\n"
+            for rejection in job.rejected_discoveries:
+                yield f"event: discovery_rejected\ndata: {rejection.model_dump_json()}\n\n"
             if job.status == ScanStatus.COMPLETED:
                 yield f"event: completed\ndata: {job.summary.model_dump_json() if job.summary else '{}'}\n\n"
             elif job.status == ScanStatus.FAILED:
@@ -582,6 +584,8 @@ async def stream_scan_events(
                 yield f"event: crawl_discovered\ndata: {ep.model_dump_json()}\n\n"
             for sub in list(job.discovered_subdomains):
                 yield f"event: subdomain_discovered\ndata: {sub.model_dump_json()}\n\n"
+            for rejection in list(job.rejected_discoveries):
+                yield f"event: discovery_rejected\ndata: {rejection.model_dump_json()}\n\n"
 
             while True:
                 msg = await queue.get()
