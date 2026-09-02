@@ -1752,7 +1752,7 @@ async def test_scenario_22_software_supply_chain_and_sbom_export(tmp_path):
 
         assert any(f.source_tool == "syft" for f in findings)
         assert any(f.source_tool == "grype" for f in findings)
-        assert any(f.source_tool == "osv_scanner" for f in findings)
+        assert any(f.source_tool == "osv-scanner" for f in findings)
         assert len(recorded_sbom) == 1
 
         # Test SBOM Exporters
@@ -1882,7 +1882,7 @@ async def test_scenario_24_cloud_container_and_k8s_cis_benchmarks(tmp_path):
         )
 
         assert any(f.source_tool == "dockle" for f in findings)
-        assert any(f.source_tool == "kube_bench" for f in findings)
+        assert any(f.source_tool == "kube-bench" for f in findings)
         assert any(f.source_tool == "prowler" for f in findings)
         assert len(recorded_cis) == 3
 

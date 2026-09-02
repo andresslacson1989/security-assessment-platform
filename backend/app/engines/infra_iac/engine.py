@@ -202,7 +202,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                     for f in kb_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
-                            f.source_tool = "kube_bench"
+                            f.source_tool = "kube-bench"
                             f.scan_id = "active"
                             findings.append(f)
                 else:

@@ -74,7 +74,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         except PathSandboxViolation as exc:
             await emit_log(LogLevel.ERROR, f"Code SAST execution blocked by workspace policy: {exc}")
             if tool_state_cb:
-                for tool_name in ("semgrep", "bandit", "gitleaks", "trufflehog", "retirejs"):
+                for tool_name in ("semgrep", "bandit", "gitleaks", "trufflehog", "retire"):
                     await tool_state_cb(tool_name, NormalizedExecutionState.EXECUTION_BLOCKED.value)
             return findings
 
@@ -259,22 +259,22 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         scan_id="active",
                         require_managed_binary=require_managed_binary,
                     )
-                    await report_tool_state("retirejs", retire_adapter, len(retire_findings))
+                    await report_tool_state("retire", retire_adapter, len(retire_findings))
                     for f in retire_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
-                            f.source_tool = "retirejs"
+                            f.source_tool = "retire"
                             f.scan_id = "active"
                             findings.append(f)
                 else:
-                    failed_primary_tools.add("retirejs")
+                    failed_primary_tools.add("retire")
                     if tool_state_cb:
-                        await tool_state_cb("retirejs", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                        await tool_state_cb("retire", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "Retire.js CLI not available")
             except Exception as e:
-                failed_primary_tools.add("retirejs")
+                failed_primary_tools.add("retire")
                 if tool_state_cb:
-                    await tool_state_cb("retirejs", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await tool_state_cb("retire", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"Retire.js adapter error: {e}")
 
         # 0.6 Syft Adapter (Software Bill of Materials Generation)
@@ -359,22 +359,22 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         scan_id="active",
                         require_managed_binary=require_managed_binary,
                     )
-                    await report_tool_state("osv_scanner", osv_adapter, len(osv_findings))
+                    await report_tool_state("osv-scanner", osv_adapter, len(osv_findings))
                     for f in osv_findings:
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
-                            f.source_tool = "osv_scanner"
+                            f.source_tool = "osv-scanner"
                             f.scan_id = "active"
                             findings.append(f)
                 else:
-                    failed_primary_tools.add("osv_scanner")
+                    failed_primary_tools.add("osv-scanner")
                     if tool_state_cb:
-                        await tool_state_cb("osv_scanner", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                        await tool_state_cb("osv-scanner", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                     await emit_log(LogLevel.INFO, "OSV-Scanner CLI not available")
             except Exception as e:
-                failed_primary_tools.add("osv_scanner")
+                failed_primary_tools.add("osv-scanner")
                 if tool_state_cb:
-                    await tool_state_cb("osv_scanner", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
+                    await tool_state_cb("osv-scanner", NormalizedExecutionState.TOOL_EXECUTION_FAILED.value)
                 await emit_log(LogLevel.WARNING, f"OSV-Scanner adapter error: {e}")
 
         # 0.9 Trivy Adapter (SCA Dependency Vulnerabilities)
@@ -464,7 +464,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         # --- Stage 3: Native Dependency SCA Fallback ---
         await emit_progress(80, "Auditing dependency manifests (requirements.txt, package.json) for CVEs...")
         dep_findings = await audit_dependencies(repo_path, emit_log=emit_log)
-        mark_fallback(dep_findings, ("trivy", "grype", "osv_scanner"))
+        mark_fallback(dep_findings, ("trivy", "grype", "osv-scanner"))
         for f in dep_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)

@@ -31,6 +31,18 @@ from app.adapters import discover_system_capabilities, get_adapter_registry
 
 logger = logging.getLogger("cyberassess.orchestrator")
 
+_TOOL_ID_ALIASES = {
+    "retirejs": "retire",
+    "osv_scanner": "osv-scanner",
+    "kube_bench": "kube-bench",
+}
+_ENGINE_TOOL_IDS = {
+    "code_sast": {"gitleaks", "trufflehog", "bandit", "semgrep", "retire", "syft", "grype", "osv-scanner", "trivy"},
+    "infra_iac": {"checkov", "trivy", "dockle", "kube-bench", "prowler"},
+    "network": {"sslyze", "nmap", "metasploit", "subfinder", "amass", "httpx"},
+    "web_dast": {"ffuf", "nuclei", "katana", "schemathesis", "sqlmap"},
+}
+
 
 class ScanOrchestrator:
     """
@@ -334,6 +346,13 @@ class ScanOrchestrator:
         state: str,
         engine: Optional[str] = None,
     ) -> None:
+        canonical_tool_name = _TOOL_ID_ALIASES.get(tool_name, tool_name)
+        allowed_tools = _ENGINE_TOOL_IDS.get(engine) if engine else None
+        if allowed_tools is not None and canonical_tool_name not in allowed_tools:
+            raise ValueError(
+                f"Tool identity {tool_name!r} is not authorized for engine {engine!r}"
+            )
+        tool_name = canonical_tool_name
         job = self._active_jobs.get(scan_id)
         try:
             state = self._normalize_tool_state(state)

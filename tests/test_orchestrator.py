@@ -295,6 +295,21 @@ async def test_invalid_version_degrades_coverage():
     assert "subfinder: INVALID_VERSION" in job.summary.coverage.coverage_limitations
 
 
+@pytest.mark.asyncio
+async def test_tool_execution_identity_is_canonical_and_engine_bound():
+    orch = ScanOrchestrator()
+    job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
+    orch._active_jobs[job.id] = job
+
+    await orch.emit_tool_execution_state(job.id, "osv_scanner", "TOOL_EXECUTION_FAILED", engine="code_sast")
+
+    assert job.tool_execution_states["osv-scanner"] == "TOOL_EXECUTION_FAILED"
+    assert "osv_scanner" not in job.tool_execution_states
+
+    with pytest.raises(ValueError, match="not authorized"):
+        await orch.emit_tool_execution_state(job.id, "sqlmap", "TOOL_EXECUTION_FAILED", engine="network")
+
+
 def test_degraded_network_evidence_survives_authoritative_persistence():
     job = ScanJob(
         target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),

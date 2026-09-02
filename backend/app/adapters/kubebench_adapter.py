@@ -118,7 +118,7 @@ class KubeBenchAdapter(BaseToolAdapter):
                             finding = Finding(
                                 scan_id=scan_id,
                                 engine="infra_iac",
-                                source_tool="kube_bench",
+                                source_tool=self.tool_name,
                                 check_id="K8S-CIS-001",
                                 category="Cluster Compliance",
                                 title=f"CIS Kubernetes Benchmark [{test_number}]: {test_desc}",

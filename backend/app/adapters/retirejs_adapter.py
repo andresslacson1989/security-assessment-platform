@@ -127,7 +127,7 @@ class RetireJSAdapter(BaseToolAdapter):
                         finding = Finding(
                             scan_id=scan_id,
                             engine="code_sast",
-                            source_tool="retirejs",
+                            source_tool=self.tool_name,
                             check_id="SCA-JS-001",
                             category="Vulnerable JS Library",
                             title=f"Vulnerable JavaScript Library: {component} v{version} ({cve_str})",

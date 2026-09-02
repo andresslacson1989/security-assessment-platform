@@ -103,7 +103,7 @@ class OSVScannerAdapter(BaseToolAdapter):
                         finding = Finding(
                             scan_id=scan_id,
                             engine="code_sast",
-                            source_tool="osv_scanner",
+                            source_tool=self.tool_name,
                             check_id="SCA-OSV-001",
                             category="Supply Chain Security",
                             title=f"Google OSV Advisory: {vuln_id} in {pkg_name}@{pkg_ver}",

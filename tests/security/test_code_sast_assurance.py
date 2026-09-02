@@ -61,7 +61,7 @@ async def test_e13_engine_blocks_unauthorized_workspace_and_publishes_state(tmp_
     )
 
     assert findings == []
-    assert {tool for tool, _ in states} == {"semgrep", "bandit", "gitleaks", "trufflehog", "retirejs"}
+    assert {tool for tool, _ in states} == {"semgrep", "bandit", "gitleaks", "trufflehog", "retire"}
     assert all(state == NormalizedExecutionState.EXECUTION_BLOCKED.value for _, state in states)
 
 
