@@ -274,6 +274,7 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         async with httpx.AsyncClient(
             headers=headers,
             timeout=timeout,
+            trust_env=False,
             transport=ValidatedTargetTransport(_validated_target),
         ) as client:
             # --- Stage 1: Authentication & Session Initialization (15% - 25%) ---

@@ -247,7 +247,7 @@ class AuthSessionManager:
 
         if test_candidates:
             unauth_transport = self.transport_factory() if self.transport_factory else None
-            async with httpx.AsyncClient(timeout=8.0, transport=unauth_transport) as unauth_client:
+            async with httpx.AsyncClient(timeout=8.0, trust_env=False, transport=unauth_transport) as unauth_client:
                 for target_endpoint in test_candidates[:5]:  # Limit check to first 5 sensitive endpoints
                     try:
                         unauth_resp = await unauth_client.get(target_endpoint, follow_redirects=False)

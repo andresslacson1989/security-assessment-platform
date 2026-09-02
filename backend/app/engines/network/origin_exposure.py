@@ -129,7 +129,7 @@ async def fetch_ct_logs(
 
     # CT providers are fixed external dependencies.  Do not follow a provider
     # redirect into an ungoverned destination.
-    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True) as client:
+    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True, trust_env=False) as client:
         # 1. Primary Source: Certspotter API
         try:
             certspotter_url = (
@@ -235,7 +235,7 @@ async def safe_probe_exposed_ip(
             # Keep certificate verification enabled even when probing an IP.
             # A certificate mismatch should fail closed rather than turning the
             # HTTPS probe into an unauthenticated network request.
-            async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True) as client:
+            async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True, trust_env=False) as client:
                 resp = await client.head(url)
                 probe_details["status_code"] = str(resp.status_code)
                 probe_details["server"] = resp.headers.get("Server", "")
