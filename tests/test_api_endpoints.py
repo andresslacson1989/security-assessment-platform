@@ -403,10 +403,25 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
         assert len(data["logs"]) == 3
         assert len(data["discovered_endpoints"]) == 1
         assert len(data["discovered_subdomains"]) == 1
-        assert len(data["tools_executed"]) >= 3
+        # Host availability is not proof of execution. Only recorded tool
+        # states or findings belong in executed-tool telemetry.
+        assert {item["tool_name"] for item in data["tools_executed"]} == {"nuclei", "schemathesis"}
         schemathesis = next(item for item in data["tools_executed"] if item["tool_name"] == "schemathesis")
         assert schemathesis["status"] == "FAILED"
         assert schemathesis["normalized_state"] == "TOOL_EXECUTION_FAILED"
+        nuclei = next(item for item in data["tools_executed"] if item["tool_name"] == "nuclei")
+        assert nuclei["status"] == "FINDINGS"
+        assert nuclei["engine"] == "web_dast"
+
+        # A finding emitted before a later tool failure is partial evidence;
+        # it must not make the failed execution look successful.
+        job.tool_execution_states["nuclei"] = "TOOL_EXECUTION_FAILED"
+        save_scan(job)
+        degraded = await ac.get(f"/api/scans/{job.id}/telemetry", headers=auth_headers)
+        degraded_nuclei = next(
+            item for item in degraded.json()["tools_executed"] if item["tool_name"] == "nuclei"
+        )
+        assert degraded_nuclei["status"] == "FAILED"
 
         # 3. Filter by tool=nuclei
         res_tool = await ac.get(f"/api/scans/{job.id}/telemetry?tool=nuclei", headers=auth_headers)

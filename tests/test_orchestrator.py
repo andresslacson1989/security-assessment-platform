@@ -253,6 +253,7 @@ async def test_final_grading_preserves_subfinder_coverage_degradation():
     assert completed is not None
     assert completed.status == ScanStatus.COMPLETED
     assert completed.tool_execution_states["subfinder"] == "PARTIAL_RESULTS_WITH_WARNING"
+    assert completed.tool_execution_engines["subfinder"] == "mock_partial_tool"
     assert completed.summary.coverage.is_fully_assessed is False
     assert "subfinder: PARTIAL_RESULTS_WITH_WARNING" in completed.summary.coverage.coverage_limitations
 

@@ -321,7 +321,13 @@ class ScanOrchestrator:
             job.rejected_discoveries.append(rejection)
         await self._broadcast(scan_id, "discovery_rejected", rejection.model_dump(mode="json"))
 
-    async def emit_tool_execution_state(self, scan_id: str, tool_name: str, state: str) -> None:
+    async def emit_tool_execution_state(
+        self,
+        scan_id: str,
+        tool_name: str,
+        state: str,
+        engine: Optional[str] = None,
+    ) -> None:
         job = self._active_jobs.get(scan_id)
         try:
             state = self._normalize_tool_state(state)
@@ -334,6 +340,8 @@ class ScanOrchestrator:
                     job.summary.coverage.coverage_limitations.append(limitation)
         if job:
             job.tool_execution_states[tool_name] = state
+            if engine:
+                job.tool_execution_engines[tool_name] = engine
             if state in {"PARTIAL_RESULTS_WITH_WARNING", "TOOL_EXECUTION_FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED", "INVALID_VERSION"}:
                 job.summary.coverage.is_fully_assessed = False
                 limitation = f"{tool_name}: {state}"
@@ -501,7 +509,7 @@ class ScanOrchestrator:
                     await self.emit_rejected_discovery(scan_id, rejection)
 
                 async def _tool_state_cb(tool_name: str, state: str) -> None:
-                    await self.emit_tool_execution_state(scan_id, tool_name, state)
+                    await self.emit_tool_execution_state(scan_id, tool_name, state, engine=engine.name)
 
                 def _sbom_cb(sbom: SBOMReport) -> None:
                     if job:

@@ -309,8 +309,16 @@ async def get_scan_telemetry(
     # Build per-tool execution telemetry
     tool_telemetry_map: Dict[str, ToolExecutionTelemetry] = {}
     recorded_states = getattr(job, "tool_execution_states", {})
-    telemetry_tools = list(dict.fromkeys([*(job.active_adapters or []), *recorded_states.keys()]))
-    degraded_states = {
+    # Availability is not execution. `active_adapters` is populated during
+    # capability discovery and must never manufacture a successful telemetry
+    # record for a tool that the selected engine did not actually run.
+    telemetry_tools = list(dict.fromkeys([
+        *recorded_states.keys(),
+        *(f.source_tool or "native" for f in job.findings),
+    ]))
+    state_statuses = {
+        "COMPLETED_NO_FINDINGS": EngineExecutionStatus.PASS,
+        "COMPLETED_WITH_FINDINGS": EngineExecutionStatus.FINDINGS,
         "PARTIAL_RESULTS_WITH_WARNING": EngineExecutionStatus.PARTIAL,
         "TOOL_EXECUTION_FAILED": EngineExecutionStatus.FAILED,
         "BLOCKED": EngineExecutionStatus.BLOCKED,
@@ -320,13 +328,17 @@ async def get_scan_telemetry(
     }
     for t_name in telemetry_tools:
         normalized_state = recorded_states.get(t_name)
+        finding_engine = next(
+            (f.engine for f in job.findings if (f.source_tool or "native").lower() == t_name.lower()),
+            None,
+        )
         tool_telemetry_map[t_name] = ToolExecutionTelemetry(
             tool_name=t_name,
             correlation_id=job.correlation_id,
-            engine="adapter",
-            status=degraded_states.get(normalized_state, EngineExecutionStatus.PASS),
+            engine=getattr(job, "tool_execution_engines", {}).get(t_name) or finding_engine or "unknown",
+            status=state_statuses.get(normalized_state, EngineExecutionStatus.FAILED),
             duration_seconds=0.0,
-            command_executed=f"{t_name} --automated",
+            command_executed=None,
             findings_count=0,
             log_count=0,
             endpoints_tested=[],
@@ -348,7 +360,13 @@ async def get_scan_telemetry(
                 endpoints_tested=[],
             )
         tool_telemetry_map[src].findings_count += 1
-        tool_telemetry_map[src].status = EngineExecutionStatus.FINDINGS
+        # Findings do not erase a degraded execution state. A tool may emit
+        # partial output before failing, timing out, or being blocked.
+        if tool_telemetry_map[src].status in {
+            EngineExecutionStatus.PASS,
+            EngineExecutionStatus.FINDINGS,
+        } or recorded_states.get(src) is None:
+            tool_telemetry_map[src].status = EngineExecutionStatus.FINDINGS
         if f.evidence and f.evidence.location:
             if f.evidence.location not in tool_telemetry_map[src].endpoints_tested:
                 tool_telemetry_map[src].endpoints_tested.append(f.evidence.location)
