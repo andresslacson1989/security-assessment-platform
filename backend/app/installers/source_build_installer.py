@@ -231,7 +231,12 @@ class SourceBuildInstaller(BaseToolInstaller):
         if manifest.get("direct_release_artifact_available") is not False:
             await emit_log("Installation refused: source build is not permitted while a direct release artifact is available or its availability is unproven.")
             return False
-        platform_key = self._platform_key()
+        try:
+            platform_key = self._platform_key()
+        except (RuntimeError, OSError, ValueError) as exc:
+            await emit_log(f"Installation refused for {self.tool_name}: {exc}")
+            await emit_progress(100, f"Unsupported source-build platform for {self.tool_name}")
+            return False
         checksums = manifest.get("sha256_checksums", {})
         source_url = manifest.get("source_archive_url")
         source_sha = checksums.get("source_archive")

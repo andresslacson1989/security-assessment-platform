@@ -202,6 +202,23 @@ async def test_nmap_source_identity_is_checked_against_installer_policy():
             await installer._verify_source_identity(client, manifest)
 
 
+@pytest.mark.asyncio
+async def test_nmap_source_build_fails_closed_on_unsupported_platform(monkeypatch):
+    installer = SourceBuildInstaller("nmap")
+    monkeypatch.setattr(installer, "_platform_key", lambda: (_ for _ in ()).throw(RuntimeError("Linux only")))
+    logs = []
+    progress = []
+
+    result = await installer.install(
+        lambda message: logs.append(message) or asyncio.sleep(0),
+        lambda percent, stage: progress.append((percent, stage)) or asyncio.sleep(0),
+    )
+
+    assert result is False
+    assert progress[-1][0] == 100
+    assert any("Linux only" in message for message in logs)
+
+
 def test_github_release_installer_requires_exact_release_tag():
     installer = GithubReleaseInstaller("nuclei")
     assert installer._release_matches_pin({"tag_name": "v3.2.0"}, "v3.2.0") is True
