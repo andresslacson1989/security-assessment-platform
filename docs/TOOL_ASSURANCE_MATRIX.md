@@ -210,8 +210,8 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 
 ### E13 Section Evidence Status
 - **Repository status**: `REWORK IN PROGRESS` after independent review identified and corrected shared process-supervision, fallback-provenance, attribution, evidence-sanitization, and authoritative-persistence defects. Focused controls are covered by adversarial tests; final acceptance awaits the post-correction full regression.
-- **Managed runtime status**: `UNAVAILABLE` for all approved E13 runtimes in the current environment. Semgrep reports `1.175.0` (approved `1.65.0`), Bandit reports `1.9.4` (approved `1.7.8`), and Trivy reports `0.74.0` (approved `0.50.0`); Gitleaks is present but does not yield an approved managed runtime/trust record; TruffleHog, Retire.js, Grype, Syft, and OSV-Scanner are unavailable. No unmanaged runtime is treated as evidence.
-- **Regression evidence**: Post-correction focused assurance/orchestration tests completed with `85 passed, 2 skipped`; full repository regression completed with `287 passed, 3 skipped, 4 warnings`.
+- **Managed runtime status**: The fresh Linux production image verified the managed direct-binary runtimes and trust records for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Trivy, and the managed Retire.js package; all ran under the unprivileged `cyberassess` account. This evidence does not establish the approved managed Python runtimes for Semgrep or Bandit, and no unmanaged runtime is treated as evidence.
+- **Regression evidence**: Post-correction focused assurance/orchestration tests completed with `85 passed, 2 skipped`; the current full repository regression completed with `430 passed, 2 skipped, 4 warnings`.
 - **Coverage limitation**: Native fallbacks are explicitly limited compared with the external tools; failed, blocked, timed-out, cancelled, or parser-degraded tools must remain visible as degraded coverage.
 
 ### 14. Trivy (Container, Filesystem & IaC Vulnerability Scanner)
