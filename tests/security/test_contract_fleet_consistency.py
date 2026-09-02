@@ -85,6 +85,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "write_source_artifact_trust_record" in dockerfile
     assert "COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap" in dockerfile
     assert "nmap-7.95.tar.bz2" in dockerfile
+    assert "does not claim upstream release-binary provenance" in contract_09.lower()
     assert "npm install -g retire" not in dockerfile
     assert "CYBERASSESS_NPM_PREFIX_DIR=/app/backend/.tool-npm" in dockerfile
     assert "build_npm_trust_record" in dockerfile
