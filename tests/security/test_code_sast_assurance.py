@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import asyncio
+import subprocess
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -184,6 +185,7 @@ async def test_e13_process_supervisor_uses_isolated_unix_session_when_available(
         proc.returncode = 0
         await supervisor.execute(["tool"], timeout=1)
         assert popen.call_args.kwargs["start_new_session"] is True
+        assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
 
 @pytest.mark.asyncio
