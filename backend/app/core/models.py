@@ -300,11 +300,12 @@ OsintConfig = OSINTConfig
 class ToolAdapterConfig(BaseModel):
     """
     Configuration for hybrid external binary tool adapters across the complete 26-tool fleet:
-    - Network / EASM: Nmap, SSLyze, Subfinder, Httpx
-    - Web DAST: Nuclei, FFuF, Katana, Schemathesis
+    - Network / EASM: Nmap, SSLyze, Subfinder, Httpx, Amass, Metasploit
+    - Web DAST: Nuclei, FFuF, Katana, Schemathesis, sqlmap
     - SAST / Secrets: Semgrep, Gitleaks, Bandit, TruffleHog, RetireJS
     - SCA / Supply Chain: Trivy, Syft, Grype, OSV-Scanner
-    - Cloud / IaC / CIS: Checkov, Prowler, Kube-bench, Dockle
+    - Cloud / IaC / CIS: Checkov, Prowler, Kube-bench, Dockle, GTFOBins
+    - Authentication Resilience: Hydra (manual-only)
     """
     # Core 9 Adapters
     enable_nmap: bool = Field(default=True, description="Enable Nmap port and service scanner adapter")

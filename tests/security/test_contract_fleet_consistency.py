@@ -97,6 +97,11 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert {"TOOL-AMASS", "TOOL-METASPLOIT", "TOOL-SQLMAP", "TOOL-HYDRA", "TOOL-GTFOBINS"}.issubset(traceability_ids)
     assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
     assert "all 26 available modern adapters" in models
+    config_fields = set(re.findall(r"^    enable_([a-z0-9_]+):", models, re.MULTILINE))
+    expected_config_fields = {tool.replace("-", "_") for tool in EXPECTED_TOOLS}
+    expected_config_fields.discard("retire")
+    expected_config_fields.add("retirejs")
+    assert config_fields == expected_config_fields
     assert "FLEET (26):" in frontend_index
     frontend_tool_ids = set(re.findall(r'id="tool-pill-([a-z0-9-]+)"', frontend_index))
     assert frontend_tool_ids == EXPECTED_TOOLS
