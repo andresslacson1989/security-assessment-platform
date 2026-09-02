@@ -1403,8 +1403,8 @@ async def test_scenario_18_in_app_tool_installation_lifecycle(tmp_path, monkeypa
     mock_release_json = {
         "tag_name": "v3.2.0",
         "assets": [
-            {"name": "nuclei_3.2.0_windows_amd64.zip", "browser_download_url": "https://example.com/nuclei.zip"},
-            {"name": "nuclei_3.2.0_linux_amd64.zip", "browser_download_url": "https://example.com/nuclei_linux.zip"},
+            {"name": "nuclei_3.2.0_windows_amd64.zip", "browser_download_url": "https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_windows_amd64.zip"},
+            {"name": "nuclei_3.2.0_linux_amd64.zip", "browser_download_url": "https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip"},
         ],
     }
 

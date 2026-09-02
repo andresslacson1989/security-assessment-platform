@@ -7,6 +7,7 @@ import asyncio
 import io
 import json
 import os
+import platform
 import shutil
 import stat
 import tarfile
@@ -214,6 +215,39 @@ def test_manifest_audit_rejects_malformed_digest_metadata():
         "invalid": ["demo"],
         "unregistered": [],
     }
+
+
+def test_manifest_audit_requires_complete_direct_artifact_identity():
+    malformed = {
+        "demo": {
+            "tool_name": "demo",
+            "version": "1.0.0",
+            "release_tag": "v1.0.0",
+            "repo": "example/demo",
+            "category": "Test",
+            "sha256_checksums": {"linux_amd64": "a" * 64},
+            "asset_names": {"linux_amd64": "demo.tar.gz"},
+        }
+    }
+
+    assert audit_tool_manifest(["demo"], malformed)["invalid"] == ["demo"]
+
+
+def test_manifest_audit_requires_matching_digest_and_asset_keys():
+    malformed = {
+        "demo": {
+            "tool_name": "demo",
+            "version": "1.0.0",
+            "release_tag": "v1.0.0",
+            "repo": "example/demo",
+            "category": "Test",
+            "pinned_version": "v1.0.0",
+            "sha256_checksums": {"linux_amd64": "a" * 64},
+            "asset_names": {"linux_arm64": "demo.tar.gz"},
+        }
+    }
+
+    assert audit_tool_manifest(["demo"], malformed)["invalid"] == ["demo"]
 
 
 @pytest.mark.asyncio
@@ -499,6 +533,58 @@ async def test_github_release_installer_success():
                 assert progress_records[-1][0] == 100
                 # Verify file placed in fake_bin_dir
                 assert os.path.exists(os.path.join(fake_bin_dir, "nuclei.exe"))
+
+
+@pytest.mark.asyncio
+async def test_github_release_installer_direct_executable_success():
+    """Direct executable releases must use the same trust pipeline as archives."""
+    installer = GithubReleaseInstaller("osv-scanner")
+    logs = []
+    progress_records = []
+
+    async def log_cb(msg):
+        logs.append(msg)
+
+    async def prog_cb(pct, stage):
+        progress_records.append((pct, stage))
+
+    os_prefix = "windows" if os.name == "nt" else ("darwin" if platform.system().lower() == "darwin" else "linux")
+    architecture = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+    asset_name = PINNED_TOOL_MANIFEST["osv-scanner"]["asset_names"][f"{os_prefix}_{architecture}"]
+    download_url = f"https://github.com/google/osv-scanner/releases/download/v1.7.0/{asset_name}"
+    release = {
+        "tag_name": "v1.7.0",
+        "assets": [{"name": asset_name, "browser_download_url": download_url}],
+    }
+    artifact = b"verified direct executable bytes"
+
+    api_response = MagicMock(status_code=200)
+    api_response.json.return_value = release
+    stream_response = MagicMock(status_code=200, headers={"content-length": str(len(artifact))})
+
+    async def aiter_bytes(chunk_size=65536):
+        yield artifact
+
+    stream_response.aiter_bytes = aiter_bytes
+    stream_context = MagicMock()
+    stream_context.__aenter__ = AsyncMock(return_value=stream_response)
+    stream_context.__aexit__ = AsyncMock(return_value=None)
+    client = MagicMock()
+    client.get = AsyncMock(return_value=api_response)
+    client.stream = MagicMock(return_value=stream_context)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+
+    with tempfile.TemporaryDirectory() as fake_bin_dir, \
+         patch.object(installer, "get_bin_dir", return_value=fake_bin_dir), \
+         patch("httpx.AsyncClient", return_value=client), \
+         patch("app.installers.tool_manifest.verify_download_integrity", return_value=(True, "fake_hash", None)), \
+         patch.object(installer, "_probe_version", new=AsyncMock(return_value="osv-scanner v1.7.0")):
+        assert await installer.install(log_cb, prog_cb) is True
+        expected_binary = "osv-scanner.exe" if os.name == "nt" else "osv-scanner"
+        assert os.path.isfile(os.path.join(fake_bin_dir, expected_binary))
+        assert progress_records[-1][0] == 100
+    assert progress_records[-1][0] == 100
 
 
 @pytest.mark.asyncio

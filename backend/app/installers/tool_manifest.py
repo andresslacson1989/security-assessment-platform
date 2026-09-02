@@ -491,22 +491,61 @@ def audit_tool_manifest(
             result["unregistered"].append(tool_name)
             continue
 
+        trust_mode = str(entry.get("trust_mode", "DIRECT_ARTIFACT_MODE")).strip()
         required_identity = all(
             isinstance(entry.get(field), str) and entry[field].strip()
-            for field in ("tool_name", "version", "release_tag")
+            for field in ("tool_name", "version", "release_tag", "repo", "category")
         )
         checksums = entry.get("sha256_checksums")
         assets = entry.get("asset_names", {})
         structurally_valid = (
             required_identity
+            and entry.get("tool_name") == tool_name
+            and trust_mode in {
+                "DIRECT_ARTIFACT_MODE",
+                "SOURCE_BUILD_MODE",
+                "PACKAGE_MANAGER_MODE",
+                "MANUAL_MODE",
+                "NATIVE_ENGINE_MODE",
+            }
             and isinstance(checksums, dict)
             and isinstance(assets, dict)
+            and all(isinstance(name, str) and name.strip() for name in assets.values())
             and all(
                 isinstance(digest, str) and digest_pattern.fullmatch(digest)
                 for digest in checksums.values()
             )
-            and set(checksums).issubset(assets)
+            and set(checksums) == set(assets)
         )
+        if trust_mode == "DIRECT_ARTIFACT_MODE":
+            structurally_valid = structurally_valid and all(
+                isinstance(entry.get(field), str) and entry[field].strip()
+                for field in ("pinned_version",)
+            ) and bool(checksums)
+        elif trust_mode == "SOURCE_BUILD_MODE":
+            source_commit = str(entry.get("source_commit", "")).strip().lower()
+            structurally_valid = structurally_valid and (
+                entry.get("source_build") is True
+                and entry.get("direct_release_artifact_available") is False
+                and isinstance(entry.get("source_archive_url"), str)
+                and entry["source_archive_url"].startswith("https://")
+                and bool(re.fullmatch(r"[0-9a-f]{40}", source_commit))
+                and isinstance(entry.get("build_toolchain"), str)
+                and bool(entry["build_toolchain"].strip())
+                and "source_archive" in checksums
+                and "source_archive" in assets
+                and any(key.startswith("go_") for key in checksums)
+                and all(key in assets for key in checksums if key.startswith("go_"))
+            )
+        elif trust_mode in {"MANUAL_MODE", "NATIVE_ENGINE_MODE"}:
+            # These integrations are intentionally diagnostic/native only;
+            # any artifact digest must not accidentally elevate them to an
+            # assured installation mode.
+            structurally_valid = structurally_valid and not checksums and not assets
+        # A package-manager, manual, or native entry may be delegated when its
+        # artifact identity is intentionally unavailable; empty checksums are
+        # classified below as incomplete rather than trusted.
+
         if not structurally_valid:
             result["invalid"].append(tool_name)
         elif not checksums:

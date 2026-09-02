@@ -159,6 +159,8 @@ class GithubReleaseInstaller(BaseToolInstaller):
     extracts the binary to backend/bin/, and sets executable permissions.
     """
 
+    _MAX_RELEASE_BYTES = 512 * 1024 * 1024
+
     def __init__(self, tool_name: str):
         if tool_name not in GITHUB_TOOL_CONFIGS:
             raise ValueError(f"Unknown GithubReleaseInstaller target: {tool_name}")
@@ -344,15 +346,21 @@ class GithubReleaseInstaller(BaseToolInstaller):
         repo = self._cfg["repo"]
         bin_name = self._cfg["binary_name"]
         local_bin_dir = self.get_bin_dir()
+        os.makedirs(local_bin_dir, exist_ok=True)
 
         from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, verify_download_integrity
         manifest_entry = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
         pinned_tag = manifest_entry.get("pinned_version")
         checksums = manifest_entry.get("sha256_checksums", {})
-        if not pinned_tag or not checksums:
+        if (
+            manifest_entry.get("trust_mode", "DIRECT_ARTIFACT_MODE") != "DIRECT_ARTIFACT_MODE"
+            or manifest_entry.get("repo") != repo
+            or not pinned_tag
+            or not checksums
+        ):
             message = (
                 f"Installation refused for '{self.tool_name}': no authoritative release tag and platform digest "
-                "are registered in PINNED_TOOL_MANIFEST."
+                "are registered for an approved direct release artifact bound to this installer."
             )
             await emit_log(message)
             await emit_progress(100, message)
@@ -387,6 +395,15 @@ class GithubReleaseInstaller(BaseToolInstaller):
                     if matched:
                         download_url = matched.get("browser_download_url")
                         asset_filename = matched.get("name")
+                        expected_url_prefix = f"https://github.com/{repo}/releases/download/{pinned_tag}/"
+                        if (
+                            not isinstance(asset_filename, str)
+                            or not asset_filename
+                            or os.path.basename(asset_filename) != asset_filename
+                            or not isinstance(download_url, str)
+                            or not download_url.startswith(expected_url_prefix)
+                        ):
+                            raise SecurityError("GitHub release asset identity or URL is not bound to the pinned release.")
                         await emit_log(f"Found official release asset: {asset_filename}")
                 elif resp.status_code == 403:
                     await emit_log(f"Notice: GitHub API unauthenticated rate limit reached. Checking fallback release targets...")
@@ -409,11 +426,15 @@ class GithubReleaseInstaller(BaseToolInstaller):
                             raise RuntimeError(f"Download failed with HTTP {stream.status_code}")
                         
                         total_bytes = int(stream.headers.get("content-length", 0))
+                        if total_bytes > self._MAX_RELEASE_BYTES:
+                            raise SecurityError("Release artifact exceeds the installer size limit.")
                         downloaded = 0
                         with open(archive_path, "wb") as f:
                             async for chunk in stream.aiter_bytes(chunk_size=65536):
-                                f.write(chunk)
                                 downloaded += len(chunk)
+                                if downloaded > self._MAX_RELEASE_BYTES:
+                                    raise SecurityError("Release artifact exceeds the installer size limit.")
+                                f.write(chunk)
                                 if total_bytes > 0:
                                     pct = 30 + int((downloaded / total_bytes) * 35)
                                     await emit_progress(pct, f"Downloading: {downloaded // 1024} KB / {total_bytes // 1024} KB")
@@ -448,6 +469,8 @@ class GithubReleaseInstaller(BaseToolInstaller):
                 else:
                     # Some official releases (notably OSV-Scanner) publish
                     # the platform executable directly without an archive.
+                    host_system = platform.system().lower()
+                    os_name = "windows" if ("win" in host_system or sys.platform == "win32") else ("darwin" if "darwin" in host_system else "linux")
                     raw_name = f"{bin_name}.exe" if os_name == "windows" else bin_name
                     shutil.copy2(archive_path, os.path.join(extract_dir, raw_name))
 
