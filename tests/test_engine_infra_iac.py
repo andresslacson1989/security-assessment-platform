@@ -21,6 +21,20 @@ from app.adapters.checkov_adapter import CheckovAdapter
 from app.adapters.dockle_adapter import DockleAdapter
 from app.adapters.kubebench_adapter import KubeBenchAdapter
 from app.adapters.prowler_adapter import ProwlerAdapter
+from app.engines.infra_iac.cloud_posture import evaluate_cloud_posture_observations
+
+
+def test_native_cloud_posture_fallback_is_observation_only_and_marked_reduced_coverage():
+    findings = evaluate_cloud_posture_observations(
+        {"root_mfa_disabled": True, "public_storage_buckets": ["bucket-a"]},
+        scan_id="scan-cloud",
+        organization_id="org-cloud",
+    )
+
+    assert {finding.check_id for finding in findings} == {"CLOUD-MFA-001", "CLOUD-STORAGE-001"}
+    assert all(finding.source_tool == "native" for finding in findings)
+    assert all(finding.is_fallback and finding.primary_tool_failed == "prowler" for finding in findings)
+    assert evaluate_cloud_posture_observations({}, scan_id="scan-cloud", organization_id="org-cloud") == []
 
 
 def test_dockerfile_auditor_rules():
@@ -344,6 +358,49 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
     assert environments[-1] == credentials
     assert findings[-1].severity == Severity.CRITICAL
+
+
+@pytest.mark.asyncio
+async def test_cloud_posture_failure_uses_observation_only_native_fallback(monkeypatch):
+    engine = InfraIacAssessmentEngine()
+    target = Target(name="AWS account", type=TargetType.CLOUD_ACCOUNT, value="aws://123456789012")
+    config = ScanConfig()
+    config.adapters.enable_prowler = True
+    emitted = []
+    states = []
+
+    async def log_cb(*_args):
+        return None
+
+    async def progress_cb(*_args):
+        return None
+
+    async def finding_cb(finding):
+        emitted.append(finding)
+
+    async def state_cb(tool, state):
+        states.append((tool, state))
+
+    monkeypatch.setattr(ProwlerAdapter, "is_available", AsyncMock(return_value=False))
+    findings = await engine.run(
+        target,
+        config,
+        log_cb,
+        progress_cb,
+        finding_cb,
+        scan_id="scan-cloud",
+        organization_id="org-cloud",
+        asset_id="asset-cloud",
+        active_probing_granted=True,
+        emit_tool_execution_state=state_cb,
+        cloud_posture_observations={"root_mfa_disabled": True},
+    )
+
+    assert len(findings) == 1
+    assert emitted == findings
+    assert findings[0].source_tool == "native"
+    assert findings[0].is_fallback is True
+    assert states == [("prowler", "TOOL_EXECUTION_FAILED")]
 
 
 @pytest.mark.asyncio

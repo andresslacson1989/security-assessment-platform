@@ -12,6 +12,7 @@ from app.engines.infra_iac.dockerfile_auditor import audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_files
 from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_manifests
 from app.engines.infra_iac.terraform_auditor import audit_terraform_files
+from app.engines.infra_iac.cloud_posture import evaluate_cloud_posture_observations
 from app.adapters.checkov_adapter import CheckovAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
 from app.adapters.dockle_adapter import DockleAdapter
@@ -129,10 +130,26 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                 return findings
 
             prowler_adapter = ProwlerAdapter()
+            async def run_native_cloud_fallback() -> None:
+                fallback_findings = evaluate_cloud_posture_observations(
+                    kwargs.get("cloud_posture_observations"),
+                    scan_id=scan_id,
+                    organization_id=kwargs.get("organization_id", "org-default"),
+                )
+                for fallback in fallback_findings:
+                    await emit_finding(fallback)
+                    findings.append(fallback)
+                if not fallback_findings:
+                    await emit_log(
+                        LogLevel.WARNING,
+                        "Prowler coverage is degraded: no server-supplied native cloud posture observations were available.",
+                    )
+
             custom_path = getattr(config.adapters, "prowler_path", None) or getattr(config.adapters, "custom_prowler_path", None)
             try:
                 if not getattr(config.adapters, "enable_prowler", True) or not await prowler_adapter.is_available(custom_path):
                     await record_tool_failure("prowler")
+                    await run_native_cloud_fallback()
                     return findings
                 prowler_findings = await prowler_adapter.run(
                     target,
@@ -152,9 +169,12 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         finding.source_tool = "prowler"
                         finding.scan_id = scan_id
                         findings.append(finding)
+                if "prowler" in failed_primary_tools:
+                    await run_native_cloud_fallback()
             except Exception as exc:
                 await record_tool_failure("prowler")
                 await emit_log(LogLevel.WARNING, f"Prowler adapter error: {type(exc).__name__}")
+                await run_native_cloud_fallback()
             return findings
 
         # --- Stage 0: Primary External IaC & CIS Tool Adapters First-in-Line ---

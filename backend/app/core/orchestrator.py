@@ -661,6 +661,7 @@ class ScanOrchestrator:
                         run_kwargs["project_id"] = job.project_id
                         run_kwargs["asset_id"] = job.asset_id
                         run_kwargs["cloud_credentials"] = job.cloud_credentials
+                        run_kwargs["cloud_posture_observations"] = job.cloud_posture_observations
                         run_kwargs["active_probing_granted"] = job.active_probing_granted
                         run_kwargs["state_changing_granted"] = job.state_changing_granted
                         run_kwargs["live_secret_authorization"] = {

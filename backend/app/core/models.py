@@ -956,6 +956,9 @@ class ScanJob(BaseModel):
     # Worker-side credential material is never accepted in public request
     # models and is excluded from persistence/serialization.
     cloud_credentials: Optional[Dict[str, str]] = Field(default=None, exclude=True, repr=False)
+    # Optional worker-side observations support the observation-only native
+    # cloud fallback; public scan requests cannot populate this field.
+    cloud_posture_observations: Optional[Dict[str, Any]] = Field(default=None, exclude=True, repr=False)
     active_probing_granted: bool = Field(default=False, description="Explicit tenant asset authorization for intrusive probing")
     state_changing_granted: bool = Field(default=False, description="Explicit authorization for state-changing checks")
     live_secret_verification_granted: bool = Field(default=False, description="Explicit tenant authorization for live secret verification")
