@@ -88,6 +88,7 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                 NormalizedExecutionState.EXECUTION_TIMED_OUT,
                 NormalizedExecutionState.EXECUTION_CANCELLED,
                 NormalizedExecutionState.EXECUTION_BLOCKED,
+                NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING,
             }:
                 failed_primary_tools.add(tool_name)
             if adapter_state_cb:

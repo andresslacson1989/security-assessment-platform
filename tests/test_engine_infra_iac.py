@@ -404,6 +404,41 @@ async def test_cloud_posture_failure_uses_observation_only_native_fallback(monke
 
 
 @pytest.mark.asyncio
+async def test_cloud_posture_parser_degradation_activates_native_fallback(monkeypatch):
+    engine = InfraIacAssessmentEngine()
+    target = Target(name="AWS account", type=TargetType.CLOUD_ACCOUNT, value="aws://123456789012")
+    config = ScanConfig()
+    states = []
+
+    async def degraded_run(self, *args, **kwargs):
+        self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+        return []
+
+    async def state_cb(tool, state):
+        states.append((tool, state))
+
+    monkeypatch.setattr(ProwlerAdapter, "is_available", AsyncMock(return_value=True))
+    monkeypatch.setattr(ProwlerAdapter, "run", degraded_run)
+    findings = await engine.run(
+        target,
+        config,
+        AsyncMock(),
+        AsyncMock(),
+        AsyncMock(),
+        scan_id="scan-cloud",
+        organization_id="org-cloud",
+        asset_id="asset-cloud",
+        active_probing_granted=True,
+        emit_tool_execution_state=state_cb,
+        cloud_posture_observations={"unlogged_api_gateways": ["gateway-a"]},
+    )
+
+    assert len(findings) == 1
+    assert findings[0].primary_tool_failed == "prowler"
+    assert states == [("prowler", "PARTIAL_RESULTS_WITH_WARNING")]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("adapter_type", "binary_name", "version"),
     [
