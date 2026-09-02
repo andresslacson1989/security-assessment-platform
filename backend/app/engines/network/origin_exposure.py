@@ -24,6 +24,7 @@ from app.core.models import (
 )
 from app.core.version import APP_VERSION
 from app.engines.base import LogCallback, FindingCallback, SubdomainDiscoveredCallback
+from app.core.provider_egress import assert_provider_url
 
 logger = logging.getLogger("cyberassess.engines.origin_exposure")
 
@@ -136,6 +137,7 @@ async def fetch_ct_logs(
                 f"https://api.certspotter.com/v1/issuances?domain={apex_domain}"
                 "&include_subdomains=true&expand=dns_names&expand=issuer"
             )
+            assert_provider_url("certspotter", certspotter_url)
             resp = await client.get(certspotter_url, headers={"User-Agent": f"CyberAssess-CT/{APP_VERSION}"})
             if resp.status_code == 200:
                 data = resp.json()
@@ -164,6 +166,7 @@ async def fetch_ct_logs(
         # 2. Secondary Source: crt.sh API (Redundancy & Fallback)
         try:
             crtsh_url = f"https://crt.sh/?q=%25.{apex_domain}&output=json"
+            assert_provider_url("crtsh", crtsh_url)
             resp = await client.get(crtsh_url, headers={"User-Agent": f"CyberAssess-CT/{APP_VERSION}"})
             if resp.status_code == 200:
                 entries = resp.json()

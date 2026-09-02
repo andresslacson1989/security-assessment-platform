@@ -16,6 +16,21 @@ from app.engines.network.origin_exposure import (
     safe_probe_exposed_ip,
 )
 from app.engines.network.subdomain_recon import audit_subdomain_osint
+from app.core.provider_egress import ProviderEgressViolation, assert_provider_url
+
+
+def test_provider_egress_requires_exact_https_destination():
+    assert assert_provider_url("crtsh", "https://crt.sh/?q=%25.example.com&output=json").startswith("https://crt.sh/")
+    assert assert_provider_url("certspotter", "https://api.certspotter.com/v1/issuances?domain=example.com").startswith("https://api.certspotter.com/")
+
+    for url in (
+        "http://crt.sh/?q=example.com",
+        "https://attacker.example/?q=example.com",
+        "https://crt.sh:443/?q=example.com",
+        "https://user:pass@crt.sh/?q=example.com",
+    ):
+        with pytest.raises(ProviderEgressViolation):
+            assert_provider_url("crtsh", url)
 
 
 def test_is_cloudflare_ip_ipv4_and_ipv6():

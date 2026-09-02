@@ -24,6 +24,7 @@ from app.core.models import (
 )
 from app.core.version import APP_VERSION
 from app.engines.base import LogCallback, FindingCallback, SubdomainDiscoveredCallback
+from app.core.provider_egress import assert_provider_url
 
 logger = logging.getLogger("cyberassess.engines.subdomain_recon")
 
@@ -160,6 +161,7 @@ async def audit_subdomain_osint(
 
     try:
         url = f"https://crt.sh/?q=%25.{apex_domain}&output=json"
+        assert_provider_url("crtsh", url)
         # crt.sh is a fixed external dependency; provider redirects must not
         # expand the scan's external egress destinations.
         async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False, verify=True, trust_env=False) as client:
