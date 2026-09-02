@@ -16,6 +16,7 @@ from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 from app.adapters.subfinder_adapter import SubfinderAdapter
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.core.models import RejectedDiscovery
+from app.core.ssrf_protector import create_validated_target
 
 
 def test_normalization_and_scope_are_deterministic():
@@ -253,6 +254,39 @@ async def test_nonzero_exit_with_partial_stdout_is_degraded_not_success(monkeypa
     )
 
     assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
+
+@pytest.mark.asyncio
+async def test_managed_subfinder_rejects_organization_mismatch(monkeypatch):
+    adapter = SubfinderAdapter()
+    monkeypatch.setattr(adapter, "resolve_binary_path", lambda *_: "/bin/subfinder")
+    monkeypatch.setattr(adapter, "verify_managed_binary", lambda *_: True)
+    with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        validated = create_validated_target(
+            Target(name="root", type=TargetType.DOMAIN, value="example.com"),
+            organization_id="org-authoritative",
+        )
+    states = []
+
+    async def callback(*_args):
+        return None
+
+    async def capture_state(tool, state):
+        states.append((tool, state))
+
+    await adapter.run(
+        validated,
+        ScanConfig(),
+        callback,
+        callback,
+        validated_target=validated,
+        require_managed_binary=True,
+        organization_id="org-attacker",
+        emit_tool_execution_state=capture_state,
+    )
+
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    assert states == [("subfinder", "BLOCKED")]
 
 
 @pytest.mark.asyncio

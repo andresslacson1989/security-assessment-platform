@@ -161,6 +161,28 @@ class SubfinderAdapter(BaseToolAdapter):
                 await publish_state()
                 return findings
 
+        authoritative_organization_id = kwargs.get("organization_id")
+        validated_organization_id = getattr(validated_target, "organization_id", None)
+        if isinstance(validated_organization_id, str) and validated_organization_id.strip():
+            if (
+                isinstance(authoritative_organization_id, str)
+                and authoritative_organization_id.strip()
+                and authoritative_organization_id != validated_organization_id
+            ):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Subfinder execution blocked: organization context does not match ValidatedTarget.")
+                await publish_state()
+                return findings
+            authoritative_organization_id = validated_organization_id
+        if kwargs.get("require_managed_binary") and (
+            not isinstance(authoritative_organization_id, str)
+            or not authoritative_organization_id.strip()
+        ):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Subfinder execution blocked: authoritative organization context is required.")
+            await publish_state()
+            return findings
+
         binary = self.resolve_binary_path(config.adapters.subfinder_path or config.adapters.custom_subfinder_path)
         if not binary:
             self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
@@ -250,7 +272,7 @@ class SubfinderAdapter(BaseToolAdapter):
             if self.classify_scope(host, apex_domain) != "IN_SCOPE":
                 out_of_scope += 1
                 if emit_rejected:
-                    await emit_rejected(RejectedDiscovery(domain=host, reason="OUT_OF_SCOPE", sources=sorted(sources), authorized_root=apex_domain, assessment_id=scan_id, organization_id=kwargs.get("organization_id", "org-default")))
+                    await emit_rejected(RejectedDiscovery(domain=host, reason="OUT_OF_SCOPE", sources=sorted(sources), authorized_root=apex_domain, assessment_id=scan_id, organization_id=authoritative_organization_id))
                 continue
             if host in discovered_hosts:
                 source_map[host].update(sources)
@@ -267,7 +289,7 @@ class SubfinderAdapter(BaseToolAdapter):
                     service_fingerprint=f"Sources: {', '.join(sorted(source_map[host]))}",
                     discovered_via="Subfinder",
                     dns_status="UNRESOLVED",
-                    organization_id=kwargs.get("organization_id"),
+                    organization_id=authoritative_organization_id,
                     assessment_id=kwargs.get("scan_id"),
                     authorized_root=apex_domain,
                     sources=sorted(source_map[host]),
