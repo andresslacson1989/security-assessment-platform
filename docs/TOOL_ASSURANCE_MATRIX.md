@@ -84,10 +84,10 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### 3. Subfinder (Passive Subdomain Enumeration)
 - **Security Domain**: Perimeter / EASM
 - **Purpose**: Discovers valid subdomains passively through the governed public `crtsh` provider baseline without active probing. Additional credentialed providers remain disabled.
-- **Enterprise Maturity**: Repository controls and managed-runtime evidence verified for the approved Subfinder path; provider egress governance remains a broader pending capability.
+- **Enterprise Maturity**: Repository controls and managed-runtime evidence verified for the approved Subfinder path; platform-owned CT requests use an exact provider allowlist, while OS-level egress restriction for the external process remains a broader pending capability.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/subfinder).
 - **Version Pinning & Integrity**: Pinned in `PINNED_TOOL_MANIFEST` with exact SHA-256 binary digests.
-- **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, no credential injection, and no automatic DNS probing or inventory admission. Explicit admission is separately tenant-scoped at `/api/assets/admit-discovery`; broader provider egress policy/credential injection remains unimplemented.
+- **Safety Controls**: Structured allowlisted command, exact-version gate, JSONL-only parsing, deterministic hostname validation, authorized-root scope classification, public `crtsh` provider allowlist, exact HTTPS destination checks for platform-owned CT clients, no credential injection, and no automatic DNS probing or inventory admission. Explicit admission is separately tenant-scoped at `/api/assets/admit-discovery`; OS-level external-process egress policy and credential injection remain unimplemented.
 - **Output Format & Parser**: Line-by-line JSON output (`-json -silent`).
 - **Finding Normalization**: Emits discovery observations and `NET-OSINT-001` informational findings; out-of-scope and malformed records are rejected with warnings and are not emitted as candidates.
 - **Role Strategy**: **PRIMARY**. Complemented by an independent native `crt.sh` enrichment path. Discovery is not authorization and does not itself create an active scan target.
