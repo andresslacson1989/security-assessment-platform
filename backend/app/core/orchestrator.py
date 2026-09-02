@@ -461,7 +461,7 @@ class ScanOrchestrator:
             "available": available,
             "mode": mode,
             "version": version,
-            "assurance_status": assurance_status,
+            "assurance_status": getattr(assurance_status, "value", assurance_status),
         })
 
     # --- Background Execution Engine ---

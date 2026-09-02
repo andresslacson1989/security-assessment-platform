@@ -20,6 +20,7 @@ from app.core.models import (
     LogLevel,
     AuthType,
     ToolExecutionMode,
+    ToolAssuranceStatus,
     CrawlerConfig,
     CrawlConfig,
     AuthConfig,
@@ -218,6 +219,11 @@ def test_enums_completeness():
     # ToolExecutionMode
     assert set(m.value for m in ToolExecutionMode) == {"ADAPTER_ACTIVE", "NATIVE_FALLBACK", "DISABLED"}
 
+    # ToolAssuranceStatus
+    assert set(s.value for s in ToolAssuranceStatus) == {
+        "ASSURED", "DELEGATED", "INCOMPLETE", "INVALID", "UNASSURED", "UNREGISTERED", "DISABLED"
+    }
+
 
 def test_coverage_status_fails_closed_when_gaps_are_recorded():
     coverage = AssessmentCoverage(engines_failed=["network"])
@@ -239,6 +245,7 @@ def test_tool_status_and_system_capabilities():
     assert tool.name == "nmap"
     assert tool.available is True
     assert tool.execution_mode == ToolExecutionMode.ADAPTER_ACTIVE
+    assert tool.assurance_status == ToolAssuranceStatus.UNASSURED
 
     caps = SystemCapabilities(
         tools=[tool],
@@ -248,6 +255,11 @@ def test_tool_status_and_system_capabilities():
     assert len(caps.tools) == 1
     assert caps.native_engines_ready is True
     assert caps.os_platform == "Windows 11"
+
+
+def test_tool_assurance_status_rejects_unknown_values():
+    with pytest.raises(ValidationError):
+        ToolStatus(name="nmap", assurance_status="TRUSTED_BY_MAGIC")
 
 
 def test_api_models():

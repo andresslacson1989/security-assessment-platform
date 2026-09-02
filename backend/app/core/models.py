@@ -194,6 +194,18 @@ class ToolExecutionMode(str, Enum):
     DISABLED = "DISABLED"                # Adapter explicitly disabled by user/config
 
 
+class ToolAssuranceStatus(str, Enum):
+    """Validated supply-chain and execution assurance classification."""
+
+    ASSURED = "ASSURED"
+    DELEGATED = "DELEGATED"
+    INCOMPLETE = "INCOMPLETE"
+    INVALID = "INVALID"
+    UNASSURED = "UNASSURED"
+    UNREGISTERED = "UNREGISTERED"
+    DISABLED = "DISABLED"
+
+
 class ToolInstallMethod(str, Enum):
     """
     Installation method used to provision the tool.
@@ -497,9 +509,9 @@ class ToolStatus(BaseModel):
     install_method: ToolInstallMethod = Field(default=ToolInstallMethod.MANUAL, description="Installation method for this tool")
     is_installed: bool = Field(default=False, description="Whether tool binary is present and executable")
     installable: bool = Field(default=True, description="Whether tool can be installed in-app")
-    assurance_status: str = Field(
-        default="UNASSURED",
-        description="Execution trust state: ASSURED, DELEGATED, INCOMPLETE, INVALID, UNASSURED, or DISABLED",
+    assurance_status: ToolAssuranceStatus = Field(
+        default=ToolAssuranceStatus.UNASSURED,
+        description="Execution trust state: ASSURED, DELEGATED, INCOMPLETE, INVALID, UNASSURED, UNREGISTERED, or DISABLED",
     )
 
 
@@ -519,8 +531,8 @@ class ToolInstallationInfo(BaseModel):
     download_url: Optional[str] = Field(default=None, description="Direct download URL or repo reference")
     error_message: Optional[str] = Field(default=None, description="Last installation error message if failed")
     progress_percent: int = Field(default=0, ge=0, le=100, description="Real-time installation progress percentage")
-    assurance_status: str = Field(
-        default="UNASSURED",
+    assurance_status: ToolAssuranceStatus = Field(
+        default=ToolAssuranceStatus.UNASSURED,
         description="Supply-chain assurance: ASSURED, UNASSURED, DELEGATED, INCOMPLETE, INVALID, or UNREGISTERED",
     )
 
