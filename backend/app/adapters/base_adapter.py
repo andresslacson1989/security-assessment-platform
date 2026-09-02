@@ -24,6 +24,45 @@ class BaseToolAdapter(ABC):
     safe_execute_subprocess = staticmethod(safe_execute_subprocess)
     last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
+    # External tools must not inherit ambient credentials, proxy settings, or
+    # provider configuration from the API/worker process.  Adapters may add
+    # further server-derived values (for example Subfinder's isolated HOME),
+    # but only this non-sensitive execution baseline is inherited by default.
+    _SAFE_ENVIRONMENT_KEYS = frozenset({
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "TMP",
+        "TEMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PYTHONIOENCODING",
+        "PYTHONUNBUFFERED",
+        "SYSTEMDRIVE",
+        "COMSPEC",
+    })
+
+    @classmethod
+    def _governed_environment(cls, supplied: Optional[dict]) -> dict:
+        """Return a server-governed environment without ambient secrets/egress settings."""
+        source = supplied if supplied is not None else os.environ
+        return {
+            str(key): str(value)
+            for key, value in source.items()
+            if str(key).upper() in cls._SAFE_ENVIRONMENT_KEYS
+            and value is not None
+        }
+
     @staticmethod
     def _state_for_process_status(status: Optional[ProcessExecutionStatus]) -> Optional[NormalizedExecutionState]:
         """Translate a supervisor outcome into the platform execution taxonomy."""
@@ -218,7 +257,7 @@ class BaseToolAdapter(ABC):
             cmd=cmd,
             timeout=timeout,
             cwd=cwd,
-            env=env,
+            env=self._governed_environment(env),
             max_output_bytes=max_output_bytes,
             pre_launch_check=pre_launch_check,
         )

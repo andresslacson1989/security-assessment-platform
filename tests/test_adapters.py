@@ -98,6 +98,21 @@ class TestBaseToolAdapter:
         assert "warn" in stderr
 
     @pytest.mark.asyncio
+    async def test_execute_command_does_not_inherit_ambient_secret_or_proxy_environment(self, monkeypatch):
+        adapter = DummyAdapter()
+        monkeypatch.setenv("CYBERASSESS_TEST_SECRET", "must-not-reach-tool")
+        monkeypatch.setenv("HTTPS_PROXY", "http://ambient-proxy.invalid:8080")
+        code, stdout, stderr = await adapter.execute_command(
+            [sys.executable, "-c", "import os; print(os.getenv('CYBERASSESS_TEST_SECRET', '')); print(os.getenv('HTTPS_PROXY', ''))"],
+            timeout=5.0,
+        )
+
+        assert code == 0
+        assert stderr == ""
+        assert "must-not-reach-tool" not in stdout
+        assert "ambient-proxy.invalid" not in stdout
+
+    @pytest.mark.asyncio
     async def test_execute_command_empty(self):
         adapter = DummyAdapter()
         code, stdout, stderr = await adapter.execute_command([], timeout=5.0)
