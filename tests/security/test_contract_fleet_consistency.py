@@ -81,6 +81,9 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     ):
         assert f"COPY --from=builder /tmp/bin/{tool} /app/backend/bin/{tool}" in dockerfile
     assert "write_direct_artifact_trust_record" in dockerfile
+    assert "npm install -g retire" not in dockerfile
+    assert "CYBERASSESS_NPM_PREFIX_DIR=/app/backend/.tool-npm" in dockerfile
+    assert "build_npm_trust_record" in dockerfile
     matrix_ids = set(re.findall(r"`(TOOL-[A-Z0-9-]+)`", assurance_matrix))
     assert len(matrix_ids) == 26
     expected_matrix_names = {

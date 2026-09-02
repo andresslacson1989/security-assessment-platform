@@ -196,7 +196,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     procps \
-    && npm install -g retire@4.4.3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create application directories
@@ -260,6 +259,18 @@ COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY run_platform.py /app/
 COPY run_worker.py /app/
+
+# Install Retire.js from the pinned npm tarball into the server-managed prefix.
+# The tarball is verified before npm expands it; the resulting package tree,
+# lockfile, and launcher are then bound into the runtime trust record.
+ENV CYBERASSESS_NPM_PREFIX_DIR=/app/backend/.tool-npm
+RUN mkdir -p /tmp/retire-npm && \
+    cd /tmp/retire-npm && \
+    npm pack --ignore-scripts --pack-destination . retire@4.4.3 && \
+    echo "1352bd6054d92d261b4d85dbfd75c4cee800f583573b5d9d0c45b56e3282c280  retire-4.4.3.tgz" | sha256sum -c - && \
+    npm install --ignore-scripts --no-audit --no-fund --prefix /app/backend/.tool-npm/retire ./retire-4.4.3.tgz && \
+    PYTHONPATH=/app/backend python -c "from app.core.npm_trust import build_npm_trust_record, write_npm_trust_record, resolve_npm_binary; b=resolve_npm_binary('retire'); r=build_npm_trust_record(tool_name='retire', binary=b, installer_version='14.3.0'); write_npm_trust_record(r,b) if b else (_ for _ in ()).throw(RuntimeError('managed Retire executable missing'))" && \
+    rm -rf /tmp/retire-npm
 
 # Bind every direct-release executable to its manifest artifact and executable
 # digest after the builder has already verified the downloaded archive. These
