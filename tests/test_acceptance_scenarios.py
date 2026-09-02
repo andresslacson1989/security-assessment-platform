@@ -1463,6 +1463,7 @@ async def test_scenario_19_batch_tool_installer_and_sse_streaming():
     """
     import asyncio
     from app.installers.manager import ToolInstallationManager
+    from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
     from app.core.models import ToolInstallStatus
 
     mgr = ToolInstallationManager.get_instance()
@@ -1471,7 +1472,11 @@ async def test_scenario_19_batch_tool_installer_and_sse_streaming():
     with patch.object(mgr, "_installers", {k: MagicMock(display_name=k, install=AsyncMock(return_value=True), get_info=AsyncMock(return_value=MagicMock(status=ToolInstallStatus.NOT_INSTALLED, path=None, version=None))) for k in mgr._installers}):
         # Verify batch install initiates tasks
         batch_responses = await mgr.install_all(force=True)
-        assert len(batch_responses) > 0
+        expected_batch_tools = {
+            name for name, entry in PINNED_TOOL_MANIFEST.items()
+            if entry.get("trust_mode") not in {"MANUAL_MODE", "NATIVE_ENGINE_MODE"}
+        }
+        assert {response.tool_name for response in batch_responses} == expected_batch_tools
         assert all(r.status == ToolInstallStatus.INSTALLING for r in batch_responses)
         assert all(r.task_id.startswith("tool-inst-") for r in batch_responses)
 

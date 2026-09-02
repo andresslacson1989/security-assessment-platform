@@ -252,10 +252,20 @@ class ToolInstallationManager:
 
     async def install_all(self, force: bool = False) -> List[ToolInstallResponse]:
         """
-        Batch installs all missing user-space tools (Pip packages and Standalone binaries).
+        Batch installs all missing managed user-space tools.
+
+        Manual and native-engine entries remain in the 26-tool capability
+        registry, but are intentionally excluded from automated installation;
+        their manifest trust modes make that boundary explicit.
         """
+        from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+
         responses = []
-        user_space_tools = ["nuclei", "ffuf", "gitleaks", "trivy", "sslyze", "bandit", "semgrep", "checkov"]
+        user_space_tools = [
+            name for name in self._installers
+            if PINNED_TOOL_MANIFEST.get(name, {}).get("trust_mode")
+            not in {"MANUAL_MODE", "NATIVE_ENGINE_MODE"}
+        ]
 
         for name in user_space_tools:
             info = await self.get_tool_info(name)
