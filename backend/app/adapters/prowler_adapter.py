@@ -204,7 +204,12 @@ class ProwlerAdapter(BaseToolAdapter):
             for item in items:
                 status = item.get("Compliance", {}).get("Status", item.get("Status", "FAIL")).upper()
                 check_title = item.get("Title", item.get("CheckTitle", "CIS Cloud Check"))
-                severity_label = item.get("Severity", {}).get("Label", "HIGH").upper()
+                severity_value = item.get("Severity", {})
+                severity_label = (
+                    severity_value.get("Label", "HIGH")
+                    if isinstance(severity_value, dict)
+                    else severity_value or "HIGH"
+                ).upper()
                 finding_severity = {
                     "CRITICAL": Severity.CRITICAL,
                     "HIGH": Severity.HIGH,
