@@ -1,6 +1,6 @@
 # ==============================================================================
 # CyberAssess Platform - Production Multi-Stage Multi-Arch Dockerfile
-# Pre-packages all 22 Enterprise Security Pentesting & Compliance Tools
+# Pre-packages the 26-tool Enterprise Security Pentesting & Compliance Fleet
 # Authoritative Contract Reference: contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md (Section 10)
 # ==============================================================================
 

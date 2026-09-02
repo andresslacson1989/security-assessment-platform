@@ -60,7 +60,7 @@ class ScanProfile(str, Enum):
     """
     Scan profile configurations determining which engine subsets run.
     """
-    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 21 available modern adapters
+    FULL_STACK = "FULL_STACK"                    # All 5 engines active + all 26 available modern adapters
     QUICK = "QUICK"                              # Fast audit alias
     QUICK_AUDIT = "QUICK_AUDIT"                  # Network + Web DAST Header Check only
     DAST_ONLY = "DAST_ONLY"                      # Web DAST + Crawler + Auth + Active Fuzzing + Nuclei + FFuF + Katana + Schemathesis

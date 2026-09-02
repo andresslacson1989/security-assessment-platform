@@ -57,6 +57,9 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text()
     contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text()
     assurance_matrix = (repository_root / "docs" / "TOOL_ASSURANCE_MATRIX.md").read_text()
+    dockerfile = (repository_root / "Dockerfile").read_text()
+    models = (repository_root / "backend" / "app" / "core" / "models.py").read_text()
+    frontend_index = (repository_root / "frontend" / "index.html").read_text(encoding="utf-8")
 
     assert "26 specialized security tool adapters" in contract_01
     assert "across seven security domains" in contract_01
@@ -68,6 +71,9 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "complete 26-tool fleet" in contract_09
     assert "21 numbered external-tool specifications" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09
+    assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
+    assert "all 26 available modern adapters" in models
+    assert "/ 26 Tools Active" in frontend_index
     matrix_ids = set(re.findall(r"`(TOOL-[A-Z0-9-]+)`", assurance_matrix))
     assert len(matrix_ids) == 26
     expected_matrix_names = {
