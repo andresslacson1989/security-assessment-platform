@@ -103,6 +103,43 @@ class MockFailingEngine(BaseAssessmentEngine):
         raise ConnectionResetError("Simulated connection reset")
 
 
+class MockReturnOnlyEngine(BaseAssessmentEngine):
+    @property
+    def name(self) -> str:
+        return "mock_return_only"
+
+    @property
+    def display_name(self) -> str:
+        return "Mock Return-Only Engine"
+
+    @property
+    def description(self) -> str:
+        return "Returns a finding without emitting it"
+
+    def is_applicable(self, target: Target) -> bool:
+        return True
+
+    async def run(self, target, config, emit_log, emit_progress, emit_finding, **kwargs):
+        return [Finding(
+            scan_id="placeholder-scan",
+            organization_id="wrong-tenant",
+            engine=self.name,
+            check_id="MOCK-RETURN-001",
+            category="Testing",
+            title="Returned finding",
+            severity=Severity.LOW,
+            cvss_score=2.0,
+            description="Returned finding for persistence-boundary testing.",
+            impact="Testing only.",
+            remediation="Testing only.",
+            evidence=Evidence(
+                location=target.value,
+                observed_value="returned",
+                expected_value="safe",
+            ),
+        )]
+
+
 class MockPartialToolEngine(BaseAssessmentEngine):
     allowed_tool_ids = {"subfinder"}
 
@@ -213,6 +250,27 @@ async def test_orchestrator_full_scan_lifecycle():
     assert "completed" in event_types
 
     orch.unsubscribe_events(scan_job.id, queue)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_rebinds_returned_only_findings_to_authoritative_scan_and_tenant():
+    orch = ScanOrchestrator()
+    orch.register_engine(MockReturnOnlyEngine())
+    job = ScanJob(
+        target=Target(name="Return Only", type=TargetType.LOCAL_PATH, value="."),
+        profile=ScanProfile.CUSTOM,
+        enabled_engines=["mock_return_only"],
+        organization_id="org-authoritative",
+    )
+
+    task = await orch.start_scan(job)
+    await task
+
+    completed = orch.get_active_job(job.id, organization_id="org-authoritative")
+    assert completed is not None
+    assert len(completed.findings) == 1
+    assert completed.findings[0].scan_id == job.id
+    assert completed.findings[0].organization_id == "org-authoritative"
 
 
 @pytest.mark.asyncio

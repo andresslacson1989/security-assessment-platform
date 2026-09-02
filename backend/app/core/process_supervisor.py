@@ -5,6 +5,8 @@ Tracks, bounds, and recursively terminates subprocess trees on cancellation or t
 
 from __future__ import annotations
 import asyncio
+import ctypes
+from ctypes import wintypes
 import logging
 import os
 import signal
@@ -79,6 +81,60 @@ class ProcessSupervisor:
         self._active_pids.discard(pid)
 
     @staticmethod
+    def _windows_descendant_pids(root_pid: int) -> list[int]:
+        """Return a snapshot of descendants using the Windows process table."""
+        if sys.platform != "win32":
+            return []
+
+        class _ProcessEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if snapshot == invalid_handle:
+            return []
+        try:
+            entry = _ProcessEntry32()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry32)
+            first = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            if not first:
+                return []
+            parent_map: dict[int, list[int]] = {}
+            while first:
+                parent_map.setdefault(int(entry.th32ParentProcessID), []).append(int(entry.th32ProcessID))
+                first = ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+            descendants: list[int] = []
+            pending = list(parent_map.get(root_pid, []))
+            while pending:
+                child = pending.pop()
+                descendants.append(child)
+                pending.extend(parent_map.get(child, []))
+            return descendants
+        finally:
+            ctypes.windll.kernel32.CloseHandle(snapshot)
+
+    @staticmethod
+    def _windows_terminate_pid(pid: int) -> None:
+        """Terminate one Windows process by PID when taskkill misses a race."""
+        process = ctypes.windll.kernel32.OpenProcess(0x0001 | 0x1000, False, pid)
+        if process:
+            try:
+                ctypes.windll.kernel32.TerminateProcess(process, 1)
+            finally:
+                ctypes.windll.kernel32.CloseHandle(process)
+
+    @staticmethod
     def kill_process_tree(pid: int) -> None:
         """
         Recursively terminates a process and all its child/grandchild descendants.
@@ -88,12 +144,19 @@ class ProcessSupervisor:
 
         if sys.platform == "win32":
             try:
+                # Capture descendants before terminating the root.  This
+                # closes the interval where taskkill /T can miss a child that
+                # was created immediately before the timeout boundary.
+                descendants = ProcessSupervisor._windows_descendant_pids(pid)
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
+                for descendant in reversed(descendants):
+                    ProcessSupervisor._windows_terminate_pid(descendant)
+                ProcessSupervisor._windows_terminate_pid(pid)
             except Exception as e:
                 logger.debug(f"Failed to taskkill PID +{pid}: {e}")
                 try:

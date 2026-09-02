@@ -689,6 +689,15 @@ class ScanOrchestrator:
                     await _raise_if_authoritatively_cancelled()
                     # Deduplicate and append
                     for finding in engine_findings:
+                        # Engine return values are an independent persistence
+                        # path from emit_finding(). Re-assert authoritative
+                        # scan and tenant identity here so a returned-only
+                        # finding cannot retain a placeholder or cross-tenant
+                        # identity supplied by an adapter/native helper.
+                        finding.scan_id = scan_id
+                        finding.organization_id = job.organization_id
+                        if finding.engine == "code_sast":
+                            finding.workspace_id = job.target.value
                         existing_fps = {f.fingerprint for f in job.findings}
                         if finding.fingerprint not in existing_fps:
                             job.findings.append(finding)
