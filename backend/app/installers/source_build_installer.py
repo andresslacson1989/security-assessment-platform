@@ -76,6 +76,17 @@ class SourceBuildInstaller(BaseToolInstaller):
     def download_url(self) -> Optional[str]:
         return PINNED_TOOL_MANIFEST[self.tool_name]["source_archive_url"]
 
+    def is_assured_installation(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
+        from app.core.binary_trust import verify_managed_binary_artifact
+
+        return verify_managed_binary_artifact(
+            self.tool_name,
+            path,
+            expected_version=PINNED_TOOL_MANIFEST[self.tool_name].get("version"),
+        )
+
     def _platform_key(self) -> str:
         if platform.system().lower() != "linux":
             raise RuntimeError("The approved Trivy source-build path currently supports Linux only")

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import json
 import hashlib
 import os
+import platform
 import shutil
 import uuid
 from pathlib import Path
@@ -112,6 +113,7 @@ async def test_real_managed_subfinder_runtime_path():
 
 def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):
     import app.adapters.subfinder_adapter as module
+    import app.core.binary_trust as binary_trust
     root = __import__("pathlib").Path.cwd() / f".subfinder-trust-test-{uuid.uuid4().hex}"
     try:
         adapter_dir = root / "backend" / "app" / "adapters"
@@ -124,9 +126,10 @@ def test_managed_trust_record_binds_identity_and_detects_tampering(monkeypatch):
             binary.chmod(0o755)
         record = managed_dir / "subfinder.trust.json"
         monkeypatch.setattr(module, "__file__", str(adapter_dir / "subfinder_adapter.py"))
+        monkeypatch.setattr(binary_trust, "get_managed_bin_dir", lambda: managed_dir)
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-        current_platform = "windows" if os.name == "nt" else ("darwin" if module.platform.system().lower() == "darwin" else "linux")
-        current_arch = "arm64" if module.platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
+        current_platform = "windows" if os.name == "nt" else ("darwin" if platform.system().lower() == "darwin" else "linux")
+        current_arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
         platform_key = f"{current_platform}_{current_arch}"
         manifest = PINNED_TOOL_MANIFEST["subfinder"]
         record_data = {

@@ -6,10 +6,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
-import hashlib
-import json
 import os
-import platform
 import re
 import shutil
 from typing import Optional, List, Callable, Awaitable, Tuple
@@ -123,50 +120,13 @@ class BaseToolAdapter(ABC):
                 approved_version=str(getattr(self, "approved_version", "")),
                 binary=binary,
             )
-        if not isinstance(binary, str) or not binary.strip() or "\x00" in binary:
-            return False
-        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
-        path = os.path.abspath(binary)
-        if os.path.realpath(path) != path or os.path.dirname(path) != managed_dir:
-            return False
-        if os.path.basename(path).lower() not in {self.tool_name.lower(), f"{self.tool_name.lower()}.exe"}:
-            return False
-        try:
-            with open(f"{path}.trust.json", "r", encoding="utf-8") as record_file:
-                record = json.load(record_file)
-            expected = str(getattr(self, "approved_version", "")).lstrip("v")
-            if record.get("tool_id") != f"TOOL-{self.tool_name.upper()}":
-                return False
-            if record.get("trust_status") != "VALID" or str(record.get("tool_version", "")).lstrip("v") != expected:
-                return False
-            if record.get("executable_relative_path") != os.path.basename(path):
-                return False
-            claims = record.get("claims", [])
-            archive_claim = "ARCHIVE_INTEGRITY_VERIFIED" in claims or "SOURCE_ARCHIVE_INTEGRITY_VERIFIED" in claims
-            if not archive_claim or "EXECUTABLE_INTEGRITY_VERIFIED" not in claims:
-                return False
-            from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
-            manifest = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
-            if manifest.get("trust_mode") == "SOURCE_BUILD_MODE":
-                if "BUILD_TOOLCHAIN_INTEGRITY_VERIFIED" not in claims:
-                    return False
-                expected_source = manifest.get("sha256_checksums", {}).get("source_archive")
-                if expected_source and (
-                    record.get("artifact_sha256") != expected_source
-                    or record.get("artifact_filename") != manifest.get("asset_names", {}).get("source_archive")
-                    or record.get("source_commit") != manifest.get("source_commit")
-                    or record.get("build_toolchain") != manifest.get("build_toolchain")
-                ):
-                    return False
-                platform_key = f"{record.get('platform')}_{record.get('architecture')}"
-                expected_toolchain = manifest.get("sha256_checksums", {}).get(f"go_{platform_key}")
-                if not expected_toolchain or record.get("build_toolchain_sha256") != expected_toolchain:
-                    return False
-            with open(path, "rb") as binary_file:
-                digest = hashlib.sha256(binary_file.read()).hexdigest()
-            return digest == record.get("executable_sha256")
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return False
+        from app.core.binary_trust import verify_managed_binary_artifact
+
+        return verify_managed_binary_artifact(
+            self.tool_name,
+            binary,
+            expected_version=getattr(self, "approved_version", None),
+        )
 
     @abstractmethod
     async def get_version(

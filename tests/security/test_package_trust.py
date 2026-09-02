@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import os
+import platform
 from pathlib import Path
 
 from app.adapters.bandit_adapter import BanditAdapter
@@ -104,3 +105,41 @@ def test_package_trust_rejects_missing_record_and_unapproved_path(tmp_path, monk
 
     assert adapter.verify_managed_binary(str(binary)) is False
     assert adapter.verify_managed_binary(str(tmp_path / "bandit")) is False
+
+
+def test_standalone_trust_requires_manifest_bound_archive_and_exact_identity(tmp_path, monkeypatch):
+    import json
+
+    managed_dir = tmp_path / "managed-bin"
+    managed_dir.mkdir()
+    binary_name = "nuclei.exe" if os.name == "nt" else "nuclei"
+    binary = managed_dir / binary_name
+    binary.write_bytes(b"managed nuclei executable")
+    if os.name != "nt":
+        binary.chmod(0o755)
+    manifest = PINNED_TOOL_MANIFEST["nuclei"]
+    platform_name = "windows" if os.name == "nt" else "linux"
+    architecture = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
+    platform_key = f"{platform_name}_{architecture}"
+    record = {
+        "tool_id": "TOOL-NUCLEI",
+        "tool_version": "v3.2.0",
+        "artifact_filename": manifest["asset_names"][platform_key],
+        "artifact_sha256": manifest["sha256_checksums"][platform_key],
+        "executable_relative_path": binary.name,
+        "executable_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "platform": platform_name,
+        "architecture": architecture,
+        "installer_version": "14.3.0",
+        "trust_status": "VALID",
+        "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
+    }
+    (managed_dir / f"{binary.name}.trust.json").write_text(json.dumps(record), encoding="utf-8")
+    import app.core.binary_trust as binary_trust
+    monkeypatch.setattr(binary_trust, "get_managed_bin_dir", lambda: managed_dir)
+
+    assert binary_trust.verify_managed_binary_artifact("nuclei", str(binary), expected_version="3.2.0") is True
+
+    record["artifact_sha256"] = "0" * 64
+    (managed_dir / f"{binary.name}.trust.json").write_text(json.dumps(record), encoding="utf-8")
+    assert binary_trust.verify_managed_binary_artifact("nuclei", str(binary), expected_version="3.2.0") is False

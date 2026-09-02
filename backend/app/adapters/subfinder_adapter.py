@@ -7,9 +7,6 @@ from __future__ import annotations
 import json
 import re
 import ipaddress
-import hashlib
-import os
-import platform
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 from urllib.parse import urlparse
 
@@ -18,7 +15,6 @@ from app.core.models import (
     calculate_fingerprint, DiscoveredSubdomain, RejectedDiscovery, NormalizedExecutionState
 )
 from app.adapters.base_adapter import BaseToolAdapter
-from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
 
 class SubfinderAdapter(BaseToolAdapter):
@@ -75,50 +71,13 @@ class SubfinderAdapter(BaseToolAdapter):
 
     def verify_managed_binary(self, binary: str) -> bool:
         """Verify the exact managed executable and its installer-created identity record."""
-        managed_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
-        path = os.path.abspath(binary)
-        if not os.path.isfile(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
-            return False
-        if os.path.realpath(path) != path:
-            return False
-        if os.path.dirname(path) != managed_dir or os.path.basename(path).lower() not in {"subfinder", "subfinder.exe"}:
-            return False
-        record_path = f"{path}.trust.json"
-        try:
-            with open(record_path, "r", encoding="utf-8") as record_file:
-                record = json.load(record_file)
-            if record.get("tool_id") != "TOOL-SUBFINDER" or record.get("trust_status") != "VALID":
-                return False
-            current_platform = "windows" if os.name == "nt" else ("darwin" if platform.system().lower() == "darwin" else "linux")
-            current_arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
-            manifest = PINNED_TOOL_MANIFEST.get("subfinder", {})
-            platform_key = f"{current_platform}_{current_arch}"
-            expected_artifact = manifest.get("asset_names", {}).get(platform_key)
-            expected_artifact_sha = manifest.get("sha256_checksums", {}).get(platform_key)
-            if record.get("tool_version") != self.APPROVED_VERSION:
-                return False
-            if record.get("platform") != current_platform or record.get("architecture") != current_arch:
-                return False
-            if (
-                not expected_artifact
-                or not expected_artifact_sha
-                or record.get("artifact_filename") != expected_artifact
-                or record.get("artifact_sha256") != expected_artifact_sha
-            ):
-                return False
-            if record.get("installer_version") is None:
-                return False
-            if "ARCHIVE_INTEGRITY_VERIFIED" not in record.get("claims", []):
-                return False
-            if "EXECUTABLE_INTEGRITY_VERIFIED" not in record.get("claims", []):
-                return False
-            if record.get("executable_relative_path") != os.path.basename(path):
-                return False
-            with open(path, "rb") as binary_file:
-                digest = hashlib.sha256(binary_file.read()).hexdigest()
-            return digest == record.get("executable_sha256")
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return False
+        from app.core.binary_trust import verify_managed_binary_artifact
+
+        return verify_managed_binary_artifact(
+            "subfinder",
+            binary,
+            expected_version=self.APPROVED_VERSION,
+        )
 
     async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]:
         binary = self.resolve_binary_path(custom_path)

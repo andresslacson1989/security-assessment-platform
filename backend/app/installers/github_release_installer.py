@@ -189,6 +189,18 @@ class GithubReleaseInstaller(BaseToolInstaller):
     def download_url(self) -> Optional[str]:
         return self._cfg["download_url"]
 
+    def is_assured_installation(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
+        from app.core.binary_trust import verify_managed_binary_artifact
+        from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+
+        return verify_managed_binary_artifact(
+            self.tool_name,
+            path,
+            expected_version=PINNED_TOOL_MANIFEST.get(self.tool_name, {}).get("version"),
+        )
+
     def _get_platform_keywords(self) -> Tuple[List[str], List[str]]:
         """Returns matching strings for OS and architecture."""
         system = platform.system().lower()
@@ -476,7 +488,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
                 with open(staged_binary_path, "rb") as binary_file:
                     executable_hash = hashlib.sha256(binary_file.read()).hexdigest()
                 trust_record = {
-                    "tool_id": f"TOOL-{self.tool_name.upper().replace('-', '_')}",
+                    "tool_id": f"TOOL-{self.tool_name.upper()}",
                     "tool_version": pinned_tag,
                     "artifact_filename": asset_filename,
                     "artifact_sha256": computed_hash,
