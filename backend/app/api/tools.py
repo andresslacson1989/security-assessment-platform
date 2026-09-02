@@ -252,6 +252,7 @@ async def execute_http_repeater(
     try:
         async with httpx.AsyncClient(
             verify=True,
+            trust_env=False,
             transport=ValidatedTargetTransport(validated_target),
             follow_redirects=payload.follow_redirects,
             timeout=payload.timeout_seconds,
