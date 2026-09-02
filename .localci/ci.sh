@@ -26,7 +26,7 @@ pip install --upgrade pip setuptools wheel
 pip install -r backend/requirements.txt pytest
 
 # 3. Execute 100% Comprehensive Acceptance Test Suite
-echo "=== Step 3: Executing Full Pytest Test Suite (153 Tests / 25 Scenarios) ==="
+echo "=== Step 3: Executing the complete repository pytest suite ==="
 pytest tests/ -v --tb=short
 
 # 4. Generate & Validate Output Artifacts
@@ -43,5 +43,5 @@ print(f'[LocalCI Diagnostic] Native Engines Ready: {caps.native_engines_ready}')
 "
 
 echo "========================================================"
-echo "   LocalCI Pipeline Completed Successfully (100% Pass)"
+echo "   LocalCI Pipeline Completed Successfully (all runnable tests passed)"
 echo "========================================================"
