@@ -5,6 +5,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 
 from __future__ import annotations
 import platform
+import inspect
 from typing import Optional, Dict, List
 
 from app.core.models import (
@@ -42,6 +43,7 @@ from app.adapters.metasploit_adapter import MetasploitAdapter
 from app.adapters.sqlmap_adapter import SqlmapAdapter
 from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.hydra_adapter import HydraAdapter
+from app.installers.tool_manifest import audit_tool_manifest
 
 
 __all__ = [
@@ -197,15 +199,52 @@ async def discover_system_capabilities(
                     install_method=inst_method,
                     is_installed=False,
                     installable=True,
+                    assurance_status="DISABLED",
                 )
             )
             continue
 
         resolved_path = adapter.resolve_binary_path(custom_path)
         available = await adapter.is_available(custom_path)
-        version = await adapter.get_version(custom_path) if available else None
-
+        assurance_status = "UNASSURED"
+        assured_for_execution = False
         if available and resolved_path:
+            manifest_status = audit_tool_manifest([name])
+            verified = False
+            try:
+                verified = bool(adapter.verify_managed_binary(resolved_path))
+            except Exception:
+                verified = False
+            if name in manifest_status["assured"]:
+                assurance_status = "ASSURED" if verified else "UNASSURED"
+            elif name in manifest_status["incomplete"]:
+                assurance_status = (
+                    "DELEGATED"
+                    if inst_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
+                    else "INCOMPLETE"
+                )
+            elif name in manifest_status["invalid"]:
+                assurance_status = "INVALID"
+            else:
+                assurance_status = "UNREGISTERED"
+            assured_for_execution = verified and assurance_status in {"ASSURED", "DELEGATED"}
+
+        version = None
+        if available and resolved_path and assured_for_execution:
+            version_kwargs = {}
+            try:
+                supports_pre_launch_check = "pre_launch_check" in inspect.signature(
+                    adapter.get_version
+                ).parameters
+            except (TypeError, ValueError):
+                supports_pre_launch_check = False
+            if supports_pre_launch_check:
+                version_kwargs["pre_launch_check"] = lambda: bool(
+                    adapter.verify_managed_binary(resolved_path)
+                )
+            version = await adapter.get_version(custom_path, **version_kwargs)
+
+        if available and resolved_path and assured_for_execution:
             mode = ToolExecutionMode.ADAPTER_ACTIVE
         else:
             mode = ToolExecutionMode.NATIVE_FALLBACK
@@ -220,6 +259,7 @@ async def discover_system_capabilities(
                 install_method=inst_method,
                 is_installed=bool(available and resolved_path),
                 installable=True,
+                assurance_status=assurance_status,
             )
         )
 

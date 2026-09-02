@@ -4,6 +4,7 @@ Contract 03 & 04 Background Scan Orchestrator and Event Dispatcher (v3.1.0).
 
 from __future__ import annotations
 import asyncio
+import inspect
 import logging
 from datetime import datetime, timezone
 import time
@@ -19,6 +20,7 @@ from app.core.models import (
     DiscoveredSubdomain,
     RejectedDiscovery,
     ToolFailureEvent,
+    ToolExecutionMode,
     utc_now,
     calculate_fingerprint,
 )
@@ -410,7 +412,15 @@ class ScanOrchestrator:
     async def emit_cancelled(self, scan_id: str, message: str = "Scan cancelled by user.") -> None:
         await self._broadcast(scan_id, "cancelled", {"message": message})
 
-    async def emit_tool_status(self, scan_id: str, tool_name: str, available: bool, mode: str, version: Optional[str] = None) -> None:
+    async def emit_tool_status(
+        self,
+        scan_id: str,
+        tool_name: str,
+        available: bool,
+        mode: str,
+        version: Optional[str] = None,
+        assurance_status: str = "UNASSURED",
+    ) -> None:
         """
         Emits an event: tool_status SSE event per Contract 04 v4.1.0.
         """
@@ -419,6 +429,7 @@ class ScanOrchestrator:
             "available": available,
             "mode": mode,
             "version": version,
+            "assurance_status": assurance_status,
         })
 
     # --- Background Execution Engine ---
@@ -453,8 +464,9 @@ class ScanOrchestrator:
                     available=tool_status.available,
                     mode=tool_status.execution_mode.value,
                     version=tool_status.version,
+                    assurance_status=tool_status.assurance_status,
                 )
-                if tool_status.available:
+                if tool_status.execution_mode == ToolExecutionMode.ADAPTER_ACTIVE:
                     active_adapters.append(tool_status.name)
                 elif tool_status.name not in job.summary.coverage.tools_unavailable:
                     job.summary.coverage.tools_unavailable.append(tool_status.name)

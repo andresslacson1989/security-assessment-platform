@@ -490,13 +490,17 @@ class ToolStatus(BaseModel):
     Status of an external binary tool adapter.
     """
     name: str = Field(..., description="Tool identifier (nmap, nuclei, semgrep, trivy)")
-    available: bool = Field(default=False, description="Whether binary was detected and verified on PATH/filesystem")
+    available: bool = Field(default=False, description="Whether a binary was detected on the host; this is not trust or execution evidence")
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
     execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', or 'DISABLED'")
     install_method: ToolInstallMethod = Field(default=ToolInstallMethod.MANUAL, description="Installation method for this tool")
     is_installed: bool = Field(default=False, description="Whether tool binary is present and executable")
     installable: bool = Field(default=True, description="Whether tool can be installed in-app")
+    assurance_status: str = Field(
+        default="UNASSURED",
+        description="Execution trust state: ASSURED, DELEGATED, INCOMPLETE, INVALID, UNASSURED, or DISABLED",
+    )
 
 
 class ToolInstallationInfo(BaseModel):

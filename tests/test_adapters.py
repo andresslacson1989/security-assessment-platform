@@ -1141,6 +1141,25 @@ class TestCapabilitiesAndRegistry:
             assert tool_map["semgrep"].execution_mode == ToolExecutionMode.ADAPTER_ACTIVE
             assert tool_map["semgrep"].available is True
 
+    @pytest.mark.asyncio
+    async def test_capability_discovery_does_not_execute_unassured_binary(self):
+        unassured = MagicMock()
+        unassured.tool_name = "semgrep"
+        unassured.resolve_binary_path.return_value = r"C:\custom\semgrep.exe"
+        unassured.is_available = AsyncMock(return_value=True)
+        unassured.verify_managed_binary.return_value = False
+        unassured.get_version = AsyncMock(return_value="semgrep 9.9.9")
+
+        with patch("app.adapters.get_adapter_registry", return_value={"semgrep": unassured}):
+            caps = await discover_system_capabilities()
+
+        status = caps.tools[0]
+        assert status.available is True
+        assert status.assurance_status == "UNASSURED"
+        assert status.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+        assert status.version is None
+        unassured.get_version.assert_not_awaited()
+
 
 # ============================================================================
 # 12. SubfinderAdapter Tests
