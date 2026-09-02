@@ -21,6 +21,7 @@ from app.core.auth import (
     authorize_internal_target,
 )
 from app.core.db import db_manager
+from app.core.storage import get_scan
 
 router = APIRouter()
 
@@ -52,6 +53,18 @@ class UpdateAssetRequest(BaseModel):
     lifecycle_status: Optional[AssetLifecycleStatus] = Field(default=None)
     active_probing_granted: Optional[bool] = Field(default=None, description="Explicit authorization for intrusive probing")
     live_secret_verification_granted: Optional[bool] = Field(default=None, description="Explicit authorization for live secret verification")
+
+
+class AdmitDiscoveredAssetRequest(BaseModel):
+    """Explicit inventory admission for one previously observed passive candidate."""
+    model_config = {"extra": "forbid"}
+
+    scan_id: str = Field(..., min_length=1, max_length=120)
+    domain: str = Field(..., min_length=1, max_length=253)
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
+    internet_exposed: bool = True
+    tags: List[str] = Field(default_factory=list)
 
 
 @router.get("", summary="List Monitored Organization Assets")
@@ -119,6 +132,77 @@ async def create_asset(
             object_id=created.id,
             result="SUCCESS",
             details={"name": created.name, "type": created.type.value, "target_value": created.target_value},
+        )
+    )
+    return created
+
+
+@router.post(
+    "/admit-discovery",
+    status_code=status.HTTP_201_CREATED,
+    summary="Explicitly Admit a Passive Discovery into Asset Inventory",
+)
+async def admit_discovered_asset(
+    payload: AdmitDiscoveredAssetRequest,
+    current_user: UserProfile = Depends(require_permission(required_scope="asset:write", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
+) -> Asset:
+    """Admit only an observed, tenant-owned passive discovery; never grants active probing."""
+    scan = get_scan(payload.scan_id, organization_id=_organization_scope(current_user))
+    if not scan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source scan not found.")
+
+    from app.adapters.subfinder_adapter import SubfinderAdapter
+
+    domain = SubfinderAdapter.normalize_domain(payload.domain)
+    if not domain:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A normalized domain is required.")
+
+    observation = next(
+        (candidate for candidate in scan.discovered_subdomains if candidate.domain == domain),
+        None,
+    )
+    if observation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain was not recorded as a discovery in the source scan.")
+    if observation.organization_id != scan.organization_id or observation.assessment_id != scan.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Discovery provenance does not match the source scan.")
+    if observation.dns_status != "UNRESOLVED":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only unresolved passive discoveries may be admitted through this workflow.")
+    if observation.authorized_root and SubfinderAdapter.classify_scope(domain, observation.authorized_root) != "IN_SCOPE":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Discovery is outside the recorded authorized root.")
+
+    asset = Asset(
+        organization_id=current_user.organization_id,
+        project_id=scan.project_id,
+        name=(payload.name or domain).strip(),
+        type=AssetType.DOMAIN,
+        target_value=domain,
+        criticality=payload.criticality,
+        internet_exposed=payload.internet_exposed,
+        # Admission is inventory authorization only. Active probing remains a
+        # separate administrator-controlled decision on the asset.
+        active_probing_granted=False,
+        live_secret_verification_granted=False,
+        tags=payload.tags,
+        owner=current_user.username,
+        lifecycle_status=AssetLifecycleStatus.DISCOVERED,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    created = db_manager.create_asset(asset)
+    db_manager.record_audit_event(
+        AuditEvent(
+            actor=current_user.username,
+            organization_id=current_user.organization_id,
+            action=AuditAction.ASSET_CREATED,
+            object_type="asset",
+            object_id=created.id,
+            result="SUCCESS",
+            details={
+                "admission": "PASSIVE_DISCOVERY",
+                "source_scan_id": scan.id,
+                "source_tool": observation.discovered_via,
+                "sources": observation.sources,
+            },
         )
     )
     return created

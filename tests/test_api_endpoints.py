@@ -469,6 +469,65 @@ async def test_telemetry_endpoint_structure_and_filters(auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_passive_discovery_requires_explicit_inventory_admission(auth_headers):
+    from app.core.models import AssetLifecycleStatus, DiscoveredSubdomain
+
+    job = ScanJob(
+        id="scan-explicit-discovery-admission",
+        organization_id="org-default",
+        target=Target(name="Discovery source", type=TargetType.DOMAIN, value="example.com"),
+        profile=ScanProfile.PASSIVE_OSINT,
+        status=ScanStatus.COMPLETED,
+        discovered_subdomains=[DiscoveredSubdomain(
+            domain="api.example.com",
+            discovered_via="Subfinder",
+            sources=["crtsh"],
+            dns_status="UNRESOLVED",
+            organization_id="org-default",
+            assessment_id="scan-explicit-discovery-admission",
+            authorized_root="example.com",
+        )],
+    )
+    save_scan(job)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        admitted = await ac.post(
+            "/api/assets/admit-discovery",
+            json={"scan_id": job.id, "domain": "API.Example.com", "name": "Public API"},
+            headers=auth_headers,
+        )
+        assert admitted.status_code == 201
+        asset = admitted.json()
+        assert asset["target_value"] == "api.example.com"
+        assert asset["type"] == "DOMAIN"
+        assert asset["lifecycle_status"] == AssetLifecycleStatus.DISCOVERED.value
+        assert asset["active_probing_granted"] is False
+        assert asset["live_secret_verification_granted"] is False
+
+        missing = await ac.post(
+            "/api/assets/admit-discovery",
+            json={"scan_id": job.id, "domain": "admin.example.com"},
+            headers=auth_headers,
+        )
+        assert missing.status_code == 404
+
+        other_tenant = UserProfile(
+            id="usr-admission-other",
+            username="admission-other",
+            email="admission-other@example.test",
+            role=UserRole.ADMIN,
+            organization_id="org-other",
+        )
+        other_headers = {"Authorization": f"Bearer {create_access_token(other_tenant)}"}
+        cross_tenant = await ac.post(
+            "/api/assets/admit-discovery",
+            json={"scan_id": job.id, "domain": "api.example.com"},
+            headers=other_headers,
+        )
+        assert cross_tenant.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_finding_occurrences_endpoint_is_tenant_scoped(auth_headers):
     """Contract 04 §1.4: occurrence history is durable and cannot cross tenants."""
     from app.core.db import db_manager
