@@ -3579,6 +3579,11 @@ Stderr: Diagnostic logs
 | `TOOL-PROWLER` | Prowler | `CREDENTIAL_AWARE` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `IAC-CLOUD-001` | `tests/test_adapters.py::TestProwlerAdapter` | Prowler |
 | `TOOL-KUBE-BENCH` | Kube-Bench | `PRIVILEGED` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-K8S-002` | `tests/test_adapters.py::TestKubeBenchAdapter` | Aqua Security |
 | `TOOL-DOCKLE` | Dockle | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-DOCKER-001/2` | `tests/test_adapters.py::TestDockleAdapter` | GoodWithTech |
+| `TOOL-AMASS` | Amass | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `AUXILIARY` | `NET-OSINT-001` | `tests/security/test_extended_adapters_assurance.py` | OWASP Amass |
+| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY` | `MANUAL_MODE` | `AUXILIARY` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | Rapid7 |
+| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE` | `MANUAL_MODE` | `AUXILIARY` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` | sqlmap Project |
+| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE` | `MANUAL_MODE` | `AUXILIARY` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | THC-Hydra |
+| `TOOL-GTFOBINS` | GTFOBins / LOLBAS | `HOST_ANALYSIS` | `NATIVE_ENGINE_MODE` | `AUXILIARY` | `HOST-PRIV-001`, `HOST-SUDO-001` | `tests/security/test_gtfobins_assurance.py` | GTFOBins / LOLBAS |
 
 ---
 

@@ -74,6 +74,10 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "numbered external-tool reviews" not in assurance_matrix
     assert "Part II defines all 26 supported tools" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09
+    traceability_rows = [line for line in contract_09.splitlines() if line.startswith("| `TOOL-")]
+    traceability_ids = {line.split("|")[1].strip().strip("`") for line in traceability_rows}
+    assert len(traceability_rows) == 26
+    assert {"TOOL-AMASS", "TOOL-METASPLOIT", "TOOL-SQLMAP", "TOOL-HYDRA", "TOOL-GTFOBINS"}.issubset(traceability_ids)
     assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
     assert "all 26 available modern adapters" in models
     assert "/ 26 Tools Active" in frontend_index
