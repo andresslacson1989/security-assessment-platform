@@ -61,8 +61,8 @@ class ToolInstallationManager:
             "dockle": GithubReleaseInstaller("dockle"),
             "kube-bench": GithubReleaseInstaller("kube-bench"),
 
-            # System / driver helpers & package manager tools (2 tools)
-            "nmap": SystemToolHelper("nmap"),
+            # Approved verified source-build and package-manager tools
+            "nmap": SourceBuildInstaller("nmap"),
             "retire": NpmToolInstaller("retire"),
             "metasploit": SystemToolHelper("metasploit"),
             "sqlmap": SystemToolHelper("sqlmap"),

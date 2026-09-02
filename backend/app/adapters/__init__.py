@@ -176,7 +176,7 @@ async def discover_system_capabilities(
         "trufflehog": ToolInstallMethod.STANDALONE_BINARY,
         "dockle": ToolInstallMethod.STANDALONE_BINARY,
         "kube-bench": ToolInstallMethod.STANDALONE_BINARY,
-        "nmap": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
+        "nmap": ToolInstallMethod.STANDALONE_BINARY,
         "retire": ToolInstallMethod.SYSTEM_PACKAGE_MANAGER,
         "gtfobins": ToolInstallMethod.MANUAL,
         "metasploit": ToolInstallMethod.MANUAL,

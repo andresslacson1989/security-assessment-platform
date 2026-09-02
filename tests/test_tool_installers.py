@@ -118,7 +118,7 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["dockle"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["kube-bench"].install_method == ToolInstallMethod.STANDALONE_BINARY
 
-    assert tool_map["nmap"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
+    assert tool_map["nmap"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
 
 
@@ -179,6 +179,27 @@ def test_trivy_uses_the_verified_source_build_installer():
     assert PINNED_TOOL_MANIFEST["trivy"]["trust_mode"] == "SOURCE_BUILD_MODE"
     assert PINNED_TOOL_MANIFEST["trivy"]["direct_release_artifact_available"] is False
     assert SOURCE_BUILD_CONFIG["trivy"]["go_version"] == PINNED_TOOL_MANIFEST["trivy"]["build_toolchain"]
+
+
+def test_nmap_uses_the_verified_source_build_installer():
+    installer = ToolInstallationManager().get_installer("nmap")
+    assert isinstance(installer, SourceBuildInstaller)
+    assert PINNED_TOOL_MANIFEST["nmap"]["trust_mode"] == "SOURCE_BUILD_MODE"
+    assert PINNED_TOOL_MANIFEST["nmap"]["direct_release_artifact_available"] is False
+    assert SOURCE_BUILD_CONFIG["nmap"]["source_revision"] == PINNED_TOOL_MANIFEST["nmap"]["source_revision"]
+
+
+@pytest.mark.asyncio
+async def test_nmap_source_identity_is_checked_against_installer_policy():
+    installer = SourceBuildInstaller("nmap")
+    client = MagicMock()
+    manifest = PINNED_TOOL_MANIFEST["nmap"]
+
+    await installer._verify_source_identity(client, manifest)
+
+    with patch.dict(manifest, {"source_revision": "svn-r99999"}):
+        with pytest.raises(SecurityError, match="source revision"):
+            await installer._verify_source_identity(client, manifest)
 
 
 def test_github_release_installer_requires_exact_release_tag():
