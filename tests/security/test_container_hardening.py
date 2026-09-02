@@ -13,6 +13,10 @@ def test_all_runtime_services_use_hardened_container_defaults():
 
     for service_name in ("cyberassess", "cyberassess-enterprise", "cyberassess-worker"):
         service = compose["services"][service_name]
+        assert service["mem_limit"] == "2g"
+        assert service["cpus"] == "2.0"
+        assert service["pids_limit"] == 256
+        assert service["ulimits"]["nofile"] == {"soft": 4096, "hard": 8192}
         assert service["read_only"] is True
         assert service["cap_drop"] == ["ALL"]
         assert service["security_opt"] == ["no-new-privileges:true"]

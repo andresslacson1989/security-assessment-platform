@@ -14,6 +14,13 @@ services:
     image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-platform
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
     read_only: true
     cap_drop:
       - ALL
@@ -47,6 +54,13 @@ services:
     image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-platform-enterprise
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
     read_only: true
     cap_drop:
       - ALL
@@ -86,6 +100,13 @@ services:
     image: ghcr.io/andresslacson1989/security-assessment-platform:latest
     container_name: cyberassess-worker
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
     read_only: true
     cap_drop:
       - ALL
