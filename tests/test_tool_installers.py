@@ -124,6 +124,8 @@ def test_nmap_manifest_records_package_manager_delegated_identity():
 
     assert entry["version"] == "7.95"
     assert entry["trust_mode"] == "PACKAGE_MANAGER_MODE"
+    assert entry["repo"] == "nmap/nmap"
+    assert "insecure-org" not in entry["repo"]
     assert entry["sha256_checksums"] == {}
     assert "OS package manager" in entry["integrity_note"]
 

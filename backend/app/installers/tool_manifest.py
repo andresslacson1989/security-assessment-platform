@@ -16,7 +16,7 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "tool_name": "nmap",
         "version": "7.95",
         "release_tag": "v7.95",
-        "repo": "insecure-org/nmap",
+        "repo": "nmap/nmap",
         "pinned_version": "v7.95",
         "category": "Network Perimeter",
         "trust_mode": "PACKAGE_MANAGER_MODE",
