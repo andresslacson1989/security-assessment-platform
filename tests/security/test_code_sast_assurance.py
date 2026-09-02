@@ -1,6 +1,7 @@
 """E13 workspace, execution-state, taint, and evidence boundary assurance."""
 
 from pathlib import Path
+import asyncio
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -183,3 +184,38 @@ async def test_e13_process_supervisor_uses_isolated_unix_session_when_available(
         proc.returncode = 0
         await supervisor.execute(["tool"], timeout=1)
         assert popen.call_args.kwargs["start_new_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_e13_process_supervisor_terminates_real_child_process_tree(tmp_path):
+    """Exercise actual parent/child termination instead of mocking Popen."""
+    child_pid_file = tmp_path / "child.pid"
+    survivor_marker = tmp_path / "child-survived.txt"
+    child_code = (
+        "import pathlib, time\n"
+        "time.sleep(1.5)\n"
+        f"pathlib.Path({str(survivor_marker)!r}).write_text('survived', encoding='utf-8')\n"
+        "time.sleep(5)\n"
+    )
+    parent_code = (
+        "import pathlib, subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+        "time.sleep(10)\n"
+    )
+
+    supervisor = ProcessSupervisor()
+    result = await supervisor.execute(
+        [sys.executable, "-c", parent_code],
+        timeout=0.5,
+        max_output_bytes=4096,
+    )
+
+    assert result.execution_status is ProcessExecutionStatus.TIMED_OUT
+    assert child_pid_file.exists(), "the real child must have been created before timeout"
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    try:
+        await asyncio.sleep(2.0)
+        assert not survivor_marker.exists(), "a child surviving the parent timeout violates tree termination"
+    finally:
+        ProcessSupervisor.kill_process_tree(child_pid)

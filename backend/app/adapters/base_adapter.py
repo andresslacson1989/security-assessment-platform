@@ -24,8 +24,20 @@ class BaseToolAdapter(ABC):
     safe_execute_subprocess = staticmethod(safe_execute_subprocess)
     last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
+    @staticmethod
+    def _state_for_process_status(status: Optional[ProcessExecutionStatus]) -> Optional[NormalizedExecutionState]:
+        """Translate a supervisor outcome into the platform execution taxonomy."""
+        return {
+            ProcessExecutionStatus.SECURITY_REJECTED: NormalizedExecutionState.EXECUTION_BLOCKED,
+            ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED: NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING,
+            ProcessExecutionStatus.TIMED_OUT: NormalizedExecutionState.EXECUTION_TIMED_OUT,
+            ProcessExecutionStatus.NOT_FOUND: NormalizedExecutionState.TOOL_EXECUTION_FAILED,
+            ProcessExecutionStatus.PERMISSION_DENIED: NormalizedExecutionState.TOOL_EXECUTION_FAILED,
+        }.get(status)
+
     def _record_execution(self, returncode: int, stdout: str, stderr: str, findings_count: int = 0, parser_error: bool = False) -> None:
         """Map upstream process results to the platform execution-state contract."""
+        process_status = getattr(self, "_last_process_execution_status", None)
         if not parser_error and getattr(self, "_parser_error_output", None) != stdout:
             self._parser_error_output = None
         if parser_error:
@@ -37,7 +49,10 @@ class BaseToolAdapter(ABC):
             self._parser_error_output = stdout
             self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if stdout.strip() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
         elif getattr(self, "_parser_error_output", None) == stdout:
+            self._last_process_execution_status = None
             return
+        elif (status_state := self._state_for_process_status(process_status)) is not None:
+            self.last_execution_state = status_state
         elif "timed out" in (stderr or "").lower():
             self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT
         elif (stderr or "").startswith("PROCESS_LAUNCH_REJECTED_SECURITY"):
@@ -50,6 +65,7 @@ class BaseToolAdapter(ABC):
             self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
         else:
             self.last_execution_state = NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING if stdout.strip() else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+        self._last_process_execution_status = None
 
     @property
     @abstractmethod
@@ -194,6 +210,7 @@ class BaseToolAdapter(ABC):
 
         Returns: (returncode, stdout_str, stderr_str)
         """
+        self._last_process_execution_status = None
         if not cmd:
             return -1, "", "Empty command provided"
 
@@ -206,8 +223,10 @@ class BaseToolAdapter(ABC):
             pre_launch_check=pre_launch_check,
         )
         code, stdout, stderr = result
-        if getattr(result, "execution_status", None) == ProcessExecutionStatus.SECURITY_REJECTED:
-            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+        process_status = getattr(result, "execution_status", None)
+        self._last_process_execution_status = process_status
+        if (status_state := self._state_for_process_status(process_status)) is not None:
+            self.last_execution_state = status_state
 
         if code != 0 and emit_log:
             if "timed out" in stderr.lower():

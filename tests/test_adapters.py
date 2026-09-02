@@ -19,6 +19,7 @@ from app.core.models import (
     Severity,
     ToolAdapterConfig,
     ToolExecutionMode,
+    NormalizedExecutionState,
 )
 from app.core.ssrf_protector import create_validated_target
 from app.adapters.base_adapter import BaseToolAdapter
@@ -117,7 +118,33 @@ class TestBaseToolAdapter:
         )
         assert code == -1
         assert "timed out" in stderr
+        assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_TIMED_OUT
         assert any(l[0] == LogLevel.WARNING for l in logs)
+
+    @pytest.mark.asyncio
+    async def test_execute_command_output_limit_is_explicitly_degraded(self):
+        adapter = DummyAdapter()
+        code, stdout, stderr = await adapter.execute_command(
+            ["python", "-c", "print('x' * 10000)"],
+            timeout=5.0,
+            max_output_bytes=128,
+        )
+        assert code == -1
+        assert len(stdout.encode("utf-8")) <= 128
+        assert "Output exceeded maximum" in stderr
+        assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+
+    @pytest.mark.asyncio
+    async def test_execute_command_security_rejection_is_explicitly_blocked(self):
+        adapter = DummyAdapter()
+        code, stdout, stderr = await adapter.execute_command(
+            ["python", "-c", "raise SystemExit(0)"],
+            timeout=5.0,
+            pre_launch_check=lambda: False,
+        )
+        assert (code, stdout) == (126, "")
+        assert stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY")
+        assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
 
     @pytest.mark.asyncio
     async def test_execute_command_nonexistent_binary(self):
