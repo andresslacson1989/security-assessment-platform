@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.hydra_adapter import HydraAdapter
+from app.core.models import ScanConfig, Target, TargetType
 from app.adapters.metasploit_adapter import MetasploitAdapter
 from app.adapters.sqlmap_adapter import SqlmapAdapter
-from app.core.models import ScanConfig, Target, TargetType
 from app.core.ssrf_protector import create_validated_target
 
 
@@ -59,6 +59,31 @@ def test_hydra_command_is_rate_limited_and_rejects_unsafe_inputs():
     assert command[command.index("-W") + 1] == "1"
     with pytest.raises(ValueError):
         HydraAdapter.build_command("hydra", "C:\\workspace\\users", "C:\\workspace\\passwords", "telnet", "192.0.2.10", 23, "C:\\workspace\\hydra.json")
+
+
+@pytest.mark.asyncio
+async def test_hydra_intrusive_execution_requires_validated_active_authorization():
+    adapter = HydraAdapter()
+    logs = []
+
+    async def emit_log(level, message):
+        logs.append((level, message))
+
+    async def emit_finding(_finding):
+        return None
+
+    result = await adapter.run(
+        Target(name="target", type=TargetType.IP, value="192.0.2.10"),
+        ScanConfig(),
+        emit_log,
+        emit_finding,
+        require_managed_binary=True,
+        explicit_credential_audit=True,
+    )
+
+    assert result == []
+    assert adapter.last_execution_state.value == "EXECUTION_BLOCKED"
+    assert "ValidatedTarget" in logs[-1][1]
 
 
 @pytest.mark.asyncio

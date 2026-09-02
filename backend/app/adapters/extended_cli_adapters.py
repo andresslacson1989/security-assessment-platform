@@ -390,15 +390,29 @@ class HydraAdapter(GovernedExtendedAdapter):
         return f"hydra {match.group(1)}" if match else None
 
     async def run(self, target: Target, config: ScanConfig, emit_log: EmitLog, emit_finding: EmitFinding, **kwargs) -> List[Finding]:
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Hydra execution blocked: a gateway-issued ValidatedTarget is required.")
+            return []
+        if kwargs.get("require_managed_binary") and not validated_target.authorization_context.get("active_probing_granted", False):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Hydra execution blocked: explicit tenant active-probing authorization is required.")
+            return []
+        if not kwargs.get("explicit_credential_audit"):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Hydra execution blocked: explicit credential-audit authorization is required.")
+            return []
         binary = await self._binary_or_block(config, getattr(config.adapters, "hydra_path", None) or getattr(config.adapters, "custom_hydra_path", None), emit_log)
         if not binary:
             return []
         username_file, password_file, output_file = (kwargs.get("username_file"), kwargs.get("password_file"), kwargs.get("output_file"))
-        if not kwargs.get("explicit_credential_audit") or not all(isinstance(path, str) for path in (username_file, password_file, output_file)):
+        if not all(isinstance(path, str) for path in (username_file, password_file, output_file)):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Hydra execution blocked: explicit credential-audit authorization and server-derived files are required.")
             return []
-        command = self.build_command(binary, username_file, password_file, kwargs.get("protocol", "ssh"), target.value, int(kwargs.get("port", 22)), output_file)
+        target_host = validated_target.selected_destination if validated_target is not None else target.value
+        command = self.build_command(binary, username_file, password_file, kwargs.get("protocol", "ssh"), target_host, int(kwargs.get("port", 22)), output_file)
         code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
         findings: List[Finding] = []
         try:
