@@ -49,6 +49,8 @@ def evaluate_host_audit(
     organization_id: Optional[str] = None,
 ) -> List[Finding]:
     """Convert observed SUID/capability/sudo metadata into canonical findings."""
+    if not isinstance(organization_id, str) or not organization_id.strip():
+        raise ValueError("GTFOBins evidence requires an authoritative organization ID")
     findings: List[Finding] = []
     seen: set[tuple[str, str]] = set()
 
@@ -65,7 +67,7 @@ def evaluate_host_audit(
         )
         finding = Finding(
             scan_id=scan_id,
-            organization_id=organization_id or "org-default",
+            organization_id=organization_id,
             engine="infra_iac",
             source_tool="gtfobins",
             check_id=check_id,

@@ -33,6 +33,7 @@ def test_gtfobins_does_not_execute_or_accept_non_catalog_commands():
             "capabilities": ["/usr/bin/custom-helper = cap_setuid+ep"],
         },
         scan_id="scan-empty",
+        organization_id="org-test",
     )
     assert findings == []
 
@@ -41,8 +42,17 @@ def test_gtfobins_matches_versioned_python_catalog_entry():
     findings = evaluate_host_audit(
         {"capabilities": ["/usr/bin/python3.11 = cap_setuid+ep"]},
         scan_id="scan-python",
+        organization_id="org-test",
     )
     assert [finding.check_id for finding in findings] == ["HOST-PRIV-001"]
+
+
+def test_gtfobins_evaluator_rejects_missing_tenant_identity():
+    with pytest.raises(ValueError, match="organization ID"):
+        evaluate_host_audit(
+            {"suid_binaries": ["/usr/bin/find"]},
+            scan_id="scan-no-tenant",
+        )
 
 
 @pytest.mark.asyncio
