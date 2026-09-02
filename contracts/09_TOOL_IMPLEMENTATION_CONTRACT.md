@@ -3558,7 +3558,7 @@ Stderr: Diagnostic logs
 
 | Tool ID | Display Name | Security Class | Trust Mode | Role | Primary Check IDs | Test Suite Reference | Upstream Project |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
+| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `SOURCE_BUILD_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
 | `TOOL-SSLYZE` | SSLyze | `ACTIVE_READ_ONLY` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `NET-TLS-001/2/3` | `tests/test_adapters.py::TestSslyzeAdapter` | Nabla C0d3 |
 | `TOOL-SUBFINDER` | Subfinder | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `NET-OSINT-001` | `tests/test_adapters.py::TestSubfinderAdapter` | ProjectDiscovery |
 | `TOOL-HTTPX` | httpx | `ACTIVE_READ_ONLY` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `NET-HTTP-001` | `tests/test_adapters.py::TestHttpxAdapter` | ProjectDiscovery |
