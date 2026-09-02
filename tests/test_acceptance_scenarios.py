@@ -1910,8 +1910,10 @@ async def test_scenario_24_cloud_container_and_k8s_cis_benchmarks(tmp_path):
 
         assert any(f.source_tool == "dockle" for f in findings)
         assert any(f.source_tool == "kube-bench" for f in findings)
-        assert any(f.source_tool == "prowler" for f in findings)
-        assert len(recorded_cis) == 3
+        # Prowler is contract-scoped to cloud-account/Kubernetes targets and
+        # must not execute against this local filesystem target.
+        assert not any(f.source_tool == "prowler" for f in findings)
+        assert len(recorded_cis) == 2
 
 
 # ============================================================================

@@ -58,6 +58,22 @@ class ProwlerAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Prowler binary not found. Skipping multi-cloud CIS benchmark audit.")
             return findings
 
+        if kwargs.get("require_managed_binary"):
+            from app.core.ssrf_protector import validate_validated_target
+
+            try:
+                validated_target = validate_validated_target(kwargs.get("validated_target"))
+            except Exception:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: a gateway-issued cloud ValidatedTarget is required.")
+                return findings
+
+            target_type = getattr(validated_target.target_type, "value", str(validated_target.target_type))
+            if target_type not in {"CLOUD_ACCOUNT", "KUBERNETES_CLUSTER"}:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: only cloud-account or Kubernetes targets are supported.")
+                return findings
+
         managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
         if kwargs.get("require_managed_binary") and not managed_check():
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED

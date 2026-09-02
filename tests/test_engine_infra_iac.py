@@ -5,7 +5,7 @@ Unit tests for Engine 4: Infrastructure-as-Code & Container Auditor.
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.core.models import Target, TargetType, ScanConfig, Severity, NormalizedExecutionState
@@ -256,6 +256,33 @@ async def test_infra_iac_adapters_fail_closed_without_managed_identity(
 
 
 @pytest.mark.asyncio
+async def test_prowler_rejects_non_cloud_target_at_assured_boundary(tmp_path):
+    adapter = ProwlerAdapter()
+    execute_mock = AsyncMock()
+
+    async def log_cb(*_args):
+        return None
+
+    async def finding_cb(*_args):
+        return None
+
+    with patch.object(adapter, "resolve_binary_path", return_value=str(tmp_path / "prowler")), \
+         patch.object(adapter, "execute_command", execute_mock):
+        findings = await adapter.run(
+            Target(name="IaC Repo", type=TargetType.LOCAL_PATH, value=str(tmp_path)),
+            ScanConfig(),
+            log_cb,
+            finding_cb,
+            require_managed_binary=True,
+            validated_target=None,
+        )
+
+    assert findings == []
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    execute_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("adapter_type", "binary_name", "version"),
     [
@@ -291,7 +318,12 @@ async def test_infra_iac_adapters_publish_failed_process_state(
         require_managed_binary=True,
     )
 
-    assert adapter.last_execution_state == NormalizedExecutionState.TOOL_EXECUTION_FAILED
+    expected_state = (
+        NormalizedExecutionState.EXECUTION_BLOCKED
+        if adapter_type is ProwlerAdapter
+        else NormalizedExecutionState.TOOL_EXECUTION_FAILED
+    )
+    assert adapter.last_execution_state == expected_state
 
 
 @pytest.mark.asyncio
