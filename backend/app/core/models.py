@@ -298,7 +298,7 @@ OsintConfig = OSINTConfig
 
 class ToolAdapterConfig(BaseModel):
     """
-    Configuration for hybrid external binary tool adapters across 21 modern enterprise tools:
+    Configuration for hybrid external binary tool adapters across the complete 26-tool fleet:
     - Network / EASM: Nmap, SSLyze, Subfinder, Httpx
     - Web DAST: Nuclei, FFuF, Katana, Schemathesis
     - SAST / Secrets: Semgrep, Gitleaks, Bandit, TruffleHog, RetireJS
