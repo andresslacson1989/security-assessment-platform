@@ -335,6 +335,7 @@ class DatabaseManager:
                 criticality TEXT NOT NULL DEFAULT 'MEDIUM',
                 internet_exposed INTEGER NOT NULL DEFAULT 1,
                 active_probing_granted INTEGER NOT NULL DEFAULT 0,
+                live_secret_verification_granted INTEGER NOT NULL DEFAULT 0,
                 owner TEXT,
                 lifecycle_status TEXT NOT NULL DEFAULT 'MONITORED',
                 tags_json TEXT NOT NULL DEFAULT '[]',
@@ -466,6 +467,7 @@ class DatabaseManager:
                 "ALTER TABLE finding_occurrences ADD COLUMN organization_id TEXT NOT NULL DEFAULT 'org-default';",
                 "ALTER TABLE audit_events ADD COLUMN sequence_number INTEGER;",
                 "ALTER TABLE assets ADD COLUMN active_probing_granted INTEGER NOT NULL DEFAULT 0;",
+                "ALTER TABLE assets ADD COLUMN live_secret_verification_granted INTEGER NOT NULL DEFAULT 0;",
             ]
             for migration_index, mig in enumerate(migrations):
                 savepoint = f"schema_migration_{migration_index}"
@@ -860,9 +862,9 @@ class DatabaseManager:
                 """
                 INSERT INTO assets (
                     id, organization_id, project_id, name, type, target_value,
-                    criticality, internet_exposed, active_probing_granted, owner, lifecycle_status, tags_json,
+                    criticality, internet_exposed, active_probing_granted, live_secret_verification_granted, owner, lifecycle_status, tags_json,
                     created_at, updated_at, last_scanned_at, last_verified_at, active_findings_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     organization_id = excluded.organization_id,
                     project_id = excluded.project_id,
@@ -872,6 +874,7 @@ class DatabaseManager:
                     criticality = excluded.criticality,
                     internet_exposed = excluded.internet_exposed,
                     active_probing_granted = excluded.active_probing_granted,
+                    live_secret_verification_granted = excluded.live_secret_verification_granted,
                     owner = excluded.owner,
                     lifecycle_status = excluded.lifecycle_status,
                     tags_json = excluded.tags_json,
@@ -890,6 +893,7 @@ class DatabaseManager:
                     asset.criticality.value if hasattr(asset.criticality, "value") else str(asset.criticality),
                     1 if asset.internet_exposed else 0,
                     1 if asset.active_probing_granted else 0,
+                    1 if asset.live_secret_verification_granted else 0,
                     asset.owner,
                     asset.lifecycle_status.value if hasattr(asset.lifecycle_status, "value") else str(asset.lifecycle_status),
                     json.dumps(asset.tags),
@@ -958,6 +962,7 @@ class DatabaseManager:
             criticality=AssetCriticality(row["criticality"]),
             internet_exposed=bool(row["internet_exposed"]),
             active_probing_granted=bool(row["active_probing_granted"]) if "active_probing_granted" in row.keys() else False,
+            live_secret_verification_granted=bool(row["live_secret_verification_granted"]) if "live_secret_verification_granted" in row.keys() else False,
             owner=row["owner"],
             lifecycle_status=AssetLifecycleStatus(row["lifecycle_status"]) if "lifecycle_status" in row.keys() else AssetLifecycleStatus.MONITORED,
             tags=json.loads(row["tags_json"]) if row["tags_json"] else [],

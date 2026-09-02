@@ -66,6 +66,26 @@ async def test_asset_registration_requires_internal_scope_even_for_admin_role():
 
 
 @pytest.mark.asyncio
+async def test_live_secret_verification_grant_requires_organization_admin():
+    from fastapi import HTTPException
+
+    analyst = UserProfile(
+        username="analyst", email="analyst@example.test", role=UserRole.SECURITY_ANALYST,
+        scopes=["asset:write"], organization_id="org-secrets",
+    )
+    payload = CreateAssetRequest(
+        name="Secret verification target",
+        type="DOMAIN",
+        target_value="example.com",
+        live_secret_verification_granted=True,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_asset(payload, analyst)
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_scan_start_requires_internal_scope_even_for_admin_role():
     from starlette.requests import Request
     from fastapi import HTTPException

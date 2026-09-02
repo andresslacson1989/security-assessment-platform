@@ -38,6 +38,7 @@ class CreateAssetRequest(BaseModel):
     criticality: AssetCriticality = Field(default=AssetCriticality.MEDIUM)
     internet_exposed: bool = Field(default=True)
     active_probing_granted: bool = Field(default=False, description="Explicit authorization for intrusive probing")
+    live_secret_verification_granted: bool = Field(default=False, description="Explicit authorization for live secret verification")
     tags: List[str] = Field(default_factory=list)
     owner: Optional[str] = Field(default=None)
 
@@ -50,6 +51,7 @@ class UpdateAssetRequest(BaseModel):
     owner: Optional[str] = Field(default=None)
     lifecycle_status: Optional[AssetLifecycleStatus] = Field(default=None)
     active_probing_granted: Optional[bool] = Field(default=None, description="Explicit authorization for intrusive probing")
+    live_secret_verification_granted: Optional[bool] = Field(default=None, description="Explicit authorization for live secret verification")
 
 
 @router.get("", summary="List Monitored Organization Assets")
@@ -82,6 +84,8 @@ async def create_asset(
     allow_internal = authorize_internal_target(current_user, payload.target_value)
     if payload.active_probing_granted and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may grant intrusive probing authorization.")
+    if payload.live_secret_verification_granted and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may grant live secret verification authorization.")
     try:
         assert_safe_target(payload.type.value, payload.target_value.strip(), allow_internal=allow_internal)
     except (SSRFProtectionError, PathSandboxViolation) as err:
@@ -98,6 +102,7 @@ async def create_asset(
         criticality=payload.criticality,
         internet_exposed=payload.internet_exposed,
         active_probing_granted=payload.active_probing_granted,
+        live_secret_verification_granted=payload.live_secret_verification_granted,
         tags=payload.tags,
         owner=payload.owner or current_user.username,
         created_at=utc_now(),
@@ -158,6 +163,10 @@ async def update_asset(
         if current_user.role != UserRole.ADMIN:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may change intrusive probing authorization.")
         asset.active_probing_granted = bool(payload.active_probing_granted)
+    if "live_secret_verification_granted" in payload.model_fields_set:
+        if current_user.role != UserRole.ADMIN:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an organization administrator may change live secret verification authorization.")
+        asset.live_secret_verification_granted = bool(payload.live_secret_verification_granted)
     asset.updated_at = utc_now()
 
     updated = db_manager.create_asset(asset)

@@ -152,6 +152,7 @@ async def start_security_scan(
         project_id=asset.project_id if asset else payload.project_id,
         asset_id=asset.id if asset else None,
         active_probing_granted=bool(asset and asset.active_probing_granted),
+        live_secret_verification_granted=bool(asset and asset.live_secret_verification_granted),
         target=target,
         profile=payload.profile,
         enabled_engines=selected_engines,

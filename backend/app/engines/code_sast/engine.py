@@ -81,16 +81,20 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
 
         repo_path = str(workspace)
         scan_target = target.model_copy(update={"value": repo_path})
+        scan_id = kwargs.get("scan_id") or "active"
         record_sbom = kwargs.get("record_sbom_report")
         # The production engine owns this gate; callers cannot downgrade an
         # assured scan by passing a generic boolean override.
         require_managed_binary = True
         live_authorization = kwargs.get("live_secret_authorization")
+        organization_id = kwargs.get("organization_id")
         allow_live_verification = (
             isinstance(live_authorization, dict)
             and live_authorization.get("approved") is True
-            and live_authorization.get("organization_id") == kwargs.get("organization_id")
-            and live_authorization.get("assessment_id")
+            and isinstance(organization_id, str)
+            and bool(organization_id.strip())
+            and live_authorization.get("organization_id") == organization_id
+            and live_authorization.get("assessment_id") == scan_id
         )
         failed_primary_tools = set()
 
@@ -127,7 +131,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("gitleaks", gitleaks_adapter, len(gitleaks_findings))
@@ -135,7 +139,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "gitleaks"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("gitleaks")
@@ -160,7 +164,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                         allow_live_verification=allow_live_verification,
                     )
@@ -169,7 +173,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "trufflehog"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("trufflehog")
@@ -194,7 +198,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("bandit", bandit_adapter, len(bandit_findings))
@@ -202,7 +206,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "bandit"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("bandit")
@@ -227,7 +231,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("semgrep", semgrep_adapter, len(semgrep_findings))
@@ -235,7 +239,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "semgrep"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("semgrep")
@@ -260,7 +264,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("retire", retire_adapter, len(retire_findings))
@@ -268,7 +272,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "retire"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("retire")
@@ -293,7 +297,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         record_sbom_report=record_sbom,
                         require_managed_binary=require_managed_binary,
                     )
@@ -302,7 +306,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "syft"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("syft")
@@ -327,7 +331,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("grype", grype_adapter, len(grype_findings))
@@ -335,7 +339,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "grype"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("grype")
@@ -360,7 +364,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("osv-scanner", osv_adapter, len(osv_findings))
@@ -368,7 +372,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "osv-scanner"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("osv-scanner")
@@ -393,7 +397,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         config,
                         emit_log,
                         emit_finding,
-                        scan_id="active",
+                        scan_id=scan_id,
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("trivy", trivy_adapter, len(trivy_findings))
@@ -401,7 +405,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         if f.fingerprint not in existing_fps:
                             existing_fps.add(f.fingerprint)
                             f.source_tool = "trivy"
-                            f.scan_id = "active"
+                            f.scan_id = scan_id
                             findings.append(f)
                 else:
                     failed_primary_tools.add("trivy")
@@ -421,7 +425,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         for f in secret_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -431,7 +435,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         for f in git_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -442,7 +446,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         for f in crypto_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -451,7 +455,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         for f in inj_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -461,7 +465,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         for f in taint_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 
@@ -472,7 +476,7 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         for f in dep_findings:
             if f.fingerprint not in existing_fps:
                 existing_fps.add(f.fingerprint)
-                f.scan_id = "active"
+                f.scan_id = scan_id
                 findings.append(f)
                 await emit_finding(f)
 

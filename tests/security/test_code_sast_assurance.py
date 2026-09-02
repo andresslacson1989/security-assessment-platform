@@ -110,6 +110,48 @@ async def test_e13_trufflehog_live_verification_requires_tenant_grant(tmp_path):
     execute.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_e13_live_secret_authorization_is_bound_to_the_actual_scan(tmp_path):
+    """A stale authorization record must not enable live secret verification."""
+    engine = CodeSastAssessmentEngine()
+    target = Target(name="repo", type=TargetType.LOCAL_PATH, value=str(tmp_path))
+    truffle_run = AsyncMock(return_value=[])
+    unavailable = AsyncMock(return_value=False)
+    with patch("app.engines.code_sast.engine.GitleaksAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.BanditAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.SemgrepAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.RetireJSAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.SyftAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.GrypeAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.OSVScannerAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.TrivyAdapter.is_available", unavailable), \
+         patch("app.engines.code_sast.engine.TruffleHogAdapter.is_available", AsyncMock(return_value=True)), \
+         patch("app.engines.code_sast.engine.TruffleHogAdapter.run", truffle_run), \
+         patch("app.engines.code_sast.engine.audit_code_secrets", new=AsyncMock(return_value=[])), \
+         patch("app.engines.code_sast.engine.audit_git_commit_history", new=AsyncMock(return_value=[])), \
+         patch("app.engines.code_sast.engine.audit_crypto_patterns", new=AsyncMock(return_value=[])), \
+         patch("app.engines.code_sast.engine.audit_injection_patterns", new=AsyncMock(return_value=[])), \
+         patch("app.engines.code_sast.engine.audit_dependencies", new=AsyncMock(return_value=[])), \
+         patch("app.engines.code_sast.engine.audit_ast_taint_flow", return_value=[]):
+        await engine.run(
+            target,
+            ScanConfig(),
+            AsyncMock(),
+            AsyncMock(),
+            AsyncMock(),
+            scan_id="scan-current",
+            organization_id="org-current",
+            live_secret_authorization={
+                "approved": True,
+                "organization_id": "org-current",
+                "assessment_id": "scan-stale",
+            },
+            workspace_roots=[tmp_path],
+        )
+
+    assert truffle_run.await_args.kwargs["allow_live_verification"] is False
+
+
 def test_e13_taint_sanitizer_prevents_false_positive_and_output_is_deterministic(tmp_path):
     source = tmp_path / "app.py"
     source.write_text(
