@@ -136,6 +136,11 @@ class NucleiAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Nuclei binary not found on host. Skipping Nuclei execution.")
             return findings
 
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            await emit_log(LogLevel.ERROR, "Nuclei execution blocked: a gateway-issued ValidatedTarget is required.")
+            return findings
+
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(nuclei_path):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Nuclei execution blocked: executable is not a trusted managed installation.")
@@ -147,8 +152,8 @@ class NucleiAdapter(BaseToolAdapter):
 
         target_url = normalize_target_url(target.value)
         host_header = None
-        if kwargs.get("validated_target") is not None:
-            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
+        if validated_target is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
         cmd = [
             nuclei_path,
             "-u", target_url,

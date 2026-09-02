@@ -71,6 +71,11 @@ class HttpxAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Httpx binary not found. Skipping Httpx probe.")
             return findings
 
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            await emit_log(LogLevel.ERROR, "Httpx execution blocked: a gateway-issued ValidatedTarget is required.")
+            return findings
+
         require_managed = bool(kwargs.get("require_managed_binary"))
         if require_managed and not self.verify_managed_binary(binary):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
@@ -86,7 +91,6 @@ class HttpxAdapter(BaseToolAdapter):
             target_url = f"https://{target_url}"
 
         host_header = None
-        validated_target = kwargs.get("validated_target")
         if validated_target is not None:
             target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
 

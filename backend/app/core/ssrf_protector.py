@@ -7,6 +7,9 @@ from __future__ import annotations
 import ipaddress
 import socket
 import urllib.parse
+import hashlib
+import hmac
+import json
 import httpx
 import httpcore
 from typing import Any, List, Tuple, Optional
@@ -55,16 +58,97 @@ class SSRFProtectionError(ValueError):
     pass
 
 
+def _validated_target_context_digest(validated_target: Any) -> str:
+    """Return the digest of authorization data bound into the gateway seal."""
+    context = getattr(validated_target, "authorization_context", None)
+    if not isinstance(context, dict):
+        raise SSRFProtectionError("Validated target authorization context is invalid.")
+    material = {
+        "allow_internal": context.get("allow_internal"),
+        "active_probing_granted": context.get("active_probing_granted"),
+        "state_changing_granted": context.get("state_changing_granted"),
+        "dns_zone_authorized": context.get("dns_zone_authorized"),
+        "authorized_scope": list(getattr(validated_target, "authorized_scope", [])),
+        "workspace_id": getattr(validated_target, "workspace_id", None) or "",
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def validate_validated_target(validated_target: Any) -> Any:
+    """Re-validate the gateway-issued target identity immediately before use."""
+    from app.core.models import ValidatedTarget, TargetType
+
+    if not isinstance(validated_target, ValidatedTarget):
+        raise SSRFProtectionError("Execution requires a gateway-issued ValidatedTarget instance.")
+
+    required_strings = (
+        "target_id",
+        "authorization_decision_id",
+        "integrity_seal",
+        "organization_id",
+        "canonical_value",
+        "selected_destination",
+        "policy_version",
+    )
+    if any(
+        not isinstance(getattr(validated_target, field, None), str)
+        or not getattr(validated_target, field)
+        for field in required_strings
+    ):
+        raise SSRFProtectionError("Validated target is missing required identity fields.")
+    if validated_target.policy_version != APP_VERSION:
+        raise SSRFProtectionError("Validated target policy version is no longer current.")
+
+    expected_target_id = hashlib.sha256(
+        f"{validated_target.canonical_value}:{validated_target.selected_destination}".encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(validated_target.target_id, expected_target_id):
+        raise SSRFProtectionError("Validated target identity does not match its canonical destination.")
+
+    expected_decision_id = hashlib.sha256(
+        f"{validated_target.organization_id}:{validated_target.project_id or ''}:{validated_target.asset_id or ''}:"
+        f"{validated_target.target_id}:{validated_target.policy_version}".encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(validated_target.authorization_decision_id, expected_decision_id):
+        raise SSRFProtectionError("Validated target authorization identity is invalid.")
+
+    context = validated_target.authorization_context
+    expected_context = {
+        "allow_internal": isinstance(context.get("allow_internal"), bool),
+        "active_probing_granted": isinstance(context.get("active_probing_granted"), bool),
+        "state_changing_granted": isinstance(context.get("state_changing_granted"), bool),
+        "dns_zone_authorized": isinstance(context.get("dns_zone_authorized"), bool),
+    }
+    if not all(expected_context.values()) or context.get("validated_by") != "assert_safe_target":
+        raise SSRFProtectionError("Validated target authorization context is invalid.")
+    if context["dns_zone_authorized"] != (validated_target.target_type == TargetType.DOMAIN):
+        raise SSRFProtectionError("Validated target DNS authorization context is inconsistent.")
+    if (context["active_probing_granted"] or context["state_changing_granted"]) and not validated_target.asset_id:
+        raise SSRFProtectionError("Intrusive authorization is not bound to an inventory asset.")
+    if not validated_target.selected_destination:
+        raise SSRFProtectionError("Validated target has no selected destination.")
+
+    expected_seal = hashlib.sha256(
+        f"GATEWAY_SEAL:{validated_target.target_id}:{validated_target.authorization_decision_id}:"
+        f"{validated_target.policy_version}:{_validated_target_context_digest(validated_target)}".encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(validated_target.integrity_seal, expected_seal):
+        raise SSRFProtectionError("Validated target integrity seal is invalid.")
+    return validated_target
+
+
 class ValidatedTargetTransport(httpx.AsyncBaseTransport):
     """httpx transport that pins TCP connections while preserving hostname SNI."""
 
     def __init__(self, validated_target: Any):
-        self._validated_target = validated_target
+        self._validated_target = validate_validated_target(validated_target)
         self._transport = httpx.AsyncHTTPTransport(retries=0, verify=True, trust_env=False)
         self._transport._pool._network_backend = _PinnedNetworkBackend(
-            str(getattr(validated_target, "selected_destination", ""))
+            str(self._validated_target.selected_destination)
         )
-        raw_value = str(getattr(validated_target, "canonical_value", ""))
+        raw_value = str(self._validated_target.canonical_value)
         parsed = urllib.parse.urlsplit(raw_value if "://" in raw_value else f"https://{raw_value}")
         self._authorized_host = (parsed.hostname or "").lower().strip("[]")
 
@@ -103,6 +187,7 @@ class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
 
 def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, str]:
     """Bind an HTTP URL to the gateway-selected address and retain its Host name."""
+    validated_target = validate_validated_target(validated_target)
     parsed = urllib.parse.urlsplit(url.strip())
     host = parsed.hostname
     selected = getattr(validated_target, "selected_destination", None)
@@ -122,6 +207,7 @@ def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, 
 def is_url_in_validated_origin(url: str, validated_target: Any) -> bool:
     """Return whether an observed URL remains within the validated web origin."""
     try:
+        validated_target = validate_validated_target(validated_target)
         candidate = urllib.parse.urlsplit(str(url).strip())
         canonical_raw = str(getattr(validated_target, "canonical_value", ""))
         canonical = urllib.parse.urlsplit(
@@ -433,16 +519,6 @@ def create_validated_target(
                         f"Resolved IP '{resolved_ip}' for target is blocked: {reason}"
                     )
 
-    # Compute cryptographic identity digests per Contract 09 §1.1
-    policy_version = APP_VERSION
-    target_id = hashlib.sha256(f"{canonical_val}:{selected_dest}".encode("utf-8")).hexdigest()
-    auth_decision_id = hashlib.sha256(
-        f"{organization_id}:{project_id or ''}:{asset_id or ''}:{target_id}:{policy_version}".encode("utf-8")
-    ).hexdigest()
-    integrity_seal = hashlib.sha256(
-        f"GATEWAY_SEAL:{target_id}:{auth_decision_id}:{policy_version}".encode("utf-8")
-    ).hexdigest()
-
     auth_ctx = {
         "allow_internal": allow_internal,
         "validated_by": "assert_safe_target",
@@ -450,6 +526,29 @@ def create_validated_target(
         "state_changing_granted": bool(state_changing_granted),
         "dns_zone_authorized": (t_type_str == "DOMAIN"),
     }
+
+    # Compute cryptographic identity digests per Contract 09 §1.1. The seal
+    # also binds authorization context so nested mutable data cannot be changed
+    # after construction without failing the next execution-boundary check.
+    policy_version = APP_VERSION
+    target_id = hashlib.sha256(f"{canonical_val}:{selected_dest}".encode("utf-8")).hexdigest()
+    auth_decision_id = hashlib.sha256(
+        f"{organization_id}:{project_id or ''}:{asset_id or ''}:{target_id}:{policy_version}".encode("utf-8")
+    ).hexdigest()
+    context_material = {
+        "allow_internal": auth_ctx["allow_internal"],
+        "active_probing_granted": auth_ctx["active_probing_granted"],
+        "state_changing_granted": auth_ctx["state_changing_granted"],
+        "dns_zone_authorized": auth_ctx["dns_zone_authorized"],
+        "authorized_scope": list(authorized_scope or []),
+        "workspace_id": workspace_id or "",
+    }
+    context_digest = hashlib.sha256(
+        json.dumps(context_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    integrity_seal = hashlib.sha256(
+        f"GATEWAY_SEAL:{target_id}:{auth_decision_id}:{policy_version}:{context_digest}".encode("utf-8")
+    ).hexdigest()
 
     return ValidatedTarget(
         target_id=target_id,

@@ -105,6 +105,11 @@ class FfufAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "FFuF binary not found on host. Skipping FFuF execution.")
             return findings
 
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            await emit_log(LogLevel.ERROR, "FFuF execution blocked: a gateway-issued ValidatedTarget is required.")
+            return findings
+
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(ffuf_path):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "FFuF execution blocked: executable is not a trusted managed installation.")
@@ -118,7 +123,6 @@ class FfufAdapter(BaseToolAdapter):
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"http://{target_url}"
         host_header = None
-        validated_target = kwargs.get("validated_target")
         if validated_target is not None:
             target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
 

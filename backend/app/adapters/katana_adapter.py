@@ -65,6 +65,11 @@ class KatanaAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Katana binary not found. Skipping Katana SPA crawler.")
             return findings
 
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            await emit_log(LogLevel.ERROR, "Katana execution blocked: a gateway-issued ValidatedTarget is required.")
+            return findings
+
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Katana execution blocked: executable is not a trusted managed installation.")
@@ -78,7 +83,6 @@ class KatanaAdapter(BaseToolAdapter):
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"https://{target_url}"
         host_header = None
-        validated_target = kwargs.get("validated_target")
         if validated_target is not None:
             target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
 

@@ -9,7 +9,7 @@ import asyncio
 import os
 import re
 import shutil
-from typing import Optional, List, Callable, Awaitable, Tuple
+from typing import Any, Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
@@ -139,6 +139,18 @@ class BaseToolAdapter(ABC):
             binary,
             expected_version=getattr(self, "approved_version", None),
         )
+
+    def require_validated_target(self, kwargs: dict) -> Optional[Any]:
+        """Require a gateway-issued target for managed network execution."""
+        if not kwargs.get("require_managed_binary"):
+            return kwargs.get("validated_target")
+        from app.core.ssrf_protector import validate_validated_target
+
+        try:
+            return validate_validated_target(kwargs.get("validated_target"))
+        except Exception:
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            return None
 
     @abstractmethod
     async def get_version(

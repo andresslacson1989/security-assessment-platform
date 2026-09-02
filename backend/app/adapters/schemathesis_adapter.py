@@ -67,6 +67,11 @@ class SchemathesisAdapter(BaseToolAdapter):
             await emit_log(LogLevel.WARNING, "Schemathesis binary not found. Skipping API contract fuzzing.")
             return findings
 
+        validated_target = self.require_validated_target(kwargs)
+        if kwargs.get("require_managed_binary") and validated_target is None:
+            await emit_log(LogLevel.ERROR, "Schemathesis execution blocked: a gateway-issued ValidatedTarget is required.")
+            return findings
+
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(binary):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "Schemathesis execution blocked: executable is not a trusted managed installation.")
@@ -80,8 +85,8 @@ class SchemathesisAdapter(BaseToolAdapter):
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
             target_url = f"https://{target_url}"
         host_header = None
-        if kwargs.get("validated_target") is not None:
-            target_url, host_header = bind_url_to_validated_target(target_url, kwargs["validated_target"])
+        if validated_target is not None:
+            target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
 
         # Schema detection (e.g. /openapi.json, /swagger.json, /api-docs)
         schema_url = target_url

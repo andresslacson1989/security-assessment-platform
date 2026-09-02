@@ -20,6 +20,7 @@ from app.core.models import (
     ToolAdapterConfig,
     ToolExecutionMode,
 )
+from app.core.ssrf_protector import create_validated_target
 from app.adapters.base_adapter import BaseToolAdapter
 from app.adapters.nmap_adapter import NmapAdapter, extract_host
 from app.adapters.sslyze_adapter import SslyzeAdapter
@@ -1218,15 +1219,12 @@ class TestHttpxAdapter:
     @pytest.mark.asyncio
     async def test_httpx_binds_validated_destination_and_preserves_host_and_sni(self):
         from app.adapters.httpx_adapter import HttpxAdapter
-        from types import SimpleNamespace
 
         adapter = HttpxAdapter()
         target = Target(name="Web", type=TargetType.URL, value="https://example.com")
         config = ScanConfig()
-        validated = SimpleNamespace(
-            canonical_value="https://example.com",
-            selected_destination="93.184.216.34",
-        )
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+            validated = create_validated_target(target)
         commands = []
 
         async def execute(cmd, **_kwargs):

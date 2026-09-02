@@ -33,7 +33,7 @@ from app.core.models import (
 )
 from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
-from app.core.ssrf_protector import ValidatedTargetTransport
+from app.core.ssrf_protector import ValidatedTargetTransport, create_validated_target as gateway_create_validated_target
 from app.core.orchestrator import ScanOrchestrator
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.engines.network.dns_hygiene import audit_dns_hygiene
@@ -818,6 +818,10 @@ async def test_scenario_14_interactive_http_repeater():
     auth_token = create_access_token(auth_user)
     auth_headers = {"Authorization": f"Bearer {auth_token}"}
 
+    def build_test_validated_target(target, destination):
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=[destination]):
+            return gateway_create_validated_target(target, organization_id=auth_user.organization_id)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Mock httpx inside execute_repeater_request for predictable testing
@@ -857,10 +861,10 @@ async def test_scenario_14_interactive_http_repeater():
             # Verify timeout error handling
             with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
                  patch("app.api.tools.assert_safe_url"), \
-                 patch("app.api.tools.create_validated_target", return_value=SimpleNamespace(
-                     canonical_value="https://slow.example.com",
-                     selected_destination="203.0.113.10",
-                 )):
+                 patch(
+                     "app.api.tools.create_validated_target",
+                     side_effect=lambda target, **kwargs: build_test_validated_target(target, "93.184.216.35"),
+                 ):
                 mock_client = AsyncMock()
                 mock_client.request.side_effect = httpx.TimeoutException("Connection timed out")
                 mock_client_cls.return_value.__aenter__.return_value = mock_client
@@ -876,10 +880,10 @@ async def test_scenario_14_interactive_http_repeater():
         # Verify network/connection error handling
         with patch("app.api.tools.httpx.AsyncClient") as mock_client_cls, \
              patch("app.api.tools.assert_safe_url"), \
-             patch("app.api.tools.create_validated_target", return_value=SimpleNamespace(
-                 canonical_value="https://unreachable.example.com",
-                 selected_destination="203.0.113.11",
-             )):
+             patch(
+                 "app.api.tools.create_validated_target",
+                 side_effect=lambda target, **kwargs: build_test_validated_target(target, "93.184.216.36"),
+             ):
             mock_client = AsyncMock()
             mock_client.request.side_effect = httpx.ConnectError("Connection refused")
             mock_client_cls.return_value.__aenter__.return_value = mock_client

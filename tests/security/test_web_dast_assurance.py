@@ -1,7 +1,6 @@
 """Focused E12 execution-state assurance for the four external DAST adapters."""
 
 import pytest
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
@@ -11,10 +10,19 @@ from app.adapters.ffuf_adapter import FfufAdapter
 from app.adapters.katana_adapter import KatanaAdapter
 from app.adapters.schemathesis_adapter import SchemathesisAdapter
 from app.engines.web_dast.engine import WebDastAssessmentEngine
-from app.core.ssrf_protector import ValidatedTargetTransport
+from app.core.ssrf_protector import (
+    ValidatedTargetTransport,
+    create_validated_target,
+    validate_validated_target,
+)
 
 
 TARGET = Target(name="Example", type=TargetType.URL, value="https://example.com")
+
+
+def make_validated_target():
+    with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        return create_validated_target(TARGET)
 
 
 @pytest.mark.asyncio
@@ -113,6 +121,7 @@ async def test_e12_managed_execution_passes_prelaunch_check_to_process_boundary(
     config = ScanConfig()
     setattr(config.adapters, path_attr, None)
     launches = []
+    validated = make_validated_target()
 
     async def capture(command, **kwargs):
         launches.append((command, kwargs))
@@ -122,7 +131,14 @@ async def test_e12_managed_execution_passes_prelaunch_check_to_process_boundary(
          patch.object(adapter, "verify_managed_binary", return_value=True), \
          patch.object(adapter, "get_version", new=AsyncMock(return_value=version)), \
          patch.object(adapter, "execute_command", new=capture):
-        await adapter.run(TARGET, config, AsyncMock(), AsyncMock(), require_managed_binary=True)
+        await adapter.run(
+            TARGET,
+            config,
+            AsyncMock(),
+            AsyncMock(),
+            require_managed_binary=True,
+            validated_target=validated,
+        )
         assert len(launches) >= 1
         assert callable(launches[-1][1]["pre_launch_check"])
         assert launches[-1][1]["pre_launch_check"]() is True
@@ -137,7 +153,7 @@ async def test_nuclei_command_binds_validated_destination_and_preserves_host():
         captured.append(command)
         return 0, "", ""
 
-    validated = SimpleNamespace(selected_destination="93.184.216.34")
+    validated = make_validated_target()
     with patch.object(adapter, "resolve_binary_path", return_value="/managed/nuclei"), \
          patch.object(adapter, "get_version", new=AsyncMock(return_value="nuclei v3.2.0")), \
          patch.object(adapter, "execute_command", new=capture_command):
@@ -150,10 +166,7 @@ async def test_nuclei_command_binds_validated_destination_and_preserves_host():
 @pytest.mark.asyncio
 async def test_katana_discards_out_of_origin_endpoint_observations():
     adapter = KatanaAdapter()
-    validated = SimpleNamespace(
-        canonical_value="https://example.com",
-        selected_destination="93.184.216.34",
-    )
+    validated = make_validated_target()
     endpoints = []
     output = (
         '{"request":{"endpoint":"https://example.com/account"}}\n'
@@ -180,10 +193,7 @@ async def test_katana_discards_out_of_origin_endpoint_observations():
 
 @pytest.mark.asyncio
 async def test_validated_http_transport_pins_address_and_rejects_origin_escape():
-    validated = SimpleNamespace(
-        canonical_value="https://example.com",
-        selected_destination="93.184.216.34",
-    )
+    validated = make_validated_target()
     transport = ValidatedTargetTransport(validated)
     response = httpx.Response(200, request=httpx.Request("GET", "https://93.184.216.34/"))
     transport._transport.handle_async_request = AsyncMock(return_value=response)
@@ -195,6 +205,19 @@ async def test_validated_http_transport_pins_address_and_rejects_origin_escape()
 
     with pytest.raises(ValueError, match="escaped validated origin"):
         await transport.handle_async_request(httpx.Request("GET", "https://attacker.example/"))
+
+
+def test_validated_target_rejects_tampered_authorization_context():
+    validated = make_validated_target()
+    validated.authorized_scope.append("attacker.example")
+
+    with pytest.raises(ValueError, match="integrity seal"):
+        validate_validated_target(validated)
+
+
+def test_validated_target_rejects_lookalike_object():
+    with pytest.raises(ValueError, match="gateway-issued ValidatedTarget"):
+        validate_validated_target({"selected_destination": "93.184.216.34"})
 
 
 @pytest.mark.asyncio
