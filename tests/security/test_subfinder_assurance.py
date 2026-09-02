@@ -36,6 +36,20 @@ def test_command_is_structured_and_has_no_client_flags():
     assert "virustotal" not in SubfinderAdapter.ALLOWED_PROVIDERS
 
 
+def test_provider_environment_excludes_host_credentials_and_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUBFINDER_PROVIDER_CONFIG", "host-secret-config")
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "host-secret")
+    monkeypatch.setenv("HTTPS_PROXY", "http://attacker-proxy.invalid")
+
+    environment = SubfinderAdapter._provider_environment(str(tmp_path))
+
+    assert environment["HOME"] == str(tmp_path)
+    assert environment["USERPROFILE"] == str(tmp_path)
+    assert "SUBFINDER_PROVIDER_CONFIG" not in environment
+    assert "VIRUSTOTAL_API_KEY" not in environment
+    assert "HTTPS_PROXY" not in environment
+
+
 def test_unmanaged_binary_cannot_satisfy_assured_execution():
     assert SubfinderAdapter().verify_managed_binary("/usr/local/bin/subfinder") is False
 

@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import re
 import ipaddress
+import os
+import tempfile
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 from urllib.parse import urlparse
 
@@ -30,6 +32,28 @@ class SubfinderAdapter(BaseToolAdapter):
     MAX_DOMAINS = 10_000
     ALLOWED_PROFILES = {"FULL_STACK", "NETWORK_ONLY", "PASSIVE_OSINT", "DAST_ONLY"}
     ALLOWED_PROVIDERS = ("crtsh",)
+
+    @staticmethod
+    def _provider_environment(isolated_home: str) -> Dict[str, str]:
+        """Return only runtime variables needed by the standalone binary.
+
+        Provider credentials, proxy settings, and the user's Subfinder config
+        are intentionally excluded from the enterprise-assured baseline.
+        """
+        environment: Dict[str, str] = {
+            "HOME": isolated_home,
+            "USERPROFILE": isolated_home,
+            "XDG_CONFIG_HOME": isolated_home,
+            "APPDATA": isolated_home,
+            "LOCALAPPDATA": isolated_home,
+            "TMP": tempfile.gettempdir(),
+            "TEMP": tempfile.gettempdir(),
+        }
+        for name in ("PATH", "SystemRoot", "WINDIR", "PATHEXT", "LANG", "LC_ALL"):
+            value = os.environ.get(name)
+            if value:
+                environment[name] = value
+        return environment
 
     @staticmethod
     def normalize_domain(value: str) -> Optional[str]:
@@ -83,10 +107,12 @@ class SubfinderAdapter(BaseToolAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command(
-            [binary, "-version"], timeout=10.0,
-            pre_launch_check=lambda: self.verify_managed_binary(binary),
-        )
+        with tempfile.TemporaryDirectory(prefix="cyberassess-subfinder-version-") as isolated_home:
+            code, stdout, stderr = await self.execute_command(
+                [binary, "-version"], timeout=10.0,
+                env=self._provider_environment(isolated_home),
+                pre_launch_check=lambda: self.verify_managed_binary(binary),
+            )
         output = stdout + " " + stderr
         match = re.search(r"(?<![0-9A-Za-z])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z])", output, re.IGNORECASE)
         if match:
@@ -186,10 +212,12 @@ class SubfinderAdapter(BaseToolAdapter):
         await emit_log(LogLevel.INFO, f"Executing Subfinder passive subdomain reconnaissance on: {apex_domain}")
         cmd = self.build_command(binary, apex_domain)
 
-        code, stdout, stderr = await self.execute_command(
-            cmd, timeout=30.0, emit_log=emit_log,
-            pre_launch_check=lambda: self.verify_managed_binary(binary),
-        )
+        with tempfile.TemporaryDirectory(prefix="cyberassess-subfinder-run-") as isolated_home:
+            code, stdout, stderr = await self.execute_command(
+                cmd, timeout=30.0, emit_log=emit_log,
+                env=self._provider_environment(isolated_home),
+                pre_launch_check=lambda: self.verify_managed_binary(binary),
+            )
         if code != 0 and not stdout:
             self.last_execution_state = (NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED)
             await emit_log(LogLevel.WARNING, f"Subfinder exited with code {code}: {stderr.strip()[:200]}")
