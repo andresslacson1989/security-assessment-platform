@@ -1,7 +1,7 @@
 # Contract 05: Deliverables, Acceptance Criteria & Adversarial Security Scenarios
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 13.0.0 (Acceptance Scenarios 1–32 & Adversarial Security Matrix SEC-001 through SEC-030 with Production Path Verification)  
+**Document Version:** 14.0.0 (Acceptance Scenarios 1–35, 26-Tool Fleet Validation & Adversarial Security Matrix SEC-001 through SEC-035)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Verification Criteria, Acceptance Scenarios & Mandatory Adversarial Test Vectors  
 
@@ -12,15 +12,15 @@
 The platform is considered complete ONLY when all following criteria are satisfied:
 1. **Security & Identity:** No hardcoded credentials; secure first-run bootstrap; library-backed RFC 8725 JWT enforcement; database-authoritative token and API-key revocation; multi-tenant database-level IDOR prevention; universal target security gateway with connection-level destination binding and fail-closed DNS; server-derived workspace sandboxing; real SHA-256 tool integrity; privileged operation tamper-evident audit logging.
 2. **Persistence:** Relational database (SQLite WAL / PostgreSQL) as single source of truth; zero JSON fallback resurrection; transactional scan and finding persistence; zero silent exception swallowing.
-3. **Execution & Governance:** Bounded scan concurrency; execution timeout enforcement; scan cancellation killing entire process tree via `ProcessSupervisor`; resource quotas enforced.
+3. **Execution & Governance:** Bounded scan concurrency; execution timeout enforcement; scan cancellation killing entire process tree via `ProcessSupervisor`; resource quotas enforced; non-destructive execution bounds strictly enforced for auxiliary scanners.
 4. **Findings & Intelligence:** Canonical findings with historical occurrences; multi-dimensional safe correlation; versioned contextual risk scoring (`contextual_risk_model_v2`); persistent SLA clock without reset on redetections; cryptographic evidence hashing.
-5. **Supply Chain:** Pinned tool manifest; real SHA-256 hashes; quarantine-before-promotion pipeline; CycloneDX 1.5 SBOM generation.
-6. **API & Frontend:** Restrictive CORS; request correlation IDs; secret masking across all output channels; real auth state in UI.
+5. **Supply Chain:** Pinned tool manifest for all 26 supported tools; real SHA-256 hashes; quarantine-before-promotion pipeline; CycloneDX 1.5 SBOM generation.
+6. **API & Frontend:** Restrictive CORS; request correlation IDs; secret masking across all output channels; real auth state in UI; unclipped telemetry dossiers.
 7. **Verification:** 100% automated test pass rate across unit, integration, contract, and adversarial security test suites.
 
 ---
 
-## 2. Mandatory Adversarial Security Matrix (SEC-001 to SEC-030)
+## 2. Mandatory Adversarial Security Matrix (SEC-001 to SEC-035)
 
 | Scenario ID | Test Name | Invariant Under Test |
 |---|---|---|
@@ -54,4 +54,8 @@ The platform is considered complete ONLY when all following criteria are satisfi
 | **SEC-028** | Report Secret Leakage | Exported HTML, JSON, and SARIF reports sanitize sensitive credentials. |
 | **SEC-029** | Database Inconsistency & No JSON Resurrection | Scan operations execute within transactional boundaries; JSON cannot resurrect deleted records. |
 | **SEC-030** | Fail-Closed Startup Configuration | Production mode fails startup if secret keys are missing or insecure. |
-```
+| **SEC-031** | Metasploit Non-Destructive Boundary | Automated scans using `metasploit` strictly execute safe `auxiliary/scanner/*` modules; exploit payloads are rejected. |
+| **SEC-032** | sqlmap Bounded Execution Mode | `sqlmap` automated adapter runs with `--batch --risk=1 --level=1` only; data dumps and OS shells are blocked. |
+| **SEC-033** | Hydra Rate Limiting Enforcement | `hydra` adapter enforces `-t 2` or `-t 4` concurrency with inter-request delay to prevent service disruption. |
+| **SEC-034** | GTFOBins Host Privilege Rule Evaluation | SUID binaries and sudoers entries matching GTFOBins catalog emit canonical `HOST-PRIV-001` or `HOST-SUDO-001`. |
+| **SEC-035** | 26-Tool Graceful Fallback Guarantee | When any external CLI tool is unavailable or times out, the platform falls back 100% seamlessly to native Python checks without crashing. |

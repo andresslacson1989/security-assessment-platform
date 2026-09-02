@@ -27,7 +27,7 @@
 4. **Pentester Workbench (HTTP Repeater):**
    - Safe interactive HTTP repeater enforcing SSRF controls, size limits, and formatted request/response inspection.
 5. **Toolbox Manager:**
-   - Real-time tool capabilities fleet status (21 tools) with 1-click installation telemetry stream.
+   - Real-time tool capabilities fleet status (26 tools) with 1-click installation telemetry stream.
 6. **Assessment Intelligence & Telemetry Hub (`#telemetry-hub-modal`):**
    - Viewport Ergonomics: Uses responsive 92vh viewport with unified modal-body vertical scrolling to eliminate inner nested scroll traps and prevent content clipping on expanded dossiers.
    - **Tested Links & Endpoints (Per-Link Grouped Matrix)**: Each crawled link renders as an expandable card displaying:

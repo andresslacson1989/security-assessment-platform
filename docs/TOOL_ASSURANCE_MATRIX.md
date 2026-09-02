@@ -1,7 +1,7 @@
 # CyberAssess v14 — Enterprise Tool Assurance Program & Methodology Matrix
 
 ## Document Purpose & Authority
-This specification serves as the **Audit & Assurance Matrix** for all 21 external security tools integrated into the CyberAssess platform.
+This specification serves as the **Audit & Assurance Matrix** for all 26 supported security tool adapters integrated into the CyberAssess platform. It contains 21 numbered external-tool reviews plus five auxiliary/manual adapter reviews defined in Contract 03 §4.1–§4.5.
 
 - **Authoritative Implementation Contract:** [`contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md`](../contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md) defines the canonical 41-point implementation requirements, invocation boundaries, schemas, and security controls.
 - **Audit & Assurance View:** This document provides the high-level methodology overview, evaluation taxonomy, and operational governance mappings.
@@ -33,6 +33,18 @@ This specification serves as the **Audit & Assurance Matrix** for all 21 externa
 | **Cloud Posture** | Prowler | `TOOL-PROWLER` | PRIMARY | AWS, Azure, GCP & K8s CIS Benchmark Auditing | Pure Python Package (pip) |
 | **Kubernetes CIS** | Kube-Bench | `TOOL-KUBE-BENCH` | SPECIALIZED | In-Cluster / Manifest CIS Kubernetes Benchmark Checker | Standalone Go Binary (GitHub Release) |
 | **Container Linter** | Dockle | `TOOL-DOCKLE` | SPECIALIZED | Container Image Best Practice & CIS Docker Linter | Standalone Go Binary (GitHub Release) |
+
+---
+
+The following five auxiliary adapters are part of the same 26-tool fleet. Their constrained operating modes are specified in Contract 03 rather than as numbered external-tool reviews in Contract 09.
+
+| Security Domain | Tool Name | Tool ID | Tool Role | Operating Mode |
+|---|---|---|---|---|
+| **Perimeter / EASM** | Amass | `TOOL-AMASS` | AUXILIARY | `MANUAL_MODE` |
+| **Exploitation / Auxiliary Verification** | Metasploit | `TOOL-METASPLOIT` | AUXILIARY | `MANUAL_MODE` |
+| **Web DAST** | sqlmap | `TOOL-SQLMAP` | AUXILIARY | `MANUAL_MODE` |
+| **Authentication / Password Resilience** | Hydra | `TOOL-HYDRA` | AUXILIARY | `MANUAL_MODE` |
+| **Knowledge / Auxiliary Verification** | GTFOBins | `TOOL-GTFOBINS` | AUXILIARY | `NATIVE_ENGINE_MODE` |
 
 ---
 

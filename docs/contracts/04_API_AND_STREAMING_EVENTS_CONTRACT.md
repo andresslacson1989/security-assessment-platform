@@ -1,7 +1,7 @@
 # Contract 04: Control Plane REST API, SSE Streaming & Multi-Tenant Authorization Specification
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 13.0.0 (Control Plane REST/SSE APIs, One-Time Bootstrap, Library-Backed RFC 8725 JWT, DB-Authoritative IDOR Prevention & Multi-Layer Authorization)  
+**Document Version:** 14.0.0 (Control Plane REST/SSE APIs, Per-Link Telemetry Dossiers, 26-Tool Fleet, RFC 8725 JWT & Multi-Layer Authorization)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST Endpoints, Streaming SSE Protocol, Multi-Tenant Authorization, Middleware & API Security Headers  
 
@@ -20,7 +20,7 @@
 
 ### 1.2 Attack Surface & Asset Inventory Endpoints (`/api/assets`)
 - `GET /api/assets`: Lists monitored assets belonging to the caller's organization (`asset:read`).
-- `POST /api/assets`: Registers a new asset (`asset:write`). Enforces target security gateway validation.
+- `POST /api/assets`: Registers a new asset (`asset:write`). Enforces target security gateway validation for all `AssetType` variants.
 - `GET /api/assets/{asset_id}`: Retrieves asset details (Enforces database-level tenant isolation `WHERE id = ? AND organization_id = ?`).
 - `PUT /api/assets/{asset_id}`: Updates asset metadata (`asset:write`, tenant-scoped).
 - `DELETE /api/assets/{asset_id}`: Removes asset from inventory (`asset:delete`, tenant-scoped).
@@ -28,8 +28,8 @@
 ### 1.3 Scan Execution & Lifecycle Endpoints (`/api/scans`)
 - `POST /api/scans/start`: Initiates a security assessment (`scan:create`). Enforces universal target security gateway (`assert_safe_target()`) and server-derived workspace sandboxing.
 - `GET /api/scans/{scan_id}`: Retrieves full scan job snapshot and findings (`scan:read`, tenant-scoped).
-- `GET /api/scans/{scan_id}/telemetry`: Retrieves organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface (`scan:read`, tenant-scoped).
-- `POST /api/scans/{scan_id}/cancel`: Cancels an active scan (`scan:cancel`) and forcefully terminates running worker subprocess trees via `ProcessSupervisor`.
+- `GET /api/scans/{scan_id}/telemetry`: Retrieves organized assessment intelligence, per-tool execution logs, per-link grouped security dossiers (`tests_performed`, `tools_executed`, `findings`), and actively resolved subdomain attack surface (`scan:read`, tenant-scoped).
+- `POST /api/scans/{scan_id}/cancel`: Cancels an active scan (`scan:cancel`), halts async workers, broadcasts `event: cancelled` SSE, and resets UI state.
 - `GET /api/scans` / `GET /api/scans/history`: Lists historical scan summaries for caller's organization.
 - `DELETE /api/scans/{scan_id}`: Deletes a scan record (`scan:delete`, tenant-scoped).
 

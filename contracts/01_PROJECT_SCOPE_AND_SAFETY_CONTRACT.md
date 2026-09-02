@@ -16,11 +16,11 @@ CyberAssess is logically separated into:
 2. **Execution Plane:** Isolated worker execution environment running containerized or sandboxed workers (DAST, SAST, Infra/Cloud) with strict workspace confinement, egress network controls, resource limits, and real-time process lifecycle governance via `ProcessSupervisor`.
 3. **Evidence & Persistence Layer:** Authoritative relational database (PostgreSQL for enterprise, SQLite WAL for single-node standalone) and encrypted object storage for reproducible, cryptographically hashed evidence artifacts. JSON storage is strictly for exports/backups and never serves as runtime persistence authority.
 
-The platform orchestrates an authoritative fleet of **26 specialized security tool adapters** backed by native fallback engines across six security domains:
+The platform orchestrates an authoritative fleet of **26 specialized security tool adapters** backed by native fallback engines across seven security domains:
 - **Network Perimeter & EASM:** `nmap`, `sslyze`, `subfinder`, `httpx`, `amass`
 - **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`, `sqlmap`, `schemathesis`
 - **Exploitation & Auxiliary Verification:** `metasploit` (strictly non-destructive auxiliary scanners)
-- **Authentication & Password Resilience:** `hydra`, `hashcat`, `john`
+- **Authentication & Password Resilience:** `hydra` (bounded, explicitly authorized credential-resilience auditing)
 - **SAST & Secrets:** `semgrep`, `bandit`, `gitleaks`, `trufflehog`, `retire`
 - **Supply Chain & SCA:** `trivy`, `syft`, `grype`, `osv-scanner`
 - **Cloud, K8s & Host Posture:** `checkov`, `prowler`, `kube-bench`, `dockle`, `gtfobins` (host/privesc rule engine)

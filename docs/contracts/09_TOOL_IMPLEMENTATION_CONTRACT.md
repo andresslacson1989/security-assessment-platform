@@ -1,10 +1,10 @@
 # Contract 09: Authoritative Enterprise Security Tool Implementation Contract & Execution Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.3.0 (Authoritative 21-Tool Fleet Implementation Specifications, Normative Destination Binding, Strict Provenance Governance & Multi-Tier Execution State Architecture)  
+**Document Version:** 14.3.0 (Authoritative 26-Tool Fleet Implementation Specifications, Normative Destination Binding, Strict Provenance Governance & Multi-Tier Execution State Architecture)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Authority:** Platform Core Architecture, Tool Adapter Layer, Process Supervisor & Verification Pipeline  
-**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for all 21 supported external security tools.  
+**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. The 21 numbered external-tool specifications in Part II are complemented by the five auxiliary/manual adapter specifications in Contract 03 §4.1–§4.5; together they define all supported tools.  
 **Dependencies:** Contract 01 (Scope & Safety), Contract 02 (Data Schemas), Contract 03 (Engine & Plugin Interface), Contract 04 (API & Streaming), Contract 05 (Deliverables & Acceptance), Contract 06 (Check Catalog & CWE Mapping), Contract 07 (Frontend UI/UX), Contract 08 (Technical Implementation & Test Vectors).
 
 ---
@@ -171,7 +171,7 @@ ToolDefinition
 
 ---
 
-# Part II: Tool Implementation Specifications (All 21 Tools)
+# Part II: 21 Numbered External Tool Implementation Specifications
 
 ## TOOL 01: Nmap
 
@@ -1872,7 +1872,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 12. Workspace Requirements & Confinement
-- Server-derived authorized workspace jail.
+- Server-derived authorized workspace jail with canonical containment and symlink/reparse-point rejection before any tool receives the path.
 
 ### 13. Network Requirements & Destination Binding Mechanism
 - 100% offline local scanning.
@@ -2028,7 +2028,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 12. Workspace Requirements & Confinement
-- Server-derived authorized workspace jail.
+- Server-derived authorized workspace jail with canonical containment and symlink/reparse-point rejection before any tool receives the path.
 
 ### 13. Network Requirements & Destination Binding Mechanism
 - Outbound HTTPS access only if live secret verification is explicitly enabled in tenant policy.
@@ -2183,7 +2183,7 @@ Stderr: Diagnostic logs
 - `NOT APPLICABLE`
 
 ### 12. Workspace Requirements & Confinement
-- Server-derived authorized workspace jail.
+- Server-derived authorized workspace jail with canonical containment and symlink/reparse-point rejection before any tool receives the path.
 
 ### 13. Network Requirements & Destination Binding Mechanism
 - Offline scanning using bundled vulnerability database.
@@ -2321,12 +2321,14 @@ Stderr: Diagnostic logs
 - `LOCAL_PATH`, `REPOSITORY`, `DOCKERFILE`, `CONTAINER_IMAGE`.
 
 ### 7. Upstream Version Policy
-- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Trivy `v0.50.0` (Exact upstream source tag; the corresponding GitHub release binary is unavailable and is not used).
+- **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` Trivy `v0.50.0` (Exact upstream source tag; the corresponding
+  GitHub release binary is unavailable and is therefore not used).
 - **Version Enforcement:** Runtime probe checks `actual_version == "0.50.0"`.
 - **Version Detection:** `trivy --version` -> Regex `Version:\s*([0-9\.]+)`
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
-- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `SOURCE_BUILD_MODE` (approved Contract 03 exception; built only from the immutable upstream tag archive with the pinned Go toolchain below).
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `SOURCE_BUILD_MODE` (approved exception under Contract 03; source is
+  built only from the immutable upstream tag archive with the pinned Go toolchain below).
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Source archive:** `https://github.com/aquasecurity/trivy/archive/refs/tags/v0.50.0.tar.gz`
@@ -2335,7 +2337,9 @@ Stderr: Diagnostic logs
 - **Go Linux amd64 SHA-256:** `502fc16d5910562461e6a6631fb6377de2322aad7304bf2bcd23500ba9dab4a7`
 - **Go Linux arm64 SHA-256:** `2ca2d70dc9c84feef959eb31f2a5aac33eefd8c97fe48f1548886d737bffabd4`
 - **Build command:** `CGO_ENABLED=0 GOOS=linux GOARCH=<arch> go build -trimpath -buildvcs=false -ldflags "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0" ./cmd/trivy`
-- **Integrity claims:** `SOURCE_ARCHIVE_INTEGRITY_VERIFIED`, `BUILD_TOOLCHAIN_INTEGRITY_VERIFIED`, and `EXECUTABLE_INTEGRITY_VERIFIED` are recorded in the generated trust sidecar. Upstream release provenance is not claimed for the unavailable binary release.
+- **Integrity claims:** `SOURCE_ARCHIVE_INTEGRITY_VERIFIED`, `BUILD_TOOLCHAIN_INTEGRITY_VERIFIED`, and
+  `EXECUTABLE_INTEGRITY_VERIFIED` are recorded in the generated trust sidecar. Upstream release provenance is
+  not claimed for the unavailable binary release.
 
 ### 10. Required Permissions & Privileges
 - Read-only workspace access (or local Docker daemon access for image scanning).

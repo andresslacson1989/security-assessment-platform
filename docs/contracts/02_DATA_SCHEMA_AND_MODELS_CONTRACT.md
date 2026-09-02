@@ -1,9 +1,9 @@
 # Contract 02: Enterprise Data Schemas, Entity Models & Multi-Tenant State Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 13.0.0 (Enterprise ASPM Schema, Canonical Findings & Occurrences, Tenant Isolation, Version Authority & Tamper-Evident Audit Models)  
+**Document Version:** 14.0.0 (Enterprise ASPM Schema, 26-Tool Fleet, Per-Link Assessment Intelligence Dossier, Active Subdomain DNS IP Resolution & Audit Models)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
-**Scope Authority:** Core Data Schemas, Relational Persistence Tables, Identity, Assets, Findings Lifecycle & Audit Records  
+**Scope Authority:** Core Data Schemas, Relational Persistence Tables, Identity, Assets, Per-Link Dossiers, Findings Lifecycle & Audit Records  
 
 ---
 
@@ -13,10 +13,10 @@ All platform components, API responses, exporters, UI banners, and database migr
 
 ```python
 # backend/app/core/version.py
-APP_VERSION = "13.0.0"
+APP_VERSION = "14.0.0"
 API_VERSION = "v1"
-SCHEMA_VERSION = "13.0.0"
-CONTRACT_VERSION = "13.0.0"
+SCHEMA_VERSION = "14.0.0"
+CONTRACT_VERSION = "14.0.0"
 RULESET_VERSION = "2026.08.31"
 RISK_MODEL_VERSION = "contextual_risk_model_v2"
 ```
@@ -267,4 +267,49 @@ class AuditEvent(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
     previous_event_hash: Optional[str] = None
     event_hash: Optional[str] = None  # SHA256(canonical_event_json + previous_event_hash)
+```
+
+---
+
+## 7. Reconnaissance, Attack Surface & Per-Link Security Dossier Models
+
+### 7.1 Endpoint Test Record & Security Dossier
+```python
+class EndpointTestStatus(str, Enum):
+    SAFE = "SAFE"          # Test executed cleanly, no vulnerability detected
+    VULNERABLE = "VULNERABLE"  # Flaw or misconfiguration detected
+    INFO = "INFO"          # Informational exposure or structural discovery
+    SKIPPED = "SKIPPED"    # Skipped due to scope/rate-limit/inapplicability
+
+class EndpointTestRecord(BaseModel):
+    test_name: str         # e.g., "SQL Injection Probe", "Reflected XSS", "Security Headers", "CORS Origin Reflection", "Form CSRF Audit"
+    category: str          # e.g., "Injection", "Authentication", "Configuration", "Client-Side"
+    tool: str              # e.g., "ffuf", "nuclei", "katana", "native_dast", "schemathesis"
+    status: EndpointTestStatus = EndpointTestStatus.SAFE
+    details: str           # Concrete probe details and observations
+    execution_time_ms: float = 0.0
+    findings_count: int = 0
+
+class DiscoveredEndpoint(BaseModel):
+    url: str
+    method: str = "GET"
+    depth: int = 0
+    status_code: Optional[int] = None
+    content_type: Optional[str] = None
+    is_authenticated: bool = False
+    has_forms: bool = False
+    discovered_forms: int = 0
+    response_time_ms: Optional[float] = None
+    tools_executed: List[str] = Field(default_factory=list)
+    tests_performed: List[EndpointTestRecord] = Field(default_factory=list)
+    finding_ids: List[str] = Field(default_factory=list)
+
+class DiscoveredSubdomain(BaseModel):
+    domain: str
+    ip_addresses: List[str] = Field(default_factory=list)  # Must be actively resolved via DNS A/AAAA
+    cname_targets: List[str] = Field(default_factory=list)
+    is_takeover_vulnerable: bool = False
+    service_fingerprint: Optional[str] = None
+    discovered_via: str = "crt.sh"
+    dns_status: str = "ACTIVE"  # "ACTIVE" or "NXDOMAIN"
 ```

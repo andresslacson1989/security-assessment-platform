@@ -1,7 +1,7 @@
 # Contract 08: Technical Implementation, Authorization Service, Supply Chain & Test Vectors
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 13.0.0 (Enterprise Technical Implementation, Multi-Layer Authorization Service, SSRF Rebinding Defense, Workspace Jail & Adversarial Vectors)  
+**Document Version:** 14.0.0 (Enterprise Technical Implementation, 26-Tool Supply Chain, SSRF Rebinding Defense & Adversarial Vectors)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Technical Implementations, Authorization Invariants, Hardened Gateways, Supply Chain Hashes & Test Vectors  
 
@@ -96,4 +96,88 @@ If an archive checksum does not match, the installer MUST abort immediately, del
 | Tamper-Evident Audit Logs | Contract 02 §6, Contract 04 §1 | `app/core/db.py`, `app/api/auth.py` | `tests/security/test_audit_integrity.py` |
 | Canonical Findings & SLA | Contract 02 §4, Contract 05 §2 | `app/core/correlator.py`, `app/core/db.py` | `tests/security/test_finding_lifecycle.py` |
 | Evidence Masking & Health | Contract 01 §3, Contract 04 §3 | `app/core/sanitizer.py`, `app/api/export.py` | `tests/security/test_evidence_integrity.py` |
+
+---
+
+## 6. Adversarial Test Vectors & Tool Mock Fixtures (v14.0.0)
+
+To achieve deterministic CI verification across environments without requiring external binary dependencies, test suites must use the following authoritative mock outputs:
+
+### 6.1 Metasploit Framework (`MetasploitAdapter`) Mock Fixtures
+```python
+# Version check mock
+MOCK_MSF_VERSION_STDOUT = "Framework Version: 6.4.12-dev\nConsole Version: 6.4.12-dev"
+
+# Heartbleed / SSL Scanner execution mock
+MOCK_MSF_HEARTBLEED_STDOUT = """
+[*] 192.168.1.50:443 - Scanning 1 of 1 hosts (100% complete)
+[+] 192.168.1.50:443 - Vulnerable to Heartbleed OpenSSL TLS heartbeat information disclosure (CVE-2014-0160)
+[*] 192.168.1.50:443 - Scanned 1 of 1 hosts (100% complete)
+[*] Auxiliary module execution completed
+"""
+```
+
+### 6.2 sqlmap (`SqlmapAdapter`) Mock Fixtures
+```python
+# Version check mock
+MOCK_SQLMAP_VERSION_STDOUT = "sqlmap/1.8.4#stable"
+
+# Injection confirmation mock
+MOCK_SQLMAP_STDOUT = """
+[INFO] testing connection to the target URL
+[INFO] checking if the target is protected by some kind of WAF/IPS
+[INFO] testing if the target URL content is stable
+[INFO] heuristic (basic) test shows that GET parameter 'id' might be injectable (possible DBMS: 'PostgreSQL')
+[INFO] GET parameter 'id' is vulnerable. Do you want to keep testing the others (if any)? [y/N] N
+sqlmap identified the following injection point(s) with a total of 42 HTTP(s) requests:
+---
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE or HAVING clause
+    Payload: id=1 AND 8821=8821
+    Type: time-based blind
+    Title: PostgreSQL > 8.1 time-based blind
+    Payload: id=1 AND 2931=(SELECT 2931 FROM PG_SLEEP(5))
+---
+[INFO] the back-end DBMS is PostgreSQL
+web server operating system: Linux Ubuntu
+web application technology: Nginx, Python 3.11.0, FastAPI
+back-end DBMS: PostgreSQL 15.2
+"""
+```
+
+### 6.3 OWASP Amass (`AmassAdapter`) Mock Fixtures
+```json
+{"name":"api.example.com","domain":"example.com","addresses":[{"ip":"93.184.216.34","cidr":"93.184.216.0/24","asn":15133,"desc":"EDGECAST"}],"tag":"cert","sources":["CertSpotter","Crtsh"]}
+{"name":"staging.example.com","domain":"example.com","addresses":[{"ip":"198.51.100.42","cidr":"198.51.100.0/24","asn":13335,"desc":"CLOUDFLARENET"}],"tag":"dns","sources":["Sublist3r","DNS"]}
+```
+
+### 6.4 THC-Hydra (`HydraAdapter`) Mock Fixtures
+```json
+{
+  "generator": "hydra",
+  "results": [
+    {
+      "host": "192.168.1.100",
+      "port": 22,
+      "service": "ssh",
+      "login": "admin",
+      "password": "password123"
+    }
+  ]
+}
+```
+
+### 6.5 GTFOBins Rule Engine Fixture
+```python
+# Discovered host misconfiguration payload
+MOCK_HOST_AUDIT_INPUT = {
+    "suid_binaries": ["/usr/bin/find", "/usr/bin/passwd"],
+    "sudo_rules": ["(ALL) NOPASSWD: /usr/bin/vim", "(ALL) NOPASSWD: /usr/bin/systemctl"],
+    "capabilities": ["/usr/bin/python3.11 = cap_setuid+ep"]
+}
+# Expected emitted finding check IDs:
+# 1. HOST-PRIV-001 (SUID /usr/bin/find -> GTFOBins execution match)
+# 2. HOST-SUDO-001 (NOPASSWD /usr/bin/vim -> GTFOBins execution match)
+```
 
