@@ -191,6 +191,7 @@ class ToolExecutionMode(str, Enum):
     """
     ADAPTER_ACTIVE = "ADAPTER_ACTIVE"    # Host CLI tool found, verified, and active
     NATIVE_FALLBACK = "NATIVE_FALLBACK"  # Pure Python native fallback engine
+    MANUAL_ONLY = "MANUAL_ONLY"          # Explicitly authorized manual-only adapter
     DISABLED = "DISABLED"                # Adapter explicitly disabled by user/config
 
 
@@ -505,7 +506,7 @@ class ToolStatus(BaseModel):
     available: bool = Field(default=False, description="Whether a binary was detected on the host; this is not trust or execution evidence")
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
-    execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', or 'DISABLED'")
+    execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', 'MANUAL_ONLY', or 'DISABLED'")
     install_method: ToolInstallMethod = Field(default=ToolInstallMethod.MANUAL, description="Installation method for this tool")
     is_installed: bool = Field(default=False, description="Whether tool binary is present and executable")
     installable: bool = Field(default=True, description="Whether tool can be installed in-app")

@@ -757,8 +757,14 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_active_and
             )
 
         capabilities = await discover_system_capabilities(ToolAdapterConfig())
+        manual_only = {"metasploit", "sqlmap", "hydra"}
         for tool in capabilities.tools:
-            assert tool.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+            expected_mode = (
+                ToolExecutionMode.MANUAL_ONLY
+                if tool.name in manual_only
+                else ToolExecutionMode.NATIVE_FALLBACK
+            )
+            assert tool.execution_mode == expected_mode
             assert tool.available is False
         assert capabilities.native_engines_ready is True
 

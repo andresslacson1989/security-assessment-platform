@@ -1035,9 +1035,11 @@ class TestCapabilitiesAndRegistry:
                 caps = await discover_system_capabilities()
                 assert len(caps.tools) == 26
                 assert caps.native_engines_ready is True
+                manual_only = {"metasploit", "sqlmap", "hydra"}
                 for t in caps.tools:
                     assert t.available is False
-                    assert t.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+                    expected_mode = ToolExecutionMode.MANUAL_ONLY if t.name in manual_only else ToolExecutionMode.NATIVE_FALLBACK
+                    assert t.execution_mode == expected_mode
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_active(self):
@@ -1091,6 +1093,9 @@ class TestCapabilitiesAndRegistry:
 
             assert tool_map["trivy"].available is False
             assert tool_map["trivy"].execution_mode == ToolExecutionMode.NATIVE_FALLBACK
+            assert tool_map["metasploit"].execution_mode == ToolExecutionMode.MANUAL_ONLY
+            assert tool_map["sqlmap"].execution_mode == ToolExecutionMode.MANUAL_ONLY
+            assert tool_map["hydra"].execution_mode == ToolExecutionMode.MANUAL_ONLY
 
     @pytest.mark.asyncio
     async def test_discover_system_capabilities_disabled(self):

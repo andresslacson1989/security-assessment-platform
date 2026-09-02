@@ -217,7 +217,7 @@ def test_enums_completeness():
     assert set(a.value for a in AuthType) == {"NO_AUTH", "NONE", "HEADER", "COOKIE", "FORM_LOGIN"}
 
     # ToolExecutionMode
-    assert set(m.value for m in ToolExecutionMode) == {"ADAPTER_ACTIVE", "NATIVE_FALLBACK", "DISABLED"}
+    assert set(m.value for m in ToolExecutionMode) == {"ADAPTER_ACTIVE", "NATIVE_FALLBACK", "MANUAL_ONLY", "DISABLED"}
 
     # ToolAssuranceStatus
     assert set(s.value for s in ToolAssuranceStatus) == {

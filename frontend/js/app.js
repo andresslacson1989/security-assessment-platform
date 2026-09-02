@@ -785,6 +785,10 @@ class ScanStreamManager {
       pill.classList.add("tool-pill--disabled");
       if (iconEl) iconEl.textContent = "⚫";
       if (modeEl) modeEl.textContent = "DISABLED";
+    } else if (mode === "MANUAL_ONLY") {
+      pill.classList.add("tool-pill--disabled");
+      if (iconEl) iconEl.textContent = "⚪";
+      if (modeEl) modeEl.textContent = "MANUAL ONLY";
     } else {
       // NATIVE_FALLBACK (default)
       pill.classList.add("tool-pill--fallback");
@@ -1355,6 +1359,10 @@ class ScanStreamManager {
           } else if (tool.execution_mode === "DISABLED") {
             pill.classList.add("tool-pill--disabled");
             if (modeSpan) modeSpan.innerText = "DISABLED";
+            if (iconSpan) iconSpan.innerText = "⚪";
+          } else if (tool.execution_mode === "MANUAL_ONLY") {
+            pill.classList.add("tool-pill--disabled");
+            if (modeSpan) modeSpan.innerText = "MANUAL ONLY";
             if (iconSpan) iconSpan.innerText = "⚪";
           } else {
             pill.classList.add("tool-pill--fallback");

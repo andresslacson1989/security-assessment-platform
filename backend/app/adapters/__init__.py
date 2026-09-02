@@ -184,6 +184,7 @@ async def discover_system_capabilities(
         "amass": ToolInstallMethod.STANDALONE_BINARY,
         "hydra": ToolInstallMethod.MANUAL,
     }
+    manual_only_tools = {"metasploit", "sqlmap", "hydra"}
 
     for name, adapter in registry.items():
         is_enabled, custom_path = adapter_configs.get(name, (True, None))
@@ -256,7 +257,9 @@ async def discover_system_capabilities(
                 assured_for_execution = False
                 version = None
 
-        if available and resolved_path and assured_for_execution:
+        if name in manual_only_tools:
+            mode = ToolExecutionMode.MANUAL_ONLY
+        elif available and resolved_path and assured_for_execution:
             mode = ToolExecutionMode.ADAPTER_ACTIVE
         else:
             mode = ToolExecutionMode.NATIVE_FALLBACK
