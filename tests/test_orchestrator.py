@@ -394,6 +394,21 @@ async def test_tool_execution_identity_is_canonical_and_engine_bound():
 
 
 @pytest.mark.asyncio
+async def test_manual_only_hydra_identity_is_governed_without_automatic_engine_assignment():
+    orch = ScanOrchestrator()
+    job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))
+    orch._active_jobs[job.id] = job
+
+    await orch.emit_tool_execution_state(
+        job.id, "hydra", "EXECUTION_BLOCKED", engine="manual"
+    )
+
+    assert job.tool_execution_states["hydra"] == "BLOCKED"
+    assert job.tool_execution_engines["hydra"] == "manual"
+    assert "hydra: BLOCKED" in job.summary.coverage.coverage_limitations
+
+
+@pytest.mark.asyncio
 async def test_adapter_execution_state_uses_registered_adapter_identity():
     orch = ScanOrchestrator()
     job = ScanJob(target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"))

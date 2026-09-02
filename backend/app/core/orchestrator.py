@@ -42,7 +42,13 @@ _ENGINE_TOOL_IDS = {
     "network": {"sslyze", "nmap", "metasploit", "subfinder", "amass", "httpx"},
     "web_dast": {"ffuf", "nuclei", "katana", "schemathesis", "sqlmap"},
 }
-_CANONICAL_TOOL_IDS = set().union(*_ENGINE_TOOL_IDS.values())
+# Hydra is deliberately not assigned to an automatic assessment engine. It
+# remains a manual-only, explicitly authorized capability, but its identity
+# must still pass through the central telemetry and authorization gate as part
+# of the complete 26-tool fleet.
+_MANUAL_TOOL_IDS = {"hydra"}
+_TOOL_EXECUTION_SCOPE_IDS = {**_ENGINE_TOOL_IDS, "manual": _MANUAL_TOOL_IDS}
+_CANONICAL_TOOL_IDS = set().union(*_TOOL_EXECUTION_SCOPE_IDS.values())
 
 
 class ScanOrchestrator:
@@ -363,10 +369,10 @@ class ScanOrchestrator:
         canonical_tool_name = _TOOL_ID_ALIASES.get(tool_name, tool_name)
         if canonical_tool_name not in _CANONICAL_TOOL_IDS:
             raise ValueError(f"Unknown canonical tool identity: {tool_name!r}")
-        if engine is not None and engine not in _ENGINE_TOOL_IDS and engine not in self._registered_engine_tool_ids:
+        if engine is not None and engine not in _TOOL_EXECUTION_SCOPE_IDS and engine not in self._registered_engine_tool_ids:
             raise ValueError(f"Unknown assessment engine identity: {engine!r}")
         allowed_tools = (
-            _ENGINE_TOOL_IDS.get(engine)
+            _TOOL_EXECUTION_SCOPE_IDS.get(engine)
             or self._registered_engine_tool_ids.get(engine)
         ) if engine else None
         if allowed_tools is not None and canonical_tool_name not in allowed_tools:

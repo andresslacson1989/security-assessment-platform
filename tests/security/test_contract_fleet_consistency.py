@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 
+from app.adapters import get_adapter_registry
 from app.installers.manager import ToolInstallationManager
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
@@ -40,8 +41,10 @@ MATRIX_TOOL_ID_ALIASES = {"RETIRE": "RETIREJS"}
 
 
 def test_registry_manifest_and_installers_preserve_complete_26_tool_fleet():
+    registry_tools = set(get_adapter_registry())
     manager_tools = set(ToolInstallationManager()._installers)
 
+    assert registry_tools == EXPECTED_TOOLS
     assert set(PINNED_TOOL_MANIFEST) == EXPECTED_TOOLS
     assert manager_tools == EXPECTED_TOOLS
 
