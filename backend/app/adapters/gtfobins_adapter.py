@@ -156,10 +156,15 @@ class GTFOBinsAdapter(BaseToolAdapter):
             self.last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
             await emit_log(LogLevel.INFO, "No host privilege metadata was supplied; GTFOBins evaluation produced no findings.")
             return []
+        organization_id = kwargs.get("organization_id")
+        if not isinstance(organization_id, str) or not organization_id.strip():
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "GTFOBins evaluation blocked: authoritative organization context is required.")
+            return []
         findings = evaluate_host_audit(
             audit_input,
             scan_id=kwargs.get("scan_id", "local-scan"),
-            organization_id=kwargs.get("organization_id") or "org-default",
+            organization_id=organization_id,
         )
         self._record_execution(0, "", "", findings_count=len(findings))
         for finding in findings:

@@ -253,14 +253,16 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                     emit_log,
                     emit_finding,
                     scan_id=kwargs.get("scan_id", "active"),
-                    organization_id=kwargs.get("organization_id") or "org-default",
+                    organization_id=kwargs.get("organization_id"),
                     host_audit_input=kwargs.get("host_audit_input"),
                 )
+                await report_tool_state("gtfobins", gtfobins_adapter, len(gtfobins_findings))
                 for finding in gtfobins_findings:
                     if finding.fingerprint not in existing_fps:
                         existing_fps.add(finding.fingerprint)
                         findings.append(finding)
             except Exception as exc:
+                await record_tool_failure("gtfobins")
                 await emit_log(LogLevel.WARNING, f"GTFOBins rule evaluation error: {exc}")
 
         # --- Stage 1: Dockerfile Container Hardening ---

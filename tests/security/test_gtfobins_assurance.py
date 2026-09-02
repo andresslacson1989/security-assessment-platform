@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from app.adapters.gtfobins_adapter import evaluate_host_audit
+from app.adapters.gtfobins_adapter import GTFOBinsAdapter
+from app.core.models import LogLevel, ScanConfig, Target, TargetType, NormalizedExecutionState
+import pytest
 
 
 def test_gtfobins_fixture_emits_only_canonical_privilege_findings():
@@ -40,3 +43,27 @@ def test_gtfobins_matches_versioned_python_catalog_entry():
         scan_id="scan-python",
     )
     assert [finding.check_id for finding in findings] == ["HOST-PRIV-001"]
+
+
+@pytest.mark.asyncio
+async def test_gtfobins_adapter_requires_authoritative_tenant_context():
+    adapter = GTFOBinsAdapter()
+    logs = []
+
+    async def emit_log(level: LogLevel, message: str):
+        logs.append((level, message))
+
+    async def emit_finding(_finding):
+        raise AssertionError("tenant-less GTFOBins execution must not emit findings")
+
+    findings = await adapter.run(
+        Target(name="Local", type=TargetType.LOCAL_PATH, value="C:\\workspace"),
+        ScanConfig(),
+        emit_log,
+        emit_finding,
+        host_audit_input={"suid_binaries": ["/usr/bin/find"]},
+    )
+
+    assert findings == []
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    assert any("organization context" in message for _, message in logs)

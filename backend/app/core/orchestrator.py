@@ -38,7 +38,7 @@ _TOOL_ID_ALIASES = {
 }
 _ENGINE_TOOL_IDS = {
     "code_sast": {"gitleaks", "trufflehog", "bandit", "semgrep", "retire", "syft", "grype", "osv-scanner", "trivy"},
-    "infra_iac": {"checkov", "trivy", "dockle", "kube-bench", "prowler"},
+    "infra_iac": {"checkov", "trivy", "dockle", "kube-bench", "prowler", "gtfobins"},
     "network": {"sslyze", "nmap", "metasploit", "subfinder", "amass", "httpx"},
     "web_dast": {"ffuf", "nuclei", "katana", "schemathesis", "sqlmap"},
 }
