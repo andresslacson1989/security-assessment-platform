@@ -22,7 +22,7 @@ TARGET = Target(name="Example", type=TargetType.URL, value="https://example.com"
 
 def make_validated_target():
     with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
-        return create_validated_target(TARGET)
+        return create_validated_target(TARGET, asset_id="asset-test", active_probing_granted=True)
 
 
 @pytest.mark.asyncio
@@ -104,6 +104,34 @@ async def test_e12_unmanaged_binary_is_policy_blocked(adapter_cls, path_attr):
          patch.object(adapter, "verify_managed_binary", return_value=False), \
          patch.object(adapter, "execute_command", new=AsyncMock()) as execute:
         await adapter.run(TARGET, config, AsyncMock(), AsyncMock(), require_managed_binary=True)
+
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_cls, path_attr", [
+    (NucleiAdapter, "nuclei_path"),
+    (FfufAdapter, "ffuf_path"),
+])
+async def test_e12_intrusive_adapters_require_active_authorization(adapter_cls, path_attr):
+    adapter = adapter_cls()
+    config = ScanConfig()
+    setattr(config.adapters, path_attr, None)
+    with patch.object(adapter, "resolve_binary_path", return_value="/managed/tool"), \
+         patch.object(adapter, "verify_managed_binary", return_value=True), \
+         patch.object(adapter, "execute_command", new=AsyncMock()) as execute, \
+         patch.object(adapter, "get_version", new=AsyncMock(return_value="approved version")):
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+            validated = create_validated_target(TARGET, active_probing_granted=False)
+        await adapter.run(
+            TARGET,
+            config,
+            AsyncMock(),
+            AsyncMock(),
+            require_managed_binary=True,
+            validated_target=validated,
+        )
 
     assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
     execute.assert_not_awaited()

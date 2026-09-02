@@ -110,6 +110,14 @@ class FfufAdapter(BaseToolAdapter):
             await emit_log(LogLevel.ERROR, "FFuF execution blocked: a gateway-issued ValidatedTarget is required.")
             return findings
 
+        if (
+            kwargs.get("require_managed_binary")
+            and not validated_target.authorization_context.get("active_probing_granted", False)
+        ):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "FFuF execution blocked: explicit tenant active-probing authorization is required.")
+            return findings
+
         if kwargs.get("require_managed_binary") and not self.verify_managed_binary(ffuf_path):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             await emit_log(LogLevel.ERROR, "FFuF execution blocked: executable is not a trusted managed installation.")
