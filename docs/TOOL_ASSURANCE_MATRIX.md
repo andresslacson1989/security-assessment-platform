@@ -157,7 +157,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E12 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
 - **Managed runtime status**: Managed Nuclei, FFuF, Katana, and Schemathesis paths were verified in the Linux production image under uid 999 with exact approved versions and valid trust records; no unmanaged executable was substituted.
-- **Acceptance evidence**: The current full repository regression completed with `430 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image.
+- **Acceptance evidence**: The current full repository regression completed with `431 passed, 2 skipped, 4 warnings`; E12 managed-runtime probes also passed in the production image.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST
@@ -211,7 +211,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E13 Section Evidence Status
 - **Repository status**: `REWORK IN PROGRESS` after independent review identified and corrected shared process-supervision, fallback-provenance, attribution, evidence-sanitization, and authoritative-persistence defects. Focused controls are covered by adversarial tests; final acceptance awaits the post-correction full regression.
 - **Managed runtime status**: The fresh Linux production image verified the managed direct-binary runtimes and trust records for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Trivy, and the managed Retire.js package. It also verified the six isolated Python environments—SSLyze `5.2.0`, Bandit `1.7.8`, Semgrep `1.65.0`, Checkov `3.2.0`, Prowler `4.1.0`, and Schemathesis `3.20.0`—with valid lock-bound package trust records. All verification ran under the unprivileged `cyberassess` account; no unmanaged runtime is treated as evidence.
-- **Regression evidence**: Post-correction focused assurance/orchestration tests completed with `85 passed, 2 skipped`; the current full repository regression completed with `430 passed, 2 skipped, 4 warnings`.
+- **Regression evidence**: Post-correction focused assurance/orchestration tests completed with `85 passed, 2 skipped`; the current full repository regression completed with `431 passed, 2 skipped, 4 warnings`.
 - **Coverage limitation**: Native fallbacks are explicitly limited compared with the external tools; failed, blocked, timed-out, cancelled, or parser-degraded tools must remain visible as degraded coverage.
 
 ### 14. Trivy (Container, Filesystem & IaC Vulnerability Scanner)
