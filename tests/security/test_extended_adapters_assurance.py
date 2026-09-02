@@ -33,6 +33,7 @@ def test_incomplete_manifest_cannot_be_promoted_by_a_fabricated_sidecar(monkeypa
 
 
 def test_metasploit_command_is_fixed_to_non_destructive_auxiliary_scanner():
+    """SEC-031: automated Metasploit use is restricted to safe auxiliary scanners."""
     command = MetasploitAdapter.build_command("msfconsole", "https://example.test", 443)
     script = command[-1]
     assert "auxiliary/scanner/ssl/openssl_heartbleed" in script
@@ -41,6 +42,7 @@ def test_metasploit_command_is_fixed_to_non_destructive_auxiliary_scanner():
 
 
 def test_sqlmap_command_enforces_bounded_batch_profile():
+    """SEC-032: sqlmap automation is fixed to the bounded non-destructive profile."""
     command = SqlmapAdapter.build_command("sqlmap", "https://example.test/item?id=1", "C:\\workspace\\sqlmap")
     assert {"--batch", "--level=1", "--risk=1", "--threads=2", "--retries=1"}.issubset(command)
     assert not any(argument in command for argument in ("--dump", "--dump-all", "--os-shell"))
@@ -54,6 +56,7 @@ def test_amass_command_is_passive_and_requires_absolute_output():
 
 
 def test_hydra_command_is_rate_limited_and_rejects_unsafe_inputs():
+    """SEC-033: Hydra concurrency, delay, and protocol scope are bounded."""
     command = HydraAdapter.build_command("hydra", "C:\\workspace\\users", "C:\\workspace\\passwords", "ssh", "192.0.2.10", 22, "C:\\workspace\\hydra.json")
     assert command[command.index("-t") + 1] == "2"
     assert command[command.index("-W") + 1] == "1"

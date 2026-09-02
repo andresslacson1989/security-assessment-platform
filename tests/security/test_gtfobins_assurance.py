@@ -6,6 +6,7 @@ from app.adapters.gtfobins_adapter import evaluate_host_audit
 
 
 def test_gtfobins_fixture_emits_only_canonical_privilege_findings():
+    """SEC-034: GTFOBins evaluates only canonical host privilege findings."""
     findings = evaluate_host_audit(
         {
             "suid_binaries": ["/usr/bin/find", "/usr/bin/passwd"],

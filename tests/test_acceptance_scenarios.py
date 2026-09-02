@@ -4,6 +4,7 @@ Verifies complete system functionality against formal contract deliverables and 
 """
 
 from datetime import datetime, timezone, timedelta
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -653,7 +654,8 @@ async def test_scenario_10_authenticated_dast_session_scanning():
 # (Contract 05 v4.1.0 - Acceptance Scenario 15)
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
+async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_active_and_discovery():
+    """SEC-035: unavailable external tools degrade to native fallback coverage."""
     """
     Scenario 15A: Adapters present (mocked) -> findings emitted with correct source_tool.
     Scenario 15B: Adapters absent (mocked) -> graceful native fallback, scan completes cleanly.
@@ -662,7 +664,7 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
     from app.adapters.nuclei_adapter import NucleiAdapter
     from app.adapters.semgrep_adapter import SemgrepAdapter
     from app.adapters.trivy_adapter import TrivyAdapter
-    from app.adapters import discover_system_capabilities
+    from app.adapters import discover_system_capabilities, get_adapter_registry
     from app.core.models import (
         ToolAdapterConfig, ToolStatus, ToolExecutionMode, SystemCapabilities,
         Evidence, Severity
@@ -743,10 +745,16 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
     # --------------------------------------------------------------------------
     # Scenario 15B: Adapters ABSENT - graceful fallback, scan completes cleanly
     # --------------------------------------------------------------------------
-    with patch.object(NmapAdapter, "is_available", AsyncMock(return_value=False)), \
-         patch.object(NucleiAdapter, "is_available", AsyncMock(return_value=False)), \
-         patch.object(SemgrepAdapter, "is_available", AsyncMock(return_value=False)), \
-         patch.object(TrivyAdapter, "is_available", AsyncMock(return_value=False)):
+    # The registry contains the complete 26-tool fleet.  Patch every registered
+    # adapter so this scenario proves fleet-wide fallback rather than only four
+    # representative adapters while a host installation happens to leak through.
+    with ExitStack() as stack:
+        registry = get_adapter_registry()
+        stack.enter_context(patch("app.adapters.get_adapter_registry", return_value=registry))
+        for registered_adapter in registry.values():
+            stack.enter_context(
+                patch.object(registered_adapter, "is_available", AsyncMock(return_value=False))
+            )
 
         capabilities = await discover_system_capabilities(ToolAdapterConfig())
         for tool in capabilities.tools:
@@ -768,7 +776,17 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
         type=TargetType.DOMAIN,
         value="example.com",
     )
-    config = ScanConfig(adapters=ToolAdapterConfig(enable_nmap=False, enable_nuclei=False, enable_semgrep=False, enable_trivy=False))
+    config = ScanConfig(adapters=ToolAdapterConfig(
+        enable_nmap=False,
+        enable_sslyze=False,
+        enable_subfinder=False,
+        enable_httpx=False,
+        enable_amass=False,
+        enable_metasploit=False,
+        enable_nuclei=False,
+        enable_semgrep=False,
+        enable_trivy=False,
+    ))
     job = ScanJob(target=target, profile=ScanProfile.QUICK, config=config, enabled_engines=["network"])
 
     with patch("app.engines.network.engine.audit_tls_certificates", AsyncMock(return_value=[])), \
@@ -777,7 +795,7 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
          patch("app.engines.network.engine.audit_exposed_ports", AsyncMock(return_value=[])), \
          patch("app.engines.network.engine.audit_subdomain_osint", AsyncMock(return_value=[])), \
          patch("app.engines.network.engine.audit_service_banners", AsyncMock(return_value=[])), \
-         patch("app.adapters.discover_system_capabilities", AsyncMock(return_value=SystemCapabilities(
+         patch("app.core.orchestrator.discover_system_capabilities", AsyncMock(return_value=SystemCapabilities(
              tools=[
                  ToolStatus(name="nmap", available=False, execution_mode=ToolExecutionMode.DISABLED),
                  ToolStatus(name="nuclei", available=False, execution_mode=ToolExecutionMode.DISABLED),
@@ -787,12 +805,8 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
              native_engines_ready=True,
              os_platform="test",
          ))):
-        await orch.start_scan(job)
-        import asyncio as _asyncio
-        for _ in range(30):
-            await _asyncio.sleep(0.1)
-            if job.status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
-                break
+        task = await orch.start_scan(job)
+        await task
 
     assert job.status == ScanStatus.COMPLETED, f"Expected COMPLETED, got {job.status}"
     assert job.active_adapters == []
@@ -1175,8 +1189,9 @@ diff --git a/config.py b/config.py
 # (Contract 05 v5.0.0 - Acceptance Scenario 15)
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback():
+async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_orchestrator():
     """
+    SEC-035: unavailable external tools degrade to native fallback coverage.
     Scenario 15: External Tool Adapter Discovery, Execution & Graceful Fallback
     - Verifies discovery and invocation of Nmap, Nuclei, Semgrep, and Trivy adapters.
     - Verifies 100% graceful fallback to native Python engines when binaries are absent, with zero unhandled exceptions.
