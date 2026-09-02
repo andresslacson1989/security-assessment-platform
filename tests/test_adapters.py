@@ -1610,7 +1610,47 @@ class TestSupplyChainAdapters:
 
 
 # ============================================================================
-# 19. CIS Benchmarks (Prowler, Kube-Bench, Dockle) Adapters Tests
+# 20. Auxiliary Contract 03 Adapters Tests
+
+
+def test_auxiliary_adapters_expose_bounded_contract_surfaces(tmp_path):
+    from app.adapters.amass_adapter import AmassAdapter
+    from app.adapters.gtfobins_adapter import GTFOBinsAdapter, evaluate_host_audit
+    from app.adapters.hydra_adapter import HydraAdapter
+    from app.adapters.metasploit_adapter import MetasploitAdapter
+    from app.adapters.sqlmap_adapter import SqlmapAdapter
+
+    assert [adapter.tool_name for adapter in (
+        MetasploitAdapter(), SqlmapAdapter(), AmassAdapter(), HydraAdapter(), GTFOBinsAdapter()
+    )] == ["metasploit", "sqlmap", "amass", "hydra", "gtfobins"]
+
+    metasploit_command = MetasploitAdapter.build_command("msfconsole", "https://example.test", 443)
+    assert metasploit_command[:2] == ["msfconsole", "-q"]
+    assert "auxiliary/scanner/ssl/openssl_heartbleed" in metasploit_command[-1]
+
+    sqlmap_command = SqlmapAdapter.build_command("sqlmap", "https://example.test/item?id=1", str(tmp_path))
+    assert {"--batch", "--level=1", "--risk=1", "--threads=2"}.issubset(sqlmap_command)
+    assert not any(argument.startswith("--dump") or argument in {"--os-shell", "--file-read", "--file-write"} for argument in sqlmap_command)
+
+    amass_command = AmassAdapter.build_command("amass", "example.test", str(tmp_path / "amass.jsonl"))
+    assert amass_command[1:4] == ["enum", "-passive", "-d"]
+
+    hydra_command = HydraAdapter.build_command(
+        "hydra", str(tmp_path / "users"), str(tmp_path / "passwords"), "ssh", "192.0.2.10", 22, str(tmp_path / "hydra.json")
+    )
+    assert hydra_command[hydra_command.index("-t") + 1] == "2"
+    with pytest.raises(ValueError):
+        HydraAdapter.build_command(
+            "hydra", str(tmp_path / "users"), str(tmp_path / "passwords"), "telnet", "192.0.2.10", 23, str(tmp_path / "hydra.json")
+        )
+
+    native_findings = evaluate_host_audit(
+        {"suid_binaries": ["/usr/bin/bash"]}, scan_id="scan-aux", organization_id="org-aux"
+    )
+    assert native_findings[0].source_tool == "gtfobins"
+
+
+# 21. CIS Benchmarks (Prowler, Kube-Bench, Dockle) Adapters Tests
 # ============================================================================
 
 class TestCISBenchmarkAdapters:
