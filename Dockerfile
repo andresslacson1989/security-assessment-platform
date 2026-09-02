@@ -161,6 +161,10 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 # 14. Nmap (7.95)
 # Debian Bookworm provides Nmap 7.93, so the contract-pinned release is
 # built from the official upstream source and verified before promotion.
+RUN if [ "$TARGETARCH" != "amd64" ]; then \
+      echo "Nmap verified source build is currently supported only for linux/amd64" >&2; \
+      exit 1; \
+    fi
 RUN curl -fsSL https://nmap.org/dist/nmap-7.95.tar.bz2 -o nmap.tar.bz2 && \
     echo "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778  nmap.tar.bz2" | sha256sum -c - && \
     echo "75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8  /usr/bin/gcc" | sha256sum -c - && \

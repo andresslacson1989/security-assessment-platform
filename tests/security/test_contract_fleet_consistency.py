@@ -85,6 +85,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "write_source_artifact_trust_record" in dockerfile
     assert "COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap" in dockerfile
     assert "nmap-7.95.tar.bz2" in dockerfile
+    assert 'TARGETARCH" != "amd64"' in dockerfile
     assert "does not claim upstream release-binary provenance" in contract_09.lower()
     assert "no active a/aaaa/cname dns resolution" in contract_03.lower()
     assert "-s crtsh" in contract_03

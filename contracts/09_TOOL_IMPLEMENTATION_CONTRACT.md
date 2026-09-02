@@ -222,7 +222,7 @@ ToolDefinition
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` `nmap --version` runtime probe.
 - **Artifact Integrity (SHA-256):** `[REPOSITORY_VERIFIED]` The official `nmap-7.95.tar.bz2` source archive is pinned to `e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778` and verified before compilation.
-- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved Linux build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation.
+- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved `linux/amd64` build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation; other target architectures fail closed until separately pinned.
 - **Provenance / Attestation:** `[UPSTREAM_REFERENCE]` Nmap publishes an Insecure.Org GPG signing key (`43D0F654`); the CyberAssess verified source-build record does not claim upstream release-binary provenance unless that signature is separately verified.
 - **Resolution Source:** `[CYBERASSESS_REQUIRED]` Verified managed source-built executable in `backend/bin/`.
 

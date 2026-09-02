@@ -34,7 +34,8 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "asset_names": {
             "source_archive": "nmap-7.95.tar.bz2",
         },
-        "integrity_note": "Official Nmap source archive and the pinned Debian GCC toolchain are verified before promotion; no upstream release-binary provenance is claimed.",
+        "supported_platforms": ["linux_amd64"],
+        "integrity_note": "Official Nmap source archive and the pinned Debian GCC toolchain are verified before promotion for the supported linux/amd64 production image; other target architectures fail closed until separately pinned; no upstream release-binary provenance is claimed.",
     },
     "nuclei": {
         "tool_name": "nuclei",
