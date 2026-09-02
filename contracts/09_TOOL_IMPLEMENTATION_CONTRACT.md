@@ -4,7 +4,7 @@
 **Document Version:** 14.3.0 (Authoritative 26-Tool Fleet Implementation Specifications, Normative Destination Binding, Strict Provenance Governance & Multi-Tier Execution State Architecture)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Authority:** Platform Core Architecture, Tool Adapter Layer, Process Supervisor & Verification Pipeline  
-**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. The 21 numbered external-tool specifications in Part II are complemented by the five auxiliary/manual adapter specifications in Contract 03 §4.1–§4.5; together they define all supported tools.  
+**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. Part II defines all 26 supported tools, including the five auxiliary/manual adapter specifications in §4.1–§4.5; no supported tool is outside this authoritative specification.
 **Dependencies:** Contract 01 (Scope & Safety), Contract 02 (Data Schemas), Contract 03 (Engine & Plugin Interface), Contract 04 (API & Streaming), Contract 05 (Deliverables & Acceptance), Contract 06 (Check Catalog & CWE Mapping), Contract 07 (Frontend UI/UX), Contract 08 (Technical Implementation & Test Vectors).
 
 ---
@@ -171,7 +171,7 @@ ToolDefinition
 
 ---
 
-# Part II: 21 Numbered External Tool Implementation Specifications
+# Part II: 26-Tool Implementation Specifications
 
 ## TOOL 01: Nmap
 

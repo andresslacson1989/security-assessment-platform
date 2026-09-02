@@ -16,7 +16,7 @@ This directory contains the authoritative, production-level architectural, safet
 | [`06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md`](./06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md) | **Master Security Check Catalog** (v14.0.0) | Canonical security check IDs with CVSS 3.1, CWE, OWASP Top 10 (2021), and NIST SP 800-53 mappings across the 26-tool fleet. |
 | [`07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md`](./07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md) | **Frontend UI/UX & Design System** (v14.0.0) | Cyber SOC dark-theme tokens, HUD hierarchy, 26-tool management matrix, telemetry dossiers, SBOM export toolbar, and SSE protocol manager. |
 | [`08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md`](./08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md) | **Technical Implementation & Test Vectors** (v14.0.0) | Exact execution algorithms, target security gateways, supply-chain controls, adversarial vectors, production Dockerfile, and CI verification. |
-| [`09_TOOL_IMPLEMENTATION_CONTRACT.md`](./09_TOOL_IMPLEMENTATION_CONTRACT.md) | **Tool Implementation Contract & Execution Specifications** (v14.3.0) | The 21 numbered tool specifications plus five auxiliary/manual adapter specifications in Contract 03, covering the complete 26-tool fleet. |
+| [`09_TOOL_IMPLEMENTATION_CONTRACT.md`](./09_TOOL_IMPLEMENTATION_CONTRACT.md) | **Tool Implementation Contract & Execution Specifications** (v14.3.0) | The complete 26-tool implementation specifications, including the five auxiliary/manual adapters, with no tools outside the authoritative fleet. |
 
 ---
 

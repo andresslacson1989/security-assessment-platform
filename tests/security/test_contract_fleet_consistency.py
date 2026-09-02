@@ -70,7 +70,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "`grype`: `v0.74.0`" in contract_08
     assert "`nmap`: `7.95` -> verified official source archive" in contract_08
     assert "complete 26-tool fleet" in contract_09
-    assert "21 numbered external-tool specifications" in contract_09
+    assert "Part II defines all 26 supported tools" in contract_09
     assert "five auxiliary/manual adapter specifications" in contract_09
     assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
     assert "all 26 available modern adapters" in models
