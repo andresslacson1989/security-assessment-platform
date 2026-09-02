@@ -53,6 +53,7 @@ class ScanOrchestrator:
 
     def __init__(self):
         self._engines: Dict[str, BaseAssessmentEngine] = {}
+        self._registered_engine_tool_ids: Dict[str, Set[str]] = {}
         self._active_jobs: Dict[str, ScanJob] = {}
         self._tasks: Dict[str, asyncio.Task] = {}
         self._subscribers: Dict[str, Set[asyncio.Queue]] = {}
@@ -94,7 +95,19 @@ class ScanOrchestrator:
         """
         Registers an assessment engine plugin.
         """
-        self._engines[engine.name] = engine
+        engine_name = engine.name
+        declared_tools = getattr(engine, "allowed_tool_ids", None)
+        if declared_tools is not None:
+            if isinstance(declared_tools, (str, bytes)):
+                raise ValueError("Engine allowed_tool_ids must be an iterable of canonical tool IDs")
+            canonical_tools = {
+                _TOOL_ID_ALIASES.get(str(tool), str(tool))
+                for tool in declared_tools
+            }
+            if not canonical_tools or not canonical_tools.issubset(_CANONICAL_TOOL_IDS):
+                raise ValueError(f"Engine {engine_name!r} declares unknown or empty tool identities")
+            self._registered_engine_tool_ids[engine_name] = canonical_tools
+        self._engines[engine_name] = engine
 
     def get_engine(self, name: str) -> Optional[BaseAssessmentEngine]:
         """
@@ -350,7 +363,12 @@ class ScanOrchestrator:
         canonical_tool_name = _TOOL_ID_ALIASES.get(tool_name, tool_name)
         if canonical_tool_name not in _CANONICAL_TOOL_IDS:
             raise ValueError(f"Unknown canonical tool identity: {tool_name!r}")
-        allowed_tools = _ENGINE_TOOL_IDS.get(engine) if engine else None
+        if engine is not None and engine not in _ENGINE_TOOL_IDS and engine not in self._registered_engine_tool_ids:
+            raise ValueError(f"Unknown assessment engine identity: {engine!r}")
+        allowed_tools = (
+            _ENGINE_TOOL_IDS.get(engine)
+            or self._registered_engine_tool_ids.get(engine)
+        ) if engine else None
         if allowed_tools is not None and canonical_tool_name not in allowed_tools:
             raise ValueError(
                 f"Tool identity {tool_name!r} is not authorized for engine {engine!r}"
@@ -417,7 +435,11 @@ class ScanOrchestrator:
                         tool=tool_name,
                     )
                     await self._broadcast(scan_id, "tool_failed", failure_event.model_dump(mode="json"))
-        await self._broadcast(scan_id, "tool_execution_state", {"tool_name": tool_name, "state": state})
+        await self._broadcast(
+            scan_id,
+            "tool_execution_state",
+            {"tool_name": tool_name, "state": state, "engine": engine},
+        )
 
     async def emit_adapter_execution_state(
         self,

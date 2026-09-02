@@ -104,6 +104,8 @@ class MockFailingEngine(BaseAssessmentEngine):
 
 
 class MockPartialToolEngine(BaseAssessmentEngine):
+    allowed_tool_ids = {"subfinder"}
+
     @property
     def name(self) -> str:
         return "mock_partial_tool"
@@ -328,6 +330,9 @@ async def test_tool_execution_identity_is_canonical_and_engine_bound():
 
     with pytest.raises(ValueError, match="Unknown canonical tool identity"):
         await orch.emit_tool_execution_state(job.id, "invented-tool", "TOOL_EXECUTION_FAILED")
+
+    with pytest.raises(ValueError, match="Unknown assessment engine identity"):
+        await orch.emit_tool_execution_state(job.id, "semgrep", "TOOL_EXECUTION_FAILED", engine="unregistered")
 
 
 @pytest.mark.asyncio
