@@ -1,5 +1,5 @@
 """
-Contract 03 & 08 Standalone Binary GitHub Release Installer (nuclei, ffuf, gitleaks, trivy).
+Contract 03 & 08 Standalone Binary GitHub Release Installer for direct-release tools.
 Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 """
 
@@ -181,6 +181,11 @@ class GithubReleaseInstaller(BaseToolInstaller):
     def __init__(self, tool_name: str):
         if tool_name not in GITHUB_TOOL_CONFIGS:
             raise ValueError(f"Unknown GithubReleaseInstaller target: {tool_name}")
+        if tool_name == "trivy":
+            raise ValueError(
+                "Trivy is approved only through SourceBuildInstaller; "
+                "direct GitHub-release installation is not authorized"
+            )
         self._tool_name = tool_name
         self._cfg = GITHUB_TOOL_CONFIGS[tool_name]
 

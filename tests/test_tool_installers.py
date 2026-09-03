@@ -236,6 +236,11 @@ def test_github_release_installer_requires_exact_release_tag():
     assert installer._release_matches_pin({"name": "v3.2.0"}, "v3.2.0") is False
 
 
+def test_trivy_cannot_bypass_approved_source_build_installer():
+    with pytest.raises(ValueError, match="SourceBuildInstaller"):
+        GithubReleaseInstaller("trivy")
+
+
 @pytest.mark.asyncio
 async def test_source_build_requires_pinned_tag_to_resolve_to_pinned_commit():
     installer = SourceBuildInstaller("trivy")
