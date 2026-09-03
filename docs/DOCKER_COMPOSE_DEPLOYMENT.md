@@ -33,9 +33,12 @@ assured external-tool execution. That control must:
    validated-target policy.
 
 The application must not treat `-s crtsh`, proxy variables, or any other tool
-flag as a replacement for this control. If the infrastructure policy is absent
-or cannot prove the worker identity and destination decision, assured external
-execution must remain disabled and the scan must report degraded coverage.
+flag as a replacement for this control. External enterprise scanner execution is
+fail-closed until a real egress provider/verifier is implemented and deployed.
+Setting `SCANNER_EGRESS_PROXY` alone does not satisfy the enterprise egress
+enforcement requirement. If the infrastructure policy is absent or cannot prove
+the worker identity and destination decision, assured external execution must
+remain disabled and the scan must report degraded coverage.
 
 This repository verifies the Compose topology and application boundaries. It
 does not claim host-firewall or egress-gateway enforcement merely because the

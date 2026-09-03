@@ -4,6 +4,7 @@ Integration test suite for FastAPI REST endpoints and SSE streaming (v10.0.0).
 
 import asyncio
 import json
+from unittest.mock import patch
 import pytest
 from httpx import AsyncClient, ASGITransport
 
@@ -20,6 +21,8 @@ from app.core.models import (
     AuthConfig,
     CrawlerConfig,
     DiscoveredEndpoint,
+    EndpointTestRecord,
+    EndpointTestStatus,
     UserProfile,
     UserRole,
     LogLevel,
@@ -37,7 +40,15 @@ from starlette.requests import Request
 
 @pytest.fixture
 def auth_headers():
-    user = UserProfile(id="usr-test-01", username="admin", email="admin@sec.local", role=UserRole.ADMIN)
+    from app.core.models import PrincipalType
+    user = UserProfile(
+        id="usr-test-01",
+        username="admin",
+        email="admin@sec.local",
+        role=UserRole.ADMIN,
+        principal_type=PrincipalType.SYSTEM_PRINCIPAL,
+        scopes=["*"],
+    )
     token = create_access_token(user)
     return {"Authorization": f"Bearer {token}"}
 
@@ -604,20 +615,21 @@ async def test_asset_creation_all_supported_types(auth_headers):
         ("api-container", "CONTAINER_IMAGE", "cyberassess/core-engine:v13.0.0"),
     ]
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        for name, a_type, target_val in test_cases:
-            payload = {
-                "name": name,
-                "type": a_type,
-                "target_value": target_val,
-                "criticality": "HIGH",
-            }
-            res = await ac.post("/api/assets", json=payload, headers=auth_headers)
-            assert res.status_code == 201, f"Failed for {a_type}: {res.text}"
-            data = res.json()
-            assert data["name"] == name
-            assert data["type"] == a_type
-            assert data["target_value"] == target_val
+    with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            for name, a_type, target_val in test_cases:
+                payload = {
+                    "name": name,
+                    "type": a_type,
+                    "target_value": target_val,
+                    "criticality": "HIGH",
+                }
+                res = await ac.post("/api/assets", json=payload, headers=auth_headers)
+                assert res.status_code == 201, f"Failed for {a_type}: {res.text}"
+                data = res.json()
+                assert data["name"] == name
+                assert data["type"] == a_type
+                assert data["target_value"] == target_val
 
 
 @pytest.mark.asyncio
@@ -645,6 +657,13 @@ async def test_per_link_assessment_dossier_structure(auth_headers):
                 is_authenticated=True,
                 has_forms=True,
                 discovered_forms=2,
+                tools_executed=["native_dast", "katana", "parameter_fuzzer"],
+                tests_performed=[
+                    EndpointTestRecord(test_name="Security Headers", category="Configuration", tool="native_dast", status=EndpointTestStatus.VULNERABLE),
+                    EndpointTestRecord(test_name="CORS Policy", category="Access Control", tool="native_dast", status=EndpointTestStatus.SAFE),
+                    EndpointTestRecord(test_name="Active Parameter Injection", category="Injection", tool="parameter_fuzzer", status=EndpointTestStatus.SAFE),
+                    EndpointTestRecord(test_name="CSRF Protection", category="Session Management", tool="native_dast", status=EndpointTestStatus.SAFE),
+                ],
             )
         ],
         findings=[

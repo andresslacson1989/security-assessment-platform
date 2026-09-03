@@ -1525,8 +1525,8 @@ def test_scenario_20_containerization_dockerfile_and_compose_validation():
     with open(dockerfile_path, "r", encoding="utf-8") as f:
         dockerfile_content = f.read()
 
-    assert "python:3.11-slim-bookworm AS builder" in dockerfile_content
-    assert "FROM python:3.11-slim-bookworm" in dockerfile_content
+    assert "python:3.11-slim-bookworm@sha256:" in dockerfile_content
+    assert "AS builder" in dockerfile_content
     assert "nmap" in dockerfile_content
     assert "nuclei" in dockerfile_content
     assert "ffuf" in dockerfile_content

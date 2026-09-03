@@ -4,14 +4,13 @@
 # contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (§3)
 # ==============================================================================
 
-version: '3.8'
-
 services:
   cyberassess:
+    profiles: ["standalone"]
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    image: ghcr.io/andresslacson1989/security-assessment-platform:${CYBERASSESS_IMAGE_TAG:-v14.3.0}
     container_name: cyberassess-platform
     restart: unless-stopped
     mem_limit: 2g
@@ -53,7 +52,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    image: ghcr.io/andresslacson1989/security-assessment-platform:${CYBERASSESS_IMAGE_TAG:-v14.3.0}
     container_name: cyberassess-platform-enterprise
     restart: unless-stopped
     mem_limit: 2g
@@ -79,8 +78,10 @@ services:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must reference the enterprise PostgreSQL service}"
       EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
+      BOOTSTRAP_SECRET: "${BOOTSTRAP_SECRET:?BOOTSTRAP_SECRET must be configured for enterprise bootstrap}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
+      SCANNER_EGRESS_PROXY: "${SCANNER_EGRESS_PROXY:-}"
     volumes:
       - ./data:/app/data
     networks:
@@ -104,7 +105,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    image: ghcr.io/andresslacson1989/security-assessment-platform:${CYBERASSESS_IMAGE_TAG:-v14.3.0}
     container_name: cyberassess-worker
     restart: unless-stopped
     mem_limit: 2g
@@ -129,6 +130,8 @@ services:
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
+      ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED: "true"
+      SCANNER_EGRESS_PROXY: "${SCANNER_EGRESS_PROXY:-}"
     volumes:
       - ./data:/app/data
     networks:
@@ -142,7 +145,7 @@ services:
 
   postgres:
     profiles: ["enterprise"]
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: cyberassess-postgres
     restart: unless-stopped
     environment:
@@ -161,7 +164,7 @@ services:
 
   redis:
     profiles: ["enterprise"]
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     container_name: cyberassess-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]

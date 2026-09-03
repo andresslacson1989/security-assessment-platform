@@ -14,36 +14,78 @@ import httpx
 import httpcore
 import os
 import secrets
-from typing import Any, List, Tuple, Optional
+from typing import Any, List, Tuple, Optional, Union
+from enum import Enum
 from app.core.version import APP_VERSION
 
 
-# Blocked IPv4 and IPv6 Networks
-BLOCKED_NETWORKS = [
-    # IPv4 Loopback & Unspecified
+class NetworkClassification(str, Enum):
+    PUBLIC = "PUBLIC"
+    PRIVATE = "PRIVATE"
+    LOOPBACK = "LOOPBACK"
+    LINK_LOCAL = "LINK_LOCAL"
+    METADATA = "METADATA"
+    RESERVED = "RESERVED"
+    MULTICAST = "MULTICAST"
+    UNSPECIFIED = "UNSPECIFIED"
+
+
+METADATA_NETWORKS = [
+    ipaddress.ip_network("169.254.169.254/32"),
+    ipaddress.ip_network("168.63.129.16/32"),
+    ipaddress.ip_network("100.100.100.200/32"),
+]
+
+LOOPBACK_NETWORKS = [
     ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+]
+
+UNSPECIFIED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
-    # IPv4 RFC 1918 Private Subnets
+    ipaddress.ip_network("::/128"),
+]
+
+LINK_LOCAL_NETWORKS = [
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+MULTICAST_NETWORKS = [
+    ipaddress.ip_network("224.0.0.0/4"),
+    ipaddress.ip_network("ff00::/8"),
+]
+
+RESERVED_NETWORKS = [
+    ipaddress.ip_network("240.0.0.0/4"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("192.0.0.0/24"),
+    ipaddress.ip_network("192.0.2.0/24"),
+    ipaddress.ip_network("198.51.100.0/24"),
+    ipaddress.ip_network("203.0.113.0/24"),
+    ipaddress.ip_network("198.18.0.0/15"),
+    ipaddress.ip_network("255.255.255.255/32"),
+    ipaddress.ip_network("2001:db8::/32"),
+    ipaddress.ip_network("100::/64"),
+    ipaddress.ip_network("2001:2::/48"),
+]
+
+PRIVATE_NETWORKS = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
-    # IPv4 Link-Local & Cloud Metadata (AWS, GCP, Azure, OpenStack 169.254.169.254)
-    ipaddress.ip_network("169.254.0.0/16"),
-    # Carrier-Grade NAT (RFC 6598)
-    ipaddress.ip_network("100.64.0.0/10"),
-    # Multicast & Reserved
-    ipaddress.ip_network("224.0.0.0/4"),
-    ipaddress.ip_network("240.0.0.0/4"),
-    # IPv6 Loopback & Unspecified
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("::/128"),
-    # IPv6 Link-Local
-    ipaddress.ip_network("fe80::/10"),
-    # IPv6 Unique Local Unicast (RFC 4193)
     ipaddress.ip_network("fc00::/7"),
-    # IPv6 Multicast
-    ipaddress.ip_network("ff00::/8"),
 ]
+
+BLOCKED_NETWORKS = (
+    METADATA_NETWORKS
+    + LOOPBACK_NETWORKS
+    + UNSPECIFIED_NETWORKS
+    + LINK_LOCAL_NETWORKS
+    + MULTICAST_NETWORKS
+    + RESERVED_NETWORKS
+    + PRIVATE_NETWORKS
+)
 
 BLOCKED_HOSTNAMES = {
     "localhost",
@@ -271,36 +313,106 @@ def is_url_in_validated_origin(url: str, validated_target: Any) -> bool:
         return False
 
 
-def is_ip_allowed(ip_str: str) -> Tuple[bool, Optional[str]]:
+def classify_ip(ip_val: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address]) -> Tuple[NetworkClassification, Optional[str]]:
     """
-    Evaluates whether an IPv4 or IPv6 address is safe for outbound scanning.
-    Returns (True, None) if allowed, or (False, reason) if blocked.
+    Authoritatively classifies an IP address into distinct network categories.
+    Evaluation order prioritizes dangerous and non-routable categories before private/public:
+    1. METADATA
+    2. LOOPBACK
+    3. UNSPECIFIED
+    4. LINK_LOCAL
+    5. MULTICAST
+    6. RESERVED
+    7. PRIVATE
+    8. PUBLIC
+    """
+    if isinstance(ip_val, str):
+        try:
+            ip_obj = ipaddress.ip_address(ip_val.strip())
+        except ValueError:
+            return NetworkClassification.UNSPECIFIED, f"Invalid IP address format: '{ip_val}'"
+    else:
+        ip_obj = ip_val
+
+    ip_str = str(ip_obj)
+
+    # 1. Cloud Metadata (Check FIRST)
+    if any(ip_obj in net for net in METADATA_NETWORKS):
+        return NetworkClassification.METADATA, f"Cloud metadata address '{ip_str}' is strictly forbidden."
+
+    # 2. Loopback
+    if ip_obj.is_loopback or any(ip_obj in net for net in LOOPBACK_NETWORKS):
+        return NetworkClassification.LOOPBACK, f"Loopback address '{ip_str}' is forbidden."
+
+    # 3. Unspecified
+    if ip_obj.is_unspecified or any(ip_obj in net for net in UNSPECIFIED_NETWORKS):
+        return NetworkClassification.UNSPECIFIED, f"Unspecified address '{ip_str}' is forbidden."
+
+    # 4. Link-Local
+    if ip_obj.is_link_local or any(ip_obj in net for net in LINK_LOCAL_NETWORKS):
+        return NetworkClassification.LINK_LOCAL, f"Link-local address '{ip_str}' is forbidden."
+
+    # 5. Multicast
+    if ip_obj.is_multicast or any(ip_obj in net for net in MULTICAST_NETWORKS):
+        return NetworkClassification.MULTICAST, f"Multicast address '{ip_str}' is forbidden."
+
+    # 6. Reserved & Non-Global
+    if ip_obj.is_reserved or any(ip_obj in net for net in RESERVED_NETWORKS):
+        return NetworkClassification.RESERVED, f"Reserved/non-global address '{ip_str}' is forbidden."
+
+    # 7. Private Intranet (RFC 1918 & IPv6 ULA)
+    if any(ip_obj in net for net in PRIVATE_NETWORKS):
+        return NetworkClassification.PRIVATE, None
+
+    # 8. Must be globally routable public address
+    if getattr(ip_obj, "is_global", False):
+        return NetworkClassification.PUBLIC, None
+
+    # Fail closed for any unclassified or non-global IP
+    return NetworkClassification.RESERVED, f"Non-global routable address '{ip_str}' is forbidden."
+
+
+def is_ip_allowed_for_policy(ip_str: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluates whether an IPv4 or IPv6 address is safe for outbound operations under the given authorization policy.
+    - If allow_internal is False: only PUBLIC is allowed.
+    - If allow_internal is True: PUBLIC and PRIVATE are allowed.
+    - LOOPBACK, LINK_LOCAL, METADATA, RESERVED, MULTICAST, UNSPECIFIED are ALWAYS denied.
     """
     try:
         ip_obj = ipaddress.ip_address(ip_str.strip())
     except ValueError:
         return False, f"Invalid IP address format: '{ip_str}'"
 
-    # Fast boolean checks from stdlib
-    if ip_obj.is_loopback:
-        return False, f"Loopback address '{ip_str}' is forbidden."
-    if ip_obj.is_private:
-        return False, f"Private intranet address '{ip_str}' is forbidden."
-    if ip_obj.is_link_local:
-        return False, f"Link-local / Cloud metadata address '{ip_str}' is forbidden."
-    if ip_obj.is_multicast:
-        return False, f"Multicast address '{ip_str}' is forbidden."
-    if ip_obj.is_reserved:
-        return False, f"Reserved address '{ip_str}' is forbidden."
-    if ip_obj.is_unspecified:
-        return False, f"Unspecified address '{ip_str}' is forbidden."
+    classification, reason = classify_ip(ip_obj)
 
-    # Comprehensive CIDR containment check
-    for net in BLOCKED_NETWORKS:
-        if ip_obj in net:
-            return False, f"IP '{ip_str}' falls within blocked network '{net}'."
+    if classification in (
+        NetworkClassification.LOOPBACK,
+        NetworkClassification.LINK_LOCAL,
+        NetworkClassification.METADATA,
+        NetworkClassification.RESERVED,
+        NetworkClassification.MULTICAST,
+        NetworkClassification.UNSPECIFIED,
+    ):
+        return False, reason or f"{classification.value} address '{ip_str}' is strictly forbidden."
 
-    return True, None
+    if classification == NetworkClassification.PRIVATE:
+        if not allow_internal:
+            return False, f"Private intranet address '{ip_str}' requires explicit 'scan:internal' authorization."
+        return True, None
+
+    if classification == NetworkClassification.PUBLIC:
+        return True, None
+
+    return False, f"Address '{ip_str}' with classification '{classification.value}' is forbidden."
+
+
+def is_ip_allowed(ip_str: str) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluates whether an IPv4 or IPv6 address is safe for public outbound operations.
+    Maintains backward compatibility with callers expecting default public-only policy.
+    """
+    return is_ip_allowed_for_policy(ip_str, allow_internal=False)
 
 
 def resolve_hostname_ips(hostname: str) -> List[str]:
@@ -317,8 +429,11 @@ def resolve_hostname_ips(hostname: str) -> List[str]:
 
 def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
     """
-    Validates that a URL is well-formed, uses http/https, and does not target forbidden internal IPs.
-    If allow_internal is True (Admin override), internal private IPs are permitted.
+    Validates that a URL is well-formed, uses http/https, and does not target forbidden destinations.
+    Enforces central network classification policy:
+    - Dangerous categories (LOOPBACK, LINK_LOCAL, METADATA, RESERVED, MULTICAST, UNSPECIFIED) are always denied.
+    - PRIVATE destinations require allow_internal=True.
+    - All resolved DNS addresses must be permitted under policy.
     """
     if not url or not isinstance(url, str):
         return False, "Target URL cannot be empty."
@@ -333,56 +448,61 @@ def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, O
 
     hostname_lower = hostname.lower().strip("[]")
 
+    # 1. Check forbidden hostnames (always blocked regardless of allow_internal)
+    if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower == "localhost" or hostname_lower.startswith("localhost."):
+        return False, f"Target hostname '{hostname}' is a reserved internal/metadata name."
+
+    # 2. Check direct IP literals
+    try:
+        ip_obj = ipaddress.ip_address(hostname_lower)
+        return is_ip_allowed_for_policy(str(ip_obj), allow_internal=allow_internal)
+    except ValueError:
+        pass  # Not an IP literal; proceed to DNS resolution
+
+    # 3. Check reserved domain suffixes if not authorized for internal
     if not allow_internal:
-        # Check forbidden hostnames
-        if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
-            return False, f"Target hostname '{hostname}' is a reserved internal/metadata name."
+        if hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
+            return False, f"Target hostname '{hostname}' is a reserved internal name."
 
-        # Check direct IP literals
-        try:
-            ip_obj = ipaddress.ip_address(hostname_lower)
-            allowed, reason = is_ip_allowed(str(ip_obj))
-            if not allowed:
-                return False, reason
-            return True, None
-        except ValueError:
-            pass  # Not an IP literal; proceed to DNS resolution
+    # 4. Resolve hostname and check all IPs
+    resolved_ips = resolve_hostname_ips(hostname_lower)
+    if not resolved_ips:
+        # Contract 01 / 08 Invariant: Unresolved target MUST fail closed.
+        return False, f"Target hostname '{hostname}' failed DNS resolution or does not exist."
 
-        # Resolve hostname and check all IPs
-        resolved_ips = resolve_hostname_ips(hostname_lower)
-        if not resolved_ips:
-            # Contract 01 / 08 Invariant: Unresolved target MUST fail closed.
-            return False, f"Target hostname '{hostname}' failed DNS resolution or does not exist."
-
-        for ip in resolved_ips:
-            allowed, reason = is_ip_allowed(ip)
-            if not allowed:
-                return False, f"Resolved IP '{ip}' for hostname '{hostname}' is blocked: {reason}"
+    for ip in resolved_ips:
+        allowed, reason = is_ip_allowed_for_policy(ip, allow_internal=allow_internal)
+        if not allowed:
+            return False, f"Resolved IP '{ip}' for hostname '{hostname}' is blocked: {reason}"
 
     return True, None
 
 
 def validate_target_domain(domain: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
     """
-    Validates a DOMAIN target input against SSRF and internal address restrictions.
+    Validates a DOMAIN target input against SSRF and network classification boundaries.
     """
     if not domain or not isinstance(domain, str):
         return False, "Target domain cannot be empty."
-    
+
     clean_domain = domain.strip().lower().split(":")[0]
+
+    if clean_domain in BLOCKED_HOSTNAMES or clean_domain == "localhost" or clean_domain.startswith("localhost."):
+        return False, f"Target domain '{domain}' is a reserved internal/metadata name."
+
     if not allow_internal:
-        if clean_domain in BLOCKED_HOSTNAMES or clean_domain.endswith(".internal") or clean_domain.endswith(".local"):
-            return False, f"Target domain '{domain}' is a reserved internal/metadata name."
-        
-        resolved_ips = resolve_hostname_ips(clean_domain)
-        if not resolved_ips:
-            return False, f"Target domain '{clean_domain}' failed DNS resolution."
-        
-        for ip in resolved_ips:
-            allowed, reason = is_ip_allowed(ip)
-            if not allowed:
-                return False, f"Domain resolved to blocked address '{ip}': {reason}"
-                
+        if clean_domain.endswith(".internal") or clean_domain.endswith(".local"):
+            return False, f"Target domain '{domain}' is a reserved internal name."
+
+    resolved_ips = resolve_hostname_ips(clean_domain)
+    if not resolved_ips:
+        return False, f"Target domain '{clean_domain}' failed DNS resolution."
+
+    for ip in resolved_ips:
+        allowed, reason = is_ip_allowed_for_policy(ip, allow_internal=allow_internal)
+        if not allowed:
+            return False, f"Domain resolved to blocked address '{ip}': {reason}"
+
     return True, None
 
 
@@ -393,7 +513,7 @@ def validate_target_ip(ip_str: str, allow_internal: bool = False) -> Tuple[bool,
     """
     if not ip_str or not isinstance(ip_str, str):
         return False, "Target IP cannot be empty."
-    
+
     clean_ip = ip_str.strip()
     if clean_ip.startswith("["):
         if "]" in clean_ip:
@@ -404,14 +524,7 @@ def validate_target_ip(ip_str: str, allow_internal: bool = False) -> Tuple[bool,
         # IPv4 with port e.g. 192.168.1.1:80
         clean_ip = clean_ip.split(":")[0]
 
-    if allow_internal:
-        try:
-            ipaddress.ip_address(clean_ip)
-            return True, None
-        except ValueError:
-            return False, f"Invalid IP address format: '{clean_ip}'"
-            
-    return is_ip_allowed(clean_ip)
+    return is_ip_allowed_for_policy(clean_ip, allow_internal=allow_internal)
 
 
 def validate_target_security(
@@ -567,12 +680,11 @@ def create_validated_target(
                 ipaddress.ip_address(resolved_ip)
             except ValueError as exc:
                 raise SSRFProtectionError("Target hostname returned an invalid address.") from exc
-            if not allow_internal:
-                allowed, reason = is_ip_allowed(resolved_ip)
-                if not allowed:
-                    raise SSRFProtectionError(
-                        f"Resolved IP '{resolved_ip}' for target is blocked: {reason}"
-                    )
+            allowed, reason = is_ip_allowed_for_policy(resolved_ip, allow_internal=allow_internal)
+            if not allowed:
+                raise SSRFProtectionError(
+                    f"Resolved IP '{resolved_ip}' for target is blocked: {reason}"
+                )
 
     auth_ctx = {
         "allow_internal": allow_internal,

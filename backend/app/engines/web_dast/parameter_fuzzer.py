@@ -44,6 +44,55 @@ def format_curl_poc(method: str, url: str, headers: Optional[Dict[str, str]] = N
     return sanitize_reproduction_curl(cmd) or cmd
 
 
+class ParameterFuzzExecution:
+    """
+    Authoritative per-URL parameter fuzzing execution record.
+    Tracks parameters tested, requested probes, completed probes, and failed probes.
+    """
+    def __init__(
+        self,
+        url: str,
+        parameters_tested: Optional[List[str]] = None,
+        probes_requested: int = 0,
+        probes_completed: int = 0,
+        probes_failed: int = 0,
+        failed_probe_details: Optional[List[str]] = None,
+    ):
+        self.url = url
+        self.parameters_tested = parameters_tested or []
+        self.probes_requested = probes_requested
+        self.probes_completed = probes_completed
+        self.probes_failed = probes_failed
+        self.failed_probe_details = failed_probe_details or []
+
+    @property
+    def is_fully_completed(self) -> bool:
+        return self.probes_requested > 0 and self.probes_failed == 0 and self.probes_completed == self.probes_requested
+
+    @property
+    def is_partial(self) -> bool:
+        return self.probes_failed > 0 and self.probes_completed > 0
+
+    @property
+    def is_failed(self) -> bool:
+        return self.probes_requested > 0 and self.probes_completed == 0
+
+
+class ParameterFuzzAuditResult(list):
+    """
+    Subclass of list holding parameter fuzzing findings, while preserving
+    authoritative per-endpoint probe execution records.
+    """
+    def __init__(
+        self,
+        findings: List[Finding],
+        executions: Optional[Dict[str, ParameterFuzzExecution]] = None,
+    ):
+        super().__init__(findings)
+        self.findings = findings
+        self.executions = executions or {}
+
+
 async def audit_parameter_fuzzing(
     target_url: str,
     discovered_endpoints: List[DiscoveredEndpoint],
@@ -52,14 +101,15 @@ async def audit_parameter_fuzzing(
     scan_id: str,
     emit_finding: Optional[FindingCallback] = None,
     emit_log: Optional[LogCallback] = None,
-) -> List[Finding]:
+) -> ParameterFuzzAuditResult:
     """
     Performs safe, bounded parameter fuzzing across all discovered URL query parameters and forms.
     """
     findings: List[Finding] = []
+    executions: Dict[str, ParameterFuzzExecution] = {}
     fuzz_cfg = config.fuzzing
     if not fuzz_cfg.enabled:
-        return findings
+        return ParameterFuzzAuditResult(findings=findings, executions=executions)
 
     # Collect URLs with query parameters or forms to test
     test_urls = set()
@@ -69,10 +119,6 @@ async def audit_parameter_fuzzing(
         if "?" in ep.url:
             test_urls.add(ep.url)
 
-    # If no parameterized URLs found, test baseline endpoint with sample query params
-    if not test_urls:
-        test_urls.add(f"{target_url.rstrip('/')}/?id=1&search=test&redirect=home")
-
     delay_target = fuzz_cfg.delay_seconds or 2.0
 
     for url_str in test_urls:
@@ -81,9 +127,13 @@ async def audit_parameter_fuzzing(
         if not params:
             continue
 
+        exec_rec = ParameterFuzzExecution(url=url_str, parameters_tested=list(params.keys()))
+        executions[url_str] = exec_rec
+
         for param_name, orig_val in params.items():
             # --- 1. Time-Based SQL Injection (DAST-INJ-001) ---
             if fuzz_cfg.fuzz_sqli:
+                exec_rec.probes_requested += 1
                 try:
                     # Baseline measurement
                     t0_start = time.perf_counter()
@@ -100,6 +150,7 @@ async def audit_parameter_fuzzing(
                     t1_start = time.perf_counter()
                     resp = await client.get(fuzzed_url, timeout=config.timeout_seconds + delay_target + 2.0)
                     t1 = time.perf_counter() - t1_start
+                    exec_rec.probes_completed += 1
 
                     if t1 >= t0 + (delay_target - 0.3):
                         loc = f"{url_str} [{param_name}]"
@@ -143,10 +194,13 @@ async def audit_parameter_fuzzing(
                         if emit_finding:
                             await emit_finding(f)
                 except Exception as exc:
+                    exec_rec.probes_failed += 1
+                    exec_rec.failed_probe_details.append(f"SQLi on {param_name}: {type(exc).__name__} ({exc})")
                     logger.debug("SQL injection probe failed: error_type=%s", type(exc).__name__)
 
             # --- 2. Canary Reflected XSS (DAST-XSS-001) ---
             if fuzz_cfg.fuzz_xss:
+                exec_rec.probes_requested += 1
                 try:
                     canary_hex = secrets.token_hex(6)
                     canary_token = f"_CYBERASSESS_XSS_{canary_hex}_"
@@ -156,6 +210,7 @@ async def audit_parameter_fuzzing(
                     fuzzed_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(fuzzed_params), parsed.fragment))
 
                     resp = await client.get(fuzzed_url, timeout=config.timeout_seconds)
+                    exec_rec.probes_completed += 1
                     if canary_token in resp.text and (f"<script>{canary_token}</script>" in resp.text or f'"{canary_token}' in resp.text):
                         loc = f"{url_str} [{param_name}]"
                         obs = f"Canary token '{canary_token}' and unescaped HTML tags reflected directly in response body."
@@ -199,10 +254,13 @@ async def audit_parameter_fuzzing(
                         if emit_finding:
                             await emit_finding(f)
                 except Exception as exc:
+                    exec_rec.probes_failed += 1
+                    exec_rec.failed_probe_details.append(f"XSS on {param_name}: {type(exc).__name__} ({exc})")
                     logger.debug("XSS probe failed: error_type=%s", type(exc).__name__)
 
             # --- 3. Local File Inclusion / Path Traversal (DAST-LFI-001) ---
             if fuzz_cfg.fuzz_lfi:
+                exec_rec.probes_requested += 1
                 try:
                     lfi_payload = "../../../../etc/passwd"
                     fuzzed_params = dict(params)
@@ -210,6 +268,7 @@ async def audit_parameter_fuzzing(
                     fuzzed_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(fuzzed_params), parsed.fragment))
 
                     resp = await client.get(fuzzed_url, timeout=config.timeout_seconds)
+                    exec_rec.probes_completed += 1
                     if re.search(r"root:.*:0:0:", resp.text) or "[fonts]" in resp.text.lower() or "[extensions]" in resp.text.lower():
                         loc = f"{url_str} [{param_name}]"
                         obs = f"Parameter '{param_name}' path traversal returned system file contents (/etc/passwd)."
@@ -253,10 +312,13 @@ async def audit_parameter_fuzzing(
                         if emit_finding:
                             await emit_finding(f)
                 except Exception as exc:
+                    exec_rec.probes_failed += 1
+                    exec_rec.failed_probe_details.append(f"LFI on {param_name}: {type(exc).__name__} ({exc})")
                     logger.debug("LFI probe failed: error_type=%s", type(exc).__name__)
 
             # --- 4. Server-Side Template Injection (DAST-SSTI-001) ---
             if fuzz_cfg.fuzz_ssti:
+                exec_rec.probes_requested += 1
                 try:
                     ssti_payload = "{{7*7}}"
                     fuzzed_params = dict(params)
@@ -264,6 +326,7 @@ async def audit_parameter_fuzzing(
                     fuzzed_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(fuzzed_params), parsed.fragment))
 
                     resp = await client.get(fuzzed_url, timeout=config.timeout_seconds)
+                    exec_rec.probes_completed += 1
                     # Check if '49' is in response but not the literal '{{7*7}}'
                     if "49" in resp.text and "{{7*7}}" not in resp.text:
                         loc = f"{url_str} [{param_name}]"
@@ -308,10 +371,13 @@ async def audit_parameter_fuzzing(
                         if emit_finding:
                             await emit_finding(f)
                 except Exception as exc:
+                    exec_rec.probes_failed += 1
+                    exec_rec.failed_probe_details.append(f"SSTI on {param_name}: {type(exc).__name__} ({exc})")
                     logger.debug("SSTI probe failed: error_type=%s", type(exc).__name__)
 
             # --- 5. Open Redirection (DAST-REDIR-001) ---
             if fuzz_cfg.fuzz_redirect:
+                exec_rec.probes_requested += 1
                 try:
                     redir_payload = "https://attacker.invalid"
                     fuzzed_params = dict(params)
@@ -322,6 +388,7 @@ async def audit_parameter_fuzzing(
                     # disabling redirect following here must not create a
                     # second unvalidated socket path.
                     resp = await client.get(fuzzed_url, follow_redirects=False)
+                    exec_rec.probes_completed += 1
                     if resp.status_code in (301, 302, 303, 307, 308):
                         location_hdr = resp.headers.get("location", "")
                         if "attacker.invalid" in location_hdr:
@@ -366,6 +433,8 @@ async def audit_parameter_fuzzing(
                             if emit_finding:
                                 await emit_finding(f)
                 except Exception as exc:
+                    exec_rec.probes_failed += 1
+                    exec_rec.failed_probe_details.append(f"Open Redirect on {param_name}: {type(exc).__name__} ({exc})")
                     logger.debug("Open redirect probe failed: error_type=%s", type(exc).__name__)
 
-    return findings
+    return ParameterFuzzAuditResult(findings=findings, executions=executions)

@@ -328,6 +328,11 @@ async def get_scan_telemetry(
         "TIMED_OUT": EngineExecutionStatus.TIMED_OUT,
         "CANCELLED": EngineExecutionStatus.CANCELLED,
         "INVALID_VERSION": EngineExecutionStatus.FAILED,
+        "FAILED_NON_ZERO_EXIT": EngineExecutionStatus.FAILED,
+        "FAILED_TIMEOUT": EngineExecutionStatus.TIMED_OUT,
+        "FAILED_OUTPUT_LIMIT": EngineExecutionStatus.FAILED,
+        "NOT_EXECUTED_PREREQUISITE_MISSING": EngineExecutionStatus.FAILED,
+        "NOT_EXECUTED_UNSUPPORTED_TARGET": EngineExecutionStatus.FAILED,
     }
     for t_name in telemetry_tools:
         normalized_state = recorded_states.get(t_name)
@@ -335,17 +340,22 @@ async def get_scan_telemetry(
             (f.engine for f in job.findings if (f.source_tool or "native").lower() == t_name.lower()),
             None,
         )
+        exec_status = state_statuses.get(normalized_state, EngineExecutionStatus.FAILED)
+        is_success = exec_status in {EngineExecutionStatus.PASS, EngineExecutionStatus.FINDINGS}
         tool_telemetry_map[t_name] = ToolExecutionTelemetry(
             tool_name=t_name,
             correlation_id=job.correlation_id,
             engine=getattr(job, "tool_execution_engines", {}).get(t_name) or finding_engine or "unknown",
-            status=state_statuses.get(normalized_state, EngineExecutionStatus.FAILED),
+            status=exec_status,
             duration_seconds=0.0,
             command_executed=None,
             findings_count=0,
             log_count=0,
             endpoints_tested=[],
             normalized_state=normalized_state,
+            output_bytes=0,
+            success_count=1 if is_success else 0,
+            failure_count=0 if is_success else 1,
         )
 
     for f in job.findings:
@@ -395,79 +405,20 @@ async def get_scan_telemetry(
             if f.id not in ep_copy.finding_ids:
                 ep_copy.finding_ids.append(f.id)
 
-        # Ensure tools_executed is populated
-        if not ep_copy.tools_executed:
-            ep_copy.tools_executed = ["native_dast", "katana", "parameter_fuzzer"]
-            # Host availability is not execution evidence. Only tools with a
-            # recorded execution state or a finding may appear in a per-link
-            # execution dossier.
-            executed_tools = set(getattr(job, "tool_execution_states", {}).keys())
-            executed_tools.update(
-                (finding.source_tool or "native")
-                for finding in job.findings
-            )
-            for tool_name in sorted(executed_tools):
-                if tool_name not in ep_copy.tools_executed:
-                    ep_copy.tools_executed.append(tool_name)
-
-        # If tests_performed is empty, build standard evaluation records
-        if not ep_copy.tests_performed:
-            header_finds = [f for f in matching_findings if "header" in f.title.lower() or "csp" in f.title.lower() or "cookie" in f.title.lower()]
-            cors_finds = [f for f in matching_findings if "cors" in f.title.lower() or "origin" in f.title.lower()]
-            fuzz_finds = [f for f in matching_findings if "injection" in f.title.lower() or "sqli" in f.title.lower() or "xss" in f.title.lower()]
-            cve_finds = [f for f in matching_findings if "cve" in f.title.lower() or f.source_tool == "nuclei"]
-
-            ep_copy.tests_performed = [
-                EndpointTestRecord(
-                    test_name="Security Headers & CSP Audit",
-                    category="Configuration",
-                    tool="native_dast",
-                    status=EndpointTestStatus.VULNERABLE if header_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(header_finds)} header misconfigurations detected." if header_finds else "HSTS, CSP, and Anti-clickjacking headers properly enforced.",
-                    findings_count=len(header_finds),
-                ),
-                EndpointTestRecord(
-                    test_name="CORS Policy & Origin Reflection",
-                    category="Configuration",
-                    tool="native_dast",
-                    status=EndpointTestStatus.VULNERABLE if cors_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(cors_finds)} CORS misconfigurations detected." if cors_finds else "Strict origin reflection and access control verified.",
-                    findings_count=len(cors_finds),
-                ),
-                EndpointTestRecord(
-                    test_name="HTML Form & CSRF Token Validation",
-                    category="Authentication",
-                    tool="auth_session",
-                    status=EndpointTestStatus.SAFE,
-                    details=f"{ep_copy.discovered_forms or (1 if ep_copy.has_forms else 0)} form(s) inspected for anti-CSRF tokens and secure transmission.",
-                    findings_count=0,
-                ),
-                EndpointTestRecord(
-                    test_name="Active Parameter Injection (SQLi / XSS / LFI)",
-                    category="Injection",
-                    tool="parameter_fuzzer",
-                    status=EndpointTestStatus.VULNERABLE if fuzz_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(fuzz_finds)} injection anomalies triggered." if fuzz_finds else "Benign payload probes evaluated; no parameter injection anomalies detected.",
-                    findings_count=len(fuzz_finds),
-                ),
-                EndpointTestRecord(
-                    test_name="Nuclei Vulnerability & CVE Probe",
-                    category="Vulnerability Scanning",
-                    tool="nuclei",
-                    status=EndpointTestStatus.VULNERABLE if cve_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(cve_finds)} CVE template matches detected." if cve_finds else "Standard CVE and misconfiguration templates evaluated cleanly.",
-                    findings_count=len(cve_finds),
-                ),
-            ]
-
+        # Do not manufacture tools_executed or tests_performed if none is recorded.
+        # An empty execution/test list truthfully indicates no authoritative test execution on this endpoint.
         enriched_endpoints.append(ep_copy)
 
     tools_executed_list = list(tool_telemetry_map.values())
-    coverage_data = getattr(job.summary, "coverage", None) or AssessmentCoverage(
-        engines_requested=job.enabled_engines,
-        engines_executed=job.enabled_engines,
-        is_fully_assessed=True,
-    )
+    coverage_data = getattr(job.summary, "coverage", None)
+    if coverage_data is None:
+        coverage_data = AssessmentCoverage(
+            engines_requested=job.enabled_engines,
+            engines_executed=[],
+            is_fully_assessed=False,
+            coverage_status="COVERAGE_DEGRADED",
+            coverage_limitations=["Authoritative coverage data is absent or scan incomplete."],
+        )
 
     return ScanTelemetryReport(
         scan_id=job.id,
@@ -501,7 +452,7 @@ async def cancel_running_scan(
     if not authorize_scan_access(current_user, job, action="cancel"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to cancel scan job '{scan_id}'.")
 
-    cancelled = await orchestrator.cancel_scan(scan_id)
+    cancelled = await orchestrator.cancel_scan(scan_id, organization_id=_organization_scope(current_user))
 
     db_manager.record_audit_event(
         AuditEvent(

@@ -177,10 +177,10 @@ class TestSslyzeDestinationBinding:
         strictly to the designated loopback socket without resolving hostnames.
         """
         target = Target(name="Internal TLS", type=TargetType.URL, value="https://secure.internal:8443")
-        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["127.0.0.1"]):
+        with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["10.0.0.1"]):
             val_target = create_validated_target(target, allow_internal=True)
 
-        assert val_target.selected_destination == "127.0.0.1"
+        assert val_target.selected_destination == "10.0.0.1"
         assert val_target.port == 8443
 
         cmd, dest_ip, port, err = SslyzeCommandBuilder.build_command(
@@ -188,9 +188,9 @@ class TestSslyzeDestinationBinding:
             target=val_target,
         )
         assert err is None
-        assert dest_ip == "127.0.0.1"
+        assert dest_ip == "10.0.0.1"
         assert port == 8443
-        assert "127.0.0.1:8443" in cmd
+        assert "10.0.0.1:8443" in cmd
         assert "--sni=secure.internal" in cmd
 
     def test_ssrf_forbidden_target_blocked(self):

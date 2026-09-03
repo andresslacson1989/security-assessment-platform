@@ -7,6 +7,7 @@ enforces security headers, and derives metadata exclusively from app.core.versio
 
 from __future__ import annotations
 import os
+import re
 import uuid
 import logging
 from contextlib import asynccontextmanager
@@ -88,11 +89,22 @@ else:
     # Explicit trusted local frontend origins
     ALLOWED_ORIGINS = _load_allowed_origins(None)
 
+operating_mode = (os.getenv("OPERATING_MODE") or os.getenv("ENVIRONMENT") or "PRODUCTION").strip().upper()
+enable_docs = os.getenv("ENABLE_DOCS", "false").strip().lower() in {"1", "true", "yes"}
+docs_enabled = (operating_mode != "PRODUCTION") or enable_docs
+
+docs_url = "/docs" if docs_enabled else None
+redoc_url = "/redoc" if docs_enabled else None
+openapi_url = "/openapi.json" if docs_enabled else None
+
 app = FastAPI(
     title=APP_TITLE,
     version=APP_VERSION,
     description=f"Enterprise Automated Security Assessment Platform (Contract v{CONTRACT_VERSION}, Ruleset v{RULESET_VERSION}).",
     lifespan=lifespan,
+    docs_url=docs_url,
+    redoc_url=redoc_url,
+    openapi_url=openapi_url,
 )
 
 
@@ -117,12 +129,26 @@ async def handle_unexpected_exception(request: Request, exc: Exception) -> JSONR
     )
 
 
+_CORRELATION_ID_REGEX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def validate_correlation_id(raw_id: Optional[str]) -> str:
+    """
+    R2.7: Validates incoming X-Correlation-ID header against strict length and character rules.
+    Rejects CRLF, whitespace, control characters, and non-alphanumeric punctuation.
+    Generates a cryptographically secure server correlation ID if absent or invalid.
+    """
+    if raw_id and _CORRELATION_ID_REGEX.match(raw_id):
+        return raw_id
+    return f"corr-{uuid.uuid4().hex[:12]}"
+
+
 @app.middleware("http")
 async def security_headers_and_correlation_middleware(request: Request, call_next):
     """
-    Injects unique X-Correlation-ID for end-to-end request tracing and adds strict enterprise security headers.
+    Injects validated X-Correlation-ID for end-to-end request tracing and adds strict enterprise security headers.
     """
-    correlation_id = request.headers.get("X-Correlation-ID") or f"corr-{uuid.uuid4().hex[:12]}"
+    correlation_id = validate_correlation_id(request.headers.get("X-Correlation-ID"))
     request.state.correlation_id = correlation_id
     correlation_token = set_correlation_id(correlation_id)
 
@@ -136,16 +162,21 @@ async def security_headers_and_correlation_middleware(request: Request, call_nex
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # R3.4: Content Security Policy - script-src strictly hardened to 'self' (zero inline scripts/handlers).
+    # Residual limitation: style-src retains 'unsafe-inline' due to dynamic runtime CSS variables across HUD themes.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com data:; "
-        "img-src 'self' data: https:; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self' data:; "
+        "img-src 'self' data:; "
         "connect-src 'self'; "
         "frame-ancestors 'none'; "
         "object-src 'none'; "
-        "base-uri 'self';"
+        "base-uri 'none';"
     )
 
     return response

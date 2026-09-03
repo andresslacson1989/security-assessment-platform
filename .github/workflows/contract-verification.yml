@@ -60,3 +60,44 @@ jobs:
           test ! -w /app/backend/bin/subfinder &&
           test ! -w /app/backend/bin/subfinder.trust.json &&
           test ! -w /opt/cyberassess/tool-venvs/sslyze/bin/sslyze.trust.json'
+
+      - name: Smoke-test application startup and health endpoint
+        run: |
+          docker run -d --name cyberassess-health-smoke \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            -v cyberassess-smoke-data:/app/data \
+            --user cyberassess \
+            -p 8000:8000 \
+            -e HOST=0.0.0.0 \
+            -e PORT=8000 \
+            -e OPERATING_MODE=TEST \
+            -e JWT_SECRET=ci-only-jwt-secret-012345678901234567890123456789 \
+            cyberassess-contract-runtime
+
+          HEALTHY=0
+          for i in $(seq 1 30); do
+            echo "Polling /api/system/health attempt $i..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/system/health || true)
+            if [ "$HTTP_CODE" = "200" ]; then
+              RESPONSE=$(curl -fsSL http://127.0.0.1:8000/api/system/health)
+              echo "Health probe succeeded: $RESPONSE"
+              echo "$RESPONSE" | grep -iq '"status":"healthy"' || exit 1
+              HEALTHY=1
+              break
+            fi
+            sleep 1
+          done
+
+          docker logs cyberassess-health-smoke
+          docker stop cyberassess-health-smoke
+          docker rm -v cyberassess-health-smoke
+          docker volume rm cyberassess-smoke-data || true
+
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "Health endpoint failed to report healthy within 30 seconds"
+            exit 1
+          fi
+

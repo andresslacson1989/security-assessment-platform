@@ -394,23 +394,23 @@
 
           <div class="card summary-counts-card">
             <div class="severity-tiles-grid">
-              <div class="sev-tile critical" onclick="filterFindingsBySeverity('CRITICAL')">
+              <div class="sev-tile critical" data-action="filter-severity" data-severity="CRITICAL">
                 <span class="sev-count" id="count-critical">0</span>
                 <span class="sev-name">CRITICAL</span>
               </div>
-              <div class="sev-tile high" onclick="filterFindingsBySeverity('HIGH')">
+              <div class="sev-tile high" data-action="filter-severity" data-severity="HIGH">
                 <span class="sev-count" id="count-high">0</span>
                 <span class="sev-name">HIGH</span>
               </div>
-              <div class="sev-tile medium" onclick="filterFindingsBySeverity('MEDIUM')">
+              <div class="sev-tile medium" data-action="filter-severity" data-severity="MEDIUM">
                 <span class="sev-count" id="count-medium">0</span>
                 <span class="sev-name">MEDIUM</span>
               </div>
-              <div class="sev-tile low" onclick="filterFindingsBySeverity('LOW')">
+              <div class="sev-tile low" data-action="filter-severity" data-severity="LOW">
                 <span class="sev-count" id="count-low">0</span>
                 <span class="sev-name">LOW</span>
               </div>
-              <div class="sev-tile info" onclick="filterFindingsBySeverity('INFO')">
+              <div class="sev-tile info" data-action="filter-severity" data-severity="INFO">
                 <span class="sev-count" id="count-info">0</span>
                 <span class="sev-name">INFO</span>
               </div>

@@ -16,6 +16,7 @@ from app.core.models import (
     AuthConfig,
     AuthType,
     DiscoveredEndpoint,
+    EndpointTestStatus,
     Finding,
     Evidence,
     Severity,
@@ -26,6 +27,50 @@ from app.core.models import (
 from app.engines.base import LogCallback
 
 logger = logging.getLogger("cyberassess.engines.auth_session")
+
+
+class FormCheckExecution:
+    """
+    Authoritative per-page form check execution record.
+    """
+    def __init__(
+        self,
+        page_url: str,
+        forms_inspected: int = 0,
+        parse_failed: bool = False,
+        error_message: str = "",
+        findings: Optional[List[Finding]] = None,
+    ):
+        self.page_url = page_url
+        self.forms_inspected = forms_inspected
+        self.parse_failed = parse_failed
+        self.error_message = error_message
+        self.findings = findings or []
+
+    @property
+    def status(self) -> EndpointTestStatus:
+        if self.findings:
+            return EndpointTestStatus.VULNERABLE
+        if self.parse_failed:
+            return EndpointTestStatus.SKIPPED
+        if self.forms_inspected > 0:
+            return EndpointTestStatus.SAFE
+        return EndpointTestStatus.NOT_EXECUTED
+
+
+class AuthFormAuditResult(list):
+    """
+    Subclass of list holding authentication and form findings, while preserving
+    authoritative per-endpoint form inspection execution records.
+    """
+    def __init__(
+        self,
+        findings: List[Finding],
+        form_executions: Optional[Dict[str, FormCheckExecution]] = None,
+    ):
+        super().__init__(findings)
+        self.findings = findings
+        self.form_executions = form_executions or {}
 
 CSRF_FIELD_NAMES = {
     "csrf_token", "_csrf", "authenticity_token", "_token", "csrf-token",
@@ -323,10 +368,14 @@ class AuthSessionManager:
                     ))
 
         # --- 5. DAST-FORM-001 & DAST-FORM-002: HTML Form Security ---
+        form_executions: Dict[str, FormCheckExecution] = {}
         for page_url, html_str in html_contents.items():
+            exec_record = FormCheckExecution(page_url=page_url)
+            form_executions[page_url] = exec_record
             try:
                 soup = BeautifulSoup(html_str, "html.parser")
                 forms = soup.find_all("form")
+                exec_record.forms_inspected = len(forms)
 
                 for form_idx, form in enumerate(forms, start=1):
                     action_raw = form.get("action", "")
@@ -334,31 +383,50 @@ class AuthSessionManager:
                     resolved_action = urllib.parse.urljoin(page_url, action_raw)
 
                     # DAST-FORM-001: Insecure Cleartext Form Action
-                    if page_url.startswith("https://") and resolved_action.startswith("http://"):
-                        findings.append(Finding(
+                    # R4.3: Ensure form transport assessment cannot say "secure submission" for a state-changing
+                    # form whose resolved action uses plain HTTP. Trigger DAST-FORM-001 if action uses http://
+                    # either on an HTTPS page (mixed-content downgrade) or for any state-changing form / cleartext HTTP form.
+                    is_insecure_transport = resolved_action.startswith("http://") and (
+                        page_url.startswith("https://") or method in ("POST", "PUT", "DELETE")
+                    )
+                    if is_insecure_transport:
+                        is_https_origin = page_url.startswith("https://")
+                        title = (
+                            f"Insecure Cleartext Form Action on HTTPS Page: '{resolved_action}'"
+                            if is_https_origin
+                            else f"Insecure Cleartext State-Changing Form Action: '{resolved_action}'"
+                        )
+                        desc = (
+                            f"A form on secure page '{page_url}' submits form data to unencrypted destination '{resolved_action}'."
+                            if is_https_origin
+                            else f"A state-changing form ({method}) on '{page_url}' submits form data to unencrypted destination '{resolved_action}'."
+                        )
+                        f = Finding(
                             scan_id=self.scan_id,
                             engine="web_dast",
                             check_id="DAST-FORM-001",
                             category="Insecure Transmission",
-                            title=f"Insecure Cleartext Form Action on HTTPS Page: '{resolved_action}'",
+                            title=title,
                             severity=Severity.HIGH,
                             cvss_score=7.5,
                             cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
                             cwe_id="CWE-319",
                             owasp_category="A02:2021-Cryptographic Failures",
                             nist_control="SC-8",
-                            description=f"A form on secure page '{page_url}' submits form data to unencrypted destination '{resolved_action}'.",
+                            description=desc,
                             impact="User inputs submitted through this form will be transmitted in plaintext across the network, vulnerable to interception.",
                             remediation="Ensure form action attributes use HTTPS URLs or relative path references.",
-                            remediation_code_snippet="<form action=\"/api/submit\" method=\"POST\">",
+                            remediation_code_snippet='<form action="/api/submit" method="POST">',
                             references=["https://cwe.mitre.org/data/definitions/319.html"],
                             evidence=Evidence(
                                 location=f"{page_url} [Form #{form_idx}]",
-                                observed_value=f"<form action=\"{resolved_action}\" method=\"{method}\">",
+                                observed_value=f'<form action="{resolved_action}" method="{method}">',
                                 expected_value="Form action uses secure HTTPS destination",
                             ),
-                            fingerprint=calculate_fingerprint("DAST-FORM-001", page_url, resolved_action),
-                        ))
+                            fingerprint=calculate_fingerprint("DAST-FORM-001", page_url, f"{resolved_action}_{method}"),
+                        )
+                        findings.append(f)
+                        exec_record.findings.append(f)
 
                     # DAST-FORM-002: Missing Anti-CSRF Token in State-Changing Form
                     if method in ("POST", "PUT", "DELETE"):
@@ -371,7 +439,7 @@ class AuthSessionManager:
                                 break
 
                         if not has_csrf:
-                            findings.append(Finding(
+                            f = Finding(
                                 scan_id=self.scan_id,
                                 engine="web_dast",
                                 check_id="DAST-FORM-002",
@@ -394,9 +462,13 @@ class AuthSessionManager:
                                     expected_value="Hidden input containing valid anti-CSRF token",
                                 ),
                                 fingerprint=calculate_fingerprint("DAST-FORM-002", page_url, f"{resolved_action}_{form_idx}"),
-                            ))
+                            )
+                            findings.append(f)
+                            exec_record.findings.append(f)
 
-            except Exception:
+            except Exception as exc:
+                exec_record.parse_failed = True
+                exec_record.error_message = str(exc)
                 continue
 
-        return findings
+        return AuthFormAuditResult(findings=findings, form_executions=form_executions)

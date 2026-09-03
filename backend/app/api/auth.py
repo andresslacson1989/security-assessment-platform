@@ -5,7 +5,9 @@ Authentication, One-Time Bootstrap, RFC 8725 JWT & Scoped API Key Router.
 
 from __future__ import annotations
 import hashlib
+import hmac
 import json
+import os
 import secrets
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Header, Request, status
@@ -18,6 +20,7 @@ from app.core.auth import (
     verify_password,
     validate_password_strength,
     create_access_token,
+    resolve_effective_scopes,
     revoke_token,
     get_current_user,
     require_admin,
@@ -41,6 +44,7 @@ class BootstrapRequest(BaseModel):
     admin_email: str = Field(...)
     admin_password: str = Field(..., min_length=8, max_length=128)
     organization_name: str = Field(default="Default Organization", min_length=2, max_length=120)
+    bootstrap_secret: Optional[str] = Field(default=None, description="One-time production bootstrap secret", exclude=True)
 
 
 class BootstrapResponse(BaseModel):
@@ -109,6 +113,30 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
             detail="Platform is already initialized with an administrator. Bootstrap is closed.",
         )
 
+    # R2.8: Production bootstrap authorization gate
+    operating_mode = (os.getenv("OPERATING_MODE") or os.getenv("ENVIRONMENT") or "PRODUCTION").strip().upper()
+    if operating_mode == "PRODUCTION":
+        configured_secret = os.getenv("BOOTSTRAP_SECRET", "").strip()
+        client_host = request.client.host if request.client else "unknown"
+        if configured_secret:
+            supplied_secret = (
+                request.headers.get("X-Bootstrap-Secret")
+                or payload.bootstrap_secret
+                or ""
+            ).strip()
+            if not hmac.compare_digest(supplied_secret, configured_secret):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Production bootstrap authorization failed: invalid or missing bootstrap secret.",
+                )
+        else:
+            # If BOOTSTRAP_SECRET is not configured in production, only allow local initialization
+            if client_host not in ("127.0.0.1", "::1", "localhost"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Production bootstrap without configured BOOTSTRAP_SECRET requires localhost access.",
+                )
+
     valid, err_msg = validate_password_strength(payload.admin_password)
     if not valid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
@@ -132,6 +160,7 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
             detail="Platform is already initialized with an administrator. Bootstrap is closed.",
         ) from exc
 
+    user.scopes = resolve_effective_scopes(user)
     token = create_access_token(user)
     return BootstrapResponse(
         message="CyberAssess platform bootstrapped successfully.",
@@ -141,6 +170,38 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
     )
 
 
+import time
+from collections import defaultdict
+
+_LOGIN_ATTEMPTS: Dict[str, List[float]] = defaultdict(list)
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 60.0
+
+
+def check_login_rate_limit(key: str) -> None:
+    """
+    R2.9: Enforces in-memory login brute-force rate limiting (max 5 attempts per 60 seconds).
+    Note: Operates in-memory per worker process. Provides standalone defense on a single replica
+    and does not coordinate rate-limit state across multi-replica distributed deployments.
+    """
+    now = time.monotonic()
+    attempts = _LOGIN_ATTEMPTS[key]
+    _LOGIN_ATTEMPTS[key] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    if len(_LOGIN_ATTEMPTS[key]) >= _MAX_LOGIN_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please wait before retrying.",
+            headers={"Retry-After": str(int(_LOGIN_WINDOW_SECONDS))},
+        )
+
+
+def record_failed_login(key: str) -> None:
+    _LOGIN_ATTEMPTS[key].append(time.monotonic())
+
+
+def reset_failed_logins(key: str) -> None:
+    _LOGIN_ATTEMPTS.pop(key, None)
+
 @router.post("/login", response_model=LoginResponse, summary="User Authentication & Token Issuance")
 async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     """
@@ -148,7 +209,9 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     Strictly verifies PBKDF2 hash with constant-time comparison.
     """
     username = payload.username.strip()
-    source_ip = request.client.host if request.client else None
+    source_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{source_ip}:{username}"
+    check_login_rate_limit(rate_key)
 
     with db_manager._connection_scope() as conn:
         cur = conn.cursor()
@@ -156,6 +219,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
         row = cur.fetchone()
 
         if not row or not verify_password(payload.password, row["hashed_password"]):
+            record_failed_login(rate_key)
             # Record failed login audit event inline (same connection)
             fail_event = AuditEvent(
                 actor=username or "unknown",
@@ -172,6 +236,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
                 detail="Invalid username or password.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        reset_failed_logins(rate_key)
 
         if not bool(row["is_active"]):
             raise HTTPException(
@@ -216,6 +281,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
         )
         db_manager._insert_audit_event_conn(conn, success_event)
 
+        user.scopes = resolve_effective_scopes(user)
         token = create_access_token(user)
         return LoginResponse(access_token=token, user=user)
 
@@ -295,13 +361,15 @@ async def create_user(
         )
     )
 
-    return UserProfile(
+    created_user = UserProfile(
         id=user_id,
         username=payload.username.strip(),
         email=payload.email.strip(),
         role=payload.role,
         organization_id=org_id,
     )
+    created_user.scopes = resolve_effective_scopes(created_user)
+    return created_user
 
 
 @router.post("/api-keys", response_model=APIKeyCreatedResponse, status_code=status.HTTP_201_CREATED, summary="Create Programmatic API Key")
@@ -320,7 +388,12 @@ async def create_api_key(
             detail="API key scopes must be a non-empty subset of the platform scope allowlist.",
         )
     caller_scopes = set(current_user.scopes or [])
-    if "*" not in caller_scopes and not requested_scopes.issubset(caller_scopes):
+    is_system_admin = (
+        current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+        and current_user.role == UserRole.ADMIN
+        and "*" in caller_scopes
+    )
+    if not is_system_admin and not requested_scopes.issubset(caller_scopes):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="API key scopes cannot exceed the caller's effective permissions.",

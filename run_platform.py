@@ -44,16 +44,24 @@ def check_prerequisites():
 
     if missing:
         print(f"\n[ERROR] Missing required dependencies: {', '.join(missing)}")
-        print("Please run: pip install -r backend/requirements.txt\n")
+        print("Please run: python -m pip install --require-hashes --requirement backend/requirements.lock\n")
         sys.exit(1)
 
 
 def main():
     check_prerequisites()
 
-    host = os.environ.get("HOST", "0.0.0.0")
+    operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "PRODUCTION").strip().upper()
+    os.environ["OPERATING_MODE"] = operating_mode
+    if operating_mode == "PRODUCTION":
+        jwt_secret = os.environ.get("JWT_SECRET", "").strip()
+        if not jwt_secret or len(jwt_secret) < 32 or jwt_secret.lower() in {"dev-secret", "change-me", "secret"}:
+            print("\n[ERROR] Production mode requires a secure JWT_SECRET with at least 32 characters.")
+            sys.exit(1)
+
+    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
-    display_host = "localhost" if host == "0.0.0.0" else host
+    display_host = "localhost" if host in {"0.0.0.0", "127.0.0.1"} else host
     dashboard_url = f"http://{display_host}:{port}"
     reload_enabled = os.environ.get("UVICORN_RELOAD", "0").strip().lower() in {"1", "true", "yes"}
 

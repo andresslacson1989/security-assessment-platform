@@ -51,7 +51,7 @@ else:
     JWT_SECRET = _raw_secret.strip()
 
 JWT_ALGORITHM = "HS256"
-ALLOWED_JWT_ALGORITHMS = ["HS256", "RS256"]
+ALLOWED_JWT_ALGORITHMS = ["HS256"]
 JWT_ISSUER = "CyberAssess-Control-Plane"
 JWT_AUDIENCE = "CyberAssess-Platform"
 JWT_EXPIRATION_SECONDS = int(os.getenv("JWT_EXPIRATION_SECONDS", "86400"))  # 24 hours
@@ -145,6 +145,8 @@ def verify_password(password: str, hashed: str) -> bool:
         if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
             return False
         iterations = int(parts[1])
+        if iterations < 100_000:
+            return False
         salt = base64.b64decode(parts[2].encode("ascii"))
         expected_hash = base64.b64decode(parts[3].encode("ascii"))
         
@@ -155,7 +157,116 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 # ============================================================================
-# 2. RFC 8725 Compliant JWT Generation & Validation (PyJWT)
+# 2. Scope Matrix Authority & Deterministic Scope Resolution
+# ============================================================================
+
+ALL_VALID_SCOPES = frozenset({
+    "scan:create", "scan:read", "scan:cancel", "scan:delete", "scan:repeater", "scan:internal",
+    "asset:read", "asset:write", "asset:delete",
+    "finding:read", "finding:write", "finding:triage", "finding:risk_accept",
+    "report:read", "tool:read", "tool:install",
+})
+
+ROLE_BASE_SCOPES: Dict[UserRole, List[str]] = {
+    UserRole.VIEWER: [
+        "scan:read",
+        "asset:read",
+        "finding:read",
+        "report:read",
+        "tool:read",
+    ],
+    UserRole.DEVELOPER: [
+        "scan:read",
+        "scan:create",
+        "scan:cancel",
+        "asset:read",
+        "asset:write",
+        "finding:read",
+        "finding:write",
+        "finding:triage",
+        "finding:risk_accept",
+        "report:read",
+        "tool:read",
+    ],
+    UserRole.SECURITY_ANALYST: [
+        "scan:read",
+        "scan:create",
+        "scan:cancel",
+        "scan:repeater",
+        "asset:read",
+        "asset:write",
+        "finding:read",
+        "finding:write",
+        "finding:triage",
+        "finding:risk_accept",
+        "report:read",
+        "tool:read",
+    ],
+    UserRole.ADMIN: [
+        "scan:create",
+        "scan:read",
+        "scan:cancel",
+        "scan:delete",
+        "scan:repeater",
+        "asset:read",
+        "asset:write",
+        "asset:delete",
+        "finding:read",
+        "finding:write",
+        "finding:triage",
+        "finding:risk_accept",
+        "report:read",
+        "tool:read",
+        "tool:install",
+    ],
+}
+
+
+def resolve_effective_scopes(
+    user: UserProfile,
+    explicit_scopes: Optional[List[str]] = None,
+) -> List[str]:
+    """
+    Authoritative scope resolver ensuring least privilege and deterministic assignment.
+    Contract 01 §3, Contract 02 §2, Contract 08 §1:
+    1. Distinguishes tenant principal from system principal.
+    2. System wildcard rule: Only SYSTEM_PRINCIPAL + ADMIN may receive ["*"].
+    3. Tenant users receive explicit scopes only (never wildcard).
+    4. Fails closed for unknown roles.
+    5. Preserves explicit scopes (e.g., durable scan:internal) if valid.
+    6. Returns an immutable/copy-safe list of scopes.
+    """
+    is_system_admin = (
+        user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+        and user.role == UserRole.ADMIN
+    )
+    if is_system_admin:
+        if explicit_scopes is None or "*" in explicit_scopes:
+            return ["*"]
+
+    role = user.role
+    if not isinstance(role, UserRole):
+        try:
+            role = UserRole(role)
+        except Exception:
+            return []
+
+    base_scopes = list(ROLE_BASE_SCOPES.get(role, []))
+
+    # Incorporate explicit valid scopes if assigned (e.g. scan:internal)
+    extra_candidates = explicit_scopes if explicit_scopes is not None else (user.scopes or [])
+    extra_scopes: List[str] = []
+    for s in extra_candidates:
+        if s == "*":
+            continue
+        if s in ALL_VALID_SCOPES and s not in base_scopes and s not in extra_scopes:
+            extra_scopes.append(s)
+
+    return base_scopes + extra_scopes
+
+
+# ============================================================================
+# 3. RFC 8725 Compliant JWT Generation & Validation (PyJWT)
 # ============================================================================
 
 def create_access_token(
@@ -165,8 +276,22 @@ def create_access_token(
 ) -> str:
     """
     Generates a signed HS256 JWT access token conforming to RFC 8725 using mature PyJWT.
+    Scopes are always explicitly resolved using centralized least-privilege policy.
+    Distinguishes scopes is None from scopes == [].
     """
     now = int(time.time())
+
+    if scopes is not None:
+        if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
+            effective_scopes = ["*"] if "*" in scopes else [s for s in scopes if s in ALL_VALID_SCOPES]
+        else:
+            allowed_max = set(resolve_effective_scopes(user))
+            effective_scopes = [s for s in scopes if s in allowed_max and s != "*"]
+    else:
+        effective_scopes = resolve_effective_scopes(user)
+
+    user.scopes = list(effective_scopes)
+
     payload = {
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
@@ -176,7 +301,7 @@ def create_access_token(
         "role": user.role.value if hasattr(user.role, "value") else str(user.role),
         "principal_type": user.principal_type.value if hasattr(user.principal_type, "value") else str(user.principal_type),
         "org_id": user.organization_id,
-        "scopes": scopes or user.scopes or ["*"],
+        "scopes": effective_scopes,
         "iat": now,
         "nbf": now,
         "exp": now + expires_in,
@@ -376,12 +501,17 @@ def authorize_finding_access(user: UserProfile, finding: CanonicalFinding, actio
 
 def authorize_internal_target(user: UserProfile, target_value: str) -> bool:
     """
-    Checks if a user is explicitly authorized to scan internal/private network addresses.
-    Requires an explicit ``scan:internal`` scope (or the explicit wildcard scope).
-    Role membership alone is not sufficient.
+    Checks if an identity possesses explicit authorization to scan private/internal network targets.
+    Requires explicit 'scan:internal' scope or system-admin wildcard.
+    Role membership alone is never sufficient.
+    Does NOT disable SSRF protections (loopback, metadata, link-local remain blocked).
     """
-    scopes = user.scopes or []
-    return "*" in scopes or "scan:internal" in scopes
+    scopes = set(user.scopes or [])
+    if "scan:internal" in scopes:
+        return True
+    if "*" in scopes and user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN:
+        return True
+    return False
 
 
 # ============================================================================
@@ -399,8 +529,8 @@ async def get_current_user(
     Authorization header; credentials are never accepted in URLs.
     """
     # 1. API Key Authentication (Hashed Token Lookup)
-    if x_api_key:
-        key_hash = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
+    if isinstance(x_api_key, str) and x_api_key.strip():
+        key_hash = hashlib.sha256(x_api_key.strip().encode("utf-8")).hexdigest()
 
         from app.core.db import db_manager
         key_record, user_profile = db_manager.verify_api_key_hash(key_hash)
@@ -421,7 +551,7 @@ async def get_current_user(
 
     # 2. JWT Bearer Token Authentication via header
     raw_jwt = None
-    if authorization:
+    if isinstance(authorization, str) and authorization.strip():
         parts = authorization.strip().split(" ")
         if len(parts) == 2 and parts[0].lower() == "bearer":
             raw_jwt = parts[1]
@@ -438,7 +568,17 @@ async def get_current_user(
                     detail="User account has been deactivated.",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            authoritative_user.scopes = payload.get("scopes", ["*"])
+            token_scopes = payload.get("scopes")
+            if token_scopes is None:
+                authoritative_user.scopes = resolve_effective_scopes(authoritative_user)
+            elif not isinstance(token_scopes, list):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Malformed token scopes claim.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            else:
+                authoritative_user.scopes = resolve_effective_scopes(authoritative_user, explicit_scopes=token_scopes)
             return authoritative_user
 
         # Production identities are database-authoritative.  A signed token
@@ -455,19 +595,27 @@ async def get_current_user(
 
         p_type_val = payload.get("principal_type", "TENANT_PRINCIPAL")
         p_type = PrincipalType(p_type_val) if p_type_val in [p.value for p in PrincipalType] else PrincipalType.TENANT_PRINCIPAL
-        
-        user = UserProfile(
+        raw_scopes = payload.get("scopes")
+        if raw_scopes is not None and not isinstance(raw_scopes, list):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Malformed token scopes claim.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        synth_user = UserProfile.model_construct(
             id=payload.get("sub", "anon"),
             username=payload.get("username", "user"),
             email=payload.get("email", "user@local"),
             role=UserRole(payload.get("role", "VIEWER")),
             principal_type=p_type,
             organization_id=payload.get("org_id", "org-default"),
-            scopes=payload.get("scopes", ["*"]),
+            scopes=[],
             is_active=True,
             created_at=datetime.fromtimestamp(payload.get("iat", time.time()), tz=timezone.utc),
         )
-        return user
+        synth_user.scopes = resolve_effective_scopes(synth_user, explicit_scopes=raw_scopes)
+        return synth_user
 
     # 3. Explicit Development Mode Bypass (Restricted to VIEWER role)
     if OPERATING_MODE == OperatingMode.DEVELOPMENT:
@@ -504,8 +652,13 @@ def require_permission(required_scope: Optional[str] = None, allowed_roles: Opti
         
         # 2. Scope validation (for API keys or restricted tokens)
         if required_scope:
-            user_scopes = user.scopes or []
-            if "*" not in user_scopes and required_scope not in user_scopes:
+            user_scopes = set(user.scopes or [])
+            is_system_admin = (
+                user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+                and user.role == UserRole.ADMIN
+                and "*" in user_scopes
+            )
+            if not is_system_admin and required_scope not in user_scopes:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Access forbidden: Credentials lack required scope '{required_scope}'.",

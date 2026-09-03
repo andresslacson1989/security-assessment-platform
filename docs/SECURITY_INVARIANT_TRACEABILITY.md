@@ -1,7 +1,7 @@
-# CyberAssess v13 — Enterprise Assessment Methodology, Tool Assurance & Production Readiness Traceability Matrix
+# CyberAssess v14 — Enterprise Assessment Methodology, Tool Assurance & Production Readiness Traceability Matrix
 
 ## Document Purpose & Authority
-This authoritative traceability matrix provides formal cross-verification between the **CyberAssess v13 Security Invariant Specifications**, the authoritative contract clauses, the concrete production implementations, and the dedicated adversarial regression test suite (tests/security/).
+This authoritative traceability matrix provides formal cross-verification between the **CyberAssess v14 Security Invariant Specifications**, the authoritative contract clauses, the concrete production implementations, and the dedicated adversarial regression test suite (tests/security/).
 
 In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production Path Proof*), passing helper unit tests alone do not constitute evidence of compliance. Each security control is validated against its actual production execution path under adversarial conditions.
 
@@ -98,14 +98,50 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 ## 3. Final Verification Assertion
 Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime execution, the managed E13 direct-binary fleet, and complete repository regression are now evidenced; remaining E11 and E13 limitations are recorded explicitly and are not represented as completed capabilities.
 
+
+---
+
+## 3. Final Verification Assertion
+Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime execution, the managed E13 direct-binary fleet, and complete repository regression are now evidenced; remaining E11 and E13 limitations are recorded explicitly and are not represented as completed capabilities.
+
 ### E12 Web DAST Execution Boundary
 - **Implementation:** `backend/app/engines/web_dast/engine.py`, `backend/app/core/ssrf_protector.py`, `backend/app/adapters/base_adapter.py`, and the four E12 adapters.
 - **Controls:** validated-target transport pinning with ambient proxy bypass, same-origin redirect revalidation, Host preservation, exact approved-version gates, managed-binary checks immediately before version probes and launches, centralized supervised launches, normalized failure states, sanitized reproduction evidence, and API telemetry retention for tools absent from `active_adapters`.
 - **Tests:** `tests/security/test_web_dast_assurance.py`, `tests/test_engine_web_dast.py`, `tests/test_api_endpoints.py::test_telemetry_endpoint_structure_and_filters`, and the four E12 adapter test classes.
 - **Status:** Repository controls and managed-runtime probes are verified. The Linux production image executed managed Nuclei `3.2.0`, FFuF `2.1.0`, Katana `1.0.5`, and Schemathesis `3.20.0` under uid 999 with valid trust records; no unmanaged runtime is treated as evidence. FFuF and Nuclei are blocked at both adapter and Web DAST production-path boundaries without tenant active-probing authorization. Authenticated external CLI injection remains intentionally fail-closed; governed native HTTP coverage handles tenant credentials until secret-safe subprocess injection exists.
 
-### E13 Code SAST, Secrets & Dependency Analysis Boundary
+#### E13 Code SAST, Secrets & Dependency Analysis Boundary
 - **Implementation:** `backend/app/core/path_sandbox.py`, `backend/app/engines/code_sast/engine.py`, the E13 adapters, native scanners, and `backend/app/core/process_supervisor.py`.
 - **Controls:** Canonical tenant-authorized workspace resolution, symlink/reparse-point rejection, supervised Git history execution, exact approved-version gates, managed package/binary checks with pre-launch verification, bounded output/timeouts, explicit parser/failure states, deterministic taint sanitization, and secret-safe evidence.
 - **Tests:** `tests/security/test_code_sast_assurance.py`, E13 adapter tests, `tests/test_engine_code_sast.py`, persistence/API tests, and full regression.
 - **Status:** `REPOSITORY_VERIFIED` for the corrected shared process-supervision, fallback-provenance, execution-state attribution, evidence-sanitization, authoritative-persistence, explicit discovery-admission boundary, platform-owned provider destination allowlists, observation-only cloud fallback, hardened production containers, and 26-tool registry controls. The current Linux production image verified managed trust records and runtime paths for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and source-built Nmap, plus Retire.js and the six lock-bound Python environments, all under UID 999. No unmanaged runtime is treated as evidence; Prowler remains fail-closed without a worker-side tenant-scoped credential envelope and provider egress controls, while missing native cloud observations are explicitly degraded rather than treated as clean. OS-level external-process egress governance and diagnostic-only auxiliary tools remain documented limitations.
+
+---
+
+## 4. E13-R3 Final Technical Closure & Truthfulness Invariants
+
+| Rework Invariant ID | Security Control Domain | Primary Specification | Concrete Implementation | Verification Suite | Status |
+|---|---|---|---|---|---|
+| **INV-R3.1** | Evidence Truthfulness & No False Safe Evidence | Contract 02 §4, Audit R3.1 | `backend/app/api/scans.py`, `backend/app/core/models.py`, `backend/app/engines/web_dast/` | `tests/test_e13_evidence_truthfulness.py` (16/16 PASS) | **VERIFIED** |
+| **INV-R3.2** | Enterprise Egress Fail-Closed Wiring & No Facility Bypass | Contract 03 §3, Audit R3.2 | `docker-compose.yml`, `backend/app/core/process_supervisor.py` | `tests/test_e13_egress_env_sanitization.py` (7/7 PASS) | **VERIFIED (Fail-Closed); INFRASTRUCTURE BLOCKED** |
+| **INV-R3.3** | Production Bootstrap Secret in Compose & Loopback Hardening | Contract 04 §1.1, Audit R3.3 | `docker-compose.yml`, `backend/app/api/auth.py` | `tests/test_e13_platform_hardening.py` (13/13 PASS) | **VERIFIED** |
+| **INV-R3.4** | Complete CSP Hardening & Zero Inline Handlers | Contract 08 §1, Audit R3.4 | `frontend/index.html`, `frontend/js/app.js`, `backend/app/main.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R3.5** | Documentation Truthfulness & Governance Reconciliation | Rule 0.1, Audit R3.5 | `docs/SECURITY_INVARIANT_TRACEABILITY.md`, `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R3.6** | Application Image Identity Pinning | Contract 01 §7, Audit R3.6 | `docker-compose.yml` | `docker-compose.yml` Inspection | **VERIFIED** |
+| **INV-R3.10** | Repository Governance Policy (Solo-Maintainer) | Rule 0.1, Audit R3.5 / E13.10 | `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | Operator Direct-Push Policy Accepted | **OPERATOR-ACCEPTED SOLO-MAINTAINER GOVERNANCE POLICY** |
+
+---
+
+## 5. E13-R4 Final Narrow Acceptance Closure Invariants
+
+| Rework Invariant ID | Security Control Domain | Primary Specification | Concrete Implementation | Verification Suite | Status |
+|---|---|---|---|---|---|
+| **INV-R4.1** | Form vs Authentication Finding Attribution | Audit R4.1 | `backend/app/engines/web_dast/engine.py` | `tests/test_e13_evidence_truthfulness.py` | **VERIFIED** |
+| **INV-R4.2** | Elimination of Synthetic Parameters from SAFE Evidence | Audit R4.2 | `backend/app/engines/web_dast/parameter_fuzzer.py` | `tests/test_e13_evidence_truthfulness.py` | **VERIFIED** |
+| **INV-R4.3** | Cleartext Form Transport Truthfulness & DAST-FORM-001 | Audit R4.3 | `backend/app/engines/web_dast/auth_session.py` | `tests/test_e13_evidence_truthfulness.py` | **VERIFIED** |
+| **INV-R4.4** | Docker Compose Standalone/Enterprise Profile Isolation | Audit R4.4 | `docker-compose.yml`, `README.md` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R4.5** | Egress Fail-Closed Documentation Truthfulness | Audit R4.5 | `README.md`, `docs/DOCKER_COMPOSE_DEPLOYMENT.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R4.6** | Reconciled Supported Python Interpreters (3.11/3.13) | Audit R4.6 | `README.md`, `contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Run | **PENDING PR RUN** |
+| **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Run | **PENDING PR RUN** |
+

@@ -67,6 +67,8 @@ class ProcessSupervisor:
 
     def __init__(self):
         self._active_pids: Set[int] = set()
+        self._execution_pids: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     @classmethod
     def get_instance(cls) -> ProcessSupervisor:
@@ -74,17 +76,64 @@ class ProcessSupervisor:
             cls._instance = cls()
         return cls._instance
 
+    def _register_execution(self, pid: int, execution_id: Optional[str] = None) -> None:
+        with self._lock:
+            self._active_pids.add(pid)
+            if execution_id:
+                self._execution_pids[execution_id] = pid
+
+    def _unregister_execution(self, pid: int, execution_id: Optional[str] = None) -> None:
+        with self._lock:
+            self._active_pids.discard(pid)
+            if execution_id and self._execution_pids.get(execution_id) == pid:
+                self._execution_pids.pop(execution_id, None)
+
     def _register_pid(self, pid: int) -> None:
-        self._active_pids.add(pid)
+        self._register_execution(pid)
 
     def _unregister_pid(self, pid: int) -> None:
-        self._active_pids.discard(pid)
+        self._unregister_execution(pid)
+
+    def cancel_execution(self, execution_id: str) -> bool:
+        """
+        Safely cancels a specific execution by execution_id without affecting sibling executions.
+        Returns True if the execution was actively tracked and terminated, False otherwise.
+        """
+        if not execution_id or not isinstance(execution_id, str):
+            return False
+        with self._lock:
+            pid = self._execution_pids.pop(execution_id, None)
+            if pid:
+                self._active_pids.discard(pid)
+        if pid:
+            self.kill_process_tree(pid)
+            return True
+        return False
+
+    def cancel_pid(self, pid: int) -> bool:
+        """
+        Safely cancels a specific process by PID if it is tracked by this supervisor.
+        """
+        if not pid or pid <= 0:
+            return False
+        with self._lock:
+            if pid not in self._active_pids:
+                return False
+            self._active_pids.discard(pid)
+            to_remove = [k for k, v in self._execution_pids.items() if v == pid]
+            for k in to_remove:
+                self._execution_pids.pop(k, None)
+        self.kill_process_tree(pid)
+        return True
 
     @staticmethod
     def _windows_descendant_pids(root_pid: int) -> list[int]:
         """Return a snapshot of descendants using the Windows process table."""
         if sys.platform != "win32":
             return []
+
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
 
         class _ProcessEntry32(ctypes.Structure):
             _fields_ = [
@@ -118,8 +167,9 @@ class ProcessSupervisor:
             pending = list(parent_map.get(root_pid, []))
             while pending:
                 child = pending.pop()
-                descendants.append(child)
-                pending.extend(parent_map.get(child, []))
+                if child > 1 and child != current_pid and (parent_pid is None or child != parent_pid):
+                    descendants.append(child)
+                    pending.extend(parent_map.get(child, []))
             return descendants
         finally:
             ctypes.windll.kernel32.CloseHandle(snapshot)
@@ -127,6 +177,12 @@ class ProcessSupervisor:
     @staticmethod
     def _windows_terminate_pid(pid: int) -> None:
         """Terminate one Windows process by PID when taskkill misses a race."""
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
+        if pid <= 1 or pid == current_pid or (parent_pid is not None and pid == parent_pid):
+            logger.warning("Refusing to terminate current or parent process PID=%s", pid)
+            return
+
         process = ctypes.windll.kernel32.OpenProcess(0x0001 | 0x1000, False, pid)
         if process:
             try:
@@ -138,15 +194,20 @@ class ProcessSupervisor:
     def kill_process_tree(pid: int) -> None:
         """
         Recursively terminates a process and all its child/grandchild descendants.
+        Guarantees isolation: never signals the host, server process, or sibling processes.
         """
         if not pid or pid <= 0:
             return
 
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
+        if pid == current_pid or (parent_pid is not None and pid == parent_pid) or pid <= 1:
+            logger.error("Security invariant: Refusing to terminate current/parent PID=%s", pid)
+            return
+
         if sys.platform == "win32":
             try:
-                # Capture descendants before terminating the root.  This
-                # closes the interval where taskkill /T can miss a child that
-                # was created immediately before the timeout boundary.
+                # Capture descendants before terminating the root.
                 descendants = ProcessSupervisor._windows_descendant_pids(pid)
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -165,14 +226,98 @@ class ProcessSupervisor:
                     logger.debug("Fallback termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
         else:
             try:
+                # POSIX process isolation:
+                # Only signal a process group if the process is its own group leader (pgid == pid),
+                # which was spawned with start_new_session=True, AND pgid != current process group!
+                current_pgrp = os.getpgrp()
                 pgid = os.getpgid(pid)
-                os.killpg(pgid, signal.SIGKILL)
+                if pgid > 1 and pgid == pid and pgid != current_pgrp:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             except Exception as exc:
                 logger.debug("Process-group termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except Exception as fallback_exc:
                     logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
+
+    _SAFE_ENVIRONMENT_KEYS = frozenset({
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "OS",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_ARCHITEW6432",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "TMP",
+        "TEMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PYTHONIOENCODING",
+        "PYTHONUNBUFFERED",
+        "PYTHONPATH",
+        "COMSPEC",
+    })
+
+    @classmethod
+    def sanitize_environment(cls, custom_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """
+        Builds a strictly curated environment for subprocess execution:
+        - Never leaks application secrets (JWT_SECRET, DATABASE_URL, etc.).
+        - Only inherits safe system keys from host.
+        - Applies SCANNER_EGRESS_PROXY if configured; otherwise strips ambient proxy variables.
+        """
+        source = custom_env if custom_env is not None else os.environ
+        clean: Dict[str, str] = {}
+        for k, v in source.items():
+            k_upper = str(k).upper()
+            if k_upper in cls._SAFE_ENVIRONMENT_KEYS:
+                if any(sec in k_upper for sec in ["SECRET", "PASSWORD", "DATABASE", "REDIS", "KEY", "TOKEN", "CREDENTIAL"]):
+                    continue
+                clean[str(k)] = str(v)
+
+        if custom_env is not None:
+            for k, v in custom_env.items():
+                k_upper = str(k).upper()
+                if not any(sec in k_upper for sec in ["SECRET", "PASSWORD", "DATABASE", "REDIS"]):
+                    clean[str(k)] = str(v)
+
+        scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
+        if scanner_proxy:
+            clean["HTTP_PROXY"] = scanner_proxy
+            clean["HTTPS_PROXY"] = scanner_proxy
+            clean["ALL_PROXY"] = scanner_proxy
+            clean["http_proxy"] = scanner_proxy
+            clean["https_proxy"] = scanner_proxy
+            clean["all_proxy"] = scanner_proxy
+        else:
+            for p in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
+                clean.pop(p, None)
+
+        return clean
 
     async def execute(
         self,
@@ -182,15 +327,27 @@ class ProcessSupervisor:
         env: Optional[Dict[str, str]] = None,
         max_output_bytes: int = 10 * 1024 * 1024,
         pre_launch_check: Optional[Callable[[], bool]] = None,
+        execution_id: Optional[str] = None,
     ) -> ProcessExecutionResult:
         """
         Executes a subprocess with execution tracking, timeout enforcement,
         and guaranteed process tree cleanup on cancellation or timeout.
         """
         if not cmd:
-            return -1, "", "Empty command provided"
+            return ProcessExecutionResult(-1, "", "Empty command provided")
         if max_output_bytes <= 0:
-            return -1, "", "Invalid maximum output size"
+            return ProcessExecutionResult(-1, "", "Invalid maximum output size")
+
+        # R3.2: Enterprise external-tool execution fails closed unconditionally when
+        # enterprise egress enforcement is required until an authoritative network verifier interface exists.
+        operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "").strip().upper()
+        egress_required = operating_mode == "ENTERPRISE" or os.environ.get("ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED", "").lower() in {"1", "true", "yes"}
+        if egress_required:
+            return ProcessExecutionResult(
+                -1,
+                "",
+                "PROCESS_LAUNCH_REJECTED_SECURITY: Enterprise egress network enforcement facility is not configured or verifiably available.",
+            )
 
         creationflags = 0
         start_new_session = False
@@ -259,7 +416,10 @@ class ProcessSupervisor:
                 stderr = f"Execution timed out after {timeout} seconds" + (f"\n{stderr}" if stderr else "")
             return stdout, stderr, limit_reached.is_set() or timed_out
 
+        proc_ref: list[Optional[subprocess.Popen]] = [None]
+
         def _run_sync() -> ProcessExecutionResult:
+            nonlocal proc_ref
             proc = None
             try:
                 if pre_launch_check is not None and not pre_launch_check():
@@ -268,17 +428,19 @@ class ProcessSupervisor:
                         "",
                         "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
                     )
+                clean_env = self.sanitize_environment(env)
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=cwd,
-                    env=env,
+                    env=clean_env,
                     creationflags=creationflags,
                     start_new_session=start_new_session,
                 )
-                self._register_pid(proc.pid)
+                proc_ref[0] = proc
+                self._register_execution(proc.pid, execution_id=execution_id)
 
                 stdout, stderr, bounded_failure = _bounded_communicate(proc)
                 if "Output exceeded maximum" in stderr:
@@ -296,13 +458,13 @@ class ProcessSupervisor:
                 return ProcessExecutionResult(-1, "", str(e))
             finally:
                 if proc and proc.pid:
-                    self._unregister_pid(proc.pid)
+                    self._unregister_execution(proc.pid, execution_id=execution_id)
 
         try:
             return await asyncio.to_thread(_run_sync)
         except asyncio.CancelledError:
-            for active_pid in list(self._active_pids):
-                self.kill_process_tree(active_pid)
+            if proc_ref[0] and proc_ref[0].pid:
+                self.kill_process_tree(proc_ref[0].pid)
             raise
 
 

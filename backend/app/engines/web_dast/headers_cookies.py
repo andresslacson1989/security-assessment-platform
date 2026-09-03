@@ -39,7 +39,7 @@ async def audit_security_headers_and_cookies(
         except Exception as e:
             if emit_log:
                 await emit_log(LogLevel.WARNING, f"HTTP request to {url} failed: {str(e)}")
-            return findings
+            raise RuntimeError(f"HTTP request to {url} failed: {e}") from e
 
     headers = response.headers
     raw_headers_snippet = "\n".join([f"{k}: {v}" for k, v in headers.items()])
