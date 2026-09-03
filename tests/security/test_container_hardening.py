@@ -46,3 +46,11 @@ def test_managed_artifacts_are_not_owned_by_runtime_user():
 def test_managed_trust_records_are_readable_but_immutable():
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
     assert "find /app/backend /opt/cyberassess/tool-venvs -type f -name '*.trust.json' -exec chmod 0644 {} +" in dockerfile
+
+
+def test_ci_verifies_the_hash_locked_runtime_dependency_set():
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml").read_text()
+    assert 'python-version: "3.11"' in workflow
+    assert "cache-dependency-path: backend/requirements.lock" in workflow
+    assert "pip install --require-hashes --requirement backend/requirements.lock" in workflow
+    assert "backend/requirements.txt" not in workflow
