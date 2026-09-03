@@ -249,44 +249,85 @@ async def execute_http_repeater(
                 target_url = str(response.url.join(redirect_target))
                 assert_safe_url(target_url, allow_internal=allow_internal)
 
+    is_https = payload.url.lower().startswith("https://")
+    verify_tls = payload.verify_tls if is_https else False
+
+    MAX_BODY_SIZE = 5 * 1024 * 1024  # 5 MB maximum response body limit
+    CHUNK_SIZE = 64 * 1024
+
     try:
         async with httpx.AsyncClient(
-            verify=True,
+            verify=verify_tls,
             trust_env=False,
             transport=ValidatedTargetTransport(validated_target),
             follow_redirects=payload.follow_redirects,
             timeout=payload.timeout_seconds,
             event_hooks={"response": [on_redirect_response]} if payload.follow_redirects else None,
         ) as client:
-            resp = await client.request(
+            req = client.build_request(
                 method=payload.method.upper(),
                 url=payload.url,
                 headers=headers,
                 content=payload.body.encode("utf-8") if payload.body is not None else None,
             )
+            resp = await client.send(req, stream=True)
+            try:
+                chunks = []
+                total_bytes = 0
+                truncated = False
+
+                async for chunk in resp.aiter_bytes(chunk_size=CHUNK_SIZE):
+                    if total_bytes + len(chunk) > MAX_BODY_SIZE:
+                        allowed = MAX_BODY_SIZE - total_bytes
+                        if allowed > 0:
+                            chunks.append(chunk[:allowed])
+                            total_bytes += allowed
+                        truncated = True
+                        break
+                    chunks.append(chunk)
+                    total_bytes += len(chunk)
+
+                raw_bytes = b"".join(chunks)
+            finally:
+                await resp.aclose()
             
             end_time = time.perf_counter()
             duration_ms = round((end_time - start_time) * 1000.0, 2)
             
             tls_version: Optional[str] = None
             cipher: Optional[str] = None
+            tls_verified: Optional[bool] = None
             
-            try:
-                ext = getattr(resp, "extensions", {})
-                if "tls_version" in ext:
-                    tls_version = str(ext["tls_version"])
-                if "cipher_suite" in ext:
-                    cipher = str(ext["cipher_suite"])
-            except Exception as exc:
-                logger.debug("Repeater TLS metadata unavailable: error_type=%s", type(exc).__name__)
-            
-            if payload.url.lower().startswith("https://") and not tls_version:
-                tls_version = "TLSv1.3"
+            if is_https:
+                tls_verified = verify_tls
+                try:
+                    ext = getattr(resp, "extensions", {})
+                    if "tls_version" in ext and ext["tls_version"]:
+                        tls_version = str(ext["tls_version"])
+                    if "cipher_suite" in ext and ext["cipher_suite"]:
+                        cipher = str(ext["cipher_suite"])
+                except Exception as exc:
+                    logger.debug("Repeater TLS metadata unavailable: error_type=%s", type(exc).__name__)
+                # Strict: Never synthesize or default TLS details when not actually present!
+            else:
+                # Plain HTTP: tls_info must be None
+                tls_version = None
+                cipher = None
+                tls_verified = None
 
-            # Enforce response body truncation at 10 MB if huge
-            body_text = sanitize_sensitive_text(resp.text)
-            if len(body_text) > 10 * 1024 * 1024:
-                body_text = body_text[:10 * 1024 * 1024] + "\n\n[... Response Truncated at 10 MB ...]"
+            content_type = resp.headers.get("content-type", "").lower()
+            is_binary = any(t in content_type for t in ["image/", "audio/", "video/", "application/octet-stream", "application/zip", "application/pdf"])
+
+            try:
+                body_text = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                is_binary = True
+                import base64
+                body_text = f"[Binary payload: {len(raw_bytes)} bytes; preview (base64): {base64.b64encode(raw_bytes[:512]).decode('ascii')}]"
+
+            body_text = sanitize_sensitive_text(body_text, max_length=MAX_BODY_SIZE)
+            if truncated:
+                body_text += f"\n\n[... Response Truncated at {MAX_BODY_SIZE // (1024 * 1024)} MB ...]"
 
             safe_headers = {
                 str(name): sanitize_sensitive_text(str(value))
@@ -298,9 +339,12 @@ async def execute_http_repeater(
                 headers=safe_headers,
                 body=body_text,
                 duration_ms=duration_ms,
-                content_length=len(resp.content),
+                content_length=total_bytes,
                 tls_version=tls_version,
                 cipher=cipher,
+                tls_verified=tls_verified,
+                truncated=truncated,
+                is_binary=is_binary,
             )
 
     except SSRFProtectionError as ssrf_err:

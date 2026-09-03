@@ -1047,6 +1047,7 @@ class RepeaterRequest(BaseModel):
     body: Optional[str] = Field(default=None, description="HTTP request body payload")
     follow_redirects: bool = Field(default=False, description="Whether to follow HTTP redirects")
     timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0, description="Request timeout in seconds")
+    verify_tls: bool = Field(default=True, description="Whether to verify TLS certificates")
 
 
 class RepeaterResponse(BaseModel):
@@ -1060,6 +1061,9 @@ class RepeaterResponse(BaseModel):
     content_length: int = Field(..., ge=0, description="Response payload content length in bytes")
     tls_version: Optional[str] = Field(default=None, description="Observed TLS version (e.g. TLSv1.3)")
     cipher: Optional[str] = Field(default=None, description="Observed TLS cipher suite")
+    tls_verified: Optional[bool] = Field(default=None, description="Whether TLS certificate verification succeeded")
+    truncated: bool = Field(default=False, description="Whether the response body was truncated due to size limits")
+    is_binary: bool = Field(default=False, description="Whether the response payload was binary data")
 
 
 # ============================================================================
