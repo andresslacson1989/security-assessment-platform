@@ -1597,11 +1597,12 @@ class TestSupplyChainAdapters:
         }
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/grype"), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_grype), ""))):
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_grype), ""))) as execute_mock:
             findings = await adapter.run(target, config, emit_log, emit_finding)
             assert len(findings) == 1
-            assert findings[0].check_id == "SCA-SBOM-001"
+            assert findings[0].check_id == "SAST-DEP-001"
             assert "CVE-2023-9999" in findings[0].title
+            assert execute_mock.await_args.kwargs["cmd"] == ["/bin/grype", f"dir:{tmp_path}", "-o", "json"]
 
     @pytest.mark.asyncio
     async def test_osv_scanner_run_success(self, tmp_path):
@@ -1639,10 +1640,11 @@ class TestSupplyChainAdapters:
         }
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/osv-scanner"), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_osv), ""))):
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_osv), ""))) as execute_mock:
             findings = await adapter.run(target, config, emit_log, emit_finding)
             assert len(findings) == 1
-            assert findings[0].check_id == "SCA-OSV-001"
+            assert findings[0].check_id == "SAST-DEP-001"
+            assert execute_mock.await_args.kwargs["cmd"] == ["/bin/osv-scanner", "--json", "-r", str(tmp_path)]
 
 
 # ============================================================================

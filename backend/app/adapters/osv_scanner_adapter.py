@@ -70,7 +70,7 @@ class OSVScannerAdapter(BaseToolAdapter):
             config.adapters.osv_scanner_path or config.adapters.custom_osv_scanner_path, emit_log, pre_launch_check=managed_check
         ):
             return findings
-        cmd = [binary, "scan", "--format", "json", "-r", scan_path]
+        cmd = [binary, "--json", "-r", scan_path]
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
@@ -104,7 +104,7 @@ class OSVScannerAdapter(BaseToolAdapter):
                             scan_id=scan_id,
                             engine="code_sast",
                             source_tool=self.tool_name,
-                            check_id="SCA-OSV-001",
+                            check_id="SAST-DEP-001",
                             category="Supply Chain Security",
                             title=f"Google OSV Advisory: {vuln_id} in {pkg_name}@{pkg_ver}",
                             severity=Severity.HIGH,
@@ -115,7 +115,7 @@ class OSVScannerAdapter(BaseToolAdapter):
                             remediation=f"Update dependency `{pkg_name}` to a non-vulnerable release specified in OSV advisory {vuln_id}.",
                             references=[f"https://osv.dev/vulnerability/{vuln_id}"],
                             evidence=evidence,
-                            fingerprint=calculate_fingerprint("SCA-OSV-001", f"{source_path}:{pkg_name}", vuln_id),
+                            fingerprint=calculate_fingerprint("SAST-DEP-001", f"{source_path}:{pkg_name}", vuln_id),
                         )
                         findings.append(finding)
                         await emit_finding(finding)

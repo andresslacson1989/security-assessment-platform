@@ -70,7 +70,7 @@ class GrypeAdapter(BaseToolAdapter):
             config.adapters.grype_path or config.adapters.custom_grype_path, emit_log, pre_launch_check=managed_check
         ):
             return findings
-        cmd = [binary, scan_path, "-o", "json", "-q"]
+        cmd = [binary, f"dir:{scan_path}", "-o", "json"]
 
         code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
 
@@ -110,7 +110,7 @@ class GrypeAdapter(BaseToolAdapter):
                     scan_id=scan_id,
                     engine="code_sast",
                     source_tool="grype",
-                    check_id="SCA-SBOM-001",
+                    check_id="SAST-DEP-001",
                     category="Vulnerable Dependencies",
                     title=f"{cve_id} in {pkg_name} v{pkg_version}",
                     severity=severity,
@@ -121,7 +121,7 @@ class GrypeAdapter(BaseToolAdapter):
                     remediation=f"Upgrade `{pkg_name}` to version `{fix_str}` or apply vendor patches.",
                     references=urls or ["https://github.com/anchore/grype"],
                     evidence=evidence,
-                    fingerprint=calculate_fingerprint("SCA-SBOM-001", f"{pkg_name}@{pkg_version}", cve_id),
+                    fingerprint=calculate_fingerprint("SAST-DEP-001", f"{pkg_name}@{pkg_version}", cve_id),
                 )
                 findings.append(finding)
                 await emit_finding(finding)
