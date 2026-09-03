@@ -11,7 +11,6 @@ import webbrowser
 from pathlib import Path
 import uvicorn
 
-# Ensure root directory and backend directory are in sys.path
 root_dir = Path(__file__).resolve().parent
 backend_dir = root_dir / "backend"
 data_dir = root_dir / "data" / "scans"
@@ -26,14 +25,11 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# Ensure storage directory exists
 data_dir.mkdir(parents=True, exist_ok=True)
 
 
 def check_prerequisites():
-    """
-    Verifies required packages are installed.
-    """
+    """Verify required control-plane packages are installed."""
     required_pkgs = ["fastapi", "uvicorn", "pydantic", "httpx", "cryptography", "dns", "yaml", "bs4"]
     missing = []
     for pkg in required_pkgs:
@@ -44,16 +40,37 @@ def check_prerequisites():
 
     if missing:
         print(f"\n[ERROR] Missing required dependencies: {', '.join(missing)}")
-        print("Please run: pip install -r backend/requirements.txt\n")
+        print("Please run: python -m pip install --require-hashes --requirement backend/requirements.lock\n")
         sys.exit(1)
+
+
+def resolve_bind_host() -> str:
+    """Return the explicit bind host, defaulting standalone mode to loopback."""
+    host = os.environ.get("HOST", "127.0.0.1").strip()
+    if not host:
+        raise RuntimeError("HOST must not be empty.")
+    return host
+
+
+def resolve_port() -> int:
+    """Return a validated TCP listen port."""
+    try:
+        port = int(os.environ.get("PORT", "8000"))
+    except ValueError as exc:
+        raise RuntimeError("PORT must be an integer between 1 and 65535.") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("PORT must be an integer between 1 and 65535.")
+    return port
 
 
 def main():
     check_prerequisites()
 
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8000"))
-    display_host = "localhost" if host == "0.0.0.0" else host
+    host = resolve_bind_host()
+    port = resolve_port()
+    display_host = "localhost" if host in {"0.0.0.0", "::"} else host
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
     dashboard_url = f"http://{display_host}:{port}"
     reload_enabled = os.environ.get("UVICORN_RELOAD", "0").strip().lower() in {"1", "true", "yes"}
 
@@ -64,10 +81,11 @@ def main():
     print(f" [*] Local API Server   : {dashboard_url}")
     print(f" [*] Interactive Docs   : {dashboard_url}/docs")
     print(f" [*] Scan Storage Path  : {data_dir}")
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        print(f" [!] Explicit non-loopback bind enabled via HOST={host}")
     print("=" * 72)
     print(" [*] Opening Cyber SOC HUD Dashboard in browser...")
 
-    # Open browser in separate background process after brief pause
     def open_browser():
         time.sleep(1.2)
         try:
@@ -79,7 +97,6 @@ def main():
     threading.Thread(target=open_browser, daemon=True).start()
 
     try:
-        # Reload is a development opt-in; production uses a stable process.
         uvicorn.run(
             "app.main:app",
             host=host,
