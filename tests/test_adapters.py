@@ -1687,6 +1687,18 @@ def test_auxiliary_adapters_expose_bounded_contract_surfaces(tmp_path):
 # ============================================================================
 
 class TestCISBenchmarkAdapters:
+    def test_prowler_accepts_upstream_asff_top_level_array(self):
+        from app.adapters.prowler_adapter import ProwlerAdapter
+
+        payload = [{
+            "Title": "Root account MFA",
+            "Severity": {"Label": "HIGH"},
+            "Compliance": {"Status": "FAILED"},
+            "Remediation": {"Recommendation": {"Text": "Enable MFA."}},
+        }]
+
+        assert ProwlerAdapter._parse_asff_report(json.dumps(payload)) == payload
+
     @pytest.mark.asyncio
     async def test_dockle_run_success(self):
         from app.adapters.dockle_adapter import DockleAdapter

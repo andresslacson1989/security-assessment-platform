@@ -41,10 +41,15 @@ class ProwlerAdapter(BaseToolAdapter):
             document = json.loads(payload)
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError("Prowler ASFF report is not valid JSON") from exc
-        if not isinstance(document, dict) or not isinstance(document.get("Findings"), list):
+        # Prowler's AWS ASFF writer emits a top-level findings array. Keep
+        # accepting the older internal wrapper so existing captured reports
+        # remain replayable, but never silently accept another shape.
+        if isinstance(document, list):
+            findings = document
+        elif isinstance(document, dict) and isinstance(document.get("Findings"), list):
+            findings = document["Findings"]
+        else:
             raise ValueError("Prowler ASFF report must contain a Findings array")
-
-        findings = document["Findings"]
         required = ("Title", "Severity", "Compliance", "Remediation")
         for item in findings:
             if not isinstance(item, dict) or any(key not in item for key in required):
