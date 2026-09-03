@@ -21,6 +21,8 @@ from app.core.models import (
     AuthConfig,
     CrawlerConfig,
     DiscoveredEndpoint,
+    EndpointTestRecord,
+    EndpointTestStatus,
     UserProfile,
     UserRole,
     LogLevel,
@@ -655,6 +657,13 @@ async def test_per_link_assessment_dossier_structure(auth_headers):
                 is_authenticated=True,
                 has_forms=True,
                 discovered_forms=2,
+                tools_executed=["native_dast", "katana", "parameter_fuzzer"],
+                tests_performed=[
+                    EndpointTestRecord(test_name="Security Headers", category="Configuration", tool="native_dast", status=EndpointTestStatus.VULNERABLE),
+                    EndpointTestRecord(test_name="CORS Policy", category="Access Control", tool="native_dast", status=EndpointTestStatus.SAFE),
+                    EndpointTestRecord(test_name="Active Parameter Injection", category="Injection", tool="parameter_fuzzer", status=EndpointTestStatus.SAFE),
+                    EndpointTestRecord(test_name="CSRF Protection", category="Session Management", tool="native_dast", status=EndpointTestStatus.SAFE),
+                ],
             )
         ],
         findings=[

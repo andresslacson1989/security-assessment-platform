@@ -231,9 +231,15 @@ async def execute_http_repeater(
             detail=f"SSRF Protection Gate: {str(ssrf_err)}",
         )
 
-    # Size limit on request body (max 2 MB)
-    if payload.body and len(payload.body) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Repeater request payload exceeds 2 MB limit.")
+    # Strict byte limit on request body (max 2 MB = 2,097,152 bytes)
+    body_bytes: Optional[bytes] = None
+    if payload.body is not None:
+        body_bytes = payload.body.encode("utf-8")
+        if len(body_bytes) > 2 * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Repeater request payload exceeds 2 MB limit.",
+            )
 
     start_time = time.perf_counter()
     
@@ -268,7 +274,7 @@ async def execute_http_repeater(
                 method=payload.method.upper(),
                 url=payload.url,
                 headers=headers,
-                content=payload.body.encode("utf-8") if payload.body is not None else None,
+                content=body_bytes,
             )
             if type(client).__name__ in ("AsyncMock", "MagicMock") and not getattr(client.send, "mock_calls", None) and (getattr(client.request, "return_value", None) is not None or getattr(client.request, "side_effect", None) is not None):
                 if getattr(client.request, "side_effect", None) is not None:

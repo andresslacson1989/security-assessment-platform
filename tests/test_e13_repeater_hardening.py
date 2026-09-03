@@ -224,3 +224,35 @@ async def test_repeater_https_no_synthetic_tls_default(admin_token):
             assert data["tls_version"] is None
             assert data["cipher"] is None
             assert data["tls_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_repeater_rejects_payload_exceeding_byte_limit_even_if_char_count_is_small(admin_token):
+    """
+    R2.2 Invariant:
+    Payload with character count < 2,000,000 but UTF-8 byte count > 2,097,152 bytes
+    MUST be rejected before outbound transmission with HTTP 400.
+    """
+    # 700,000 4-byte unicode emojis: len(char_string) = 700,000 (< 2,000,000)
+    # len(utf8_bytes) = 2,800,000 (> 2,097,152 bytes = 2 MB)
+    large_unicode_body = "\U0001F600" * 700000
+    assert len(large_unicode_body) < 2000000
+    assert len(large_unicode_body.encode("utf-8")) > 2 * 1024 * 1024
+
+    with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
+        with patch("app.core.ssrf_protector.ValidatedTargetTransport.handle_async_request") as mock_send:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                res = await ac.post(
+                    "/api/tools/repeater",
+                    json={
+                        "url": "https://example.com/test",
+                        "method": "POST",
+                        "body": large_unicode_body,
+                    },
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+                assert res.status_code == 400
+                assert "2 MB" in res.json()["detail"]
+                # Outbound request must NOT have been sent
+                mock_send.assert_not_called()
+

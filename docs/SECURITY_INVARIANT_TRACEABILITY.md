@@ -98,14 +98,37 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 ## 3. Final Verification Assertion
 Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime execution, the managed E13 direct-binary fleet, and complete repository regression are now evidenced; remaining E11 and E13 limitations are recorded explicitly and are not represented as completed capabilities.
 
+
+---
+
+## 3. Final Verification Assertion
+Repository-level controls for the documented invariants are implemented and verified through focused and adversarial tests. Managed Subfinder runtime execution, the managed E13 direct-binary fleet, and complete repository regression are now evidenced; remaining E11 and E13 limitations are recorded explicitly and are not represented as completed capabilities.
+
 ### E12 Web DAST Execution Boundary
 - **Implementation:** `backend/app/engines/web_dast/engine.py`, `backend/app/core/ssrf_protector.py`, `backend/app/adapters/base_adapter.py`, and the four E12 adapters.
 - **Controls:** validated-target transport pinning with ambient proxy bypass, same-origin redirect revalidation, Host preservation, exact approved-version gates, managed-binary checks immediately before version probes and launches, centralized supervised launches, normalized failure states, sanitized reproduction evidence, and API telemetry retention for tools absent from `active_adapters`.
 - **Tests:** `tests/security/test_web_dast_assurance.py`, `tests/test_engine_web_dast.py`, `tests/test_api_endpoints.py::test_telemetry_endpoint_structure_and_filters`, and the four E12 adapter test classes.
 - **Status:** Repository controls and managed-runtime probes are verified. The Linux production image executed managed Nuclei `3.2.0`, FFuF `2.1.0`, Katana `1.0.5`, and Schemathesis `3.20.0` under uid 999 with valid trust records; no unmanaged runtime is treated as evidence. FFuF and Nuclei are blocked at both adapter and Web DAST production-path boundaries without tenant active-probing authorization. Authenticated external CLI injection remains intentionally fail-closed; governed native HTTP coverage handles tenant credentials until secret-safe subprocess injection exists.
 
-### E13 Code SAST, Secrets & Dependency Analysis Boundary
+#### E13 Code SAST, Secrets & Dependency Analysis Boundary
 - **Implementation:** `backend/app/core/path_sandbox.py`, `backend/app/engines/code_sast/engine.py`, the E13 adapters, native scanners, and `backend/app/core/process_supervisor.py`.
 - **Controls:** Canonical tenant-authorized workspace resolution, symlink/reparse-point rejection, supervised Git history execution, exact approved-version gates, managed package/binary checks with pre-launch verification, bounded output/timeouts, explicit parser/failure states, deterministic taint sanitization, and secret-safe evidence.
 - **Tests:** `tests/security/test_code_sast_assurance.py`, E13 adapter tests, `tests/test_engine_code_sast.py`, persistence/API tests, and full regression.
 - **Status:** `REPOSITORY_VERIFIED` for the corrected shared process-supervision, fallback-provenance, execution-state attribution, evidence-sanitization, authoritative-persistence, explicit discovery-admission boundary, platform-owned provider destination allowlists, observation-only cloud fallback, hardened production containers, and 26-tool registry controls. The current Linux production image verified managed trust records and runtime paths for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and source-built Nmap, plus Retire.js and the six lock-bound Python environments, all under UID 999. No unmanaged runtime is treated as evidence; Prowler remains fail-closed without a worker-side tenant-scoped credential envelope and provider egress controls, while missing native cloud observations are explicitly degraded rather than treated as clean. OS-level external-process egress governance and diagnostic-only auxiliary tools remain documented limitations.
+
+---
+
+## 4. E13-R2 Final Audit Closure & Truthfulness Invariants
+
+| Rework Invariant ID | Security Control Domain | Primary Specification | Concrete Implementation | Verification Suite | Status |
+|---|---|---|---|---|---|
+| **INV-R2.1** | Evidence Truthfulness & No Manufactured Assurance | Contract 02 §4, Audit R2.1 | `backend/app/api/scans.py`, `backend/app/core/models.py`, `backend/app/engines/web_dast/` | `tests/test_e13_evidence_truthfulness.py` (10/10 PASS) | **VERIFIED** |
+| **INV-R2.2** | Repeater Request Strict Byte Limit | Contract 04 §3, Audit R2.2 | `backend/app/api/tools.py` | `tests/test_e13_repeater_hardening.py` (9/9 PASS) | **VERIFIED** |
+| **INV-R2.3** | Enterprise Process Egress Fail-Closed (Option B) | Contract 03 §3, Audit R2.3 | `backend/app/core/process_supervisor.py` | `tests/test_e13_egress_env_sanitization.py` (6/6 PASS) | **VERIFIED (Fail-Closed); INFRASTRUCTURE BLOCKED** |
+| **INV-R2.4** | OCI Multi-Arch Cryptographic Digest Pinning | Contract 01 §7, Audit R2.4 | `Dockerfile`, `docker-compose.yml` | `tests/test_e13_supply_chain_integrity.py` (7/7 PASS) | **VERIFIED** |
+| **INV-R2.5** | Safe Platform Defaults & Hash-Locked Dependencies | Contract 01 §4, Audit R2.5 | `run_platform.py`, `backend/requirements.lock` | `tests/test_e13_platform_hardening.py` (8/8 PASS) | **VERIFIED** |
+| **INV-R2.6** | Content-Security-Policy Origin Hardening | Contract 08 §1, Audit R2.6 | `backend/app/main.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R2.7** | Untrusted Correlation-ID Input Sanitization | Contract 08 §1, Audit R2.7 | `backend/app/main.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R2.8** | Production Bootstrap Secret Protection | Contract 04 §1.1, Audit R2.8 | `backend/app/api/auth.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R2.9** | In-Memory Login Rate Limiter Scope Disclosure | Contract 08 §1, Audit R2.9 | `backend/app/api/auth.py`, `README.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R2.11** | Repository Governance Branch Protection Disclosure | Rule 0.1, Audit R2.11 | `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | GitHub API Query (HTTP 404) | **BLOCKED / OPERATOR ACTION REQUIRED** |

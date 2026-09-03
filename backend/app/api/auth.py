@@ -5,7 +5,9 @@ Authentication, One-Time Bootstrap, RFC 8725 JWT & Scoped API Key Router.
 
 from __future__ import annotations
 import hashlib
+import hmac
 import json
+import os
 import secrets
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Header, Request, status
@@ -42,6 +44,7 @@ class BootstrapRequest(BaseModel):
     admin_email: str = Field(...)
     admin_password: str = Field(..., min_length=8, max_length=128)
     organization_name: str = Field(default="Default Organization", min_length=2, max_length=120)
+    bootstrap_secret: Optional[str] = Field(default=None, description="One-time production bootstrap secret", exclude=True)
 
 
 class BootstrapResponse(BaseModel):
@@ -110,6 +113,30 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
             detail="Platform is already initialized with an administrator. Bootstrap is closed.",
         )
 
+    # R2.8: Production bootstrap authorization gate
+    operating_mode = (os.getenv("OPERATING_MODE") or os.getenv("ENVIRONMENT") or "PRODUCTION").strip().upper()
+    if operating_mode == "PRODUCTION":
+        configured_secret = os.getenv("BOOTSTRAP_SECRET", "").strip()
+        client_host = request.client.host if request.client else "unknown"
+        if configured_secret:
+            supplied_secret = (
+                request.headers.get("X-Bootstrap-Secret")
+                or payload.bootstrap_secret
+                or ""
+            ).strip()
+            if not hmac.compare_digest(supplied_secret, configured_secret):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Production bootstrap authorization failed: invalid or missing bootstrap secret.",
+                )
+        else:
+            # If BOOTSTRAP_SECRET is not configured in production, only allow local initialization
+            if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Production bootstrap without configured BOOTSTRAP_SECRET requires localhost access.",
+                )
+
     valid, err_msg = validate_password_strength(payload.admin_password)
     if not valid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
@@ -152,6 +179,11 @@ _LOGIN_WINDOW_SECONDS = 60.0
 
 
 def check_login_rate_limit(key: str) -> None:
+    """
+    R2.9: Enforces in-memory login brute-force rate limiting (max 5 attempts per 60 seconds).
+    Note: Operates in-memory per worker process. Provides standalone defense on a single replica
+    and does not coordinate rate-limit state across multi-replica distributed deployments.
+    """
     now = time.monotonic()
     attempts = _LOGIN_ATTEMPTS[key]
     _LOGIN_ATTEMPTS[key] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]

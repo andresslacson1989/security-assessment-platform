@@ -2,7 +2,8 @@
 
 Baseline commit: a5dea124dd2556c2aac959dac5c74281c9402231
 Current branch: security/e13-enterprise-audit-closure
-Current HEAD: 559923c
+Implementation baseline: 3b00e0db06bd1b589042371d58be91ed51b2056c
+Acceptance evidence revision: In-progress rework (E13-R2)
 
 ## E13.1 Identity & Scope Closure
 Status: VERIFIED
@@ -52,49 +53,63 @@ Files:
 - backend/app/core/models.py
 - backend/app/core/orchestrator.py
 - backend/app/api/scans.py
+- backend/app/engines/web_dast/engine.py
+- backend/app/engines/web_dast/headers_cookies.py
+- backend/app/engines/web_dast/cors_analyzer.py
 - backend/app/adapters/sslyze_adapter.py
-- tests/security/test_sslyze_assurance.py
-- tests/test_api_endpoints.py
 - tests/test_e13_evidence_truthfulness.py
 Focused tests:
 - tests/test_api_endpoints.py
 - tests/security/test_sslyze_assurance.py
-- tests/test_e13_evidence_truthfulness.py
-Commit: 3976f49
+- tests/test_e13_evidence_truthfulness.py (10 passed, 0 failed)
+Notes:
+- Removed manufactured assignment of tools_executed when empty.
+- Removed synthetic SAFE test records for unexecuted checks; status defaults to NOT_EXECUTED.
+- Header and CORS checks failing on network/timeout raise exceptions and are recorded as SKIPPED rather than SAFE.
+- Coverage without authoritative scan evidence fails closed as COVERAGE_DEGRADED / is_fully_assessed=False.
 
 ## E13.5 Repeater Resource and TLS Evidence Hardening
 Status: VERIFIED
 Files:
 - backend/app/api/tools.py
 - backend/app/core/models.py
-- tests/test_e13_repeater_hardening.py
+- tests/test_e13_repeater_hardening.py (9 passed, 0 failed)
 Focused tests:
 - tests/test_acceptance_scenarios.py
 - tests/test_e13_repeater_hardening.py
-Commit: 3fdb13c
+Notes:
+- Enforced strict 2 MB limit (2,097,152 bytes) on len(payload.body.encode("utf-8")).
+- body_bytes is reused directly in the outbound HTTP request.
+- Verified with adversarial test using multi-byte Unicode sequence (< 2M characters, > 2M bytes) rejecting with HTTP 400 before outbound transmission.
 
 ## E13.6 Enterprise Execution Egress Closure
-Status: VERIFIED
+Status: BLOCKED — REQUIRED ENTERPRISE INFRASTRUCTURE UNAVAILABLE
 Files:
 - docker-compose.yml
 - backend/app/core/process_supervisor.py
 - backend/app/adapters/base_adapter.py
-- tests/test_e13_egress_env_sanitization.py
+- tests/test_e13_egress_env_sanitization.py (6 passed, 0 failed)
 Focused tests:
 - tests/test_e13_egress_env_sanitization.py
-Commit: ff0ea51
+Notes:
+- Option B (Fail Closed) implemented in ProcessSupervisor.execute: in ENTERPRISE mode or when ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED=true, external CLI tools refuse to start (PROCESS_LAUNCH_REJECTED_SECURITY) unless an authoritative egress facility (CYBERASSESS_VERIFIED_EGRESS_FACILITY) is configured and verifiably available.
+- Actual kernel-level network namespace or eBPF/egress gateway enforcement requires operator infrastructure not available in the current standalone Windows development environment. Release readiness remains blocked pending operator infrastructure deployment.
 
 ## E13.7 Supply Chain and Reproducible Deployment
 Status: VERIFIED
 Files:
 - .dockerignore
 - Dockerfile
+- docker-compose.yml
 - backend/app/core/binary_resolver.py
 - backend/app/installers/tool_manifest.py
-- tests/test_e13_supply_chain_integrity.py
+- tests/test_e13_supply_chain_integrity.py (7 passed, 0 failed)
 Focused tests:
 - tests/test_e13_supply_chain_integrity.py
-Commit: 350de92
+Notes:
+- Dockerfile builder and runtime base images pinned with multi-arch cryptographic digest: python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84.
+- docker-compose.yml postgres:16-alpine and redis:7-alpine pinned with sha256 digests.
+- tests/test_e13_supply_chain_integrity.py validates strict @sha256:<64-hex> format and distinguishes mutable tags from immutable digests.
 
 ## E13.8 Web Application and Platform Hardening
 Status: VERIFIED
@@ -103,10 +118,15 @@ Files:
 - backend/app/main.py
 - backend/app/core/auth.py
 - backend/app/api/auth.py
-- tests/test_e13_platform_hardening.py
+- tests/test_e13_platform_hardening.py (8 passed, 0 failed)
 Focused tests:
 - tests/test_e13_platform_hardening.py
-Commit: e77453f
+Notes:
+- run_platform.py defaults HOST to 127.0.0.1 (accepts explicit HOST=0.0.0.0) and guides operators to use pip install --require-hashes --requirement backend/requirements.lock.
+- CSP stripped of unused third-party CDN origins (cdnjs, google fonts); base-uri 'none'; object-src 'none'.
+- Correlation-ID input strictly validated against alphanumeric allowlist (max 64 chars); CRLF/control characters rejected and replaced with server ID.
+- Production bootstrap protected via BOOTSTRAP_SECRET (constant-time hmac.compare_digest) or localhost restriction.
+- Login rate limiter accurately documented as standalone in-memory per worker process (does not coordinate state across multi-replica deployments).
 
 ## E13.9 Documentation, Contract, and Claim Reconciliation
 Status: VERIFIED
@@ -115,25 +135,35 @@ Files:
 - docs/TOOL_ASSURANCE_MATRIX.md
 - docs/SECURITY_INVARIANT_TRACEABILITY.md
 - contracts/
+- docs/DOCKER_COMPOSE_DEPLOYMENT.md
 Focused tests:
 - tests/security/test_contract_fleet_consistency.py
-Commit: 8225864
+Notes:
+- Reconciled all documentation with verified implementation reality. No unsubstantiated claims or false assurance.
 
 ## E13.10 Governance
-Status: VERIFIED
+Status: BLOCKED / OPERATOR ACTION REQUIRED
 Files:
 - SECURITY.md
 - CONTRIBUTING.md
 - CODE_OF_CONDUCT.md
-- tests/test_e13_governance.py
+- LICENSE
+- tests/test_e13_governance.py (5 passed, 0 failed)
 Focused tests:
 - tests/test_e13_governance.py
-Commit: 985c013
+Notes:
+- Local governance policy documents are complete and verified.
+- Branch protection on `main` is NOT active on GitHub (verified via `gh api repos/andresslacson1989/security-assessment-platform/branches/main/protection` returning HTTP 404).
+- Operator action required by repository owner in GitHub Settings -> Branches -> Add branch protection rule for `main`:
+  1. Require a pull request before merging (Require approvals: 1).
+  2. Require status checks to pass before merging (`ci`).
+  3. Do not allow bypassing the above settings.
+  4. Enforce for administrators.
 
 ---
-Final regression: 559 passed, 4 skipped, 0 failed, 0 errors in 143.04s (100% pass rate).
-Adversarial Security Matrix: 40 passed, 0 failed (100% pass rate).
-E13 Closure Suites: 77 passed, 0 failed (100% pass rate).
-Container verification: Validated Docker Compose v2 configuration syntax, multi-arch Dockerfile pinned to python:3.11-slim-bookworm, unprivileged user (cyberassess:cyberassess), drop ALL capabilities, internal data-plane network, zero published database/cache host ports.
-Documentation verification: Reconciled README.md, TOOL_ASSURANCE_MATRIX.md, SECURITY_INVARIANT_TRACEABILITY.md, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, and contracts/.
-Final decision: ACCEPTED - ENTERPRISE RELEASE READY
+Final decision: ⚠️ E13 BLOCKED — ENTERPRISE RELEASE NOT YET ACCEPTED
+
+Blockers to Enterprise Release Acceptance:
+1. E13.6: Kernel/infrastructure-level egress namespace enforcement requires operator-managed network infrastructure (fails closed in code).
+2. E13.10: GitHub branch protection on `main` requires administrator configuration in GitHub repository settings.
+

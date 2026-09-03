@@ -355,41 +355,52 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 if "native_dast" not in ep.tools_executed:
                     ep.tools_executed.append("native_dast")
                 cached_resp = page_responses.get(ep.url)
-                header_findings = await audit_security_headers_and_cookies(
-                    ep.url,
-                    client=client,
-                    response=cached_resp,
-                )
-                if header_findings:
-                    ep.tests_performed.append(
-                        EndpointTestRecord(
-                            test_name="Security Headers & CSP Audit",
-                            category="Configuration",
-                            tool="native_dast",
-                            status=EndpointTestStatus.VULNERABLE,
-                            details=f"Missing or weak security headers detected ({len(header_findings)} issues).",
-                            findings_count=len(header_findings),
-                        )
+                try:
+                    header_findings = await audit_security_headers_and_cookies(
+                        ep.url,
+                        client=client,
+                        response=cached_resp,
                     )
-                else:
-                    ep.tests_performed.append(
-                        EndpointTestRecord(
-                            test_name="Security Headers & CSP Audit",
-                            category="Configuration",
-                            tool="native_dast",
-                            status=EndpointTestStatus.SAFE,
-                            details="HSTS, CSP, and Anti-clickjacking headers properly enforced.",
+                    if header_findings:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="Security Headers & CSP Audit",
+                                category="Configuration",
+                                tool="native_dast",
+                                status=EndpointTestStatus.VULNERABLE,
+                                details=f"Missing or weak security headers detected ({len(header_findings)} issues).",
+                                findings_count=len(header_findings),
+                            )
                         )
-                    )
+                    else:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="Security Headers & CSP Audit",
+                                category="Configuration",
+                                tool="native_dast",
+                                status=EndpointTestStatus.SAFE,
+                                details="HSTS, CSP, and Anti-clickjacking headers properly enforced.",
+                            )
+                        )
 
-                for f in header_findings:
-                    if f.fingerprint not in existing_fps:
-                        existing_fps.add(f.fingerprint)
-                        f.scan_id = scan_id
-                        findings.append(f)
-                        if f.id not in ep.finding_ids:
-                            ep.finding_ids.append(f.id)
-                        await emit_finding(f)
+                    for f in header_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.scan_id = scan_id
+                            findings.append(f)
+                            if f.id not in ep.finding_ids:
+                                ep.finding_ids.append(f.id)
+                            await emit_finding(f)
+                except Exception as exc:
+                    ep.tests_performed.append(
+                        EndpointTestRecord(
+                            test_name="Security Headers & CSP Audit",
+                            category="Configuration",
+                            tool="native_dast",
+                            status=EndpointTestStatus.SKIPPED,
+                            details=f"Security headers check skipped due to error: {type(exc).__name__}",
+                        )
+                    )
 
             # Form & authentication audits across all crawled HTML pages
             auth_form_findings = await auth_manager.audit_auth_and_forms(
@@ -420,41 +431,52 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             # --- Stage 4: CORS Policy Analyzer (60% - 70%) ---
             await emit_progress(60, "Testing Cross-Origin Resource Sharing (CORS) configurations...")
             for ep in discovered_endpoints[:10]:
-                cors_findings = await audit_cors_policies(
-                    ep.url,
-                    client=client,
-                    emit_log=emit_log,
-                )
-                if cors_findings:
-                    ep.tests_performed.append(
-                        EndpointTestRecord(
-                            test_name="CORS Origin Reflection & Wildcard Policy",
-                            category="Configuration",
-                            tool="native_dast",
-                            status=EndpointTestStatus.VULNERABLE,
-                            details=f"Insecure CORS configuration detected ({len(cors_findings)} issues).",
-                            findings_count=len(cors_findings),
-                        )
+                try:
+                    cors_findings = await audit_cors_policies(
+                        ep.url,
+                        client=client,
+                        emit_log=emit_log,
                     )
-                else:
-                    ep.tests_performed.append(
-                        EndpointTestRecord(
-                            test_name="CORS Origin Reflection & Wildcard Policy",
-                            category="Configuration",
-                            tool="native_dast",
-                            status=EndpointTestStatus.SAFE,
-                            details="Strict origin reflection and access control verified.",
+                    if cors_findings:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="CORS Origin Reflection & Wildcard Policy",
+                                category="Configuration",
+                                tool="native_dast",
+                                status=EndpointTestStatus.VULNERABLE,
+                                details=f"Insecure CORS configuration detected ({len(cors_findings)} issues).",
+                                findings_count=len(cors_findings),
+                            )
                         )
-                    )
+                    else:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="CORS Origin Reflection & Wildcard Policy",
+                                category="Configuration",
+                                tool="native_dast",
+                                status=EndpointTestStatus.SAFE,
+                                details="Strict origin reflection and access control verified.",
+                            )
+                        )
 
-                for f in cors_findings:
-                    if f.fingerprint not in existing_fps:
-                        existing_fps.add(f.fingerprint)
-                        f.scan_id = scan_id
-                        findings.append(f)
-                        if f.id not in ep.finding_ids:
-                            ep.finding_ids.append(f.id)
-                        await emit_finding(f)
+                    for f in cors_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.scan_id = scan_id
+                            findings.append(f)
+                            if f.id not in ep.finding_ids:
+                                ep.finding_ids.append(f.id)
+                            await emit_finding(f)
+                except Exception as exc:
+                    ep.tests_performed.append(
+                        EndpointTestRecord(
+                            test_name="CORS Origin Reflection & Wildcard Policy",
+                            category="Configuration",
+                            tool="native_dast",
+                            status=EndpointTestStatus.SKIPPED,
+                            details=f"CORS audit skipped due to error: {type(exc).__name__}",
+                        )
+                    )
 
             # --- Stage 5: Sensitive Exposure & API Inspector (70% - 80%) ---
             await emit_progress(70, "Inspecting sensitive files, debug consoles, and HTTP methods...")
@@ -550,7 +572,16 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
             if config.fuzzing.enabled:
                 if not kwargs.get("active_probing_granted", False):
                     await emit_log(LogLevel.WARNING, "Native active parameter fuzzing blocked: explicit tenant active-probing authorization is required.")
-                    fuzz_findings = []
+                    for ep in discovered_endpoints:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                category="Injection",
+                                tool="parameter_fuzzer",
+                                status=EndpointTestStatus.SKIPPED,
+                                details="Parameter fuzzing skipped: tenant active-probing authorization required.",
+                            )
+                        )
                 else:
                     await emit_progress(85, "Executing benign parameter fuzzing (SQLi, XSS, LFI, SSTI, Open Redirect)...")
                     await emit_log(LogLevel.INFO, "Fuzzing discovered query parameters and forms with non-destructive payloads.")
@@ -563,40 +594,40 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_finding=emit_finding,
                         emit_log=emit_log,
                     )
-                for f in fuzz_findings:
-                    if f.fingerprint not in existing_fps:
-                        existing_fps.add(f.fingerprint)
-                        f.scan_id = scan_id
-                        findings.append(f)
+                    for f in fuzz_findings:
+                        if f.fingerprint not in existing_fps:
+                            existing_fps.add(f.fingerprint)
+                            f.scan_id = scan_id
+                            findings.append(f)
 
-                for ep in discovered_endpoints:
-                    if "parameter_fuzzer" not in ep.tools_executed:
-                        ep.tools_executed.append("parameter_fuzzer")
-                    ep_fuzz_finds = [f for f in fuzz_findings if f.evidence and f.evidence.location and ep.url in f.evidence.location]
-                    for f in ep_fuzz_finds:
-                        if f.id not in ep.finding_ids:
-                            ep.finding_ids.append(f.id)
-                    if ep_fuzz_finds:
-                        ep.tests_performed.append(
-                            EndpointTestRecord(
-                                test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
-                                category="Injection",
-                                tool="parameter_fuzzer",
-                                status=EndpointTestStatus.VULNERABLE,
-                                details=f"{len(ep_fuzz_finds)} injection vulnerability payload(s) triggered anomalies.",
-                                findings_count=len(ep_fuzz_finds),
+                    for ep in discovered_endpoints:
+                        if "parameter_fuzzer" not in ep.tools_executed:
+                            ep.tools_executed.append("parameter_fuzzer")
+                        ep_fuzz_finds = [f for f in fuzz_findings if f.evidence and f.evidence.location and ep.url in f.evidence.location]
+                        for f in ep_fuzz_finds:
+                            if f.id not in ep.finding_ids:
+                                ep.finding_ids.append(f.id)
+                        if ep_fuzz_finds:
+                            ep.tests_performed.append(
+                                EndpointTestRecord(
+                                    test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                    category="Injection",
+                                    tool="parameter_fuzzer",
+                                    status=EndpointTestStatus.VULNERABLE,
+                                    details=f"{len(ep_fuzz_finds)} injection vulnerability payload(s) triggered anomalies.",
+                                    findings_count=len(ep_fuzz_finds),
+                                )
                             )
-                        )
-                    else:
-                        ep.tests_performed.append(
-                            EndpointTestRecord(
-                                test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
-                                category="Injection",
-                                tool="parameter_fuzzer",
-                                status=EndpointTestStatus.SAFE,
-                                details="Benign payload probes evaluated; no SQLi, XSS, or path traversal anomalies detected.",
+                        else:
+                            ep.tests_performed.append(
+                                EndpointTestRecord(
+                                    test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                    category="Injection",
+                                    tool="parameter_fuzzer",
+                                    status=EndpointTestStatus.SAFE,
+                                    details="Benign payload probes evaluated; no SQLi, XSS, or path traversal anomalies detected.",
+                                )
                             )
-                        )
 
         await emit_progress(100, "Web DAST assessment completed.")
         await emit_log(LogLevel.INFO, f"Web DAST engine finished with {len(findings)} total findings.")

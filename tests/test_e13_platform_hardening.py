@@ -87,3 +87,151 @@ def test_cors_rejects_wildcard_origins():
 
     with pytest.raises(RuntimeError, match="malformed origin"):
         _load_allowed_origins("invalid-origin-no-scheme")
+
+
+def test_run_platform_host_defaults_and_pip_guidance():
+    """
+    R2.5 Invariant:
+    run_platform.py defaults HOST to 127.0.0.1 when unset, accepts explicit HOST=0.0.0.0,
+    and guides operators to use pip install --require-hashes --requirement backend/requirements.lock.
+    """
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    launcher_path = os.path.join(root_dir, "run_platform.py")
+    with open(launcher_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Default to 127.0.0.1
+    assert 'host = os.environ.get("HOST", "127.0.0.1")' in content
+    # Locked requirements guidance
+    assert "--require-hashes" in content
+    assert "backend/requirements.lock" in content
+
+
+@pytest.mark.asyncio
+async def test_csp_contains_no_unnecessary_external_origins():
+    """
+    R2.6 Invariant:
+    Content-Security-Policy must not include unnecessary external CDN origins (cdnjs, google fonts).
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.get("/api/system/health")
+        assert res.status_code == 200
+        csp = res.headers.get("Content-Security-Policy", "")
+        assert "cdnjs.cloudflare.com" not in csp
+        assert "fonts.googleapis.com" not in csp
+        assert "fonts.gstatic.com" not in csp
+        assert "base-uri 'none'" in csp
+        assert "object-src 'none'" in csp
+
+
+@pytest.mark.asyncio
+async def test_correlation_id_input_hardening():
+    """
+    R2.7 Invariant:
+    Incoming X-Correlation-ID is treated as untrusted input.
+    Valid format is preserved; oversized, CRLF, control chars, or punctuation are replaced by server ID.
+    """
+    from app.main import validate_correlation_id
+
+    # 1. Valid caller ID
+    valid_id = "corr-user-trace-123_456"
+    assert validate_correlation_id(valid_id) == valid_id
+
+    # 2. Oversized ID (> 64 characters)
+    oversized = "a" * 65
+    validated_oversized = validate_correlation_id(oversized)
+    assert validated_oversized != oversized
+    assert validated_oversized.startswith("corr-")
+
+    # 3. Newline injection
+    crlf_attempt = "valid-id\r\nInjected-Header: evil"
+    validated_crlf = validate_correlation_id(crlf_attempt)
+    assert "\r" not in validated_crlf and "\n" not in validated_crlf
+    assert validated_crlf.startswith("corr-")
+
+    # 4. Carriage return only
+    cr_attempt = "valid-id\revil"
+    assert validate_correlation_id(cr_attempt).startswith("corr-")
+
+    # 5. Non-allowed punctuation
+    punct_attempt = "corr<script>alert(1)</script>"
+    assert validate_correlation_id(punct_attempt).startswith("corr-")
+
+    punct_attempt2 = "corr;rm -rf /"
+    assert validate_correlation_id(punct_attempt2).startswith("corr-")
+
+    # 6. End-to-end middleware test with CRLF injection
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.get("/api/system/health", headers={"X-Correlation-ID": "evil\r\nInjected: header"})
+        assert res.status_code == 200
+        reflected_id = res.headers.get("X-Correlation-ID", "")
+        assert "\r" not in reflected_id
+        assert "\n" not in reflected_id
+        assert reflected_id.startswith("corr-")
+
+
+@pytest.mark.asyncio
+async def test_production_bootstrap_protection():
+    """
+    R2.8 Invariant:
+    Production bootstrap setup requires a configured BOOTSTRAP_SECRET (or localhost restriction).
+    Invalid or missing secret fails closed with HTTP 403 Forbidden.
+    Secret is never returned in the response.
+    """
+    from app.core.db import db_manager
+
+    # Test with BOOTSTRAP_SECRET configured
+    with patch.dict(os.environ, {"OPERATING_MODE": "PRODUCTION", "BOOTSTRAP_SECRET": "test-super-secret-bootstrap-token-12345"}):
+        with patch.object(db_manager, "is_initialized", return_value=False):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                # 1. Missing secret => 403 Forbidden
+                res_missing = await ac.post(
+                    "/api/auth/bootstrap",
+                    json={
+                        "admin_username": "prodadmin",
+                        "admin_email": "admin@prod.local",
+                        "admin_password": "SecurePassword123!",
+                    },
+                )
+                assert res_missing.status_code == 403
+                assert "bootstrap secret" in res_missing.json()["detail"]
+
+                # 2. Invalid secret => 403 Forbidden
+                res_invalid = await ac.post(
+                    "/api/auth/bootstrap",
+                    json={
+                        "admin_username": "prodadmin",
+                        "admin_email": "admin@prod.local",
+                        "admin_password": "SecurePassword123!",
+                    },
+                    headers={"X-Bootstrap-Secret": "wrong-secret-guess"},
+                )
+                assert res_invalid.status_code == 403
+
+                # 3. Valid secret via header allows proceeding
+                with patch("app.core.db.db_manager.bootstrap_system") as mock_boot:
+                    from app.core.models import UserProfile, UserRole, PrincipalType, Organization
+                    dummy_user = UserProfile(
+                        id="usr-boot-1",
+                        username="prodadmin",
+                        email="admin@prod.local",
+                        role=UserRole.ADMIN,
+                        principal_type=PrincipalType.SYSTEM_PRINCIPAL,
+                    )
+                    dummy_org = Organization(id="org-1", name="Default Org", slug="default-org")
+                    mock_boot.return_value = (dummy_user, dummy_org)
+
+                    res_valid = await ac.post(
+                        "/api/auth/bootstrap",
+                        json={
+                            "admin_username": "prodadmin",
+                            "admin_email": "admin@prod.local",
+                            "admin_password": "SecurePassword123!",
+                        },
+                        headers={"X-Bootstrap-Secret": "test-super-secret-bootstrap-token-12345"},
+                    )
+                    assert res_valid.status_code == 201
+                    data = res_valid.json()
+                    assert "bootstrap_secret" not in data
+                    assert "token-12345" not in str(data)
+

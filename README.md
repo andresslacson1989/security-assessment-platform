@@ -72,6 +72,11 @@ CyberAssess enforces strict architectural security invariants:
    - Subprocesses receive an explicitly curated environment containing only safe system keys (`PATH`, `SYSTEMROOT`, `LANG`, etc.).
    - Platform secrets (`JWT_SECRET`, `DATABASE_URL`, `REDIS_URL`, API keys) are strictly excluded from tool environments.
    - `SCANNER_EGRESS_PROXY` governs outbound tool proxy routing; ambient host proxies are purged.
+   - In `ENTERPRISE` mode, external tool execution fails closed unless an operator-verified egress gateway or network namespace enforcement facility is configured.
+
+6. **Authentication, Rate Limiting & Bootstrap Protection**:
+   - First-time production bootstrap requires an out-of-band `BOOTSTRAP_SECRET` (or localhost restriction); fails closed once initialized.
+   - Login brute-force rate limiting operates as an in-memory guard per worker replica (does not coordinate state across multi-replica distributed deployments).
 
 ---
 
@@ -87,13 +92,13 @@ CyberAssess enforces strict architectural security invariants:
 git clone https://github.com/andresslacson1989/security-assessment-platform.git
 cd security-assessment-platform
 
-# Install dependencies
-pip install -r backend/requirements.txt
+# Install dependencies using cryptographically pinned lockfile
+python -m pip install --require-hashes --requirement backend/requirements.lock
 
 # Run test suite
 pytest tests/ -v
 
-# Launch local platform
+# Launch local platform (binds safely to 127.0.0.1 by default)
 python run_platform.py
 ```
 *Access the SOC Dark Theme Dashboard at `http://127.0.0.1:8000`.*
@@ -102,6 +107,7 @@ python run_platform.py
 ```bash
 # Set required secrets
 export JWT_SECRET="your-32-char-min-production-secret-here"
+export BOOTSTRAP_SECRET="your-one-time-out-of-band-bootstrap-secret"
 export POSTGRES_PASSWORD="secure-postgres-password"
 export DATABASE_URL="postgresql://cyberassess:${POSTGRES_PASSWORD}@postgres:5432/cyberassess"
 export EXECUTION_QUEUE_URL="redis://redis:6379/0"

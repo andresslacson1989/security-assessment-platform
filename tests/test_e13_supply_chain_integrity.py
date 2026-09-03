@@ -95,6 +95,7 @@ async def test_missing_binary_adapter_graceful_degradation():
 
 def test_dockerfile_and_dockerignore_compliance():
     """Dockerfile and .dockerignore adhere to enterprise supply-chain rules."""
+    import re
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     dockerfile_path = os.path.join(root_dir, "Dockerfile")
     dockerignore_path = os.path.join(root_dir, ".dockerignore")
@@ -105,8 +106,14 @@ def test_dockerfile_and_dockerignore_compliance():
     with open(dockerignore_path, "r", encoding="utf-8") as f:
         dockerignore = f.read()
 
-    # Pinned base image check
-    assert "FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm" in dockerfile
+    # R2.4: Require authoritative immutable OCI base image digests (@sha256:<64-hex>)
+    from_lines = re.findall(r"FROM (?:--platform=[^\s]+ )?([^\s]+)", dockerfile)
+    assert len(from_lines) >= 2, "Dockerfile must contain at least builder and runtime stages"
+    
+    sha256_digest_regex = re.compile(r"^python:3\.11-slim-bookworm@sha256:[a-f0-9]{64}$")
+    for img in from_lines:
+        assert "@sha256:" in img, f"Base image {img} is mutable (not pinned by cryptographic digest)"
+        assert sha256_digest_regex.match(img), f"Base image {img} does not match strict @sha256:64-hex digest format"
 
     # Non-root user check
     assert "USER cyberassess" in dockerfile
@@ -116,3 +123,20 @@ def test_dockerfile_and_dockerignore_compliance():
     assert ".env*" in dockerignore
     assert "tests/" in dockerignore
     assert "__pycache__" in dockerignore
+
+
+def test_supply_chain_distinguishes_tag_pinned_from_digest_pinned():
+    """R2.4: Invariant verifying mutable tag-only references are rejected as not digest-pinned."""
+    import re
+    sha256_digest_regex = re.compile(r"^.+@sha256:[a-f0-9]{64}$")
+
+    # Mutable version tags must fail digest pinning check
+    assert not sha256_digest_regex.match("python:3.11-slim-bookworm")
+    assert not sha256_digest_regex.match("python:3.11-slim")
+    assert not sha256_digest_regex.match("python:latest")
+    assert not sha256_digest_regex.match("python:3.11@sha256:short")
+
+    # Cryptographic immutable digest must pass
+    valid_digest = "python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84"
+    assert sha256_digest_regex.match(valid_digest)
+

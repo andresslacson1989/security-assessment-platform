@@ -33,8 +33,13 @@ async def audit_cors_policies(
     if emit_log:
         await emit_log(LogLevel.INFO, f"Probing CORS configuration on {url}...")
 
+    probes_attempted = 0
+    probes_failed = 0
+    last_exc: Optional[Exception] = None
+
     # Test 1: Arbitrary Origin Reflection (https://attacker-origin.com)
     evil_origin = "https://attacker-origin.com"
+    probes_attempted += 1
     try:
         resp = await client.get(url, headers={"Origin": evil_origin})
         allow_origin = resp.headers.get("access-control-allow-origin")
@@ -105,8 +110,11 @@ async def audit_cors_policies(
             ))
     except Exception as exc:
         logger.debug("CORS wildcard probe failed: error_type=%s", type(exc).__name__)
+        probes_failed += 1
+        last_exc = exc
 
     # Test 2: Trust of 'null' Origin
+    probes_attempted += 1
     try:
         resp_null = await client.get(url, headers={"Origin": "null"})
         allow_origin_null = resp_null.headers.get("access-control-allow-origin")
@@ -138,5 +146,10 @@ async def audit_cors_policies(
             ))
     except Exception as exc:
         logger.debug("CORS null-origin probe failed: error_type=%s", type(exc).__name__)
+        probes_failed += 1
+        last_exc = exc
+
+    if probes_attempted > 0 and probes_failed == probes_attempted and last_exc is not None:
+        raise RuntimeError(f"CORS audit failed: all probes failed with error: {last_exc}") from last_exc
 
     return findings

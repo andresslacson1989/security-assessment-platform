@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Builder Stage (Download & verify official pre-compiled tool binaries)
 # ------------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm AS builder
+FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS builder
 
 ARG TARGETARCH
 
@@ -198,7 +198,7 @@ RUN curl -fsSL https://nmap.org/dist/nmap-7.95.tar.bz2 -o nmap.tar.bz2 && \
 # ------------------------------------------------------------------------------
 # Stage 2: Final Hardened Production Runtime
 # ------------------------------------------------------------------------------
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
 
 LABEL org.opencontainers.image.title="CyberAssess Security Assessment Platform" \
       org.opencontainers.image.description="Full-Stack Automated Security Assessment & Vulnerability Management Platform" \

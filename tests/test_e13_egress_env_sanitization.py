@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import yaml
+from unittest.mock import patch
 import pytest
 
 from app.core.process_supervisor import ProcessSupervisor
@@ -123,3 +124,28 @@ def test_docker_compose_network_segmentation():
     redis = services["redis"]
     assert redis.get("networks") == ["data-plane"]
     assert "ports" not in redis, "Redis must not publish host ports!"
+
+
+@pytest.mark.asyncio
+async def test_enterprise_mode_fails_closed_without_verified_egress_facility():
+    """
+    R2.3 Invariant:
+    Under ENTERPRISE mode / egress enforcement required, ProcessSupervisor MUST fail closed
+    and reject process launch unless a verified egress facility is explicitly configured.
+    """
+    supervisor = ProcessSupervisor.get_instance()
+    cmd = [sys.executable, "-c", "print('hello')"]
+
+    # 1. Without verified egress facility configured -> MUST FAIL CLOSED
+    with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE", "CYBERASSESS_VERIFIED_EGRESS_FACILITY": ""}):
+        res = await supervisor.execute(cmd, timeout=5.0)
+        assert res.returncode == -1
+        assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
+        assert "egress network enforcement facility is not configured" in res.stderr
+
+    # 2. With verified egress facility configured -> Launch proceeds
+    with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE", "CYBERASSESS_VERIFIED_EGRESS_FACILITY": "egress-gw-v1"}):
+        res = await supervisor.execute(cmd, timeout=5.0)
+        assert res.returncode == 0
+        assert "hello" in res.stdout
+
