@@ -84,7 +84,7 @@ jobs:
             if [ "$HTTP_CODE" = "200" ]; then
               RESPONSE=$(curl -fsSL http://127.0.0.1:8000/api/system/health)
               echo "Health probe succeeded: $RESPONSE"
-              echo "$RESPONSE" | grep -q '"status":"healthy"' || exit 1
+              echo "$RESPONSE" | grep -iq '"status":"healthy"' || exit 1
               HEALTHY=1
               break
             fi
