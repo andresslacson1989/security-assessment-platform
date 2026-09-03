@@ -68,7 +68,7 @@ jobs:
             --cap-drop=ALL \
             --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,nodev \
-            --tmpfs /app/data:rw,noexec,nosuid,nodev \
+            -v cyberassess-smoke-data:/app/data \
             --user cyberassess \
             -p 8000:8000 \
             -e HOST=0.0.0.0 \
@@ -93,7 +93,8 @@ jobs:
 
           docker logs cyberassess-health-smoke
           docker stop cyberassess-health-smoke
-          docker rm cyberassess-health-smoke
+          docker rm -v cyberassess-health-smoke
+          docker volume rm cyberassess-smoke-data || true
 
           if [ "$HEALTHY" -ne 1 ]; then
             echo "Health endpoint failed to report healthy within 30 seconds"
