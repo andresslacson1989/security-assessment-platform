@@ -97,9 +97,10 @@ class SchemathesisAdapter(BaseToolAdapter):
         cmd = [
             binary, "run", schema_url,
             "--hypothesis-max-examples=10",
+            "--format=json",
+            "--workers=1",
             "--validate-schema=true",
             "--checks=not_a_server_error,status_code_conformance,content_type_conformance",
-            "--report-format=json"
         ]
         if host_header:
             cmd.extend(["--header", f"Host: {host_header}"])

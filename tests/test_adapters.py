@@ -1439,11 +1439,15 @@ class TestSchemathesisAdapter:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/schemathesis"), \
              patch.object(adapter, "get_version", new=AsyncMock(return_value="schemathesis 3.20.0")), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))):
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))) as execute_mock:
             findings = await adapter.run(target, config, emit_log, emit_finding)
             assert len(findings) == 1
             assert findings[0].check_id == "API-SCHEMA-001"
             assert findings[0].severity == Severity.HIGH
+            command = execute_mock.await_args.kwargs["cmd"]
+            assert "--format=json" in command
+            assert "--workers=1" in command
+            assert "--report-format=json" not in command
 
 
 # ============================================================================
