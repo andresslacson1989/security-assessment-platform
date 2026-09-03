@@ -901,7 +901,7 @@ class SslyzeAdapter(BaseToolAdapter):
         custom_path = getattr(config.adapters, "sslyze_path", None) or getattr(config.adapters, "custom_sslyze_path", None)
         sslyze_path = self.resolve_binary_path(custom_path)
         if not sslyze_path:
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
+            self.last_execution_state = NormalizedExecutionState.NOT_EXECUTED_PREREQUISITE_MISSING
             await emit_log(LogLevel.WARNING, "SSLyze binary not found on host. Skipping SSLyze execution.")
             return findings
 

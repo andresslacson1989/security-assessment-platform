@@ -651,6 +651,11 @@ class NormalizedExecutionState(str, Enum):
     EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
     EXECUTION_BLOCKED = "EXECUTION_BLOCKED"
     INVALID_VERSION = "INVALID_VERSION"
+    FAILED_NON_ZERO_EXIT = "FAILED_NON_ZERO_EXIT"
+    FAILED_TIMEOUT = "FAILED_TIMEOUT"
+    FAILED_OUTPUT_LIMIT = "FAILED_OUTPUT_LIMIT"
+    NOT_EXECUTED_PREREQUISITE_MISSING = "NOT_EXECUTED_PREREQUISITE_MISSING"
+    NOT_EXECUTED_UNSUPPORTED_TARGET = "NOT_EXECUTED_UNSUPPORTED_TARGET"
 
 
 class ValidatedTarget(BaseModel):
@@ -911,6 +916,9 @@ class ToolExecutionTelemetry(BaseModel):
     log_count: int = Field(default=0, ge=0, description="Telemetry log events produced by this tool")
     endpoints_tested: List[str] = Field(default_factory=list, description="Target links or paths evaluated")
     normalized_state: Optional[str] = Field(default=None, description="Tool-specific normalized execution state")
+    output_bytes: int = Field(default=0, ge=0, description="Bytes produced in tool output")
+    success_count: int = Field(default=0, ge=0, description="Successful executions of this tool")
+    failure_count: int = Field(default=0, ge=0, description="Failed executions of this tool")
 
 
 class ToolFailureEvent(BaseModel):

@@ -77,6 +77,11 @@ class ScanOrchestrator:
             "PARTIAL_RESULTS_WITH_WARNING": "PARTIAL_RESULTS_WITH_WARNING",
             "TOOL_EXECUTION_FAILED": "TOOL_EXECUTION_FAILED",
             "INVALID_VERSION": "INVALID_VERSION",
+            "FAILED_NON_ZERO_EXIT": "TOOL_EXECUTION_FAILED",
+            "FAILED_TIMEOUT": "TIMED_OUT",
+            "FAILED_OUTPUT_LIMIT": "TOOL_EXECUTION_FAILED",
+            "NOT_EXECUTED_PREREQUISITE_MISSING": "TOOL_EXECUTION_FAILED",
+            "NOT_EXECUTED_UNSUPPORTED_TARGET": "BLOCKED",
         }
         normalized = state_map.get(state)
         if normalized is None:

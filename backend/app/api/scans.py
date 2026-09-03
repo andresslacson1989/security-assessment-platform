@@ -328,6 +328,11 @@ async def get_scan_telemetry(
         "TIMED_OUT": EngineExecutionStatus.TIMED_OUT,
         "CANCELLED": EngineExecutionStatus.CANCELLED,
         "INVALID_VERSION": EngineExecutionStatus.FAILED,
+        "FAILED_NON_ZERO_EXIT": EngineExecutionStatus.FAILED,
+        "FAILED_TIMEOUT": EngineExecutionStatus.TIMED_OUT,
+        "FAILED_OUTPUT_LIMIT": EngineExecutionStatus.FAILED,
+        "NOT_EXECUTED_PREREQUISITE_MISSING": EngineExecutionStatus.FAILED,
+        "NOT_EXECUTED_UNSUPPORTED_TARGET": EngineExecutionStatus.FAILED,
     }
     for t_name in telemetry_tools:
         normalized_state = recorded_states.get(t_name)
@@ -335,17 +340,22 @@ async def get_scan_telemetry(
             (f.engine for f in job.findings if (f.source_tool or "native").lower() == t_name.lower()),
             None,
         )
+        exec_status = state_statuses.get(normalized_state, EngineExecutionStatus.FAILED)
+        is_success = exec_status in {EngineExecutionStatus.PASS, EngineExecutionStatus.FINDINGS}
         tool_telemetry_map[t_name] = ToolExecutionTelemetry(
             tool_name=t_name,
             correlation_id=job.correlation_id,
             engine=getattr(job, "tool_execution_engines", {}).get(t_name) or finding_engine or "unknown",
-            status=state_statuses.get(normalized_state, EngineExecutionStatus.FAILED),
+            status=exec_status,
             duration_seconds=0.0,
             command_executed=None,
             findings_count=0,
             log_count=0,
             endpoints_tested=[],
             normalized_state=normalized_state,
+            output_bytes=0,
+            success_count=1 if is_success else 0,
+            failure_count=0 if is_success else 1,
         )
 
     for f in job.findings:
@@ -454,8 +464,8 @@ async def get_scan_telemetry(
                     test_name="Nuclei Vulnerability & CVE Probe",
                     category="Vulnerability Scanning",
                     tool="nuclei",
-                    status=EndpointTestStatus.VULNERABLE if cve_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(cve_finds)} CVE template matches detected." if cve_finds else "Standard CVE and misconfiguration templates evaluated cleanly.",
+                    status=EndpointTestStatus.VULNERABLE if cve_finds else (EndpointTestStatus.SAFE if "nuclei" in ep_copy.tools_executed else EndpointTestStatus.SKIPPED),
+                    details=f"{len(cve_finds)} CVE template matches detected." if cve_finds else ("Standard CVE and misconfiguration templates evaluated cleanly." if "nuclei" in ep_copy.tools_executed else "Nuclei tool was not executed for this profile."),
                     findings_count=len(cve_finds),
                 ),
             ]
