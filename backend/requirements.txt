@@ -9,6 +9,5 @@ pyyaml>=6.0.1
 pytest==7.4.4
 pytest-asyncio>=0.23.0
 pyjwt>=2.8.0
-schemathesis==3.20.0
 psycopg[binary,pool]>=3.2.0
 redis[hiredis]>=5.0.0

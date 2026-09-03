@@ -65,3 +65,11 @@ def test_ci_builds_and_smoke_tests_the_hardened_production_image():
     assert "--user cyberassess" in workflow
     assert "-c 'test \"$(id -u)\" -ne 0" in workflow
     assert "test ! -w /app/backend/bin/subfinder.trust.json" in workflow
+
+
+def test_schemathesis_isolated_environment_is_not_installed_in_app_runtime():
+    requirements = (REPOSITORY_ROOT / "backend" / "requirements.txt").read_text()
+    lock = (REPOSITORY_ROOT / "backend" / "requirements.lock").read_text()
+    assert "schemathesis" not in requirements.lower()
+    assert not any(line.startswith("schemathesis==") for line in lock.splitlines())
+    assert (REPOSITORY_ROOT / "backend" / "tool-requirements" / "schemathesis.lock").is_file()

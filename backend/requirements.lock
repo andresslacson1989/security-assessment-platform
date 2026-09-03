@@ -1441,10 +1441,6 @@ rpds-py==2026.6.3 \
     # via
     #   jsonschema
     #   referencing
-schemathesis==3.20.0 \
-    --hash=sha256:52f03b4fa694c5a5e8dd0f606e0afb98644b1989b474f526af6dfb079e501cb4 \
-    --hash=sha256:cc5480e0c60ad82dd5887fa596ff820d08e620239edacb648e6eb099b6a5d2b8
-    # via -r backend/requirements.txt
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
