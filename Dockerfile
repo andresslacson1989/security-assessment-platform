@@ -314,7 +314,7 @@ RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_s
 # provisioned above; the application never needs container-root privileges.
 RUN groupadd --system cyberassess && \
     useradd --system --gid cyberassess --home-dir /nonexistent --shell /usr/sbin/nologin cyberassess && \
-    chown -R cyberassess:cyberassess /app/data /app/backend /app/frontend /opt/cyberassess/tool-venvs /app/run_platform.py /app/run_worker.py
+    chown -R cyberassess:cyberassess /app/data
 USER cyberassess
 
 # Expose Web SOC HUD port

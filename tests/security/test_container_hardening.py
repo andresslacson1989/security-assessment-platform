@@ -30,3 +30,14 @@ def test_runtime_writable_state_is_explicitly_provisioned():
         service = compose["services"][service_name]
         volumes = service["volumes"]
         assert any(str(volume).startswith("./data:/app/data") for volume in volumes)
+
+
+def test_managed_artifacts_are_not_owned_by_runtime_user():
+    """Trust records and executables must remain outside the worker's write set."""
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    ownership_line = next(
+        line for line in dockerfile.splitlines() if "chown -R cyberassess:cyberassess" in line
+    )
+    assert ownership_line.strip() == "chown -R cyberassess:cyberassess /app/data"
+    assert "/app/backend" not in ownership_line
+    assert "/opt/cyberassess/tool-venvs" not in ownership_line
