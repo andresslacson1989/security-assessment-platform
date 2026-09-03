@@ -28,7 +28,6 @@ from app.core.models import (
 
 logger = logging.getLogger("cyberassess.auth")
 
-# Environment & Operational Configuration
 OPERATING_MODE_STR = os.getenv("OPERATING_MODE", "PRODUCTION").upper()
 OPERATING_MODE = OperatingMode.PRODUCTION if OPERATING_MODE_STR == "PRODUCTION" else (
     OperatingMode.DEVELOPMENT if OPERATING_MODE_STR == "DEVELOPMENT" else OperatingMode.TEST
@@ -43,8 +42,6 @@ if not _raw_secret or _raw_secret.strip().lower() in _invalid_secret_values or l
 else:
     JWT_SECRET = _raw_secret.strip()
 
-# This deployment uses one algorithm family and one typed key store. Do not mix
-# symmetric and asymmetric algorithms in the same verification path.
 JWT_ALGORITHM = "HS256"
 ALLOWED_JWT_ALGORITHMS = [JWT_ALGORITHM]
 JWT_ISSUER = "CyberAssess-Control-Plane"
@@ -55,9 +52,9 @@ ACTIVE_KEY_ID = os.getenv("JWT_ACTIVE_KEY_ID", "k-primary")
 JWT_KEY_ROTATION_STORE: Dict[str, str] = {ACTIVE_KEY_ID: JWT_SECRET}
 
 # Tenant session authority is derived from the current authoritative role on
-# every request. `scan:internal` is intentionally absent from every tenant role:
-# internal-network access requires a separately governed capability and must
-# never be obtained merely by logging in as an analyst/developer/admin.
+# every request. Only the tenant ADMIN role receives scan:internal; developers
+# and analysts cannot acquire it by logging in. The SSRF layer still refuses
+# loopback/link-local/metadata/reserved destinations even when this scope exists.
 ROLE_SCOPES: Dict[UserRole, frozenset[str]] = {
     UserRole.VIEWER: frozenset({
         "scan:read",
@@ -79,7 +76,7 @@ ROLE_SCOPES: Dict[UserRole, frozenset[str]] = {
         "report:read", "tool:read",
     }),
     UserRole.ADMIN: frozenset({
-        "scan:create", "scan:read", "scan:cancel", "scan:delete", "scan:repeater",
+        "scan:create", "scan:read", "scan:cancel", "scan:delete", "scan:repeater", "scan:internal",
         "asset:read", "asset:write", "asset:delete",
         "finding:read", "finding:write", "finding:triage", "finding:risk_accept",
         "report:read", "tool:read", "tool:install",
@@ -95,11 +92,7 @@ def scopes_for_user(user: UserProfile) -> List[str]:
 
 
 def restrict_scopes_to_authority(user: UserProfile, requested: Optional[List[str]]) -> List[str]:
-    """Intersect token-carried scopes with current durable role authority.
-
-    This prevents a stale or previously over-privileged bearer token from
-    retaining permissions after the user's authoritative role changes.
-    """
+    """Intersect token-carried scopes with current durable role authority."""
     authority = scopes_for_user(user)
     if authority == ["*"]:
         if not requested:
@@ -125,7 +118,6 @@ def rotate_signing_key(new_kid: str, new_secret: str) -> None:
 
 
 def retire_signing_key(old_kid: str) -> None:
-    """Retire an old verification key while retaining at least one active key."""
     if old_kid in JWT_KEY_ROTATION_STORE and len(JWT_KEY_ROTATION_STORE) > 1:
         JWT_KEY_ROTATION_STORE.pop(old_kid, None)
 
@@ -143,14 +135,12 @@ ANONYMOUS_DEV_USER = UserProfile(
 REVOKED_TOKENS_REGISTRY: set = set()
 API_KEYS_CACHE: Dict[str, Tuple[UserProfile, List[str], float]] = {}
 
-# OWASP Password Storage Cheat Sheet baseline for PBKDF2-HMAC-SHA256.
 PBKDF2_SHA256_ITERATIONS = 600_000
 MIN_SINGLE_FACTOR_PASSWORD_LENGTH = 15
 MAX_PASSWORD_LENGTH = 128
 
 
 def validate_password_strength(password: str) -> Tuple[bool, Optional[str]]:
-    """Validate new single-factor passwords against the platform baseline."""
     if len(password) < MIN_SINGLE_FACTOR_PASSWORD_LENGTH:
         return False, f"Password must be at least {MIN_SINGLE_FACTOR_PASSWORD_LENGTH} characters in length."
     if len(password) > MAX_PASSWORD_LENGTH:
@@ -161,18 +151,18 @@ def validate_password_strength(password: str) -> Tuple[bool, Optional[str]]:
 
 
 def hash_password(password: str, iterations: int = PBKDF2_SHA256_ITERATIONS) -> str:
-    """Hash a password with PBKDF2-HMAC-SHA256 and a unique 128-bit salt."""
     if iterations < PBKDF2_SHA256_ITERATIONS:
         raise ValueError(f"PBKDF2-HMAC-SHA256 requires at least {PBKDF2_SHA256_ITERATIONS} iterations for new hashes.")
     salt = secrets.token_bytes(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    salt_b64 = base64.b64encode(salt).decode("ascii")
-    hash_b64 = base64.b64encode(dk).decode("ascii")
-    return f"pbkdf2_sha256${iterations}${salt_b64}${hash_b64}"
+    return "pbkdf2_sha256$%d$%s$%s" % (
+        iterations,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(dk).decode("ascii"),
+    )
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify current and legacy PBKDF2 hashes in constant time."""
     try:
         parts = hashed.split("$")
         if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
@@ -188,12 +178,20 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
+def password_hash_needs_upgrade(hashed: str) -> bool:
+    """Return whether a valid legacy PBKDF2 record uses an obsolete work factor."""
+    try:
+        algorithm, iteration_text, _, _ = hashed.split("$")
+        return algorithm == "pbkdf2_sha256" and int(iteration_text) < PBKDF2_SHA256_ITERATIONS
+    except Exception:
+        return False
+
+
 def create_access_token(
     user: UserProfile,
     expires_in: int = JWT_EXPIRATION_SECONDS,
     scopes: Optional[List[str]] = None,
 ) -> str:
-    """Generate a signed HS256 JWT whose scopes cannot exceed current authority."""
     now = int(time.time())
     token_scopes = restrict_scopes_to_authority(user, scopes if scopes is not None else scopes_for_user(user))
     payload = {
@@ -216,7 +214,6 @@ def create_access_token(
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:
-    """Validate an HS256 JWT with explicit algorithm, issuer, audience and key ID."""
     if not token or not isinstance(token, str):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token format.", headers={"WWW-Authenticate": "Bearer"})
     if token in REVOKED_TOKENS_REGISTRY:
@@ -262,7 +259,6 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 
 
 def revoke_token(token: str) -> bool:
-    """Durably revoke a JWT before updating the process-local acceleration cache."""
     try:
         payload = decode_access_token(token)
         jti = payload.get("jti")
@@ -312,7 +308,6 @@ def authorize_finding_access(user: UserProfile, finding: CanonicalFinding, actio
 
 
 def authorize_internal_target(user: UserProfile, target_value: str) -> bool:
-    """Return whether this identity carries explicit internal-target authority."""
     scopes = user.scopes or []
     if user.principal_type == PrincipalType.SYSTEM_PRINCIPAL and user.role == UserRole.ADMIN and "*" in scopes:
         return True
@@ -323,7 +318,6 @@ async def get_current_user(
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> UserProfile:
-    """Resolve a database-authoritative bearer or API-key identity."""
     if x_api_key:
         key_hash = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
         from app.core.db import db_manager
@@ -378,7 +372,6 @@ async def get_current_user(
 
 
 def require_permission(required_scope: Optional[str] = None, allowed_roles: Optional[List[UserRole]] = None):
-    """Require both a permitted role (when specified) and explicit credential scope."""
     async def _permission_guard(user: UserProfile = Depends(get_current_user)) -> UserProfile:
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is deactivated.")
