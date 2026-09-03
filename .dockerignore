@@ -18,7 +18,7 @@ htmlcov/
 venv/
 .venv/
 env/
-.env
+.env*
 
 # Test files and historical scan outputs (runtime creates clean /app/data)
 data/scans/*

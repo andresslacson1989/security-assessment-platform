@@ -224,6 +224,10 @@ def resolve_tool_binary(
     return None
 
 
+# Canonical alias
+resolve_binary = resolve_tool_binary
+
+
 async def safe_execute_subprocess(
     cmd: List[str],
     timeout: float = 60.0,
