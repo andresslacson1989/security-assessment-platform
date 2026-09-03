@@ -244,6 +244,81 @@ class ProcessSupervisor:
                 except Exception as fallback_exc:
                     logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
 
+    _SAFE_ENVIRONMENT_KEYS = frozenset({
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "OS",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_ARCHITEW6432",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "TMP",
+        "TEMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PYTHONIOENCODING",
+        "PYTHONUNBUFFERED",
+        "PYTHONPATH",
+        "COMSPEC",
+    })
+
+    @classmethod
+    def sanitize_environment(cls, custom_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """
+        Builds a strictly curated environment for subprocess execution:
+        - Never leaks application secrets (JWT_SECRET, DATABASE_URL, etc.).
+        - Only inherits safe system keys from host.
+        - Applies SCANNER_EGRESS_PROXY if configured; otherwise strips ambient proxy variables.
+        """
+        source = custom_env if custom_env is not None else os.environ
+        clean: Dict[str, str] = {}
+        for k, v in source.items():
+            k_upper = str(k).upper()
+            if k_upper in cls._SAFE_ENVIRONMENT_KEYS:
+                if any(sec in k_upper for sec in ["SECRET", "PASSWORD", "DATABASE", "REDIS", "KEY", "TOKEN", "CREDENTIAL"]):
+                    continue
+                clean[str(k)] = str(v)
+
+        if custom_env is not None:
+            for k, v in custom_env.items():
+                k_upper = str(k).upper()
+                if not any(sec in k_upper for sec in ["SECRET", "PASSWORD", "DATABASE", "REDIS"]):
+                    clean[str(k)] = str(v)
+
+        scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
+        if scanner_proxy:
+            clean["HTTP_PROXY"] = scanner_proxy
+            clean["HTTPS_PROXY"] = scanner_proxy
+            clean["ALL_PROXY"] = scanner_proxy
+            clean["http_proxy"] = scanner_proxy
+            clean["https_proxy"] = scanner_proxy
+            clean["all_proxy"] = scanner_proxy
+        else:
+            for p in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
+                clean.pop(p, None)
+
+        return clean
+
     async def execute(
         self,
         cmd: List[str],
@@ -342,13 +417,14 @@ class ProcessSupervisor:
                         "",
                         "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
                     )
+                clean_env = self.sanitize_environment(env)
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=cwd,
-                    env=env,
+                    env=clean_env,
                     creationflags=creationflags,
                     start_new_session=start_new_session,
                 )

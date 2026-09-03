@@ -81,6 +81,7 @@ services:
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
+      SCANNER_EGRESS_PROXY: "${SCANNER_EGRESS_PROXY:-}"
     volumes:
       - ./data:/app/data
     networks:
@@ -129,6 +130,7 @@ services:
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
+      SCANNER_EGRESS_PROXY: "${SCANNER_EGRESS_PROXY:-}"
     volumes:
       - ./data:/app/data
     networks:

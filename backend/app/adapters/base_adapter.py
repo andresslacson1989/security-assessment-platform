@@ -57,7 +57,7 @@ class BaseToolAdapter(ABC):
         """Return a server-governed environment without ambient secrets/egress settings."""
         source = supplied if supplied is not None else os.environ
         allowed_sensitive = {str(key).upper() for key in (sensitive_keys or set())}
-        return {
+        env = {
             str(key): str(value)
             for key, value in source.items()
             if (
@@ -66,6 +66,18 @@ class BaseToolAdapter(ABC):
             )
             and value is not None
         }
+        scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
+        if scanner_proxy:
+            env["HTTP_PROXY"] = scanner_proxy
+            env["HTTPS_PROXY"] = scanner_proxy
+            env["ALL_PROXY"] = scanner_proxy
+            env["http_proxy"] = scanner_proxy
+            env["https_proxy"] = scanner_proxy
+            env["all_proxy"] = scanner_proxy
+        else:
+            for p in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
+                env.pop(p, None)
+        return env
 
     @staticmethod
     def _state_for_process_status(status: Optional[ProcessExecutionStatus]) -> Optional[NormalizedExecutionState]:
