@@ -1810,5 +1810,5 @@ class TestCISBenchmarkAdapters:
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_prowler_lines, ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
             assert len(findings) == 1
-            assert findings[0].check_id == "CLOUD-CIS-001"
+            assert findings[0].check_id == "IAC-CLOUD-001"
             assert len(recorded_cis) == 1

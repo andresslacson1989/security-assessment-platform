@@ -281,7 +281,7 @@ class ProwlerAdapter(BaseToolAdapter):
                         scan_id=scan_id,
                         engine="infra_iac",
                         source_tool="prowler",
-                        check_id="CLOUD-CIS-001",
+                        check_id="IAC-CLOUD-001",
                         category="Cloud Compliance",
                         title=f"CIS Cloud Benchmark Failure: {check_title}",
                         severity=finding_severity,
@@ -292,7 +292,7 @@ class ProwlerAdapter(BaseToolAdapter):
                         remediation=remediation,
                         references=["https://github.com/prowler-cloud/prowler"],
                         evidence=evidence,
-                        fingerprint=calculate_fingerprint("CLOUD-CIS-001", f"{service_name}:{resource_id}", check_id),
+                        fingerprint=calculate_fingerprint("IAC-CLOUD-001", f"{service_name}:{resource_id}", check_id),
                     )
                     findings.append(finding)
                     await emit_finding(finding)
