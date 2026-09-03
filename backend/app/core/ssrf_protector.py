@@ -17,34 +17,34 @@ import secrets
 from typing import Any, List, Tuple, Optional
 from app.core.version import APP_VERSION
 
-
-# Blocked IPv4 and IPv6 Networks
-BLOCKED_NETWORKS = [
-    # IPv4 Loopback & Unspecified
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("0.0.0.0/8"),
-    # IPv4 RFC 1918 Private Subnets
+# Private address space that may be assessed only with explicit scan:internal authority.
+INTERNAL_ALLOWED_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
-    # IPv4 Link-Local & Cloud Metadata (AWS, GCP, Azure, OpenStack 169.254.169.254)
+    ipaddress.ip_network("fc00::/7"),
+)
+
+# These destinations are never made reachable by scan:internal. A future need
+# for any of them requires a separate capability, audit trail, and threat model.
+NEVER_ALLOWED_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("169.254.0.0/16"),
-    # Carrier-Grade NAT (RFC 6598)
     ipaddress.ip_network("100.64.0.0/10"),
-    # Multicast & Reserved
     ipaddress.ip_network("224.0.0.0/4"),
     ipaddress.ip_network("240.0.0.0/4"),
-    # IPv6 Loopback & Unspecified
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("::/128"),
-    # IPv6 Link-Local
     ipaddress.ip_network("fe80::/10"),
-    # IPv6 Unique Local Unicast (RFC 4193)
-    ipaddress.ip_network("fc00::/7"),
-    # IPv6 Multicast
     ipaddress.ip_network("ff00::/8"),
-]
+)
 
+# Compatibility alias used by existing tests/contracts. It denotes all
+# non-public networks, not the set permitted by an internal-target grant.
+BLOCKED_NETWORKS = list(NEVER_ALLOWED_NETWORKS) + list(INTERNAL_ALLOWED_NETWORKS)
+
+# Named metadata/loopback targets are forbidden regardless of scan:internal.
 BLOCKED_HOSTNAMES = {
     "localhost",
     "localhost.localdomain",
@@ -65,40 +65,18 @@ _EPHEMERAL_GATEWAY_SEAL_KEY = secrets.token_bytes(32)
 
 
 def _gateway_seal_key() -> bytes:
-    """Return a key dedicated to validated-target authorization seals.
-
-    Production deployments should provide TARGET_GATEWAY_SEAL_SECRET.  The
-    JWT secret is an explicitly derived fallback so key material is separated
-    by domain; the ephemeral fallback keeps test/development processes
-    self-contained while production authentication still requires a durable
-    configured secret.
-    """
     configured = os.getenv("TARGET_GATEWAY_SEAL_SECRET") or os.getenv("JWT_SECRET")
     if configured and configured.strip():
-        return hmac.new(
-            configured.strip().encode("utf-8"),
-            _GATEWAY_SEAL_DOMAIN,
-            hashlib.sha256,
-        ).digest()
+        return hmac.new(configured.strip().encode("utf-8"), _GATEWAY_SEAL_DOMAIN, hashlib.sha256).digest()
     return _EPHEMERAL_GATEWAY_SEAL_KEY
 
 
-def _compute_gateway_seal(
-    target_id: str,
-    authorization_decision_id: str,
-    policy_version: str,
-    context_digest: str,
-) -> str:
-    """Compute the authenticated integrity seal for a validated target."""
-    payload = (
-        f"GATEWAY_SEAL:{target_id}:{authorization_decision_id}:"
-        f"{policy_version}:{context_digest}"
-    ).encode("utf-8")
+def _compute_gateway_seal(target_id: str, authorization_decision_id: str, policy_version: str, context_digest: str) -> str:
+    payload = f"GATEWAY_SEAL:{target_id}:{authorization_decision_id}:{policy_version}:{context_digest}".encode("utf-8")
     return hmac.new(_gateway_seal_key(), payload, hashlib.sha256).hexdigest()
 
 
 def _validated_target_context_digest(validated_target: Any) -> str:
-    """Return the digest of authorization data bound into the gateway seal."""
     context = getattr(validated_target, "authorization_context", None)
     if not isinstance(context, dict):
         raise SSRFProtectionError("Validated target authorization context is invalid.")
@@ -111,45 +89,28 @@ def _validated_target_context_digest(validated_target: Any) -> str:
         "authorized_scope": list(getattr(validated_target, "authorized_scope", [])),
         "workspace_id": getattr(validated_target, "workspace_id", None) or "",
     }
-    return hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def validate_validated_target(validated_target: Any) -> Any:
-    """Re-validate the gateway-issued target identity immediately before use."""
     from app.core.models import ValidatedTarget, TargetType
 
     if not isinstance(validated_target, ValidatedTarget):
         raise SSRFProtectionError("Execution requires a gateway-issued ValidatedTarget instance.")
-
     required_strings = (
-        "target_id",
-        "authorization_decision_id",
-        "integrity_seal",
-        "organization_id",
-        "canonical_value",
-        "selected_destination",
-        "policy_version",
+        "target_id", "authorization_decision_id", "integrity_seal", "organization_id",
+        "canonical_value", "selected_destination", "policy_version",
     )
-    if any(
-        not isinstance(getattr(validated_target, field, None), str)
-        or not getattr(validated_target, field)
-        for field in required_strings
-    ):
+    if any(not isinstance(getattr(validated_target, field, None), str) or not getattr(validated_target, field) for field in required_strings):
         raise SSRFProtectionError("Validated target is missing required identity fields.")
     if validated_target.policy_version != APP_VERSION:
         raise SSRFProtectionError("Validated target policy version is no longer current.")
 
-    expected_target_id = hashlib.sha256(
-        f"{validated_target.canonical_value}:{validated_target.selected_destination}".encode("utf-8")
-    ).hexdigest()
+    expected_target_id = hashlib.sha256(f"{validated_target.canonical_value}:{validated_target.selected_destination}".encode("utf-8")).hexdigest()
     if not hmac.compare_digest(validated_target.target_id, expected_target_id):
         raise SSRFProtectionError("Validated target identity does not match its canonical destination.")
-
     expected_decision_id = hashlib.sha256(
-        f"{validated_target.organization_id}:{validated_target.project_id or ''}:{validated_target.asset_id or ''}:"
-        f"{validated_target.target_id}:{validated_target.policy_version}".encode("utf-8")
+        f"{validated_target.organization_id}:{validated_target.project_id or ''}:{validated_target.asset_id or ''}:{validated_target.target_id}:{validated_target.policy_version}".encode("utf-8")
     ).hexdigest()
     if not hmac.compare_digest(validated_target.authorization_decision_id, expected_decision_id):
         raise SSRFProtectionError("Validated target authorization identity is invalid.")
@@ -190,20 +151,15 @@ class ValidatedTargetTransport(httpx.AsyncBaseTransport):
     def __init__(self, validated_target: Any):
         self._validated_target = validate_validated_target(validated_target)
         self._transport = httpx.AsyncHTTPTransport(retries=0, verify=True, trust_env=False)
-        self._transport._pool._network_backend = _PinnedNetworkBackend(
-            str(self._validated_target.selected_destination)
-        )
+        self._transport._pool._network_backend = _PinnedNetworkBackend(str(self._validated_target.selected_destination))
         raw_value = str(self._validated_target.canonical_value)
         parsed = urllib.parse.urlsplit(raw_value if "://" in raw_value else f"https://{raw_value}")
         self._authorized_host = (parsed.hostname or "").lower().strip("[]")
 
     async def handle_async_request(self, request: Any) -> Any:
         request_host = request.url.host.lower().strip("[]")
-        if request_host != self._authorized_host and request_host != str(
-            getattr(self._validated_target, "selected_destination", "")
-        ).lower().strip("[]"):
+        if request_host != self._authorized_host and request_host != str(getattr(self._validated_target, "selected_destination", "")).lower().strip("[]"):
             raise SSRFProtectionError(f"Redirect or request escaped validated origin: {request.url}")
-
         if not getattr(self._validated_target, "selected_destination", ""):
             raise SSRFProtectionError("Validated target has no selected destination.")
         request.headers["host"] = self._authorized_host
@@ -214,50 +170,34 @@ class ValidatedTargetTransport(httpx.AsyncBaseTransport):
 
 
 class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
-    """Connect to the selected address; httpcore retains the original origin for TLS SNI."""
-
     def __init__(self, destination: str):
         self._destination = destination
         self._delegate = httpcore.AnyIOBackend()
 
     async def connect_tcp(self, host: str, port: int, timeout: float | None = None, local_address: str | None = None, socket_options: Any = None) -> Any:
-        return await self._delegate.connect_tcp(
-            self._destination,
-            port,
-            timeout=timeout,
-            local_address=local_address,
-            socket_options=socket_options,
-        )
+        return await self._delegate.connect_tcp(self._destination, port, timeout=timeout, local_address=local_address, socket_options=socket_options)
 
 
 def bind_url_to_validated_target(url: str, validated_target: Any) -> Tuple[str, str]:
-    """Bind an HTTP URL to the gateway-selected address and retain its Host name."""
     validated_target = validate_validated_target(validated_target)
     parsed = urllib.parse.urlsplit(url.strip())
     host = parsed.hostname
     selected = getattr(validated_target, "selected_destination", None)
     if not host or not selected:
         raise SSRFProtectionError("Validated target is missing a selected destination or hostname.")
-
     port = parsed.port
     if ":" in selected and not selected.startswith("["):
         selected = f"[{selected}]"
-    bound_netloc = selected
-    if port:
-        bound_netloc = f"{bound_netloc}:{port}"
-    bound_url = urllib.parse.urlunsplit((parsed.scheme, bound_netloc, parsed.path, parsed.query, parsed.fragment))
-    return bound_url, host
+    bound_netloc = f"{selected}:{port}" if port else selected
+    return urllib.parse.urlunsplit((parsed.scheme, bound_netloc, parsed.path, parsed.query, parsed.fragment)), host
 
 
 def is_url_in_validated_origin(url: str, validated_target: Any) -> bool:
-    """Return whether an observed URL remains within the validated web origin."""
     try:
         validated_target = validate_validated_target(validated_target)
         candidate = urllib.parse.urlsplit(str(url).strip())
         canonical_raw = str(getattr(validated_target, "canonical_value", ""))
-        canonical = urllib.parse.urlsplit(
-            canonical_raw if "://" in canonical_raw else f"https://{canonical_raw}"
-        )
+        canonical = urllib.parse.urlsplit(canonical_raw if "://" in canonical_raw else f"https://{canonical_raw}")
         candidate_host = (candidate.hostname or "").lower().strip("[]")
         canonical_host = (canonical.hostname or "").lower().strip("[]")
         if not candidate_host or candidate_host != canonical_host:
@@ -271,129 +211,99 @@ def is_url_in_validated_origin(url: str, validated_target: Any) -> bool:
         return False
 
 
-def is_ip_allowed(ip_str: str) -> Tuple[bool, Optional[str]]:
-    """
-    Evaluates whether an IPv4 or IPv6 address is safe for outbound scanning.
-    Returns (True, None) if allowed, or (False, reason) if blocked.
-    """
+def is_ip_allowed(ip_str: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
+    """Evaluate an IP against public/private and never-allowed destination policy."""
     try:
         ip_obj = ipaddress.ip_address(ip_str.strip())
     except ValueError:
         return False, f"Invalid IP address format: '{ip_str}'"
 
-    # Fast boolean checks from stdlib
+    # Never-allowed classes are evaluated before private authorization because
+    # Python's is_private classification intentionally covers some non-global
+    # special-use space too broadly for an SSRF privilege decision.
     if ip_obj.is_loopback:
         return False, f"Loopback address '{ip_str}' is forbidden."
-    if ip_obj.is_private:
-        return False, f"Private intranet address '{ip_str}' is forbidden."
+    if ip_obj.is_unspecified:
+        return False, f"Unspecified address '{ip_str}' is forbidden."
     if ip_obj.is_link_local:
-        return False, f"Link-local / Cloud metadata address '{ip_str}' is forbidden."
+        return False, f"Link-local / cloud metadata address '{ip_str}' is forbidden."
     if ip_obj.is_multicast:
         return False, f"Multicast address '{ip_str}' is forbidden."
     if ip_obj.is_reserved:
         return False, f"Reserved address '{ip_str}' is forbidden."
-    if ip_obj.is_unspecified:
-        return False, f"Unspecified address '{ip_str}' is forbidden."
+    for network in NEVER_ALLOWED_NETWORKS:
+        if ip_obj in network:
+            return False, f"IP '{ip_str}' falls within forbidden network '{network}'."
 
-    # Comprehensive CIDR containment check
-    for net in BLOCKED_NETWORKS:
-        if ip_obj in net:
-            return False, f"IP '{ip_str}' falls within blocked network '{net}'."
+    for network in INTERNAL_ALLOWED_NETWORKS:
+        if ip_obj in network:
+            if allow_internal:
+                return True, None
+            return False, f"Private intranet address '{ip_str}' requires explicit internal-target authorization."
 
+    # Reject any remaining non-global special-use address that is not one of
+    # the explicitly admitted private networks above.
+    if not ip_obj.is_global:
+        return False, f"Non-global special-use address '{ip_str}' is forbidden."
     return True, None
 
 
 def resolve_hostname_ips(hostname: str) -> List[str]:
-    """
-    Resolves hostname to all corresponding IPv4 and IPv6 addresses.
-    """
     try:
         addr_info = socket.getaddrinfo(hostname, None)
-        ips = list(dict.fromkeys(item[4][0] for item in addr_info if item and item[4]))
-        return ips
+        return list(dict.fromkeys(item[4][0] for item in addr_info if item and item[4]))
     except socket.gaierror:
         return []
 
 
+def _validate_hostname_resolution(hostname: str, allow_internal: bool) -> Tuple[bool, Optional[str]]:
+    resolved_ips = resolve_hostname_ips(hostname)
+    if not resolved_ips:
+        return False, f"Target hostname '{hostname}' failed DNS resolution or does not exist."
+    for resolved_ip in resolved_ips:
+        allowed, reason = is_ip_allowed(resolved_ip, allow_internal=allow_internal)
+        if not allowed:
+            return False, f"Resolved IP '{resolved_ip}' for hostname '{hostname}' is blocked: {reason}"
+    return True, None
+
+
 def validate_target_url(url: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
-    """
-    Validates that a URL is well-formed, uses http/https, and does not target forbidden internal IPs.
-    If allow_internal is True (Admin override), internal private IPs are permitted.
-    """
     if not url or not isinstance(url, str):
         return False, "Target URL cannot be empty."
-
     parsed = urllib.parse.urlparse(url.strip())
     if parsed.scheme.lower() not in ("http", "https"):
         return False, f"Scheme '{parsed.scheme}' is disallowed. Must be 'http' or 'https'."
-
     hostname = parsed.hostname
     if not hostname:
         return False, "Target URL missing valid hostname."
-
     hostname_lower = hostname.lower().strip("[]")
 
-    if not allow_internal:
-        # Check forbidden hostnames
-        if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
-            return False, f"Target hostname '{hostname}' is a reserved internal/metadata name."
+    if hostname_lower in BLOCKED_HOSTNAMES:
+        return False, f"Target hostname '{hostname}' is a forbidden loopback/metadata name."
+    if not allow_internal and (hostname_lower.endswith(".internal") or hostname_lower.endswith(".local")):
+        return False, f"Target hostname '{hostname}' requires explicit internal-target authorization."
 
-        # Check direct IP literals
-        try:
-            ip_obj = ipaddress.ip_address(hostname_lower)
-            allowed, reason = is_ip_allowed(str(ip_obj))
-            if not allowed:
-                return False, reason
-            return True, None
-        except ValueError:
-            pass  # Not an IP literal; proceed to DNS resolution
-
-        # Resolve hostname and check all IPs
-        resolved_ips = resolve_hostname_ips(hostname_lower)
-        if not resolved_ips:
-            # Contract 01 / 08 Invariant: Unresolved target MUST fail closed.
-            return False, f"Target hostname '{hostname}' failed DNS resolution or does not exist."
-
-        for ip in resolved_ips:
-            allowed, reason = is_ip_allowed(ip)
-            if not allowed:
-                return False, f"Resolved IP '{ip}' for hostname '{hostname}' is blocked: {reason}"
-
-    return True, None
+    try:
+        ip_obj = ipaddress.ip_address(hostname_lower)
+    except ValueError:
+        return _validate_hostname_resolution(hostname_lower, allow_internal)
+    return is_ip_allowed(str(ip_obj), allow_internal=allow_internal)
 
 
 def validate_target_domain(domain: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
-    """
-    Validates a DOMAIN target input against SSRF and internal address restrictions.
-    """
     if not domain or not isinstance(domain, str):
         return False, "Target domain cannot be empty."
-    
     clean_domain = domain.strip().lower().split(":")[0]
-    if not allow_internal:
-        if clean_domain in BLOCKED_HOSTNAMES or clean_domain.endswith(".internal") or clean_domain.endswith(".local"):
-            return False, f"Target domain '{domain}' is a reserved internal/metadata name."
-        
-        resolved_ips = resolve_hostname_ips(clean_domain)
-        if not resolved_ips:
-            return False, f"Target domain '{clean_domain}' failed DNS resolution."
-        
-        for ip in resolved_ips:
-            allowed, reason = is_ip_allowed(ip)
-            if not allowed:
-                return False, f"Domain resolved to blocked address '{ip}': {reason}"
-                
-    return True, None
+    if clean_domain in BLOCKED_HOSTNAMES:
+        return False, f"Target domain '{domain}' is a forbidden loopback/metadata name."
+    if not allow_internal and (clean_domain.endswith(".internal") or clean_domain.endswith(".local")):
+        return False, f"Target domain '{domain}' requires explicit internal-target authorization."
+    return _validate_hostname_resolution(clean_domain, allow_internal)
 
 
 def validate_target_ip(ip_str: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
-    """
-    Validates an IP target input against SSRF and private network boundaries.
-    Correctly handles IPv4, standard IPv6, and bracketed host:port notation.
-    """
     if not ip_str or not isinstance(ip_str, str):
         return False, "Target IP cannot be empty."
-    
     clean_ip = ip_str.strip()
     if clean_ip.startswith("["):
         if "]" in clean_ip:
@@ -401,61 +311,37 @@ def validate_target_ip(ip_str: str, allow_internal: bool = False) -> Tuple[bool,
         else:
             clean_ip = clean_ip.strip("[]")
     elif clean_ip.count(":") == 1:
-        # IPv4 with port e.g. 192.168.1.1:80
         clean_ip = clean_ip.split(":")[0]
-
-    if allow_internal:
-        try:
-            ipaddress.ip_address(clean_ip)
-            return True, None
-        except ValueError:
-            return False, f"Invalid IP address format: '{clean_ip}'"
-            
-    return is_ip_allowed(clean_ip)
+    return is_ip_allowed(clean_ip, allow_internal=allow_internal)
 
 
-def validate_target_security(
-    target_type: str,
-    target_value: str,
-    allow_internal: bool = False,
-) -> Tuple[bool, Optional[str]]:
-    """
-    Authoritative single-pipeline security validation for all target and asset types:
-    TargetType: URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST
-    AssetType: WEB_APPLICATION, API_ENDPOINT, DOMAIN, IP_ADDRESS, GIT_REPOSITORY,
-               CONTAINER_IMAGE, KUBERNETES_CLUSTER, CLOUD_ACCOUNT, IAC_TEMPLATE
-    Ensures zero bypass routes around the security gateway.
-    """
+def validate_target_security(target_type: str, target_value: str, allow_internal: bool = False) -> Tuple[bool, Optional[str]]:
     t_type = target_type.value if hasattr(target_type, "value") else str(target_type).upper()
     val = target_value.strip()
-
     if t_type == "URL":
         return validate_target_url(val, allow_internal=allow_internal)
-    elif t_type in ("WEB_APPLICATION", "API_ENDPOINT"):
+    if t_type in ("WEB_APPLICATION", "API_ENDPOINT"):
         if not val.startswith("http://") and not val.startswith("https://") and "://" not in val:
             if "/" not in val and ":" not in val and "." in val:
                 return validate_target_domain(val, allow_internal=allow_internal)
             val = f"https://{val}"
         return validate_target_url(val, allow_internal=allow_internal)
-    elif t_type in ("DOMAIN",):
+    if t_type == "DOMAIN":
         return validate_target_domain(val, allow_internal=allow_internal)
-    elif t_type in ("IP", "IP_ADDRESS"):
+    if t_type in ("IP", "IP_ADDRESS"):
         return validate_target_ip(val, allow_internal=allow_internal)
-    elif t_type in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST", "IAC_TEMPLATE"):
+    if t_type in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST", "IAC_TEMPLATE"):
         from app.core.path_sandbox import validate_path_sandbox
         return validate_path_sandbox(val)
-    elif t_type in ("GIT_REPOSITORY",):
+    if t_type == "GIT_REPOSITORY":
         if val.startswith("http://") or val.startswith("https://"):
             return validate_target_url(val, allow_internal=allow_internal)
-        elif val.startswith("git@"):
-            # SSH format: git@github.com:org/repo.git -> extract domain
+        if val.startswith("git@"):
             parts = val.split("@", 1)[1].split(":", 1)[0]
             return validate_target_domain(parts, allow_internal=allow_internal)
-        else:
-            from app.core.path_sandbox import validate_path_sandbox
-            return validate_path_sandbox(val)
-    elif t_type in ("CONTAINER_IMAGE", "KUBERNETES_CLUSTER", "CLOUD_ACCOUNT"):
-        # Safe format check: ensure no control chars or shell injection attempts
+        from app.core.path_sandbox import validate_path_sandbox
+        return validate_path_sandbox(val)
+    if t_type in ("CONTAINER_IMAGE", "KUBERNETES_CLUSTER", "CLOUD_ACCOUNT"):
         if any(c in val for c in [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\0"]):
             return False, f"Dangerous characters detected in {t_type} specification: '{val}'"
         if t_type == "KUBERNETES_CLUSTER" and (val.startswith("http://") or val.startswith("https://")):
@@ -469,23 +355,16 @@ def validate_target_security(
             if provider.lower() != "kubernetes" or not separator or not identifier:
                 return False, "Kubernetes targets must use kubernetes:// followed by a cluster identifier or API endpoint."
         return True, None
-    else:
-        return False, f"Unsupported target type: '{target_type}'"
+    return False, f"Unsupported target type: '{target_type}'"
 
 
 def assert_safe_url(url: str, allow_internal: bool = False) -> None:
-    """
-    Convenience function that raises SSRFProtectionError if the URL fails validation.
-    """
     allowed, reason = validate_target_url(url, allow_internal=allow_internal)
     if not allowed:
         raise SSRFProtectionError(reason or "SSRF validation failed.")
 
 
 def assert_safe_target(target_type: str, target_value: str, allow_internal: bool = False) -> None:
-    """
-    Authoritatively asserts safety of any target type, raising SSRFProtectionError or PathTraversalError on failure.
-    """
     allowed, reason = validate_target_security(target_type, target_value, allow_internal=allow_internal)
     if not allowed:
         raise SSRFProtectionError(reason or "Target validation failed security policy.")
@@ -502,25 +381,16 @@ def create_validated_target(
     state_changing_granted: bool = False,
     active_probing_granted: bool = False,
 ) -> Any:
-    """
-    Contract 01 §5.1, Contract 02 §3, Contract 08 §12.1 & Contract 09 §1.1:
-    Authoritative single-pipeline validation gate producing an immutable ValidatedTarget object.
-    Fails closed if the target violates SSRF, DNS, or workspace confinement policies.
-    """
-    import hashlib
     from app.core.models import ValidatedTarget, TargetType, utc_now
 
     if (active_probing_granted or state_changing_granted) and not asset_id:
-        raise SSRFProtectionError(
-            "Intrusive or state-changing authorization requires an explicitly authorized inventory asset."
-        )
-    
+        raise SSRFProtectionError("Intrusive or state-changing authorization requires an explicitly authorized inventory asset.")
+
     t_val = raw_target.value if hasattr(raw_target, "value") else str(raw_target)
     t_type = raw_target.type if hasattr(raw_target, "type") else TargetType.URL
     t_type_str = t_type.value if hasattr(t_type, "value") else str(t_type)
-    
     assert_safe_target(t_type_str, t_val, allow_internal=allow_internal)
-    
+
     canonical_val = t_val.strip()
     resolved_ips: List[str] = []
     selected_dest = ""
@@ -551,35 +421,28 @@ def create_validated_target(
             except ValueError:
                 pass
     elif t_type_str in ("LOCAL_PATH", "DOCKERFILE", "IAC_MANIFEST"):
-        import os
         selected_dest = os.path.abspath(canonical_val)
     elif t_type_str in ("CLOUD_ACCOUNT", "KUBERNETES_CLUSTER"):
         selected_dest = canonical_val
 
-    # The authoritative constructor performs a second DNS lookup after the
-    # initial input gate. Re-apply the address policy here so a DNS answer
-    # changing between those two points cannot become the pinned destination.
     if t_type_str in ("URL", "DOMAIN"):
         if not resolved_ips:
             raise SSRFProtectionError("Target hostname did not resolve at validated-target construction time.")
         for resolved_ip in resolved_ips:
-            try:
-                ipaddress.ip_address(resolved_ip)
-            except ValueError as exc:
-                raise SSRFProtectionError("Target hostname returned an invalid address.") from exc
-            if not allow_internal:
-                allowed, reason = is_ip_allowed(resolved_ip)
-                if not allowed:
-                    raise SSRFProtectionError(
-                        f"Resolved IP '{resolved_ip}' for target is blocked: {reason}"
-                    )
+            allowed, reason = is_ip_allowed(resolved_ip, allow_internal=allow_internal)
+            if not allowed:
+                raise SSRFProtectionError(f"Resolved IP '{resolved_ip}' for target is blocked: {reason}")
+    elif t_type_str == "IP":
+        allowed, reason = is_ip_allowed(selected_dest, allow_internal=allow_internal)
+        if not allowed:
+            raise SSRFProtectionError(reason or "Selected target IP violates SSRF policy.")
 
     auth_ctx = {
         "allow_internal": allow_internal,
         "validated_by": "assert_safe_target",
         "active_probing_granted": bool(active_probing_granted),
         "state_changing_granted": bool(state_changing_granted),
-        "dns_zone_authorized": (t_type_str == "DOMAIN"),
+        "dns_zone_authorized": t_type_str == "DOMAIN",
         "cloud_provider": (
             canonical_val.split("://", 1)[0].lower()
             if t_type_str in ("CLOUD_ACCOUNT", "KUBERNETES_CLUSTER") and "://" in canonical_val
@@ -587,9 +450,6 @@ def create_validated_target(
         ),
     }
 
-    # Compute cryptographic identity digests per Contract 09 §1.1. The seal
-    # also binds authorization context so nested mutable data cannot be changed
-    # after construction without failing the next execution-boundary check.
     policy_version = APP_VERSION
     target_id = hashlib.sha256(f"{canonical_val}:{selected_dest}".encode("utf-8")).hexdigest()
     auth_decision_id = hashlib.sha256(
@@ -604,15 +464,8 @@ def create_validated_target(
         "authorized_scope": list(authorized_scope or []),
         "workspace_id": workspace_id or "",
     }
-    context_digest = hashlib.sha256(
-        json.dumps(context_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    integrity_seal = _compute_gateway_seal(
-        target_id,
-        auth_decision_id,
-        policy_version,
-        context_digest,
-    )
+    context_digest = hashlib.sha256(json.dumps(context_material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    integrity_seal = _compute_gateway_seal(target_id, auth_decision_id, policy_version, context_digest)
 
     return ValidatedTarget(
         target_id=target_id,

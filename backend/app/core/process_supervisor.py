@@ -5,7 +5,9 @@ Tracks, bounds, and recursively terminates subprocess trees on cancellation or t
 
 from __future__ import annotations
 import asyncio
+import contextvars
 import ctypes
+from contextlib import contextmanager
 from ctypes import wintypes
 import logging
 import os
@@ -14,15 +16,39 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from enum import Enum
-from typing import Callable, NamedTuple, Optional, Set
+from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
+# Propagates through asyncio task creation and asyncio.to_thread. Queue-owned
+# scans set this to scan_id so every external child launched by that scan shares
+# one lifecycle boundary without sharing it with another scan/tenant.
+_CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "cyberassess_process_execution_context",
+    default=None,
+)
+
+
+@contextmanager
+def process_execution_context(context_id: str) -> Iterator[None]:
+    """Bind supervised subprocesses created in this context to one owner."""
+    normalized = str(context_id or "").strip()
+    if not normalized:
+        raise ValueError("Process execution context ID must be non-empty.")
+    token = _CURRENT_EXECUTION_CONTEXT.set(normalized)
+    try:
+        yield
+    finally:
+        _CURRENT_EXECUTION_CONTEXT.reset(token)
+
+
+def current_execution_context_id() -> Optional[str]:
+    return _CURRENT_EXECUTION_CONTEXT.get()
+
 
 class ProcessExecutionStatus(str, Enum):
-    """Typed outcome for a supervised subprocess invocation."""
-
     COMPLETED = "COMPLETED"
     SECURITY_REJECTED = "SECURITY_REJECTED"
     TIMED_OUT = "TIMED_OUT"
@@ -33,8 +59,6 @@ class ProcessExecutionStatus(str, Enum):
 
 
 class ProcessExecutionResult(NamedTuple):
-    """Three-value-compatible process result with a typed execution status."""
-
     returncode: int
     stdout: str
     stderr: str
@@ -57,32 +81,63 @@ class ProcessExecutionResult(NamedTuple):
 
 
 class ProcessSupervisor:
-    """
-    Central process supervisor tracking running external tool subprocesses,
-    enforcing bounded execution timeouts, memory output quotas, and guaranteeing
-    clean process tree termination on cancellation or timeout.
-    """
+    """Central, owner-scoped external process supervisor."""
 
-    _instance: Optional[ProcessSupervisor] = None
+    _instance: Optional["ProcessSupervisor"] = None
 
     def __init__(self):
-        self._active_pids: Set[int] = set()
+        self._active_pids_by_context: Dict[str, Set[int]] = {}
+        self._pid_context: Dict[int, str] = {}
+        self._registry_lock = threading.RLock()
 
     @classmethod
-    def get_instance(cls) -> ProcessSupervisor:
+    def get_instance(cls) -> "ProcessSupervisor":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    def _register_pid(self, pid: int) -> None:
-        self._active_pids.add(pid)
+    @property
+    def active_pids(self) -> Set[int]:
+        """Return a snapshot for diagnostics/tests; callers cannot mutate state."""
+        with self._registry_lock:
+            return set(self._pid_context)
+
+    def active_pids_for_context(self, context_id: str) -> Set[int]:
+        with self._registry_lock:
+            return set(self._active_pids_by_context.get(context_id, set()))
+
+    def _register_pid(self, pid: int, context_id: str) -> None:
+        with self._registry_lock:
+            self._pid_context[pid] = context_id
+            self._active_pids_by_context.setdefault(context_id, set()).add(pid)
 
     def _unregister_pid(self, pid: int) -> None:
-        self._active_pids.discard(pid)
+        with self._registry_lock:
+            context_id = self._pid_context.pop(pid, None)
+            if context_id is None:
+                return
+            pids = self._active_pids_by_context.get(context_id)
+            if pids is not None:
+                pids.discard(pid)
+                if not pids:
+                    self._active_pids_by_context.pop(context_id, None)
+
+    def kill_context(self, context_id: str) -> None:
+        """Terminate only process trees owned by one execution context."""
+        with self._registry_lock:
+            pids = list(self._active_pids_by_context.get(context_id, set()))
+        for pid in pids:
+            self.kill_process_tree(pid)
+
+    def kill_all_processes(self) -> None:
+        """Explicit service-shutdown primitive; never used for single-scan cancel."""
+        with self._registry_lock:
+            pids = list(self._pid_context)
+        for pid in pids:
+            self.kill_process_tree(pid)
 
     @staticmethod
     def _windows_descendant_pids(root_pid: int) -> list[int]:
-        """Return a snapshot of descendants using the Windows process table."""
         if sys.platform != "win32":
             return []
 
@@ -126,7 +181,6 @@ class ProcessSupervisor:
 
     @staticmethod
     def _windows_terminate_pid(pid: int) -> None:
-        """Terminate one Windows process by PID when taskkill misses a race."""
         process = ctypes.windll.kernel32.OpenProcess(0x0001 | 0x1000, False, pid)
         if process:
             try:
@@ -136,17 +190,10 @@ class ProcessSupervisor:
 
     @staticmethod
     def kill_process_tree(pid: int) -> None:
-        """
-        Recursively terminates a process and all its child/grandchild descendants.
-        """
         if not pid or pid <= 0:
             return
-
         if sys.platform == "win32":
             try:
-                # Capture descendants before terminating the root.  This
-                # closes the interval where taskkill /T can miss a child that
-                # was created immediately before the timeout boundary.
                 descendants = ProcessSupervisor._windows_descendant_pids(pid)
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -157,12 +204,12 @@ class ProcessSupervisor:
                 for descendant in reversed(descendants):
                     ProcessSupervisor._windows_terminate_pid(descendant)
                 ProcessSupervisor._windows_terminate_pid(pid)
-            except Exception as e:
-                logger.debug(f"Failed to taskkill PID +{pid}: {e}")
+            except Exception as exc:
+                logger.debug("Windows process-tree termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
                 try:
                     os.kill(pid, signal.SIGTERM)
-                except Exception as exc:
-                    logger.debug("Fallback termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
+                except Exception as fallback_exc:
+                    logger.debug("Fallback termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
         else:
             try:
                 pgid = os.getpgid(pid)
@@ -183,24 +230,18 @@ class ProcessSupervisor:
         max_output_bytes: int = 10 * 1024 * 1024,
         pre_launch_check: Optional[Callable[[], bool]] = None,
     ) -> ProcessExecutionResult:
-        """
-        Executes a subprocess with execution tracking, timeout enforcement,
-        and guaranteed process tree cleanup on cancellation or timeout.
-        """
         if not cmd:
-            return -1, "", "Empty command provided"
+            return ProcessExecutionResult(-1, "", "Empty command provided")
         if max_output_bytes <= 0:
-            return -1, "", "Invalid maximum output size"
+            return ProcessExecutionResult(-1, "", "Invalid maximum output size")
 
-        creationflags = 0
-        start_new_session = False
-        if sys.platform == "win32":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            start_new_session = True
+        # Unscoped direct adapter use receives a unique invocation context, so
+        # cancellation of one call can never terminate another unrelated call.
+        context_id = current_execution_context_id() or f"invocation-{uuid.uuid4().hex}"
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        start_new_session = sys.platform != "win32"
 
         def _bounded_communicate(proc: subprocess.Popen) -> Tuple[str, str, bool]:
-            """Drain both pipes concurrently while enforcing a combined byte cap."""
             output_lock = threading.Lock()
             captured = {"stdout": bytearray(), "stderr": bytearray()}
             total_bytes = 0
@@ -263,11 +304,7 @@ class ProcessSupervisor:
             proc = None
             try:
                 if pre_launch_check is not None and not pre_launch_check():
-                    return ProcessExecutionResult(
-                        126,
-                        "",
-                        "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
-                    )
+                    return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed")
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -278,22 +315,21 @@ class ProcessSupervisor:
                     creationflags=creationflags,
                     start_new_session=start_new_session,
                 )
-                self._register_pid(proc.pid)
-
+                self._register_pid(proc.pid, context_id)
                 stdout, stderr, bounded_failure = _bounded_communicate(proc)
                 if "Output exceeded maximum" in stderr:
                     return ProcessExecutionResult(-1, stdout, stderr)
                 if bounded_failure and "Execution timed out" in stderr:
                     return ProcessExecutionResult(-1, stdout, stderr)
                 return ProcessExecutionResult(proc.returncode, stdout, stderr)
-            except FileNotFoundError as e:
-                return ProcessExecutionResult(127, "", f"Executable not found: {e}")
-            except PermissionError as e:
-                return ProcessExecutionResult(126, "", f"Permission denied: {e}")
-            except Exception as e:
+            except FileNotFoundError as exc:
+                return ProcessExecutionResult(127, "", f"Executable not found: {exc}")
+            except PermissionError as exc:
+                return ProcessExecutionResult(126, "", f"Permission denied: {exc}")
+            except Exception as exc:
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
-                return ProcessExecutionResult(-1, "", str(e))
+                return ProcessExecutionResult(-1, "", str(exc))
             finally:
                 if proc and proc.pid:
                     self._unregister_pid(proc.pid)
@@ -301,8 +337,8 @@ class ProcessSupervisor:
         try:
             return await asyncio.to_thread(_run_sync)
         except asyncio.CancelledError:
-            for active_pid in list(self._active_pids):
-                self.kill_process_tree(active_pid)
+            # Critical isolation invariant: never terminate another scan's PIDs.
+            self.kill_context(context_id)
             raise
 
 

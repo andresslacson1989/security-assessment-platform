@@ -10,14 +10,41 @@ import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Callable, Awaitable, Protocol
+from urllib.parse import urlsplit
 
 from app.core.models import CloudCredentialEnvelope
 from app.core.credential_handoff import encrypt_credential_envelope, decrypt_credential_envelope
+from app.core.process_supervisor import process_execution_context
 
 MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "5"))
 MAX_CONCURRENT_SCANS_PER_TENANT = int(os.getenv("MAX_CONCURRENT_SCANS_PER_TENANT", "2"))
 GLOBAL_SCAN_TIMEOUT_SECONDS = float(os.getenv("GLOBAL_SCAN_TIMEOUT_SECONDS", "300.0"))
 EXECUTION_QUEUE_URL = os.getenv("EXECUTION_QUEUE_URL", "").strip()
+ENVIRONMENT = os.getenv("ENVIRONMENT", "").strip().lower()
+
+
+def validate_execution_queue_url(redis_url: str, *, production: bool = False) -> str:
+    """Validate queue transport without exposing credentials in errors/logs."""
+    value = str(redis_url or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise RuntimeError("EXECUTION_QUEUE_URL is malformed") from exc
+    if parsed.scheme not in {"redis", "rediss"}:
+        raise RuntimeError("EXECUTION_QUEUE_URL must use redis:// or rediss://")
+    if not parsed.hostname:
+        raise RuntimeError("EXECUTION_QUEUE_URL must include a Redis host")
+    if production and not parsed.password:
+        raise RuntimeError("Production EXECUTION_QUEUE_URL must authenticate to Redis")
+    return value
+
+
+EXECUTION_QUEUE_URL = validate_execution_queue_url(
+    EXECUTION_QUEUE_URL,
+    production=ENVIRONMENT == "production",
+)
 
 
 class DurableQueueBackend(Protocol):
@@ -64,9 +91,7 @@ class RedisDurableQueue:
             if self._group_ready:
                 return
             try:
-                await self._redis.xgroup_create(
-                    self.stream_name, self.consumer_group, id="0", mkstream=True
-                )
+                await self._redis.xgroup_create(self.stream_name, self.consumer_group, id="0", mkstream=True)
             except Exception as exc:
                 if "BUSYGROUP" not in str(exc):
                     raise
@@ -92,11 +117,7 @@ class RedisDurableQueue:
                 scan_id=scan_id,
                 organization_id=organization_id,
             )
-        message_id = await self._redis.xadd(
-            self.stream_name,
-            fields,
-        )
-        return str(message_id)
+        return str(await self._redis.xadd(self.stream_name, fields))
 
     async def complete(self, message_id: str) -> None:
         await self._ensure_group()
@@ -104,10 +125,7 @@ class RedisDurableQueue:
 
     async def fail(self, message_id: str, error_code: str) -> None:
         await self._ensure_group()
-        await self._redis.xadd(
-            f"{self.stream_name}:failures",
-            {"message_id": message_id, "error_code": error_code},
-        )
+        await self._redis.xadd(f"{self.stream_name}:failures", {"message_id": message_id, "error_code": error_code})
         await self._redis.xack(self.stream_name, self.consumer_group, message_id)
 
     async def consume_once(
@@ -117,12 +135,6 @@ class RedisDurableQueue:
         block_ms: int = 5000,
         reclaim_idle_ms: int = 60000,
     ) -> bool:
-        """Claim one pending/new execution intent and settle it after handling.
-
-        Pending messages are reclaimed before reading new messages so a worker
-        that dies mid-scan does not leave the execution intent permanently
-        stranded in the consumer group's pending entries list.
-        """
         await self._ensure_group()
         messages = []
         claimed = await self._redis.xautoclaim(
@@ -146,7 +158,6 @@ class RedisDurableQueue:
             )
             if response:
                 messages = response[0][1] or []
-
         if not messages:
             return False
 
@@ -167,11 +178,9 @@ class RedisDurableQueue:
                     organization_id=organization_id,
                 )
             import inspect
-
             signature = inspect.signature(handler)
             accepts_three = any(
-                parameter.kind == inspect.Parameter.VAR_POSITIONAL
-                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
                 for parameter in signature.parameters.values()
             ) or len(signature.parameters) >= 3
             if accepts_three:
@@ -191,11 +200,9 @@ class RedisDurableQueue:
 
 
 class ScanQueueManager:
-    """
-    Manages concurrent active scan execution with bounded worker concurrency and timeouts.
-    """
+    """Bounded global/per-tenant scan execution manager."""
 
-    _instance: Optional[ScanQueueManager] = None
+    _instance: Optional["ScanQueueManager"] = None
 
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_SCANS, max_concurrent_per_tenant: int = MAX_CONCURRENT_SCANS_PER_TENANT, durable_backend: Optional[DurableQueueBackend] = None):
         self._max_concurrent = max_concurrent
@@ -207,7 +214,7 @@ class ScanQueueManager:
         self._durable_backend = durable_backend
 
     @classmethod
-    def get_instance(cls) -> ScanQueueManager:
+    def get_instance(cls) -> "ScanQueueManager":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -234,7 +241,6 @@ class ScanQueueManager:
         organization_id: Optional[str],
         credential_envelope: Optional[CloudCredentialEnvelope] = None,
     ) -> str:
-        """Persist an enterprise execution intent without running it locally."""
         if self._durable_backend is None:
             raise RuntimeError("enqueue_only requires a durable execution backend")
         if credential_envelope is None:
@@ -245,10 +251,7 @@ class ScanQueueManager:
         if not organization_id:
             return None
         async with self._tenant_lock:
-            return self._tenant_semaphores.setdefault(
-                organization_id,
-                asyncio.Semaphore(self._max_concurrent_per_tenant),
-            )
+            return self._tenant_semaphores.setdefault(organization_id, asyncio.Semaphore(self._max_concurrent_per_tenant))
 
     async def execute_bounded(
         self,
@@ -259,20 +262,19 @@ class ScanQueueManager:
         organization_id: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        """
-        Executes a scan job task within the concurrency semaphore and execution timeout boundary.
-        """
+        """Execute one scan inside a scan-owned process lifecycle context."""
         tenant_semaphore = await self._tenant_semaphore(organization_id)
         message_id = None
         if self._durable_backend is not None:
             message_id = await self._durable_backend.enqueue(scan_id, organization_id)
         try:
-            async with self._semaphore:
-                if tenant_semaphore is None:
-                    result = await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
-                else:
-                    async with tenant_semaphore:
+            with process_execution_context(scan_id):
+                async with self._semaphore:
+                    if tenant_semaphore is None:
                         result = await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
+                    else:
+                        async with tenant_semaphore:
+                            result = await self._execute_with_accounting(task_fn, args, kwargs, timeout_seconds)
             if message_id is not None:
                 await self._durable_backend.complete(message_id)
             return result
@@ -289,9 +291,4 @@ class ScanQueueManager:
             self._active_count = max(0, self._active_count - 1)
 
 
-if EXECUTION_QUEUE_URL and not EXECUTION_QUEUE_URL.lower().startswith("redis://"):
-    raise RuntimeError("EXECUTION_QUEUE_URL must use redis:// for the enterprise queue backend")
-
-queue_manager = ScanQueueManager(
-    durable_backend=RedisDurableQueue(EXECUTION_QUEUE_URL) if EXECUTION_QUEUE_URL else None
-)
+queue_manager = ScanQueueManager(durable_backend=RedisDurableQueue(EXECUTION_QUEUE_URL) if EXECUTION_QUEUE_URL else None)

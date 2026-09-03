@@ -5,11 +5,8 @@ Enforces multi-tenant organization authorization and IDOR protection.
 """
 
 from __future__ import annotations
-import asyncio
 import json
-from pathlib import Path
 from typing import Dict, Any, List, Optional
-import urllib.parse
 from fastapi import APIRouter, HTTPException, Query, status, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -30,18 +27,13 @@ from app.core.models import (
     ToolExecutionTelemetry,
     ScanTelemetryReport,
     DiscoveredEndpoint,
-    EndpointTestRecord,
-    EndpointTestStatus,
     PrincipalType,
 )
-from app.core.storage import get_scan, list_scans, delete_scan
+from app.core.storage import list_scans, delete_scan
 from app.core.orchestrator import orchestrator
-from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
+from app.core.ssrf_protector import SSRFProtectionError
 from app.core.path_sandbox import assert_safe_path, PathSandboxViolation, get_default_workspace_dir
 from app.core.auth import (
-    get_current_user,
-    require_admin,
-    require_dev_or_higher,
     require_permission,
     UserProfile,
     UserRole,
@@ -71,15 +63,9 @@ class StartScanRequest(BaseModel):
 
 
 def validate_target_input(target_type: TargetType, target_value: str, allow_internal: bool = False) -> None:
-    """
-    Validates target value syntax and security constraints for ALL target types:
-    URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST.
-    Ensures zero bypass routes around the security gateway.
-    """
     val = target_value.strip()
     if not val:
         raise HTTPException(status_code=400, detail="Target value cannot be empty.")
-
     try:
         if target_type in (TargetType.LOCAL_PATH, TargetType.DOCKERFILE, TargetType.IAC_MANIFEST):
             assert_safe_path(val, allowed_roots=[get_default_workspace_dir()])
@@ -87,15 +73,9 @@ def validate_target_input(target_type: TargetType, target_value: str, allow_inte
         from app.core.ssrf_protector import assert_safe_target
         assert_safe_target(target_type.value, val, allow_internal=allow_internal)
     except SSRFProtectionError as err:
-        raise HTTPException(
-            status_code=400,
-            detail=f"SSRF Protection Gate: {str(err)}"
-        )
+        raise HTTPException(status_code=400, detail=f"SSRF Protection Gate: {str(err)}")
     except PathSandboxViolation as err:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Path Sandbox Violation: {str(err)}"
-        )
+        raise HTTPException(status_code=400, detail=f"Path Sandbox Violation: {str(err)}")
 
 
 @router.post("/start", status_code=status.HTTP_201_CREATED, summary="Start Automated Security Scan")
@@ -104,10 +84,6 @@ async def start_security_scan(
     request: Request,
     current_user: UserProfile = Depends(require_permission(required_scope="scan:create", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
-    """
-    Validates the target, creates a ScanJob, and launches asynchronous security assessment in the background.
-    Protected by SSRF gateway, path sandboxing, and RBAC multi-tenant authentication.
-    """
     allow_internal = authorize_internal_target(current_user, payload.target_value)
     asset = None
     if payload.asset_id:
@@ -128,26 +104,12 @@ async def start_security_scan(
         if payload.project_id and payload.project_id != asset.project_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan project does not match the selected asset.")
         allow_internal = authorize_internal_target(current_user, payload.target_value)
+
     validate_target_input(payload.target_type, payload.target_value, allow_internal=allow_internal)
-
-    target_name = payload.target_name or payload.target_value
-    target = Target(
-        name=target_name,
-        type=payload.target_type,
-        value=payload.target_value.strip(),
-    )
-
-    # Determine enabled engines
-    if payload.enabled_engines:
-        selected_engines = payload.enabled_engines
-    else:
-        selected_engines = [
-            eng.name for eng in orchestrator.get_registered_engines()
-            if eng.is_applicable(target)
-        ]
-
-    scan_config = payload.config or ScanConfig()
-
+    target = Target(name=payload.target_name or payload.target_value, type=payload.target_type, value=payload.target_value.strip())
+    selected_engines = payload.enabled_engines or [
+        eng.name for eng in orchestrator.get_registered_engines() if eng.is_applicable(target)
+    ]
     scan_job = ScanJob(
         correlation_id=getattr(request.state, "correlation_id", None),
         organization_id=asset.organization_id if asset else current_user.organization_id,
@@ -158,46 +120,33 @@ async def start_security_scan(
         target=target,
         profile=payload.profile,
         enabled_engines=selected_engines,
-        config=scan_config,
+        config=payload.config or ScanConfig(),
     )
 
-    # Record Audit Events
-    db_manager.record_audit_event(
-        AuditEvent(
-            actor=current_user.username,
-            organization_id=current_user.organization_id,
-            action=AuditAction.SCAN_CREATED,
-            object_type="scan",
-            object_id=scan_job.id,
-            result="SUCCESS",
-            correlation_id=scan_job.correlation_id,
-            details={"target_type": target.type.value, "target_value": target.value, "profile": scan_job.profile.value},
-        )
-    )
-
-    # Launch background task
+    db_manager.record_audit_event(AuditEvent(
+        actor=current_user.username,
+        organization_id=current_user.organization_id,
+        action=AuditAction.SCAN_CREATED,
+        object_type="scan",
+        object_id=scan_job.id,
+        result="SUCCESS",
+        correlation_id=scan_job.correlation_id,
+        details={"target_type": target.type.value, "target_value": target.value, "profile": scan_job.profile.value},
+    ))
     await orchestrator.start_scan(scan_job)
-
-    db_manager.record_audit_event(
-        AuditEvent(
-            actor=current_user.username,
-            organization_id=current_user.organization_id,
-            action=AuditAction.SCAN_STARTED,
-            object_type="scan",
-            object_id=scan_job.id,
-            result="SUCCESS",
-            correlation_id=scan_job.correlation_id,
-        )
-    )
-
+    db_manager.record_audit_event(AuditEvent(
+        actor=current_user.username,
+        organization_id=current_user.organization_id,
+        action=AuditAction.SCAN_STARTED,
+        object_type="scan",
+        object_id=scan_job.id,
+        result="SUCCESS",
+        correlation_id=scan_job.correlation_id,
+    ))
     return {
         "scan_id": scan_job.id,
         "status": scan_job.status.value,
-        "target": {
-            "name": target.name,
-            "type": target.type.value,
-            "value": target.value,
-        },
+        "target": {"name": target.name, "type": target.type.value, "value": target.value},
         "profile": scan_job.profile.value,
         "enabled_engines": scan_job.enabled_engines,
         "active_adapters": scan_job.active_adapters,
@@ -213,13 +162,7 @@ async def get_all_scans(
     offset: int = Query(default=0, ge=0),
     current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> Dict[str, Any]:
-    """Returns paginated list of historical scan summaries for caller's organization."""
-    scans, total = list_scans(
-        limit=limit,
-        offset=offset,
-        organization_id=_organization_scope(current_user),
-    )
-
+    scans, total = list_scans(limit=limit, offset=offset, organization_id=_organization_scope(current_user))
     return {
         "total": total,
         "limit": limit,
@@ -227,11 +170,7 @@ async def get_all_scans(
         "items": [
             {
                 "id": s.id,
-                "target": {
-                    "name": s.target.name,
-                    "type": s.target.type.value,
-                    "value": s.target.value,
-                },
+                "target": {"name": s.target.name, "type": s.target.type.value, "value": s.target.value},
                 "profile": s.profile.value,
                 "status": s.status.value,
                 "progress_percent": s.progress_percent,
@@ -251,15 +190,70 @@ async def get_scan_details(
     scan_id: str,
     current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> ScanJob:
-    """Returns full ScanJob model. Enforces tenant ownership (IDOR denial)."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
-    if not job:
+    if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
-    if not authorize_scan_access(current_user, job, action="read"):
-        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
     return job
+
+
+def _tool_telemetry_from_authoritative_evidence(job: ScanJob) -> Dict[str, ToolExecutionTelemetry]:
+    """Build tool telemetry without manufacturing execution evidence."""
+    recorded_states = dict(getattr(job, "tool_execution_states", {}) or {})
+    state_statuses = {
+        "COMPLETED_NO_FINDINGS": EngineExecutionStatus.PASS,
+        "COMPLETED_WITH_FINDINGS": EngineExecutionStatus.FINDINGS,
+        "PARTIAL_RESULTS_WITH_WARNING": EngineExecutionStatus.PARTIAL,
+        "TOOL_EXECUTION_FAILED": EngineExecutionStatus.FAILED,
+        "BLOCKED": EngineExecutionStatus.BLOCKED,
+        "TIMED_OUT": EngineExecutionStatus.TIMED_OUT,
+        "CANCELLED": EngineExecutionStatus.CANCELLED,
+        "INVALID_VERSION": EngineExecutionStatus.FAILED,
+    }
+    tool_names = list(dict.fromkeys([
+        *recorded_states.keys(),
+        *((finding.source_tool or "native").lower() for finding in job.findings),
+    ]))
+    result: Dict[str, ToolExecutionTelemetry] = {}
+    for tool_name in tool_names:
+        normalized_state = recorded_states.get(tool_name)
+        finding_engine = next(
+            (finding.engine for finding in job.findings if (finding.source_tool or "native").lower() == tool_name),
+            None,
+        )
+        # A finding is affirmative execution evidence. In its absence, only a
+        # recorded state can establish that the tool ran.
+        has_finding = any((finding.source_tool or "native").lower() == tool_name for finding in job.findings)
+        status_value = state_statuses.get(normalized_state)
+        if status_value is None:
+            status_value = EngineExecutionStatus.FINDINGS if has_finding else EngineExecutionStatus.FAILED
+        result[tool_name] = ToolExecutionTelemetry(
+            tool_name=tool_name,
+            correlation_id=job.correlation_id,
+            engine=getattr(job, "tool_execution_engines", {}).get(tool_name) or finding_engine or "unknown",
+            status=status_value,
+            duration_seconds=0.0,
+            command_executed=None,
+            findings_count=0,
+            log_count=0,
+            endpoints_tested=[],
+            normalized_state=normalized_state,
+        )
+
+    for finding in job.findings:
+        source = (finding.source_tool or "native").lower()
+        telemetry = result[source]
+        telemetry.findings_count += 1
+        if telemetry.status in {EngineExecutionStatus.PASS, EngineExecutionStatus.FINDINGS} and recorded_states.get(source) is None:
+            telemetry.status = EngineExecutionStatus.FINDINGS
+        if finding.evidence and finding.evidence.location and finding.evidence.location not in telemetry.endpoints_tested:
+            telemetry.endpoints_tested.append(finding.evidence.location)
+
+    for log in job.logs:
+        message = log.message.lower()
+        for tool_name, telemetry in result.items():
+            if tool_name in message or (log.tool and log.tool.lower() == tool_name):
+                telemetry.log_count += 1
+    return result
 
 
 @router.get("/{scan_id}/telemetry", response_model=ScanTelemetryReport, summary="Get Structured Assessment Telemetry & Tool Logs")
@@ -271,203 +265,52 @@ async def get_scan_telemetry(
     search: Optional[str] = Query(default=None, description="Search term in log messages or URLs"),
     current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> ScanTelemetryReport:
-    """
-    Returns organized assessment telemetry, per-tool execution logs, tested links, and discovered attack surface.
-    Enforces strict multi-tenant authorization and IDOR defense.
-    """
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
-    if not authorize_scan_access(current_user, job, action="read"):
+    if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
     all_logs = list(job.logs)
     filtered_logs = all_logs
     if tool:
         tool_lower = tool.strip().lower()
-        filtered_logs = [
-            l for l in filtered_logs
-            if (l.tool and l.tool.lower() == tool_lower) or (tool_lower in l.message.lower())
-        ]
+        filtered_logs = [log for log in filtered_logs if (log.tool and log.tool.lower() == tool_lower) or tool_lower in log.message.lower()]
     if engine:
         engine_lower = engine.strip().lower()
-        filtered_logs = [
-            l for l in filtered_logs
-            if (l.engine and l.engine.lower() == engine_lower)
-        ]
+        filtered_logs = [log for log in filtered_logs if log.engine and log.engine.lower() == engine_lower]
     if level:
         level_upper = level.strip().upper()
-        filtered_logs = [
-            l for l in filtered_logs
-            if (l.level.value if hasattr(l.level, "value") else str(l.level)).upper() == level_upper
-        ]
+        filtered_logs = [log for log in filtered_logs if (log.level.value if hasattr(log.level, "value") else str(log.level)).upper() == level_upper]
     if search:
-        s_term = search.strip().lower()
+        search_term = search.strip().lower()
         filtered_logs = [
-            l for l in filtered_logs
-            if s_term in l.message.lower() or (l.engine and s_term in l.engine.lower()) or (l.tool and s_term in l.tool.lower())
+            log for log in filtered_logs
+            if search_term in log.message.lower()
+            or (log.engine and search_term in log.engine.lower())
+            or (log.tool and search_term in log.tool.lower())
         ]
 
-    # Build per-tool execution telemetry
-    tool_telemetry_map: Dict[str, ToolExecutionTelemetry] = {}
-    recorded_states = getattr(job, "tool_execution_states", {})
-    # Availability is not execution. `active_adapters` is populated during
-    # capability discovery and must never manufacture a successful telemetry
-    # record for a tool that the selected engine did not actually run.
-    telemetry_tools = list(dict.fromkeys([
-        *recorded_states.keys(),
-        *(f.source_tool or "native" for f in job.findings),
-    ]))
-    state_statuses = {
-        "COMPLETED_NO_FINDINGS": EngineExecutionStatus.PASS,
-        "COMPLETED_WITH_FINDINGS": EngineExecutionStatus.FINDINGS,
-        "PARTIAL_RESULTS_WITH_WARNING": EngineExecutionStatus.PARTIAL,
-        "TOOL_EXECUTION_FAILED": EngineExecutionStatus.FAILED,
-        "BLOCKED": EngineExecutionStatus.BLOCKED,
-        "TIMED_OUT": EngineExecutionStatus.TIMED_OUT,
-        "CANCELLED": EngineExecutionStatus.CANCELLED,
-        "INVALID_VERSION": EngineExecutionStatus.FAILED,
-    }
-    for t_name in telemetry_tools:
-        normalized_state = recorded_states.get(t_name)
-        finding_engine = next(
-            (f.engine for f in job.findings if (f.source_tool or "native").lower() == t_name.lower()),
-            None,
-        )
-        tool_telemetry_map[t_name] = ToolExecutionTelemetry(
-            tool_name=t_name,
-            correlation_id=job.correlation_id,
-            engine=getattr(job, "tool_execution_engines", {}).get(t_name) or finding_engine or "unknown",
-            status=state_statuses.get(normalized_state, EngineExecutionStatus.FAILED),
-            duration_seconds=0.0,
-            command_executed=None,
-            findings_count=0,
-            log_count=0,
-            endpoints_tested=[],
-            normalized_state=normalized_state,
-        )
+    tool_telemetry_map = _tool_telemetry_from_authoritative_evidence(job)
 
-    for f in job.findings:
-        src = (f.source_tool or "native").lower()
-        if src not in tool_telemetry_map:
-            tool_telemetry_map[src] = ToolExecutionTelemetry(
-                tool_name=src,
-                correlation_id=job.correlation_id,
-                engine=f.engine or "native",
-                status=EngineExecutionStatus.FINDINGS,
-                duration_seconds=0.0,
-                command_executed=f"{src} active assessment",
-                findings_count=0,
-                log_count=0,
-                endpoints_tested=[],
-            )
-        tool_telemetry_map[src].findings_count += 1
-        # Findings do not erase a degraded execution state. A tool may emit
-        # partial output before failing, timing out, or being blocked.
-        if tool_telemetry_map[src].status in {
-            EngineExecutionStatus.PASS,
-            EngineExecutionStatus.FINDINGS,
-        } or recorded_states.get(src) is None:
-            tool_telemetry_map[src].status = EngineExecutionStatus.FINDINGS
-        if f.evidence and f.evidence.location:
-            if f.evidence.location not in tool_telemetry_map[src].endpoints_tested:
-                tool_telemetry_map[src].endpoints_tested.append(f.evidence.location)
-
-    for l in all_logs:
-        msg = l.message.lower()
-        for t_name in tool_telemetry_map.keys():
-            if t_name in msg or (l.tool and l.tool.lower() == t_name):
-                tool_telemetry_map[t_name].log_count += 1
-
-    # Enrich discovered endpoints with per-link dossiers and finding correlations
+    # Endpoint presentation is allowed to correlate existing findings, but it
+    # must not add tools or tests that the engine did not record as executed.
     enriched_endpoints: List[DiscoveredEndpoint] = []
-    for ep in job.discovered_endpoints:
-        ep_copy = ep.model_copy(deep=True)
-        # Correlate findings matching this endpoint URL
-        matching_findings = [
-            f for f in job.findings
-            if f.evidence and f.evidence.location and (
-                ep.url in f.evidence.location or f.evidence.location in ep.url
-            )
-        ]
-        for f in matching_findings:
-            if f.id not in ep_copy.finding_ids:
-                ep_copy.finding_ids.append(f.id)
+    for endpoint in job.discovered_endpoints:
+        endpoint_copy = endpoint.model_copy(deep=True)
+        for finding in job.findings:
+            if finding.evidence and finding.evidence.location and (
+                endpoint.url in finding.evidence.location or finding.evidence.location in endpoint.url
+            ) and finding.id not in endpoint_copy.finding_ids:
+                endpoint_copy.finding_ids.append(finding.id)
+        enriched_endpoints.append(endpoint_copy)
 
-        # Ensure tools_executed is populated
-        if not ep_copy.tools_executed:
-            ep_copy.tools_executed = ["native_dast", "katana", "parameter_fuzzer"]
-            # Host availability is not execution evidence. Only tools with a
-            # recorded execution state or a finding may appear in a per-link
-            # execution dossier.
-            executed_tools = set(getattr(job, "tool_execution_states", {}).keys())
-            executed_tools.update(
-                (finding.source_tool or "native")
-                for finding in job.findings
-            )
-            for tool_name in sorted(executed_tools):
-                if tool_name not in ep_copy.tools_executed:
-                    ep_copy.tools_executed.append(tool_name)
-
-        # If tests_performed is empty, build standard evaluation records
-        if not ep_copy.tests_performed:
-            header_finds = [f for f in matching_findings if "header" in f.title.lower() or "csp" in f.title.lower() or "cookie" in f.title.lower()]
-            cors_finds = [f for f in matching_findings if "cors" in f.title.lower() or "origin" in f.title.lower()]
-            fuzz_finds = [f for f in matching_findings if "injection" in f.title.lower() or "sqli" in f.title.lower() or "xss" in f.title.lower()]
-            cve_finds = [f for f in matching_findings if "cve" in f.title.lower() or f.source_tool == "nuclei"]
-
-            ep_copy.tests_performed = [
-                EndpointTestRecord(
-                    test_name="Security Headers & CSP Audit",
-                    category="Configuration",
-                    tool="native_dast",
-                    status=EndpointTestStatus.VULNERABLE if header_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(header_finds)} header misconfigurations detected." if header_finds else "HSTS, CSP, and Anti-clickjacking headers properly enforced.",
-                    findings_count=len(header_finds),
-                ),
-                EndpointTestRecord(
-                    test_name="CORS Policy & Origin Reflection",
-                    category="Configuration",
-                    tool="native_dast",
-                    status=EndpointTestStatus.VULNERABLE if cors_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(cors_finds)} CORS misconfigurations detected." if cors_finds else "Strict origin reflection and access control verified.",
-                    findings_count=len(cors_finds),
-                ),
-                EndpointTestRecord(
-                    test_name="HTML Form & CSRF Token Validation",
-                    category="Authentication",
-                    tool="auth_session",
-                    status=EndpointTestStatus.SAFE,
-                    details=f"{ep_copy.discovered_forms or (1 if ep_copy.has_forms else 0)} form(s) inspected for anti-CSRF tokens and secure transmission.",
-                    findings_count=0,
-                ),
-                EndpointTestRecord(
-                    test_name="Active Parameter Injection (SQLi / XSS / LFI)",
-                    category="Injection",
-                    tool="parameter_fuzzer",
-                    status=EndpointTestStatus.VULNERABLE if fuzz_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(fuzz_finds)} injection anomalies triggered." if fuzz_finds else "Benign payload probes evaluated; no parameter injection anomalies detected.",
-                    findings_count=len(fuzz_finds),
-                ),
-                EndpointTestRecord(
-                    test_name="Nuclei Vulnerability & CVE Probe",
-                    category="Vulnerability Scanning",
-                    tool="nuclei",
-                    status=EndpointTestStatus.VULNERABLE if cve_finds else EndpointTestStatus.SAFE,
-                    details=f"{len(cve_finds)} CVE template matches detected." if cve_finds else "Standard CVE and misconfiguration templates evaluated cleanly.",
-                    findings_count=len(cve_finds),
-                ),
-            ]
-
-        enriched_endpoints.append(ep_copy)
-
-    tools_executed_list = list(tool_telemetry_map.values())
-    coverage_data = getattr(job.summary, "coverage", None) or AssessmentCoverage(
-        engines_requested=job.enabled_engines,
-        engines_executed=job.enabled_engines,
-        is_fully_assessed=True,
-    )
+    coverage = getattr(job.summary, "coverage", None)
+    if coverage is None:
+        coverage = AssessmentCoverage(
+            engines_requested=list(job.enabled_engines),
+            engines_executed=[],
+            coverage_limitations=["Authoritative coverage evidence is unavailable for this scan."],
+            is_fully_assessed=False,
+        )
 
     return ScanTelemetryReport(
         scan_id=job.id,
@@ -478,12 +321,12 @@ async def get_scan_telemetry(
         status=job.status,
         total_logs=len(all_logs),
         logs=filtered_logs,
-        tools_executed=tools_executed_list,
+        tools_executed=list(tool_telemetry_map.values()),
         tool_failure_events=getattr(job, "tool_failure_events", []),
         discovered_endpoints=enriched_endpoints,
         discovered_subdomains=job.discovered_subdomains,
         rejected_discoveries=job.rejected_discoveries,
-        coverage=coverage_data,
+        coverage=coverage,
         generated_at=utc_now(),
     )
 
@@ -493,27 +336,21 @@ async def cancel_running_scan(
     scan_id: str,
     current_user: UserProfile = Depends(require_permission(required_scope="scan:cancel", allowed_roles=[UserRole.ADMIN, UserRole.SECURITY_ANALYST, UserRole.DEVELOPER])),
 ) -> Dict[str, Any]:
-    """Signals orchestrator to abort scan execution and forcefully terminate subprocesses."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
     if not authorize_scan_access(current_user, job, action="cancel"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to cancel scan job '{scan_id}'.")
 
     cancelled = await orchestrator.cancel_scan(scan_id)
-
-    db_manager.record_audit_event(
-        AuditEvent(
-            actor=current_user.username,
-            organization_id=current_user.organization_id,
-            action=AuditAction.SCAN_CANCELLED,
-            object_type="scan",
-            object_id=scan_id,
-            result="SUCCESS",
-        )
-    )
-
+    db_manager.record_audit_event(AuditEvent(
+        actor=current_user.username,
+        organization_id=current_user.organization_id,
+        action=AuditAction.SCAN_CANCELLED,
+        object_type="scan",
+        object_id=scan_id,
+        result="SUCCESS",
+    ))
     return {
         "scan_id": scan_id,
         "status": ScanStatus.CANCELLED.value,
@@ -527,14 +364,11 @@ async def delete_scan_job(
     scan_id: str,
     current_user: UserProfile = Depends(require_permission(required_scope="scan:delete")),
 ) -> Dict[str, Any]:
-    """Deletes a scan job from storage. Enforces tenant ownership."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
     if not authorize_scan_access(current_user, job, action="delete"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to delete scan job '{scan_id}'.")
-
     deleted = delete_scan(scan_id, organization_id=_organization_scope(current_user))
     return {"scan_id": scan_id, "deleted": deleted, "message": "Scan record deleted."}
 
@@ -544,19 +378,12 @@ async def stream_scan_events(
     scan_id: str,
     current_user: UserProfile = Depends(require_permission(required_scope="scan:read")),
 ) -> StreamingResponse:
-    """Streams real-time logs, findings, and progress updates over SSE."""
     job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
-    if not authorize_scan_access(current_user, job, action="read"):
+    if not job or not authorize_scan_access(current_user, job, action="read"):
         raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
 
     async def event_generator():
-        # Yield initial connected event
         yield f"event: connected\ndata: {json.dumps({'scan_id': scan_id, 'status': job.status.value})}\n\n"
-
-        # If job already completed/failed/cancelled, stream historical events and close
         if job.status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
             for log in job.logs:
                 yield f"event: log\ndata: {log.model_dump_json()}\n\n"
@@ -568,37 +395,34 @@ async def stream_scan_events(
                 yield f"event: completed\ndata: {job.summary.model_dump_json() if job.summary else '{}'}\n\n"
             elif job.status == ScanStatus.FAILED:
                 yield f"event: failed\ndata: {json.dumps({'reason': job.failure_reason or 'Scan failed'})}\n\n"
-            elif job.status == ScanStatus.CANCELLED:
+            else:
                 yield f"event: cancelled\ndata: {json.dumps({'message': 'Scan cancelled by user'})}\n\n"
             return
 
-        # Stream live events from orchestrator
         queue = orchestrator.subscribe_events(scan_id)
         try:
-            # Yield initial snapshot of active scan progress & logs recorded before handshake
             if job.progress_percent > 0 or job.current_stage:
                 yield f"event: progress\ndata: {json.dumps({'percent': job.progress_percent, 'stage': job.current_stage, 'status': job.status.value})}\n\n"
             for log in list(job.logs):
                 yield f"event: log\ndata: {log.model_dump_json()}\n\n"
             for finding in list(job.findings):
                 yield f"event: finding\ndata: {finding.model_dump_json()}\n\n"
-            for ep in list(job.discovered_endpoints):
-                yield f"event: crawl_discovered\ndata: {ep.model_dump_json()}\n\n"
-            for sub in list(job.discovered_subdomains):
-                yield f"event: subdomain_discovered\ndata: {sub.model_dump_json()}\n\n"
+            for endpoint in list(job.discovered_endpoints):
+                yield f"event: crawl_discovered\ndata: {endpoint.model_dump_json()}\n\n"
+            for subdomain in list(job.discovered_subdomains):
+                yield f"event: subdomain_discovered\ndata: {subdomain.model_dump_json()}\n\n"
             for rejection in list(job.rejected_discoveries):
                 yield f"event: discovery_rejected\ndata: {rejection.model_dump_json()}\n\n"
 
             while True:
-                msg = await queue.get()
-                if isinstance(msg, dict):
-                    event_name = msg.get("event", "message")
-                    data = msg.get("data", {})
-                elif isinstance(msg, (tuple, list)) and len(msg) >= 2:
-                    event_name, data = msg[0], msg[1]
+                message = await queue.get()
+                if isinstance(message, dict):
+                    event_name = message.get("event", "message")
+                    data = message.get("data", {})
+                elif isinstance(message, (tuple, list)) and len(message) >= 2:
+                    event_name, data = message[0], message[1]
                 else:
-                    event_name, data = "message", msg
-
+                    event_name, data = "message", message
                 data_str = data if isinstance(data, str) else json.dumps(data)
                 yield f"event: {event_name}\ndata: {data_str}\n\n"
                 if event_name in ("completed", "failed", "cancelled"):
@@ -609,9 +433,5 @@ async def stream_scan_events(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

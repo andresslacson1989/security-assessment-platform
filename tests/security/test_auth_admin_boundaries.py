@@ -18,7 +18,7 @@ async def test_tenant_admin_cannot_create_user_in_another_organization():
         principal_type=PrincipalType.TENANT_PRINCIPAL, organization_id="org-one",
     )
     payload = CreateUserRequest(
-        username="cross-tenant", email="cross@example.test", password="StrongPass123!",
+        username="cross-tenant", email="cross@example.test", password="StrongPassphrase123!",
         organization_id="org-two",
     )
 
@@ -28,30 +28,28 @@ async def test_tenant_admin_cannot_create_user_in_another_organization():
     assert exc_info.value.status_code == 403
 
 
-def test_internal_target_requires_explicit_scope_even_for_admin_role():
+def test_internal_target_requires_explicit_scope_even_for_admin_role_object():
     admin_without_scope = UserProfile(
         username="admin", email="admin@example.test", role=UserRole.ADMIN,
         scopes=["scan:repeater"],
     )
     admin_with_scope = admin_without_scope.model_copy(update={"scopes": ["scan:repeater", "scan:internal"]})
 
-    assert authorize_internal_target(admin_without_scope, "http://127.0.0.1") is False
-    assert authorize_internal_target(admin_with_scope, "http://127.0.0.1") is True
+    assert authorize_internal_target(admin_without_scope, "http://192.168.1.10") is False
+    assert authorize_internal_target(admin_with_scope, "http://192.168.1.10") is True
 
 
-def test_internal_target_accepts_explicit_wildcard_scope():
+def test_tenant_analyst_wildcard_claim_is_not_internal_authority():
     analyst = UserProfile(
         username="analyst", email="analyst@example.test", role=UserRole.SECURITY_ANALYST,
         scopes=["*"]
     )
 
-    assert authorize_internal_target(analyst, "http://127.0.0.1") is True
+    assert authorize_internal_target(analyst, "http://192.168.1.10") is False
 
 
 @pytest.mark.asyncio
-async def test_asset_registration_requires_internal_scope_even_for_admin_role():
-    from fastapi import HTTPException
-
+async def test_private_asset_can_be_registered_without_granting_execution_authority():
     admin_without_scope = UserProfile(
         username="admin", email="admin@example.test", role=UserRole.ADMIN,
         scopes=["asset:write"], organization_id="org-internal-test",
@@ -60,9 +58,9 @@ async def test_asset_registration_requires_internal_scope_even_for_admin_role():
         name="Internal host", type="IP_ADDRESS", target_value="192.168.1.50",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await create_asset(payload, admin_without_scope)
-    assert exc_info.value.status_code == 400
+    asset = await create_asset(payload, admin_without_scope)
+    assert asset.target_value == "192.168.1.50"
+    assert asset.active_probing_granted is False
 
 
 @pytest.mark.asyncio
@@ -86,7 +84,7 @@ async def test_live_secret_verification_grant_requires_organization_admin():
 
 
 @pytest.mark.asyncio
-async def test_scan_start_requires_internal_scope_even_for_admin_role():
+async def test_scan_start_requires_internal_scope_even_for_admin_role_object():
     from starlette.requests import Request
     from fastapi import HTTPException
 
