@@ -109,7 +109,7 @@ class TruffleHogAdapter(BaseToolAdapter):
                 line_num = data.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {}).get("line", 1)
                 location = f"{file_path}:{line_num}" if line_num else file_path
 
-                check_id = "SEC-VERIFIED-001" if verified else "SAST-SEC-001"
+                check_id = "SAST-SEC-001"
                 title = f"Verified Live Secret Leaked: {detector_name}" if verified else f"Hardcoded Secret Detected: {detector_name}"
                 severity = Severity.CRITICAL if verified else Severity.HIGH
                 cvss_score = 10.0 if verified else 8.5

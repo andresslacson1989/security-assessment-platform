@@ -1474,7 +1474,7 @@ class TestTruffleHogAdapter:
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding)
             assert len(findings) == 1
-            assert findings[0].check_id == "SEC-VERIFIED-001"
+            assert findings[0].check_id == "SAST-SEC-001"
             assert findings[0].severity == Severity.CRITICAL
             assert findings[0].verified_secret is not None
             assert findings[0].verified_secret.is_live is True
@@ -1525,7 +1525,7 @@ class TestRetireJSAdapter:
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding)
             assert len(findings) == 1
-            assert findings[0].check_id == "SCA-JS-001"
+            assert findings[0].check_id == "SAST-DEP-001"
             assert "CVE-2019-11358" in findings[0].title
 
 

@@ -128,7 +128,7 @@ class RetireJSAdapter(BaseToolAdapter):
                             scan_id=scan_id,
                             engine="code_sast",
                             source_tool=self.tool_name,
-                            check_id="SCA-JS-001",
+                            check_id="SAST-DEP-001",
                             category="Vulnerable JS Library",
                             title=f"Vulnerable JavaScript Library: {component} v{version} ({cve_str})",
                             severity=severity,
@@ -139,7 +139,7 @@ class RetireJSAdapter(BaseToolAdapter):
                             remediation=f"Upgrade `{component}` to the latest patched release or replace with a maintained alternative.",
                             references=vuln.get("info", ["https://retirejs.github.io/retire.js/"]),
                             evidence=evidence,
-                            fingerprint=calculate_fingerprint("SCA-JS-001", file_path, f"{component}-{version}-{cve_str}"),
+                            fingerprint=calculate_fingerprint("SAST-DEP-001", file_path, f"{component}-{version}-{cve_str}"),
                         )
                         findings.append(finding)
                         await emit_finding(finding)
