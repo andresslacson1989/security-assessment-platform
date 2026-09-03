@@ -41,3 +41,8 @@ def test_managed_artifacts_are_not_owned_by_runtime_user():
     assert ownership_line.strip() == "chown -R cyberassess:cyberassess /app/data"
     assert "/app/backend" not in ownership_line
     assert "/opt/cyberassess/tool-venvs" not in ownership_line
+
+
+def test_managed_trust_records_are_readable_but_immutable():
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    assert "find /app/backend /opt/cyberassess/tool-venvs -type f -name '*.trust.json' -exec chmod 0644 {} +" in dockerfile

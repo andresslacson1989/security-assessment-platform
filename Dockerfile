@@ -308,6 +308,9 @@ RUN mkdir -p /tmp/retire-npm && \
 # each subprocess launch.
 RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_direct_artifact_trust_record; [write_direct_artifact_trust_record(tool, '/app/backend/bin/' + tool, installer_version='14.3.0') for tool in ('nuclei', 'ffuf', 'gitleaks', 'katana', 'syft', 'grype', 'osv-scanner', 'trufflehog', 'dockle', 'kube-bench', 'amass')]"
 RUN PYTHONPATH=/app/backend python -c "from app.core.binary_trust import write_source_artifact_trust_record; write_source_artifact_trust_record('nmap', '/app/backend/bin/nmap', source_identity='svn-r39734', build_toolchain_sha256='75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8', installer_version='14.3.0')"
+# Trust records are immutable image metadata: readable by the runtime user,
+# but never writable by that user.
+RUN find /app/backend /opt/cyberassess/tool-venvs -type f -name '*.trust.json' -exec chmod 0644 {} +
 
 # Run the control plane as an unprivileged service account. Tool execution,
 # scan workspaces, and runtime data remain writable only where explicitly
