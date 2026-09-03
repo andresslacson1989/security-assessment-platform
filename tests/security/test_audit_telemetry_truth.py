@@ -7,6 +7,7 @@ import pytest
 from app.api import scans as scans_api
 from app.core.models import (
     DiscoveredEndpoint,
+    Evidence,
     Finding,
     FindingVerificationStatus,
     PrincipalType,
@@ -46,13 +47,16 @@ def test_finding_does_not_overwrite_recorded_failed_state():
     job.tool_execution_states["nuclei"] = "TOOL_EXECUTION_FAILED"
     job.tool_execution_engines["nuclei"] = "web_dast"
     job.findings.append(Finding(
+        scan_id=job.id,
         check_id="DAST-CVE-TEST",
         category="Vulnerability",
         title="Partial finding before upstream failure",
         severity=Severity.MEDIUM,
+        cvss_score=5.0,
         description="test",
         impact="test",
         remediation="test",
+        evidence=Evidence(location="https://example.com", observed_value="partial output"),
         source_tool="nuclei",
         engine="web_dast",
         verification_status=FindingVerificationStatus.DETECTED,
