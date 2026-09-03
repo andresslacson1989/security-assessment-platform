@@ -90,6 +90,7 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 
 ### E11.3 Runtime Verification
 - **Evidence:** On 2026-09-01, the production adapter executed the approved managed `backend/bin/subfinder.exe` against `example.com`; managed trust verification returned true, the runtime reported `subfinder v2.6.5`, and the adapter completed with normalized state `COMPLETED_NO_FINDINGS`.
+- **Additional Evidence:** On 2026-09-03, the Linux image manifest `sha256:89bb462cbab15428ee877e5ed705dcf6eff890f18eaa7af50957b1cc0db0c244` ran with a read-only root filesystem, dropped capabilities, `no-new-privileges`, `noexec` temporary storage, and uid 999. Fifteen managed standalone artifacts and six lock-bound package trust records verified; six managed version probes launched through `ProcessSupervisor` with pre-launch trust checks.
 - **Status:** VERIFIED for the managed adapter execution path and the separate tenant-scoped inventory-admission workflow. This does not claim upstream provenance beyond the recorded artifact/install controls, nor does it close provider-egress governance.
 
 ---
