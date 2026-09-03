@@ -105,8 +105,12 @@ class KubeBenchAdapter(BaseToolAdapter):
                             record_cis_result(cis_model)
 
                         if status in ("FAIL", "WARN"):
-                            severity = Severity.HIGH if status == "FAIL" else Severity.MEDIUM
-                            cvss_score = 7.5 if status == "FAIL" else 5.3
+                            if status == "WARN":
+                                severity, cvss_score = Severity.LOW, 3.1
+                            elif str(bench_id).strip().lower() in {"master", "controlplane", "control-plane", "apiserver", "api-server"}:
+                                severity, cvss_score = Severity.HIGH, 7.5
+                            else:
+                                severity, cvss_score = Severity.MEDIUM, 5.3
 
                             evidence = Evidence(
                                 location=f"K8s Control {test_number}",

@@ -1768,7 +1768,7 @@ class TestCISBenchmarkAdapters:
         mock_kb = {
             "Controls": [
                 {
-                    "id": "1.1",
+                    "id": "master",
                     "tests": [
                         {
                             "section": "1.1.1",
@@ -1791,7 +1791,34 @@ class TestCISBenchmarkAdapters:
             findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
             assert len(findings) == 1
             assert findings[0].check_id == "IAC-K8S-002"
+            assert findings[0].severity == Severity.HIGH
             assert len(recorded_cis) == 1
+
+    @pytest.mark.asyncio
+    async def test_kubebench_node_failure_and_warning_severity_mapping(self, tmp_path):
+        from app.adapters.kubebench_adapter import KubeBenchAdapter
+
+        adapter = KubeBenchAdapter()
+        target = Target(name="K8s", type=TargetType.IAC_MANIFEST, value=str(tmp_path))
+        findings = []
+
+        async def emit_finding(finding):
+            findings.append(finding)
+
+        payload = {
+            "Controls": [{
+                "id": "node",
+                "tests": [{"results": [
+                    {"status": "FAIL", "test_number": "4.1", "test_desc": "Node check", "remediation": "Fix node."},
+                    {"status": "WARN", "test_number": "4.2", "test_desc": "Node warning", "remediation": "Review node."},
+                ]}],
+            }],
+        }
+        with patch.object(adapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(payload), ""))):
+            await adapter.run(target, ScanConfig(), AsyncMock(), emit_finding)
+
+        assert [finding.severity for finding in findings] == [Severity.MEDIUM, Severity.LOW]
 
     @pytest.mark.asyncio
     async def test_prowler_run_success(self, tmp_path):
