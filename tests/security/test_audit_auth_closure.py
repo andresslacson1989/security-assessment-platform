@@ -37,11 +37,17 @@ def _user(role: UserRole, *, principal_type: PrincipalType = PrincipalType.TENAN
     )
 
 
-def test_tenant_roles_never_inherit_wildcard_or_internal_scan_scope():
-    for role in UserRole:
+def test_non_admin_tenant_roles_never_inherit_wildcard_or_internal_scan_scope():
+    for role in (UserRole.VIEWER, UserRole.DEVELOPER, UserRole.SECURITY_ANALYST):
         scopes = scopes_for_user(_user(role))
         assert "*" not in scopes
         assert "scan:internal" not in scopes
+
+
+def test_tenant_admin_has_explicit_internal_scope_but_not_wildcard():
+    scopes = scopes_for_user(_user(UserRole.ADMIN))
+    assert "*" not in scopes
+    assert "scan:internal" in scopes
 
 
 def test_only_system_admin_receives_wildcard_session_authority():
@@ -64,7 +70,6 @@ def test_new_password_policy_and_hash_work_factor_match_enterprise_baseline():
 
 
 def test_legacy_pbkdf2_hashes_remain_verifiable_during_migration():
-    # Directly construct an old work-factor hash to prove login compatibility.
     import base64
     import hashlib
 
@@ -120,9 +125,9 @@ async def test_analyst_cannot_delegate_internal_scan_scope_to_api_key(monkeypatc
     assert exc_info.value.status_code == 403
 
 
-def test_tenant_admin_token_contains_no_wildcard_or_internal_scope():
+def test_tenant_admin_token_contains_explicit_internal_but_no_wildcard_scope():
     admin = _user(UserRole.ADMIN)
     token = create_access_token(admin)
     payload = jwt.decode(token, options={"verify_signature": False})
     assert "*" not in payload["scopes"]
-    assert "scan:internal" not in payload["scopes"]
+    assert "scan:internal" in payload["scopes"]
