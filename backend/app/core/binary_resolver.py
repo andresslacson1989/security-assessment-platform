@@ -231,6 +231,7 @@ async def safe_execute_subprocess(
     env: Optional[dict] = None,
     max_output_bytes: int = 10 * 1024 * 1024,
     pre_launch_check: Optional[Callable[[], bool]] = None,
+    execution_id: Optional[str] = None,
 ) -> "ProcessExecutionResult":
     """
     Loop-agnostic safe subprocess execution helper.
@@ -248,6 +249,7 @@ async def safe_execute_subprocess(
         env=env,
         max_output_bytes=max_output_bytes,
         pre_launch_check=pre_launch_check,
+        execution_id=execution_id,
     )
     code, stdout, stderr = result
     if "<3>WSL" in stderr:

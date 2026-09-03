@@ -173,28 +173,27 @@ class ScanOrchestrator:
         self._tasks[scan_job.id] = task
         return task
 
-    async def cancel_scan(self, scan_id: str) -> bool:
+    async def cancel_scan(self, scan_id: str, organization_id: Optional[str] = None) -> bool:
         """
         Gracefully cancels an active scan job.
+        Enforces tenant isolation: if organization_id is provided, the scan must belong to that tenant.
         """
+        # 1. Authoritative lookup and tenant check
+        job = self.get_active_job(scan_id, organization_id=organization_id)
+        if not job:
+            return False
+
+        # 2. Explicitly terminate any subprocess tracked by process_supervisor for this scan
+        from app.core.process_supervisor import process_supervisor
+        process_supervisor.cancel_execution(scan_id)
+
+        # 3. Cancel running task if present
         task = self._tasks.get(scan_id)
         if task and not task.done():
             task.cancel()
-            job = self._active_jobs.get(scan_id)
-            if job:
-                job.status = ScanStatus.CANCELLED
-                job.completed_at = utc_now()
-                job.current_stage = "Scan job cancelled by user."
-                save_scan(job)
-                await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", "Scan job cancelled by user.")
-                await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
-                await self.emit_cancelled(scan_id, "Scan job cancelled by user.")
-            return True
-        # In enterprise mode the control-plane enqueue task can finish before
-        # the worker claims the intent. Persisted state is authoritative, so a
-        # queued scan remains cancellable even after that short-lived task ends.
-        job = self.get_active_job(scan_id)
-        if job and job.status in {ScanStatus.PENDING, ScanStatus.RUNNING}:
+
+        # 4. Mark cancelled state if in cancellable state
+        if job.status in {ScanStatus.PENDING, ScanStatus.RUNNING}:
             job.status = ScanStatus.CANCELLED
             job.completed_at = utc_now()
             job.current_stage = "Scan job cancelled by user."

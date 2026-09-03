@@ -501,7 +501,7 @@ async def cancel_running_scan(
     if not authorize_scan_access(current_user, job, action="cancel"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to cancel scan job '{scan_id}'.")
 
-    cancelled = await orchestrator.cancel_scan(scan_id)
+    cancelled = await orchestrator.cancel_scan(scan_id, organization_id=_organization_scope(current_user))
 
     db_manager.record_audit_event(
         AuditEvent(
