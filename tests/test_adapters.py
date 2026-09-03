@@ -1725,16 +1725,26 @@ class TestCISBenchmarkAdapters:
                     "title": "Create a user for the container",
                     "level": "WARN",
                     "alerts": ["Last user should not be root"],
-                }
+                },
+                {
+                    "code": "CIS-DI-0005",
+                    "title": "Sensitive information",
+                    "level": "WARN",
+                    "alerts": ["Secret found in image layer"],
+                },
             ]
         }
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/dockle"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_dockle), ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
-            assert len(findings) == 1
-            assert findings[0].check_id == "DOCKER-CIS-001"
-            assert len(recorded_cis) == 1
+            assert len(findings) == 2
+            assert findings[0].check_id == "IAC-DOCKER-001"
+            assert findings[0].severity == Severity.HIGH
+            assert findings[1].check_id == "IAC-DOCKER-002"
+            assert findings[1].severity == Severity.CRITICAL
+            assert findings[1].cwe_id == "CWE-522"
+            assert len(recorded_cis) == 2
 
     @pytest.mark.asyncio
     async def test_kubebench_run_success(self, tmp_path):
@@ -1780,7 +1790,7 @@ class TestCISBenchmarkAdapters:
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_kb), ""))):
             findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
             assert len(findings) == 1
-            assert findings[0].check_id == "K8S-CIS-001"
+            assert findings[0].check_id == "IAC-K8S-002"
             assert len(recorded_cis) == 1
 
     @pytest.mark.asyncio

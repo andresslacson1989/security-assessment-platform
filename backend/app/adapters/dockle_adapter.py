@@ -102,8 +102,13 @@ class DockleAdapter(BaseToolAdapter):
                     record_cis_result(cis_model)
 
                 if level in ("FATAL", "WARN"):
-                    severity = Severity.HIGH if level == "FATAL" else Severity.MEDIUM
-                    cvss_score = 7.5 if level == "FATAL" else 5.3
+                    canonical_id, cwe_id, severity, cvss_score = {
+                        "CIS-DI-0001": ("IAC-DOCKER-001", "CWE-250", Severity.HIGH, 7.5),
+                        "CIS-DI-0005": ("IAC-DOCKER-002", "CWE-522", Severity.CRITICAL, 9.0),
+                    }.get(
+                        code_id,
+                        ("IAC-DOCKER-001", "CWE-250", Severity.HIGH if level == "FATAL" else Severity.MEDIUM, 7.5 if level == "FATAL" else 5.3),
+                    )
 
                     evidence = Evidence(
                         location=f"{target_image} ({code_id})",
@@ -116,18 +121,18 @@ class DockleAdapter(BaseToolAdapter):
                         scan_id=scan_id,
                         engine="infra_iac",
                         source_tool="dockle",
-                        check_id="DOCKER-CIS-001",
+                        check_id=canonical_id,
                         category="Container Hardening",
                         title=f"CIS Docker Benchmark [{code_id}]: {title}",
                         severity=severity,
                         cvss_score=cvss_score,
-                        cwe_id="CWE-250",
+                        cwe_id=cwe_id,
                         description=f"Dockle identified a CIS Docker container violation `{code_id}` in image `{target_image}`: {alert_text}.",
                         impact="Running containers as root or with unnecessary SUID binaries increases the blast radius of container escapes.",
                         remediation=remediation,
                         references=["https://github.com/goodwithtech/dockle"],
                         evidence=evidence,
-                        fingerprint=calculate_fingerprint("DOCKER-CIS-001", target_image, code_id),
+                        fingerprint=calculate_fingerprint(canonical_id, target_image, code_id),
                     )
                     findings.append(finding)
                     await emit_finding(finding)

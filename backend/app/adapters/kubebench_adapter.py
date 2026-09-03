@@ -119,7 +119,7 @@ class KubeBenchAdapter(BaseToolAdapter):
                                 scan_id=scan_id,
                                 engine="infra_iac",
                                 source_tool=self.tool_name,
-                                check_id="K8S-CIS-001",
+                                check_id="IAC-K8S-002",
                                 category="Cluster Compliance",
                                 title=f"CIS Kubernetes Benchmark [{test_number}]: {test_desc}",
                                 severity=severity,
@@ -130,7 +130,7 @@ class KubeBenchAdapter(BaseToolAdapter):
                                 remediation=remediation,
                                 references=["https://github.com/aquasecurity/kube-bench"],
                                 evidence=evidence,
-                                fingerprint=calculate_fingerprint("K8S-CIS-001", f"K8s-{test_number}", test_desc),
+                                fingerprint=calculate_fingerprint("IAC-K8S-002", f"K8s-{test_number}", test_desc),
                             )
                             findings.append(finding)
                             await emit_finding(finding)
