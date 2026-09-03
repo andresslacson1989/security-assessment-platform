@@ -119,10 +119,6 @@ async def audit_parameter_fuzzing(
         if "?" in ep.url:
             test_urls.add(ep.url)
 
-    # If no parameterized URLs found, test baseline endpoint with sample query params
-    if not test_urls:
-        test_urls.add(f"{target_url.rstrip('/')}/?id=1&search=test&redirect=home")
-
     delay_target = fuzz_cfg.delay_seconds or 2.0
 
     for url_str in test_urls:

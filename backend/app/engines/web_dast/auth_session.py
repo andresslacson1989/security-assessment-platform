@@ -383,30 +383,47 @@ class AuthSessionManager:
                     resolved_action = urllib.parse.urljoin(page_url, action_raw)
 
                     # DAST-FORM-001: Insecure Cleartext Form Action
-                    if page_url.startswith("https://") and resolved_action.startswith("http://"):
+                    # R4.3: Ensure form transport assessment cannot say "secure submission" for a state-changing
+                    # form whose resolved action uses plain HTTP. Trigger DAST-FORM-001 if action uses http://
+                    # either on an HTTPS page (mixed-content downgrade) or for any state-changing form / cleartext HTTP form.
+                    is_insecure_transport = resolved_action.startswith("http://") and (
+                        page_url.startswith("https://") or method in ("POST", "PUT", "DELETE")
+                    )
+                    if is_insecure_transport:
+                        is_https_origin = page_url.startswith("https://")
+                        title = (
+                            f"Insecure Cleartext Form Action on HTTPS Page: '{resolved_action}'"
+                            if is_https_origin
+                            else f"Insecure Cleartext State-Changing Form Action: '{resolved_action}'"
+                        )
+                        desc = (
+                            f"A form on secure page '{page_url}' submits form data to unencrypted destination '{resolved_action}'."
+                            if is_https_origin
+                            else f"A state-changing form ({method}) on '{page_url}' submits form data to unencrypted destination '{resolved_action}'."
+                        )
                         f = Finding(
                             scan_id=self.scan_id,
                             engine="web_dast",
                             check_id="DAST-FORM-001",
                             category="Insecure Transmission",
-                            title=f"Insecure Cleartext Form Action on HTTPS Page: '{resolved_action}'",
+                            title=title,
                             severity=Severity.HIGH,
                             cvss_score=7.5,
                             cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
                             cwe_id="CWE-319",
                             owasp_category="A02:2021-Cryptographic Failures",
                             nist_control="SC-8",
-                            description=f"A form on secure page '{page_url}' submits form data to unencrypted destination '{resolved_action}'.",
+                            description=desc,
                             impact="User inputs submitted through this form will be transmitted in plaintext across the network, vulnerable to interception.",
                             remediation="Ensure form action attributes use HTTPS URLs or relative path references.",
-                            remediation_code_snippet="<form action=\"/api/submit\" method=\"POST\">",
+                            remediation_code_snippet='<form action="/api/submit" method="POST">',
                             references=["https://cwe.mitre.org/data/definitions/319.html"],
                             evidence=Evidence(
                                 location=f"{page_url} [Form #{form_idx}]",
-                                observed_value=f"<form action=\"{resolved_action}\" method=\"{method}\">",
+                                observed_value=f'<form action="{resolved_action}" method="{method}">',
                                 expected_value="Form action uses secure HTTPS destination",
                             ),
-                            fingerprint=calculate_fingerprint("DAST-FORM-001", page_url, resolved_action),
+                            fingerprint=calculate_fingerprint("DAST-FORM-001", page_url, f"{resolved_action}_{method}"),
                         )
                         findings.append(f)
                         exec_record.findings.append(f)

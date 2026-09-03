@@ -129,3 +129,19 @@ Repository-level controls for the documented invariants are implemented and veri
 | **INV-R3.5** | Documentation Truthfulness & Governance Reconciliation | Rule 0.1, Audit R3.5 | `docs/SECURITY_INVARIANT_TRACEABILITY.md`, `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | Doc & Code Inspection | **VERIFIED** |
 | **INV-R3.6** | Application Image Identity Pinning | Contract 01 §7, Audit R3.6 | `docker-compose.yml` | `docker-compose.yml` Inspection | **VERIFIED** |
 | **INV-R3.10** | Repository Governance Policy (Solo-Maintainer) | Rule 0.1, Audit R3.5 / E13.10 | `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | Operator Direct-Push Policy Accepted | **OPERATOR-ACCEPTED SOLO-MAINTAINER GOVERNANCE POLICY** |
+
+---
+
+## 5. E13-R4 Final Narrow Acceptance Closure Invariants
+
+| Rework Invariant ID | Security Control Domain | Primary Specification | Concrete Implementation | Verification Suite | Status |
+|---|---|---|---|---|---|
+| **INV-R4.1** | Form vs Authentication Finding Attribution | Audit R4.1 | `backend/app/engines/web_dast/engine.py` | `tests/test_e13_evidence_truthfulness.py` | **VERIFIED** |
+| **INV-R4.2** | Elimination of Synthetic Parameters from SAFE Evidence | Audit R4.2 | `backend/app/engines/web_dast/parameter_fuzzer.py` | `tests/test_e13_evidence_truthfulness.py` | **VERIFIED** |
+| **INV-R4.3** | Cleartext Form Transport Truthfulness & DAST-FORM-001 | Audit R4.3 | `backend/app/engines/web_dast/auth_session.py` | `tests/test_e13_evidence_truthfulness.py` | **VERIFIED** |
+| **INV-R4.4** | Docker Compose Standalone/Enterprise Profile Isolation | Audit R4.4 | `docker-compose.yml`, `README.md` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R4.5** | Egress Fail-Closed Documentation Truthfulness | Audit R4.5 | `README.md`, `docs/DOCKER_COMPOSE_DEPLOYMENT.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R4.6** | Reconciled Supported Python Interpreters (3.11/3.13) | Audit R4.6 | `README.md`, `contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Run | **PENDING PR RUN** |
+| **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Run | **PENDING PR RUN** |
+

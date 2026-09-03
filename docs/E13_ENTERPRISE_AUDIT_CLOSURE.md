@@ -3,7 +3,7 @@
 Baseline commit: a5dea124dd2556c2aac959dac5c74281c9402231
 Current branch: security/e13-enterprise-audit-closure
 Implementation baseline: 3b00e0db06bd1b589042371d58be91ed51b2056c
-Acceptance evidence revision: Final Technical Closure (E13-R3)
+Acceptance evidence revision: Final Narrow Acceptance Closure (E13-R4)
 
 ## E13.1 Identity & Scope Closure
 Status: VERIFIED
@@ -99,7 +99,8 @@ Focused tests:
 Notes:
 - Worker environment in docker-compose.yml explicitly specifies ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED: "true".
 - ProcessSupervisor fails closed unconditionally (PROCESS_LAUNCH_REJECTED_SECURITY) under ENTERPRISE mode or when ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED=true without any arbitrary facility string bypass.
-- Actual kernel-level network namespace or eBPF/egress gateway enforcement requires operator infrastructure not available in the current standalone Windows development environment. Release readiness remains blocked pending operator infrastructure deployment.
+- External enterprise scanner execution is fail-closed until a real egress provider/verifier is implemented and deployed. Setting SCANNER_EGRESS_PROXY alone does not satisfy the enterprise egress enforcement requirement.
+- Actual kernel-level network namespace or eBPF/egress gateway enforcement requires operator infrastructure not available in the current standalone development environment. Enterprise release readiness remains blocked pending operator infrastructure deployment.
 
 ## E13.7 Supply Chain and Reproducible Deployment
 Status: VERIFIED
@@ -169,14 +170,17 @@ Notes:
 - Formally recorded as an accepted operational governance tradeoff, not an implemented branch-protection control.
 
 ---
-Final decision: ⚠️ E13 IMPLEMENTATION VERIFIED — ENTERPRISE DEPLOYMENT ACCEPTANCE BLOCKED ON EGRESS INFRASTRUCTURE
+Final decision:
+✅ E13 REPOSITORY IMPLEMENTATION ACCEPTED
+⚠️ ENTERPRISE DEPLOYMENT ACTIVATION BLOCKED ON EXTERNAL-PROCESS EGRESS INFRASTRUCTURE
 
 Accepted Operational Risks:
 1. E13.10 Solo-Maintainer Governance Policy: Direct push permitted on main for solo maintainer on GitHub Free plan.
 2. E13.8 Residual CSP Style Inline: style-src 'unsafe-inline' retained for runtime HUD styling variables.
 
 Deployment Blocker:
-1. E13.6 Enterprise Egress Infrastructure: Kernel/network-level egress gateway required before enterprise deployment acceptance (code fails closed via Option B).
+1. E13.6 Enterprise Egress Infrastructure: Kernel/network-level egress gateway required before enterprise deployment activation (code fails closed via Option B).
+
 
 
 

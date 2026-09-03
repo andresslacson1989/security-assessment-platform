@@ -1,7 +1,7 @@
 # CyberAssess - Enterprise Automated Security Assessment & Vulnerability Management Platform
 
 [![Platform Version](https://img.shields.io/badge/version-14.3.0-06b6d4.svg)](https://github.com/andresslacson1989/security-assessment-platform)
-[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Standards](https://img.shields.io/badge/standards-ASVS%20v5.0.0%20%7C%20NIST%20SSDF%20v1.1%20%7C%20NIST%20800--53-purple.svg)](https://github.com/andresslacson1989/security-assessment-platform)
 [![License](https://img.shields.io/badge/license-Proprietary%20Personal--Use-red.svg)](LICENSE)
@@ -18,7 +18,7 @@ CyberAssess operates under two distinct deployment profiles:
 - **Persistence**: ACID relational persistence using local SQLite.
 - **Dispatch**: In-process asynchronous task execution.
 - **Target Use**: Rapid local assessments, CI/CD runners, and developer workstations.
-- **Launcher**: `python run_platform.py`
+- **Launcher**: `python run_platform.py` or `docker compose --profile standalone up -d`
 
 ### 2. Enterprise Profile (Containerized / Segmented Multi-Service)
 - **Persistence**: Enterprise PostgreSQL 16 on an internal-only data plane network.
@@ -27,7 +27,7 @@ CyberAssess operates under two distinct deployment profiles:
   - `control-plane`: API gateway and HUD server.
   - `data-plane`: Dedicated internal network (`internal: true`) for database and queue; no published host ports.
   - `execution-egress`: Outbound tool execution network isolated from internal persistence.
-- **Launcher**: `docker compose --profile enterprise up -d`
+- **Launcher**: `docker compose --profile enterprise up -d` (starts enterprise API, worker, PostgreSQL, and Redis; standalone API is excluded to prevent port collisions)
 
 ---
 
@@ -71,8 +71,8 @@ CyberAssess enforces strict architectural security invariants:
 5. **Subprocess Environment Sanitization & Egress Governance**:
    - Subprocesses receive an explicitly curated environment containing only safe system keys (`PATH`, `SYSTEMROOT`, `LANG`, etc.).
    - Platform secrets (`JWT_SECRET`, `DATABASE_URL`, `REDIS_URL`, API keys) are strictly excluded from tool environments.
-   - `SCANNER_EGRESS_PROXY` governs outbound tool proxy routing; ambient host proxies are purged.
-   - In `ENTERPRISE` mode, external tool execution fails closed unless an operator-verified egress gateway or network namespace enforcement facility is configured.
+   - `SCANNER_EGRESS_PROXY` governs outbound tool proxy routing for supported tools; ambient host proxies are purged.
+   - External enterprise scanner execution is fail-closed until a real egress provider/verifier is implemented and deployed. Setting `SCANNER_EGRESS_PROXY` alone does not satisfy the enterprise egress enforcement requirement.
 
 6. **Authentication, Rate Limiting & Bootstrap Protection**:
    - First-time production bootstrap requires an out-of-band `BOOTSTRAP_SECRET` (or localhost restriction); fails closed once initialized.
@@ -83,8 +83,8 @@ CyberAssess enforces strict architectural security invariants:
 ## ⚡ Quickstart
 
 ### Prerequisites
-- Python 3.11, 3.12, or 3.13
-- Optional: Docker & Docker Compose for enterprise multi-service deployment
+- Python 3.11 (Authoritative CI & Production Container) or Python 3.13 (Development Verified)
+- Optional: Docker & Docker Compose for containerized deployment
 
 ### 1. Standalone Local Setup
 ```bash
@@ -103,7 +103,13 @@ python run_platform.py
 ```
 *Access the SOC Dark Theme Dashboard at `http://127.0.0.1:8000`.*
 
-### 2. Enterprise Docker Deployment
+### 2. Standalone Docker Deployment
+```bash
+# Launch standalone containerized platform (binds host port 8000)
+docker compose --profile standalone up -d
+```
+
+### 3. Enterprise Docker Deployment
 ```bash
 # Set required secrets
 export JWT_SECRET="your-32-char-min-production-secret-here"
@@ -113,7 +119,7 @@ export DATABASE_URL="postgresql://cyberassess:${POSTGRES_PASSWORD}@postgres:5432
 export EXECUTION_QUEUE_URL="redis://redis:6379/0"
 export CLOUD_CREDENTIALS_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 
-# Launch enterprise fleet
+# Launch enterprise fleet (starts enterprise API, worker, PostgreSQL, and Redis; excludes standalone API)
 docker compose --profile enterprise up -d
 ```
 

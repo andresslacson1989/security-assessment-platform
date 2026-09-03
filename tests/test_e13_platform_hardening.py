@@ -366,3 +366,69 @@ def test_r3_4_frontend_contains_zero_inline_event_handlers():
     assert len(js_matches) == 0, f"Found inline event handlers in app.js: {js_matches}"
 
 
+def test_r4_4_docker_compose_profile_topology_and_port_uniqueness():
+    """
+    R4.4 Invariant:
+    1. 'cyberassess' must be assigned to profiles: ['standalone'].
+    2. 'cyberassess-enterprise' must be assigned to profiles: ['enterprise'].
+    3. Under standalone profile ('standalone'), only cyberassess binds port 8000.
+    4. Under enterprise profile ('enterprise'), only cyberassess-enterprise binds port 8000.
+       'cyberassess' must NOT be active under enterprise profile, avoiding port 8000 collision.
+    """
+    import yaml
+    repo_root = os.path.dirname(os.path.dirname(__file__))
+    compose_path = os.path.join(repo_root, "docker-compose.yml")
+    with open(compose_path, "r", encoding="utf-8") as f:
+        compose = yaml.safe_load(f)
+
+    services = compose.get("services", {})
+    assert "cyberassess" in services
+    assert "cyberassess-enterprise" in services
+
+    # 1. Profile assignments
+    assert services["cyberassess"].get("profiles") == ["standalone"]
+    assert services["cyberassess-enterprise"].get("profiles") == ["enterprise"]
+
+    # 2. Simulate enterprise profile activation:
+    # Services active when --profile enterprise is used:
+    # Any service with no profile, plus any service with 'enterprise' in profiles.
+    ent_active_services = {
+        name: svc for name, svc in services.items()
+        if not svc.get("profiles") or "enterprise" in svc.get("profiles", [])
+    }
+    assert "cyberassess" not in ent_active_services, (
+        "cyberassess (standalone) must NOT be activated when --profile enterprise is specified!"
+    )
+    assert "cyberassess-enterprise" in ent_active_services
+
+    # Inspect published host ports under enterprise topology
+    ent_published_ports = []
+    for sname, sdata in ent_active_services.items():
+        for p in sdata.get("ports", []):
+            host_port = str(p).split(":")[0]
+            ent_published_ports.append((sname, host_port))
+
+    host_8000_binders = [sname for sname, port in ent_published_ports if port == "8000"]
+    assert len(host_8000_binders) == 1
+    assert host_8000_binders[0] == "cyberassess-enterprise"
+
+    # 3. Simulate standalone profile activation:
+    std_active_services = {
+        name: svc for name, svc in services.items()
+        if not svc.get("profiles") or "standalone" in svc.get("profiles", [])
+    }
+    assert "cyberassess-enterprise" not in std_active_services
+    assert "cyberassess" in std_active_services
+
+    std_published_ports = []
+    for sname, sdata in std_active_services.items():
+        for p in sdata.get("ports", []):
+            host_port = str(p).split(":")[0]
+            std_published_ports.append((sname, host_port))
+
+    std_8000_binders = [sname for sname, port in std_published_ports if port == "8000"]
+    assert len(std_8000_binders) == 1
+    assert std_8000_binders[0] == "cyberassess"
+
+
+

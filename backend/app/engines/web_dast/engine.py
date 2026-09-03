@@ -424,10 +424,20 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             exec_record = r
                             break
 
-                ep_form_finds = [f for f in auth_form_findings if f.evidence and f.evidence.location and ep.url in f.evidence.location]
+                # Authoritative form check findings strictly restricted to form/CSRF check IDs: DAST-FORM-001, DAST-FORM-002
+                relevant_form_ids = {"DAST-FORM-001", "DAST-FORM-002"}
+                if exec_record and exec_record.findings:
+                    form_findings_for_ep = [f for f in exec_record.findings if f.check_id in relevant_form_ids]
+                else:
+                    form_findings_for_ep = [
+                        f for f in auth_form_findings
+                        if f.check_id in relevant_form_ids
+                        and f.evidence
+                        and f.evidence.location
+                        and ep.url in f.evidence.location
+                    ]
 
-                if ep_form_finds or (exec_record and exec_record.findings):
-                    all_ep_finds = list(exec_record.findings) if exec_record and exec_record.findings else ep_form_finds
+                if form_findings_for_ep:
                     if "auth_session" not in ep.tools_executed:
                         ep.tools_executed.append("auth_session")
                     ep.tests_performed.append(
@@ -436,8 +446,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             category="Authentication",
                             tool="auth_session",
                             status=EndpointTestStatus.VULNERABLE,
-                            details=f"Insecure form or missing CSRF token detected ({len(all_ep_finds)} issues).",
-                            findings_count=len(all_ep_finds),
+                            details=f"Insecure form or missing CSRF token detected ({len(form_findings_for_ep)} issues).",
+                            findings_count=len(form_findings_for_ep),
                         )
                     )
                 elif exec_record is not None:
@@ -454,13 +464,19 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             )
                         )
                     elif exec_record.forms_inspected > 0:
+                        is_https_page = ep.url.startswith("https://")
+                        details_msg = (
+                            f"{exec_record.forms_inspected} HTML form(s) inspected for anti-CSRF tokens and secure submission."
+                            if is_https_page
+                            else f"{exec_record.forms_inspected} HTML form(s) inspected for anti-CSRF tokens (unencrypted HTTP transport)."
+                        )
                         ep.tests_performed.append(
                             EndpointTestRecord(
                                 test_name="HTML Form & CSRF Token Validation",
                                 category="Authentication",
                                 tool="auth_session",
                                 status=EndpointTestStatus.SAFE,
-                                details=f"{exec_record.forms_inspected} HTML form(s) inspected for anti-CSRF tokens and secure submission.",
+                                details=details_msg,
                             )
                         )
                     else:
@@ -473,12 +489,26 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                 details="Endpoint contains no HTML forms to validate.",
                             )
                         )
+                else:
+                    ep.tests_performed.append(
+                        EndpointTestRecord(
+                            test_name="HTML Form & CSRF Token Validation",
+                            category="Authentication",
+                            tool="auth_session",
+                            status=EndpointTestStatus.NOT_EXECUTED,
+                            details="Endpoint contains no HTML forms to validate.",
+                        )
+                    )
 
             for f in auth_form_findings:
                 if f.fingerprint not in existing_fps:
                     existing_fps.add(f.fingerprint)
                     f.scan_id = scan_id
                     findings.append(f)
+                    for ep in discovered_endpoints:
+                        if f.evidence and f.evidence.location and ep.url in f.evidence.location:
+                            if f.id not in ep.finding_ids:
+                                ep.finding_ids.append(f.id)
                     await emit_finding(f)
 
             # --- Stage 4: CORS Policy Analyzer (60% - 70%) ---
@@ -725,8 +755,16 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                     )
                                 )
                         else:
-                            # Endpoint was NEVER a fuzzer candidate; do not mark SAFE or add parameter_fuzzer to tools_executed.
-                            pass
+                            # Endpoint was NEVER a fuzzer candidate; record truthful NOT_EXECUTED without adding parameter_fuzzer to tools_executed.
+                            ep.tests_performed.append(
+                                EndpointTestRecord(
+                                    test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                    category="Injection",
+                                    tool="parameter_fuzzer",
+                                    status=EndpointTestStatus.NOT_EXECUTED,
+                                    details="Endpoint contains no discoverable query or form parameters for injection testing.",
+                                )
+                            )
 
         await emit_progress(100, "Web DAST assessment completed.")
         await emit_log(LogLevel.INFO, f"Web DAST engine finished with {len(findings)} total findings.")

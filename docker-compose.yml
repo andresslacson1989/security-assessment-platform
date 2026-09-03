@@ -6,6 +6,7 @@
 
 services:
   cyberassess:
+    profiles: ["standalone"]
     build:
       context: .
       dockerfile: Dockerfile

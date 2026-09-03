@@ -936,3 +936,253 @@ async def test_r3_1_cors_partial_failure_forces_skipped_never_safe():
     assert cors_tests[0].status != EndpointTestStatus.SAFE
 
 
+@pytest.mark.asyncio
+async def test_r4_1_sensitive_query_token_preserves_auth_finding_without_falsely_marking_form_csrf_vulnerable():
+    """
+    R4.1 Invariant:
+    A generic authentication finding (e.g. DAST-AUTH-004 for sensitive query token)
+    must remain present as a finding, but must NEVER cause the
+    'HTML Form & CSRF Token Validation' test record to say
+    'Insecure form or missing CSRF token detected' or be marked VULNERABLE.
+    """
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "application/json"}
+    mock_resp.text = '{"status": "ok"}'
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://app.local")
+    config = ScanConfig()
+    config.fuzzing.enabled = False
+
+    # Endpoint contains sensitive token in query string, but no forms
+    ep = DiscoveredEndpoint(
+        url="https://app.local/api/v1/user?access_token=super_secret_jwt_token_12345",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="application/json",
+    )
+
+    endpoints = []
+    async def ep_cb(e):
+        endpoints.append(e)
+
+    findings = []
+    async def find_cb(f):
+        findings.append(f)
+
+    def make_crawler(eps):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([ep])):
+        result_findings = await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=find_cb,
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            organization_id="org-default",
+        )
+
+    # 1. DAST-AUTH-004 must be detected and present
+    auth_finds = [f for f in result_findings if f.check_id == "DAST-AUTH-004"]
+    assert len(auth_finds) == 1, f"Expected DAST-AUTH-004 finding, found: {[f.check_id for f in result_findings]}"
+    assert "access_token" in auth_finds[0].title
+
+    # 2. Form/CSRF test record must NOT be VULNERABLE and must NOT claim insecure form
+    assert len(endpoints) == 1
+    form_tests = [t for t in endpoints[0].tests_performed if "Form & CSRF" in t.test_name]
+    assert len(form_tests) == 1
+    assert form_tests[0].status != EndpointTestStatus.VULNERABLE, (
+        f"DAST-AUTH-004 falsely contaminated form/CSRF record: {form_tests[0]}"
+    )
+    assert form_tests[0].status == EndpointTestStatus.NOT_EXECUTED
+    assert "Insecure form" not in form_tests[0].details
+    assert "missing CSRF token" not in form_tests[0].details
+
+
+@pytest.mark.asyncio
+async def test_r4_2_endpoint_with_no_discovered_parameters_never_receives_fuzzer_safe_result():
+    """
+    R4.2 Invariant:
+    When no real fuzzing candidates exist (no query parameters on target or endpoints),
+    parameter fuzzer must NOT invent '?id=1&search=test&redirect=home'.
+    The endpoint must yield NOT_EXECUTED, never SAFE, and parameter_fuzzer must not be in tools_executed.
+    """
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
+
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/html"}
+    mock_resp.text = "<html><body><h1>Static Info Page</h1></body></html>"
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    # 1. Direct unit test of audit_parameter_fuzzing: zero executions when no parameters exist
+    config = ScanConfig()
+    config.fuzzing.enabled = True
+    config.fuzzing.fuzz_sqli = True
+
+    static_ep = DiscoveredEndpoint(
+        url="https://app.local/about",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="text/html",
+    )
+
+    res = await audit_parameter_fuzzing(
+        target_url="https://app.local",
+        discovered_endpoints=[static_ep],
+        client=mock_client,
+        config=config,
+        scan_id="scan-fuzz-empty",
+    )
+    # Executions dict must be empty — no synthesized URLs!
+    assert len(res.executions) == 0, f"Expected 0 executions, but found synthesized URLs: {list(res.executions.keys())}"
+    assert len(res) == 0
+
+    # 2. Integration test through engine: ep receives NOT_EXECUTED, never SAFE
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://app.local")
+
+    endpoints = []
+    async def ep_cb(e):
+        endpoints.append(e)
+
+    def make_crawler(eps):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = {"https://app.local/about": "<html><body><h1>Static Info</h1></body></html>"}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([static_ep])):
+        await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            organization_id="org-default",
+            active_probing_granted=True,
+        )
+
+    assert len(endpoints) == 1
+    assert "parameter_fuzzer" not in endpoints[0].tools_executed
+
+    fuzz_tests = [t for t in endpoints[0].tests_performed if "Active Parameter Injection" in t.test_name]
+    assert len(fuzz_tests) == 1
+    assert fuzz_tests[0].status == EndpointTestStatus.NOT_EXECUTED
+    assert fuzz_tests[0].status != EndpointTestStatus.SAFE
+
+
+@pytest.mark.asyncio
+async def test_r4_3_form_transport_truthfulness_matrix():
+    """
+    R4.3 Invariant:
+    - HTTPS page -> HTTPS form action = clean transport (SAFE)
+    - HTTPS page -> HTTP form action = vulnerable (DAST-FORM-001 / VULNERABLE)
+    - HTTP page -> HTTP POST form = vulnerable (DAST-FORM-001 / VULNERABLE, must not be called secure)
+    """
+    from app.core.models import AuthConfig
+    from app.engines.web_dast.auth_session import AuthSessionManager
+
+    mock_client = AsyncMock()
+
+    # Case 1: HTTPS page -> HTTPS form (with valid CSRF token)
+    mgr1 = AuthSessionManager(target_url="https://secure.local", config=AuthConfig(), client=mock_client, scan_id="s1")
+    ep1 = DiscoveredEndpoint(url="https://secure.local/login", method="GET", depth=1, status_code=200, content_type="text/html")
+    html1 = {
+        "https://secure.local/login": """
+        <html><body>
+          <form action="https://secure.local/api/login" method="POST">
+            <input type="hidden" name="csrf_token" value="valid_token_xyz" />
+            <input type="text" name="user" />
+          </form>
+        </body></html>
+        """
+    }
+    res1 = await mgr1.audit_auth_and_forms([ep1], html1)
+    form_finds1 = [f for f in res1.findings if f.check_id in ("DAST-FORM-001", "DAST-FORM-002")]
+    assert len(form_finds1) == 0, f"Expected 0 form findings on clean HTTPS form, got: {form_finds1}"
+    exec1 = res1.form_executions.get("https://secure.local/login")
+    assert exec1 is not None and len(exec1.findings) == 0
+    assert exec1.forms_inspected == 1
+
+    # Case 2: HTTPS page -> HTTP form action (mixed-content cleartext submission)
+    mgr2 = AuthSessionManager(target_url="https://secure.local", config=AuthConfig(), client=mock_client, scan_id="s2")
+    ep2 = DiscoveredEndpoint(url="https://secure.local/feedback", method="GET", depth=1, status_code=200, content_type="text/html")
+    html2 = {
+        "https://secure.local/feedback": """
+        <html><body>
+          <form action="http://insecure.local/submit" method="POST">
+            <input type="hidden" name="_csrf" value="token123" />
+            <input type="text" name="comment" />
+          </form>
+        </body></html>
+        """
+    }
+    res2 = await mgr2.audit_auth_and_forms([ep2], html2)
+    form_finds2 = [f for f in res2.findings if f.check_id == "DAST-FORM-001"]
+    assert len(form_finds2) == 1, "Expected DAST-FORM-001 for HTTPS page -> HTTP form"
+    assert "Insecure Cleartext Form Action on HTTPS Page" in form_finds2[0].title
+
+    # Case 3: HTTP page -> HTTP POST form (cleartext state-changing form)
+    mgr3 = AuthSessionManager(target_url="http://plain.local", config=AuthConfig(), client=mock_client, scan_id="s3")
+    ep3 = DiscoveredEndpoint(url="http://plain.local/settings", method="GET", depth=1, status_code=200, content_type="text/html")
+    html3 = {
+        "http://plain.local/settings": """
+        <html><body>
+          <form action="http://plain.local/update" method="POST">
+            <input type="hidden" name="csrf_token" value="token456" />
+            <input type="text" name="email" />
+          </form>
+        </body></html>
+        """
+    }
+    res3 = await mgr3.audit_auth_and_forms([ep3], html3)
+    form_finds3 = [f for f in res3.findings if f.check_id == "DAST-FORM-001"]
+    assert len(form_finds3) == 1, "Expected DAST-FORM-001 for HTTP POST form; must not be called secure"
+    assert "Insecure Cleartext State-Changing Form Action" in form_finds3[0].title
+
+
+

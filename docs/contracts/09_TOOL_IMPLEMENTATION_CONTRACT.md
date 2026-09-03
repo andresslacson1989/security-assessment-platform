@@ -406,7 +406,7 @@ Stderr: Captures runtime diagnostics and errors
 ### 7. Upstream Version Policy
 - **Exact Pinned Version:** `[CYBERASSESS_REQUIRED]` SSLyze `5.2.0` (Exact PyPI Release - September 2023).
 - **Runtime Compatibility Matrix:**
-  - Python: 3.8 to 3.12 (Supported runtime environment; Python 3.13 / OpenSSL 3.0+ TLS renegotiation/cryptography bindings must be evaluated in isolated venv).
+  - Python: 3.11 (Authoritative CI & Production Container runtime environment; Python 3.13 local regression verified).
   - OpenSSL: OpenSSL 1.1.1 or OpenSSL 3.0 compatible bindings.
   - OS Platform: Linux / POSIX container / Windows.
 - **Version Enforcement:** Runtime probe checks `actual_version == "sslyze 5.2.0"`.
