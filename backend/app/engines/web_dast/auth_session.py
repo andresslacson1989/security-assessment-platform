@@ -16,6 +16,7 @@ from app.core.models import (
     AuthConfig,
     AuthType,
     DiscoveredEndpoint,
+    EndpointTestStatus,
     Finding,
     Evidence,
     Severity,
@@ -26,6 +27,50 @@ from app.core.models import (
 from app.engines.base import LogCallback
 
 logger = logging.getLogger("cyberassess.engines.auth_session")
+
+
+class FormCheckExecution:
+    """
+    Authoritative per-page form check execution record.
+    """
+    def __init__(
+        self,
+        page_url: str,
+        forms_inspected: int = 0,
+        parse_failed: bool = False,
+        error_message: str = "",
+        findings: Optional[List[Finding]] = None,
+    ):
+        self.page_url = page_url
+        self.forms_inspected = forms_inspected
+        self.parse_failed = parse_failed
+        self.error_message = error_message
+        self.findings = findings or []
+
+    @property
+    def status(self) -> EndpointTestStatus:
+        if self.findings:
+            return EndpointTestStatus.VULNERABLE
+        if self.parse_failed:
+            return EndpointTestStatus.SKIPPED
+        if self.forms_inspected > 0:
+            return EndpointTestStatus.SAFE
+        return EndpointTestStatus.NOT_EXECUTED
+
+
+class AuthFormAuditResult(list):
+    """
+    Subclass of list holding authentication and form findings, while preserving
+    authoritative per-endpoint form inspection execution records.
+    """
+    def __init__(
+        self,
+        findings: List[Finding],
+        form_executions: Optional[Dict[str, FormCheckExecution]] = None,
+    ):
+        super().__init__(findings)
+        self.findings = findings
+        self.form_executions = form_executions or {}
 
 CSRF_FIELD_NAMES = {
     "csrf_token", "_csrf", "authenticity_token", "_token", "csrf-token",
@@ -323,10 +368,14 @@ class AuthSessionManager:
                     ))
 
         # --- 5. DAST-FORM-001 & DAST-FORM-002: HTML Form Security ---
+        form_executions: Dict[str, FormCheckExecution] = {}
         for page_url, html_str in html_contents.items():
+            exec_record = FormCheckExecution(page_url=page_url)
+            form_executions[page_url] = exec_record
             try:
                 soup = BeautifulSoup(html_str, "html.parser")
                 forms = soup.find_all("form")
+                exec_record.forms_inspected = len(forms)
 
                 for form_idx, form in enumerate(forms, start=1):
                     action_raw = form.get("action", "")
@@ -335,7 +384,7 @@ class AuthSessionManager:
 
                     # DAST-FORM-001: Insecure Cleartext Form Action
                     if page_url.startswith("https://") and resolved_action.startswith("http://"):
-                        findings.append(Finding(
+                        f = Finding(
                             scan_id=self.scan_id,
                             engine="web_dast",
                             check_id="DAST-FORM-001",
@@ -358,7 +407,9 @@ class AuthSessionManager:
                                 expected_value="Form action uses secure HTTPS destination",
                             ),
                             fingerprint=calculate_fingerprint("DAST-FORM-001", page_url, resolved_action),
-                        ))
+                        )
+                        findings.append(f)
+                        exec_record.findings.append(f)
 
                     # DAST-FORM-002: Missing Anti-CSRF Token in State-Changing Form
                     if method in ("POST", "PUT", "DELETE"):
@@ -371,7 +422,7 @@ class AuthSessionManager:
                                 break
 
                         if not has_csrf:
-                            findings.append(Finding(
+                            f = Finding(
                                 scan_id=self.scan_id,
                                 engine="web_dast",
                                 check_id="DAST-FORM-002",
@@ -394,9 +445,13 @@ class AuthSessionManager:
                                     expected_value="Hidden input containing valid anti-CSRF token",
                                 ),
                                 fingerprint=calculate_fingerprint("DAST-FORM-002", page_url, f"{resolved_action}_{form_idx}"),
-                            ))
+                            )
+                            findings.append(f)
+                            exec_record.findings.append(f)
 
-            except Exception:
+            except Exception as exc:
+                exec_record.parse_failed = True
+                exec_record.error_message = str(exc)
                 continue
 
-        return findings
+        return AuthFormAuditResult(findings=findings, form_executions=form_executions)

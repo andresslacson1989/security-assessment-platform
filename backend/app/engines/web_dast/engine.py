@@ -282,12 +282,18 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 await publish_tool_state("schemathesis")
                 await emit_log(LogLevel.WARNING, f"Schemathesis adapter error: {e}")
 
-        async with httpx.AsyncClient(
-            headers=headers,
-            timeout=timeout,
-            trust_env=False,
-            transport=ValidatedTargetTransport(_validated_target),
-        ) as client:
+        from contextlib import nullcontext
+        if kwargs.get("client") is not None:
+            client_ctx = nullcontext(kwargs["client"])
+        else:
+            client_ctx = httpx.AsyncClient(
+                headers=headers,
+                timeout=timeout,
+                trust_env=False,
+                transport=ValidatedTargetTransport(_validated_target),
+            )
+
+        async with client_ctx as client:
             # --- Stage 1: Authentication & Session Initialization (15% - 25%) ---
             await emit_progress(15, "Initializing authentication and session manager...")
             auth_manager = AuthSessionManager(
@@ -407,8 +413,21 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                 discovered_endpoints=discovered_endpoints,
                 html_contents=html_contents,
             )
+            form_executions = getattr(auth_form_findings, "form_executions", {})
+
             for ep in discovered_endpoints:
-                if ep.has_forms:
+                exec_record = form_executions.get(ep.url)
+                if not exec_record:
+                    ep_clean = ep.url.rstrip("/")
+                    for u, r in form_executions.items():
+                        if u.rstrip("/") == ep_clean:
+                            exec_record = r
+                            break
+
+                ep_form_finds = [f for f in auth_form_findings if f.evidence and f.evidence.location and ep.url in f.evidence.location]
+
+                if ep_form_finds or (exec_record and exec_record.findings):
+                    all_ep_finds = list(exec_record.findings) if exec_record and exec_record.findings else ep_form_finds
                     if "auth_session" not in ep.tools_executed:
                         ep.tools_executed.append("auth_session")
                     ep.tests_performed.append(
@@ -416,10 +435,44 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             test_name="HTML Form & CSRF Token Validation",
                             category="Authentication",
                             tool="auth_session",
-                            status=EndpointTestStatus.SAFE,
-                            details=f"{ep.discovered_forms} HTML form(s) inspected for anti-CSRF tokens and secure submission.",
+                            status=EndpointTestStatus.VULNERABLE,
+                            details=f"Insecure form or missing CSRF token detected ({len(all_ep_finds)} issues).",
+                            findings_count=len(all_ep_finds),
                         )
                     )
+                elif exec_record is not None:
+                    if "auth_session" not in ep.tools_executed:
+                        ep.tools_executed.append("auth_session")
+                    if exec_record.parse_failed:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="HTML Form & CSRF Token Validation",
+                                category="Authentication",
+                                tool="auth_session",
+                                status=EndpointTestStatus.SKIPPED,
+                                details=f"HTML form check skipped due to parse error: {exec_record.error_message or 'Parse failure'}",
+                            )
+                        )
+                    elif exec_record.forms_inspected > 0:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="HTML Form & CSRF Token Validation",
+                                category="Authentication",
+                                tool="auth_session",
+                                status=EndpointTestStatus.SAFE,
+                                details=f"{exec_record.forms_inspected} HTML form(s) inspected for anti-CSRF tokens and secure submission.",
+                            )
+                        )
+                    else:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="HTML Form & CSRF Token Validation",
+                                category="Authentication",
+                                tool="auth_session",
+                                status=EndpointTestStatus.NOT_EXECUTED,
+                                details="Endpoint contains no HTML forms to validate.",
+                            )
+                        )
 
             for f in auth_form_findings:
                 if f.fingerprint not in existing_fps:
@@ -448,14 +501,24 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                 findings_count=len(cors_findings),
                             )
                         )
-                    else:
+                    elif getattr(cors_findings, "is_fully_completed", True) and not getattr(cors_findings, "probes_failed", 0):
                         ep.tests_performed.append(
                             EndpointTestRecord(
                                 test_name="CORS Origin Reflection & Wildcard Policy",
                                 category="Configuration",
                                 tool="native_dast",
                                 status=EndpointTestStatus.SAFE,
-                                details="Strict origin reflection and access control verified.",
+                                details="Strict origin reflection and access control verified (all probes completed).",
+                            )
+                        )
+                    else:
+                        ep.tests_performed.append(
+                            EndpointTestRecord(
+                                test_name="CORS Origin Reflection & Wildcard Policy",
+                                category="Configuration",
+                                tool="native_dast",
+                                status=EndpointTestStatus.SKIPPED,
+                                details=f"CORS audit partially failed: {getattr(cors_findings, 'probes_failed', 1)} probe(s) failed or timed out.",
                             )
                         )
 
@@ -600,14 +663,24 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             f.scan_id = scan_id
                             findings.append(f)
 
+                    fuzz_executions = getattr(fuzz_findings, "executions", {})
+
                     for ep in discovered_endpoints:
-                        if "parameter_fuzzer" not in ep.tools_executed:
-                            ep.tools_executed.append("parameter_fuzzer")
-                        ep_fuzz_finds = [f for f in fuzz_findings if f.evidence and f.evidence.location and ep.url in f.evidence.location]
+                        ep_base = ep.url.split("?")[0].rstrip("/")
+                        exec_info = None
+                        for u, ex in fuzz_executions.items():
+                            if u == ep.url or u.split("?")[0].rstrip("/") == ep_base:
+                                exec_info = ex
+                                break
+
+                        ep_fuzz_finds = [f for f in fuzz_findings if f.evidence and f.evidence.location and ep_base in f.evidence.location]
                         for f in ep_fuzz_finds:
                             if f.id not in ep.finding_ids:
                                 ep.finding_ids.append(f.id)
+
                         if ep_fuzz_finds:
+                            if "parameter_fuzzer" not in ep.tools_executed:
+                                ep.tools_executed.append("parameter_fuzzer")
                             ep.tests_performed.append(
                                 EndpointTestRecord(
                                     test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
@@ -618,16 +691,42 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                     findings_count=len(ep_fuzz_finds),
                                 )
                             )
-                        else:
-                            ep.tests_performed.append(
-                                EndpointTestRecord(
-                                    test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
-                                    category="Injection",
-                                    tool="parameter_fuzzer",
-                                    status=EndpointTestStatus.SAFE,
-                                    details="Benign payload probes evaluated; no SQLi, XSS, or path traversal anomalies detected.",
+                        elif exec_info is not None:
+                            if "parameter_fuzzer" not in ep.tools_executed:
+                                ep.tools_executed.append("parameter_fuzzer")
+                            if exec_info.is_fully_completed:
+                                ep.tests_performed.append(
+                                    EndpointTestRecord(
+                                        test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                        category="Injection",
+                                        tool="parameter_fuzzer",
+                                        status=EndpointTestStatus.SAFE,
+                                        details=f"All {exec_info.probes_completed} parameter probe(s) evaluated across parameters ({', '.join(exec_info.parameters_tested)}); no anomalies detected.",
+                                    )
                                 )
-                            )
+                            elif exec_info.is_partial:
+                                ep.tests_performed.append(
+                                    EndpointTestRecord(
+                                        test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                        category="Injection",
+                                        tool="parameter_fuzzer",
+                                        status=EndpointTestStatus.SKIPPED,
+                                        details=f"Parameter fuzzing partially completed ({exec_info.probes_completed}/{exec_info.probes_requested} probes succeeded, {exec_info.probes_failed} failed).",
+                                    )
+                                )
+                            else:
+                                ep.tests_performed.append(
+                                    EndpointTestRecord(
+                                        test_name="Active Parameter Injection (SQLi / XSS / LFI / SSTI)",
+                                        category="Injection",
+                                        tool="parameter_fuzzer",
+                                        status=EndpointTestStatus.SKIPPED,
+                                        details=f"Parameter fuzzing failed: {exec_info.probes_failed} probe(s) failed or timed out.",
+                                    )
+                                )
+                        else:
+                            # Endpoint was NEVER a fuzzer candidate; do not mark SAFE or add parameter_fuzzer to tools_executed.
+                            pass
 
         await emit_progress(100, "Web DAST assessment completed.")
         await emit_log(LogLevel.INFO, f"Web DAST engine finished with {len(findings)} total findings.")

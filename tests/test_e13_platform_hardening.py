@@ -235,3 +235,134 @@ async def test_production_bootstrap_protection():
                     assert "bootstrap_secret" not in data
                     assert "token-12345" not in str(data)
 
+
+@pytest.mark.asyncio
+async def test_r3_3_production_bootstrap_without_secret_rejects_testclient():
+    """
+    R3.3 Invariant:
+    'testclient' is removed from the production loopback allowlist.
+    In PRODUCTION mode without BOOTSTRAP_SECRET, a request from 'testclient'
+    MUST be rejected with 403 Forbidden.
+    """
+    from app.core.db import db_manager
+
+    with patch.dict(os.environ, {"OPERATING_MODE": "PRODUCTION", "BOOTSTRAP_SECRET": ""}):
+        with patch.object(db_manager, "is_initialized", return_value=False):
+            # Explicitly set client host to 'testclient'
+            transport = ASGITransport(app=app, client=("testclient", 50000))
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                res = await ac.post(
+                    "/api/auth/bootstrap",
+                    json={
+                        "admin_username": "prodadmin",
+                        "admin_email": "admin@prod.local",
+                        "admin_password": "SecurePassword123!",
+                    },
+                )
+                assert res.status_code == 403
+                assert "requires localhost access" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_r3_3_production_bootstrap_without_secret_allows_strict_127_0_0_1():
+    """
+    R3.3 Invariant:
+    In PRODUCTION mode without BOOTSTRAP_SECRET, strict 127.0.0.1 client host is permitted.
+    """
+    from app.core.db import db_manager
+    from app.core.models import UserProfile, UserRole, PrincipalType, Organization
+
+    with patch.dict(os.environ, {"OPERATING_MODE": "PRODUCTION", "BOOTSTRAP_SECRET": ""}):
+        with patch.object(db_manager, "is_initialized", return_value=False), \
+             patch("app.core.db.db_manager.bootstrap_system") as mock_boot:
+            dummy_user = UserProfile(
+                id="usr-boot-127",
+                username="prodadmin",
+                email="admin@prod.local",
+                role=UserRole.ADMIN,
+                principal_type=PrincipalType.SYSTEM_PRINCIPAL,
+            )
+            dummy_org = Organization(id="org-127", name="Default Org", slug="default-org")
+            mock_boot.return_value = (dummy_user, dummy_org)
+
+            # Explicitly set client to 127.0.0.1 in ASGITransport
+            transport = ASGITransport(app=app, client=("127.0.0.1", 50000))
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1") as ac:
+                res = await ac.post(
+                    "/api/auth/bootstrap",
+                    json={
+                        "admin_username": "prodadmin",
+                        "admin_email": "admin@prod.local",
+                        "admin_password": "SecurePassword123!",
+                    },
+                )
+                assert res.status_code == 201
+
+
+def test_r3_3_enterprise_compose_wires_bootstrap_secret():
+    """
+    R3.3 Invariant:
+    docker-compose.yml must explicitly wire BOOTSTRAP_SECRET into cyberassess-enterprise
+    with a mandatory error-on-unset pattern (${BOOTSTRAP_SECRET:?...}).
+    """
+    import yaml
+    compose_path = os.path.join(os.path.dirname(__file__), "..", "docker-compose.yml")
+    with open(compose_path, "r", encoding="utf-8") as f:
+        compose = yaml.safe_load(f)
+
+    ent_env = compose["services"]["cyberassess-enterprise"]["environment"]
+    assert "BOOTSTRAP_SECRET" in ent_env
+    secret_spec = ent_env["BOOTSTRAP_SECRET"]
+    assert secret_spec.startswith("${BOOTSTRAP_SECRET:?")
+    assert "must be configured" in secret_spec
+
+
+@pytest.mark.asyncio
+async def test_r3_4_csp_script_src_contains_no_unsafe_inline():
+    """
+    R3.4 Invariant:
+    Content-Security-Policy header must enforce script-src 'self' and MUST NOT
+    contain 'unsafe-inline' within script-src.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.get("/api/system/health")
+        assert res.status_code == 200
+        csp = res.headers.get("Content-Security-Policy", "")
+
+        # Extract script-src directive
+        directives = dict(item.strip().split(None, 1) for item in csp.split(";") if item.strip())
+        assert "script-src" in directives
+        script_src = directives["script-src"]
+        assert "'self'" in script_src
+        assert "'unsafe-inline'" not in script_src, "script-src must NOT allow 'unsafe-inline'!"
+
+
+def test_r3_4_frontend_contains_zero_inline_event_handlers():
+    """
+    R3.4 Invariant:
+    Neither frontend/index.html nor dynamic HTML generation in frontend/js/app.js
+    may contain inline event handlers (onclick=, onload=, onerror=, etc.).
+    All interactions must use data-action attributes and delegated listeners.
+    """
+    import re
+    repo_root = os.path.dirname(os.path.dirname(__file__))
+    html_path = os.path.join(repo_root, "frontend", "index.html")
+    js_path = os.path.join(repo_root, "frontend", "js", "app.js")
+
+    with open(html_path, "r", encoding="utf-8") as f:
+        html_content = f.read()
+
+    with open(js_path, "r", encoding="utf-8") as f:
+        js_content = f.read()
+
+    # Pattern for HTML inline event handler attributes (e.g. onclick="...", onload='...')
+    # Requires whitespace before attribute and quote after equals to distinguish from JS property assignments (e.g. obj.onerror = ...)
+    inline_handler_regex = re.compile(r'\s(on(?:click|load|error|change|submit|focus|blur|keydown|keyup))\s*=\s*["\']', re.IGNORECASE)
+
+    html_matches = inline_handler_regex.findall(html_content)
+    assert len(html_matches) == 0, f"Found inline event handlers in index.html: {html_matches}"
+
+    js_matches = inline_handler_regex.findall(js_content)
+    assert len(js_matches) == 0, f"Found inline event handlers in app.js: {js_matches}"
+
+

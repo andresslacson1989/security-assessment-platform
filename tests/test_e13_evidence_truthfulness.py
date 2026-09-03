@@ -10,7 +10,7 @@ Validates:
 - Unexecuted endpoint tools are marked SKIPPED rather than falsely claiming SAFE.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import json
 import pytest
 from httpx import AsyncClient, ASGITransport
@@ -427,4 +427,512 @@ async def test_missing_coverage_fails_closed_as_not_fully_assessed(auth_headers)
         assert coverage["is_fully_assessed"] is False
         assert coverage["coverage_status"] == "COVERAGE_DEGRADED"
         assert coverage["engines_executed"] == []
+
+
+# ============================================================================
+# R3.1 Invariants: Form/CSRF, Parameter Fuzzer, and CORS Truthful Accounting
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_r3_1_csrf_finding_forces_vulnerable_never_safe():
+    """
+    R3.1 Invariant:
+    When DAST-FORM-002 (missing CSRF token) is detected on an endpoint,
+    the endpoint's 'HTML Form & CSRF Token Validation' record MUST be VULNERABLE,
+    NEVER SAFE.
+    """
+    from app.engines.web_dast.auth_session import AuthSessionManager
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from unittest.mock import patch
+
+    mock_client = AsyncMock()
+    mock_client.cookies = MagicMock(jar=[])
+    endpoint = DiscoveredEndpoint(
+        url="https://csrf-vuln.local/transfer",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="text/html",
+        has_forms=True,
+        discovered_forms=1,
+    )
+    html_with_insecure_form = """
+    <html><body>
+      <form action="/transfer" method="POST">
+        <input type="text" name="amount" value="100"/>
+        <button type="submit">Submit</button>
+      </form>
+    </body></html>
+    """
+
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://csrf-vuln.local")
+    config = ScanConfig()
+    config.fuzzing.enabled = False
+
+    endpoints = []
+    async def ep_cb(ep):
+        endpoints.append(ep)
+
+    def make_crawler(eps, html_dict=None):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = html_dict or {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([endpoint], {"https://csrf-vuln.local/transfer": html_with_insecure_form})), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])):
+        findings = await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            organization_id="org-default",
+        )
+
+    # 1. DAST-FORM-002 must be generated
+    csrf_findings = [f for f in findings if f.check_id == "DAST-FORM-002"]
+    assert len(csrf_findings) >= 1
+
+    # 2. Endpoint MUST be marked VULNERABLE, NEVER SAFE
+    assert len(endpoints) == 1
+    ep = endpoints[0]
+    form_tests = [t for t in ep.tests_performed if "HTML Form" in t.test_name]
+    assert len(form_tests) == 1
+    assert form_tests[0].status == EndpointTestStatus.VULNERABLE
+    assert form_tests[0].status != EndpointTestStatus.SAFE
+    assert form_tests[0].findings_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_r3_1_form_parser_failure_forces_skipped_never_safe():
+    """
+    R3.1 Invariant:
+    When HTML form parsing fails on an endpoint, the record MUST be SKIPPED,
+    NEVER SAFE.
+    """
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from unittest.mock import patch
+
+    mock_client = AsyncMock()
+    mock_client.cookies = MagicMock(jar=[])
+    endpoint = DiscoveredEndpoint(
+        url="https://corrupt-html.local/bad",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="text/html",
+        has_forms=True,
+        discovered_forms=1,
+    )
+
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://corrupt-html.local")
+    config = ScanConfig()
+    config.fuzzing.enabled = False
+
+    endpoints = []
+    async def ep_cb(ep):
+        endpoints.append(ep)
+
+    def make_crawler(eps, html_dict=None):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = html_dict or {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    # Trigger parse failure by patching BeautifulSoup inside auth_session
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.auth_session.BeautifulSoup", side_effect=ValueError("Corrupt markup")), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([endpoint], {"https://corrupt-html.local/bad": "<broken>"})), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])):
+        await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            organization_id="org-default",
+        )
+
+    assert len(endpoints) == 1
+    ep = endpoints[0]
+    form_tests = [t for t in ep.tests_performed if "HTML Form" in t.test_name]
+    assert len(form_tests) == 1
+    assert form_tests[0].status == EndpointTestStatus.SKIPPED
+    assert form_tests[0].status != EndpointTestStatus.SAFE
+
+
+@pytest.mark.asyncio
+async def test_r3_1_all_form_checks_pass_records_safe():
+    """
+    R3.1 Invariant:
+    When forms are inspected, have valid anti-CSRF tokens and HTTPS actions,
+    and produce zero findings, the record is truthfully SAFE.
+    """
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from unittest.mock import patch
+
+    mock_client = AsyncMock()
+    mock_client.cookies = MagicMock(jar=[])
+    endpoint = DiscoveredEndpoint(
+        url="https://secure-forms.local/login",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="text/html",
+        has_forms=True,
+        discovered_forms=1,
+    )
+    valid_form_html = """
+    <html><body>
+      <form action="/login" method="POST">
+        <input type="hidden" name="csrf_token" value="abc123secret"/>
+        <input type="text" name="user"/>
+        <button type="submit">Log In</button>
+      </form>
+    </body></html>
+    """
+
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://secure-forms.local")
+    config = ScanConfig()
+    config.fuzzing.enabled = False
+
+    endpoints = []
+    async def ep_cb(ep):
+        endpoints.append(ep)
+
+    def make_crawler(eps, html_dict=None):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = html_dict or {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([endpoint], {"https://secure-forms.local/login": valid_form_html})), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])):
+        findings = await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            organization_id="org-default",
+        )
+
+    form_findings = [f for f in findings if f.check_id in ("DAST-FORM-001", "DAST-FORM-002")]
+    assert len(form_findings) == 0
+
+    assert len(endpoints) == 1
+    ep = endpoints[0]
+    form_tests = [t for t in ep.tests_performed if "HTML Form" in t.test_name]
+    assert len(form_tests) == 1
+    assert form_tests[0].status == EndpointTestStatus.SAFE
+
+
+@pytest.mark.asyncio
+async def test_r3_1_parameter_fuzzer_outbound_failures_never_safe():
+    """
+    R3.1 Invariant:
+    When parameter fuzzing probes fail or time out on outbound requests,
+    the endpoint record MUST be SKIPPED, NEVER SAFE.
+    """
+    from app.engines.web_dast.parameter_fuzzer import audit_parameter_fuzzing
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from unittest.mock import patch
+    import httpx
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    # Simulate timeout on outbound fuzzing requests
+    mock_client.get = AsyncMock(side_effect=httpx.ReadTimeout("Socket timeout during fuzz probe"))
+
+    endpoint = DiscoveredEndpoint(
+        url="https://fuzz-timeout.local/search?q=test",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="text/html",
+    )
+    config = ScanConfig()
+    config.fuzzing.enabled = True
+
+    # 1. Direct fuzzer execution must report failed probes
+    result = await audit_parameter_fuzzing(
+        "https://fuzz-timeout.local/search?q=test",
+        discovered_endpoints=[endpoint],
+        client=mock_client,
+        config=config,
+        scan_id="scan-fuzz-1",
+    )
+    assert len(result) == 0  # Zero findings
+    assert result.executions["https://fuzz-timeout.local/search?q=test"].probes_failed > 0
+    assert result.executions["https://fuzz-timeout.local/search?q=test"].is_fully_completed is False
+
+    # 2. Engine execution must record SKIPPED, never SAFE
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://fuzz-timeout.local")
+
+    endpoints = []
+    async def ep_cb(ep):
+        endpoints.append(ep)
+
+    def make_crawler(eps, html_dict=None):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = html_dict or {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([endpoint], {})), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])):
+        await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            active_probing_granted=True,
+            organization_id="org-default",
+        )
+
+    assert len(endpoints) == 1
+    ep = endpoints[0]
+    fuzz_tests = [t for t in ep.tests_performed if "Parameter Injection" in t.test_name]
+    assert len(fuzz_tests) == 1
+    assert fuzz_tests[0].status == EndpointTestStatus.SKIPPED
+    assert fuzz_tests[0].status != EndpointTestStatus.SAFE
+
+
+@pytest.mark.asyncio
+async def test_r3_1_endpoint_never_fuzzed_receives_no_safe_and_no_tool():
+    """
+    R3.1 Invariant:
+    An endpoint without query parameters that was never fuzzed must NOT receive
+    'parameter_fuzzer' in tools_executed and MUST NOT receive SAFE parameter fuzzing evidence.
+    """
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from unittest.mock import patch
+
+    mock_client = AsyncMock()
+    # Mock normal response for baseline
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = "OK"
+    mock_resp.headers = {}
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    # Endpoint 1: Has query parameter (fuzzed)
+    ep_fuzzed = DiscoveredEndpoint(
+        url="https://fuzz-candidates.local/items?id=42",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="application/json",
+    )
+    # Endpoint 2: Static endpoint without query parameter (never fuzzed)
+    ep_static = DiscoveredEndpoint(
+        url="https://fuzz-candidates.local/healthz",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="application/json",
+    )
+
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://fuzz-candidates.local")
+    config = ScanConfig()
+    config.fuzzing.enabled = True
+
+    endpoints = []
+    async def ep_cb(ep):
+        endpoints.append(ep)
+
+    def make_crawler(eps, html_dict=None):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = html_dict or {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([ep_fuzzed, ep_static], {})), \
+         patch("app.engines.web_dast.engine.audit_cors_policies", new=AsyncMock(return_value=[])):
+        await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            active_probing_granted=True,
+            organization_id="org-default",
+        )
+
+    # ep_static was never a fuzzer candidate:
+    # 1. parameter_fuzzer must NOT be in tools_executed
+    assert "parameter_fuzzer" not in ep_static.tools_executed
+    # 2. ep_static must NOT have SAFE parameter injection record
+    static_fuzz_tests = [t for t in ep_static.tests_performed if "Parameter Injection" in t.test_name]
+    assert all(t.status != EndpointTestStatus.SAFE for t in static_fuzz_tests)
+
+
+@pytest.mark.asyncio
+async def test_r3_1_cors_partial_failure_forces_skipped_never_safe():
+    """
+    R3.1 Invariant:
+    If one CORS probe succeeds (arbitrary-origin) but another times out (null-origin),
+    SAFE is forbidden; the record must be SKIPPED.
+    """
+    from app.engines.web_dast.cors_analyzer import audit_cors_policies
+    from app.engines.web_dast.engine import WebDastAssessmentEngine
+    from unittest.mock import patch
+    import httpx
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    # Probe 1 (evil origin) returns 200 with no reflection
+    evil_resp = MagicMock()
+    evil_resp.status_code = 200
+    evil_resp.headers = {"access-control-allow-origin": "https://trusted.local"}
+
+    async def mock_get(url, headers=None, **kwargs):
+        if headers and headers.get("Origin") == "null":
+            raise httpx.ReadTimeout("Null-origin probe timeout")
+        return evil_resp
+
+    mock_client.get = AsyncMock(side_effect=mock_get)
+
+    # 1. Direct check returns CorsAuditResult with is_partial=True, is_fully_completed=False
+    cors_res = await audit_cors_policies("https://cors-partial.local", client=mock_client)
+    assert len(cors_res) == 0  # Zero findings
+    assert cors_res.is_fully_completed is False
+    assert cors_res.is_partial is True
+    assert cors_res.probes_failed == 1
+    assert cors_res.probes_completed == 1
+
+    # 2. In engine, record must be SKIPPED, never SAFE
+    engine = WebDastAssessmentEngine()
+    target = Target(name="test", type=TargetType.URL, value="https://cors-partial.local")
+    config = ScanConfig()
+    config.fuzzing.enabled = False
+
+    ep = DiscoveredEndpoint(
+        url="https://cors-partial.local/api/data",
+        method="GET",
+        depth=1,
+        status_code=200,
+        content_type="application/json",
+    )
+
+    endpoints = []
+    async def ep_cb(e):
+        endpoints.append(e)
+
+    def make_crawler(eps, html_dict=None):
+        def _factory(*args, **kwargs):
+            on_ep = kwargs.get("on_endpoint_discovered")
+            async def _crawl():
+                if on_ep:
+                    for ep in eps:
+                        await on_ep(ep)
+                return eps
+            c = MagicMock()
+            c.crawl = AsyncMock(side_effect=_crawl)
+            c.page_html = html_dict or {}
+            c.page_responses = {}
+            return c
+        return _factory
+
+    mock_vt = MagicMock()
+    mock_vt.canonical_value = target.value
+
+    with patch("app.engines.web_dast.engine.create_validated_target", return_value=mock_vt), \
+         patch("app.engines.web_dast.engine.WebCrawler", side_effect=make_crawler([ep], {})):
+        await engine.run(
+            target,
+            config,
+            emit_log=AsyncMock(),
+            emit_progress=AsyncMock(),
+            emit_finding=AsyncMock(),
+            emit_endpoint_discovered=ep_cb,
+            client=mock_client,
+            organization_id="org-default",
+        )
+
+    assert len(endpoints) == 1
+    cors_tests = [t for t in endpoints[0].tests_performed if "CORS" in t.test_name]
+    assert len(cors_tests) == 1
+    assert cors_tests[0].status == EndpointTestStatus.SKIPPED
+    assert cors_tests[0].status != EndpointTestStatus.SAFE
+
 

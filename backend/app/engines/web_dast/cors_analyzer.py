@@ -19,11 +19,40 @@ def normalize_target_url(target_value: str) -> str:
     return target_value
 
 
+class CorsAuditResult(list):
+    """
+    Subclass of list that holds CORS findings and preserves authoritative
+    probe execution accounting (probes attempted, completed, and failed).
+    """
+    def __init__(
+        self,
+        findings: List[Finding],
+        probes_attempted: int = 0,
+        probes_completed: int = 0,
+        probes_failed: int = 0,
+        failed_errors: Optional[List[str]] = None,
+    ):
+        super().__init__(findings)
+        self.findings = findings
+        self.probes_attempted = probes_attempted
+        self.probes_completed = probes_completed
+        self.probes_failed = probes_failed
+        self.failed_errors = failed_errors or []
+
+    @property
+    def is_fully_completed(self) -> bool:
+        return self.probes_attempted > 0 and self.probes_failed == 0 and self.probes_completed == self.probes_attempted
+
+    @property
+    def is_partial(self) -> bool:
+        return self.probes_failed > 0 and self.probes_completed > 0
+
+
 async def audit_cors_policies(
     target_value: str,
     client: httpx.AsyncClient,
     emit_log: Optional[LogCallback] = None,
-) -> List[Finding]:
+) -> CorsAuditResult:
     """
     Sends non-destructive CORS probe requests with arbitrary and null origins.
     """
@@ -34,7 +63,9 @@ async def audit_cors_policies(
         await emit_log(LogLevel.INFO, f"Probing CORS configuration on {url}...")
 
     probes_attempted = 0
+    probes_completed = 0
     probes_failed = 0
+    failed_errors: List[str] = []
     last_exc: Optional[Exception] = None
 
     # Test 1: Arbitrary Origin Reflection (https://attacker-origin.com)
@@ -42,6 +73,7 @@ async def audit_cors_policies(
     probes_attempted += 1
     try:
         resp = await client.get(url, headers={"Origin": evil_origin})
+        probes_completed += 1
         allow_origin = resp.headers.get("access-control-allow-origin")
         allow_credentials = resp.headers.get("access-control-allow-credentials", "").lower() == "true"
 
@@ -112,11 +144,13 @@ async def audit_cors_policies(
         logger.debug("CORS wildcard probe failed: error_type=%s", type(exc).__name__)
         probes_failed += 1
         last_exc = exc
+        failed_errors.append(f"Wildcard/origin probe failed: {exc}")
 
     # Test 2: Trust of 'null' Origin
     probes_attempted += 1
     try:
         resp_null = await client.get(url, headers={"Origin": "null"})
+        probes_completed += 1
         allow_origin_null = resp_null.headers.get("access-control-allow-origin")
         allow_credentials_null = resp_null.headers.get("access-control-allow-credentials", "").lower() == "true"
 
@@ -148,8 +182,15 @@ async def audit_cors_policies(
         logger.debug("CORS null-origin probe failed: error_type=%s", type(exc).__name__)
         probes_failed += 1
         last_exc = exc
+        failed_errors.append(f"Null origin probe failed: {exc}")
 
     if probes_attempted > 0 and probes_failed == probes_attempted and last_exc is not None:
         raise RuntimeError(f"CORS audit failed: all probes failed with error: {last_exc}") from last_exc
 
-    return findings
+    return CorsAuditResult(
+        findings=findings,
+        probes_attempted=probes_attempted,
+        probes_completed=probes_completed,
+        probes_failed=probes_failed,
+        failed_errors=failed_errors,
+    )

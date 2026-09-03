@@ -165,9 +165,11 @@ async def security_headers_and_correlation_middleware(request: Request, call_nex
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # R3.4: Content Security Policy - script-src strictly hardened to 'self' (zero inline scripts/handlers).
+    # Residual limitation: style-src retains 'unsafe-inline' due to dynamic runtime CSS variables across HUD themes.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "font-src 'self' data:; "
         "img-src 'self' data:; "

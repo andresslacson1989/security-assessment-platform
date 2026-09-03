@@ -441,6 +441,7 @@ class EndpointTestStatus(str, Enum):
     SAFE = "SAFE"
     VULNERABLE = "VULNERABLE"
     INFO = "INFO"
+    PARTIAL = "PARTIAL"
     SKIPPED = "SKIPPED"
     NOT_EXECUTED = "NOT_EXECUTED"
     NOT_ASSESSED = "NOT_ASSESSED"

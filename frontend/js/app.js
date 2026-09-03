@@ -867,7 +867,7 @@ class ScanStreamManager {
           <td><code style="font-size: 11px; color: var(--accent-cyan);">${this.escapeHtml(cnamesStr)}</code></td>
           <td>${takeoverBadge}</td>
           <td>
-            <button class="btn btn-xs btn-outline" onclick="window.app.setTargetSubdomain(decodeURIComponent('${this.encodeInlineArg(sub.domain)}'))">Scan</button>
+            <button class="btn btn-xs btn-outline" data-action="set-target-subdomain" data-subdomain="${this.escapeHtml(sub.domain)}">Scan</button>
           </td>
         </tr>
       `;
@@ -1130,7 +1130,7 @@ class ScanStreamManager {
           <div class="code-block-container">
             <div class="code-header">
               <span>Remediation Code Snippet</span>
-              <button class="btn-copy" onclick="window.copySnippet('snip-${idx}')">Copy</button>
+              <button class="btn-copy" data-action="copy-snippet" data-target-id="snip-${idx}">Copy</button>
             </div>
             <pre id="snip-${idx}"><code>${this.escapeHtml(f.remediation_code_snippet)}</code></pre>
           </div>
@@ -1142,7 +1142,7 @@ class ScanStreamManager {
           <div class="curl-poc-box">
             <div class="curl-poc-header">
               <span>⚡ Reproduction cURL Command</span>
-              <button class="btn-copy" onclick="window.copySnippet('curl-${idx}')">Copy cURL</button>
+              <button class="btn-copy" data-action="copy-snippet" data-target-id="curl-${idx}">Copy cURL</button>
             </div>
             <pre id="curl-${idx}"><code>${this.escapeHtml(f.reproduction_curl)}</code></pre>
           </div>
@@ -1183,7 +1183,7 @@ class ScanStreamManager {
 
         return `
         <div class="finding-card ${sevClass}">
-          <div class="finding-header" onclick="window.toggleCard('fc-${idx}')">
+          <div class="finding-header" data-action="toggle-finding" data-card-id="fc-${idx}">
             <div class="finding-title-group">
               <span class="severity-badge ${sevClass}">${f.severity}</span>
               <span class="check-id">${this.escapeHtml(f.check_id)}</span>
@@ -1201,7 +1201,7 @@ class ScanStreamManager {
               ${f.owasp_category ? `<span class="meta-tag">${this.escapeHtml(f.owasp_category)}</span>` : ""}
               ${f.nist_control ? `<span class="meta-tag">${this.escapeHtml(f.nist_control)}</span>` : ""}
               <span class="meta-tag engine-tag">${this.escapeHtml(f.engine)}</span>
-              <span class="source-tool-badge source-tool--${this.escapeHtml(toolName.toLowerCase())}" style="cursor: pointer;" title="Click to filter findings by ${this.escapeHtml(toolName)}" onclick="event.stopPropagation(); window.app.filterByTool(decodeURIComponent('${this.encodeInlineArg(toolName)}'))">[${this.escapeHtml(toolName)}]</span>
+              <span class="source-tool-badge source-tool--${this.escapeHtml(toolName.toLowerCase())}" style="cursor: pointer;" title="Click to filter findings by ${this.escapeHtml(toolName)}" data-action="filter-by-tool" data-tool="${this.escapeHtml(toolName)}">[${this.escapeHtml(toolName)}]</span>
             </div>
 
             <p class="finding-desc"><strong>Description:</strong> ${this.escapeHtml(f.description)}</p>
@@ -1276,9 +1276,9 @@ class ScanStreamManager {
           <td>${score}</td>
           <td>${findCount}</td>
           <td>
-            <button class="btn btn-xs btn-outline" onclick="window.app.loadPastScan('${s.id}')">View</button>
-            <button class="btn btn-xs btn-outline" onclick="window.app.openTelemetryModal('${s.id}')">📊 Telemetry</button>
-            <button class="btn btn-xs btn-ghost" style="color: var(--color-critical);" onclick="window.app.deletePastScan('${s.id}')">Delete</button>
+            <button class="btn btn-xs btn-outline" data-action="load-past-scan" data-scan-id="${this.escapeHtml(s.id)}">View</button>
+            <button class="btn btn-xs btn-outline" data-action="open-telemetry-modal" data-scan-id="${this.escapeHtml(s.id)}">📊 Telemetry</button>
+            <button class="btn btn-xs btn-ghost" style="color: var(--color-critical);" data-action="delete-past-scan" data-scan-id="${this.escapeHtml(s.id)}">Delete</button>
           </td>
         </tr>
       `;
@@ -1430,13 +1430,13 @@ class ScanStreamManager {
         let actionBtn = "";
         if (t.install_method === "SYSTEM_PACKAGE_MANAGER") {
           const btnText = isInstalled ? "📖 Setup Guide" : "📖 How to Install";
-          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.openToolInstructionsModal(decodeURIComponent('${toolArg}'))">${btnText}</button>`;
+          actionBtn = `<button class="btn btn-xs btn-outline" data-action="open-tool-instructions" data-tool="${this.escapeHtml(t.name)}">${btnText}</button>`;
         } else if (t.status === "INSTALLING") {
-          actionBtn = `<button class="btn btn-xs btn-outline" style="color: var(--color-critical); border-color: var(--color-critical);" onclick="window.app.handleCancelTool(decodeURIComponent('${toolArg}'))">⏹ Cancel</button>`;
+          actionBtn = `<button class="btn btn-xs btn-outline" style="color: var(--color-critical); border-color: var(--color-critical);" data-action="cancel-tool" data-tool="${this.escapeHtml(t.name)}">⏹ Cancel</button>`;
         } else if (isInstalled) {
-          actionBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.handleInstallTool(decodeURIComponent('${toolArg}'), true)">Reinstall</button>`;
+          actionBtn = `<button class="btn btn-xs btn-outline" data-action="reinstall-tool" data-tool="${this.escapeHtml(t.name)}">Reinstall</button>`;
         } else {
-          actionBtn = `<button class="btn-install-tool" onclick="window.app.handleInstallTool(decodeURIComponent('${toolArg}'), false)">⚡ Install</button>`;
+          actionBtn = `<button class="btn-install-tool" data-action="install-tool" data-tool="${this.escapeHtml(t.name)}">⚡ Install</button>`;
         }
 
         return `
@@ -1549,7 +1549,7 @@ class ScanStreamManager {
           : "";
         const snippetAction = opt.isLink
           ? `<a href="${this.escapeHtml(opt.snippet)}" target="_blank" class="btn-copy-code">Open ↗</a>`
-          : `<button class="btn-copy-code" onclick="navigator.clipboard.writeText(decodeURIComponent('${this.encodeInlineArg(opt.snippet)}')).then(()=>this.textContent='Copied!').catch(()=>{})">📋 Copy</button>`;
+          : `<button class="btn-copy-code" data-action="copy-text" data-copy-text="${this.escapeHtml(opt.snippet)}">📋 Copy</button>`;
 
         const explanationHtml = opt.explanation
           ? `<div class="instruction-explanation">${this.escapeHtml(opt.explanation).replace(/\n/g, '<br>')}</div>`
@@ -1775,8 +1775,8 @@ class ScanStreamManager {
           <td><span class="badge ${a.criticality === 'CRITICAL' ? 'badge-critical' : a.criticality === 'HIGH' ? 'badge-high' : 'badge-none'}">${this.escapeHtml(a.criticality)}</span></td>
           <td>${a.active_findings_count || 0}</td>
           <td>
-            <button class="btn btn-xs btn-primary" onclick="window.auditAsset(decodeURIComponent('${this.encodeInlineArg(a.target_value)}'), decodeURIComponent('${this.encodeInlineArg(a.type)}'))">Audit</button>
-            <button class="btn btn-xs btn-danger" onclick="window.deleteAsset(decodeURIComponent('${this.encodeInlineArg(a.id)}'))">Delete</button>
+            <button class="btn btn-xs btn-primary" data-action="audit-asset" data-target-value="${this.escapeHtml(a.target_value)}" data-target-type="${this.escapeHtml(a.type)}">Audit</button>
+            <button class="btn btn-xs btn-danger" data-action="delete-asset" data-asset-id="${this.escapeHtml(a.id)}">Delete</button>
           </td>
         </tr>
       `).join("");
@@ -2153,7 +2153,7 @@ class ScanStreamManager {
       return `
         <div class="endpoint-dossier-card" style="background: #0d1520; border: 1px solid var(--border-subtle); border-radius: 6px; overflow: visible; transition: border-color 0.2s; margin-bottom: 12px;">
           <!-- Card Header (Click to Expand) -->
-          <div style="padding: 12px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; cursor: pointer; user-select: none;" onclick="window.app.toggleEndpointDossier('${cardId}')">
+          <div style="padding: 12px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; cursor: pointer; user-select: none;" data-action="toggle-endpoint-dossier" data-card-id="${cardId}">
             <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 300px;">
               <span id="${cardId}-icon" style="font-size: 12px; color: var(--accent-cyan); width: 14px;">▶</span>
               <span class="badge ${method === 'POST' ? 'badge-warning' : (method === 'DELETE' ? 'badge-danger' : 'badge-info')}" style="font-weight: 700; font-size: 11px;">${this.escapeHtml(method)}</span>
@@ -2209,8 +2209,8 @@ class ScanStreamManager {
                 Content-Type: <code>${this.escapeHtml(ep.content_type || 'text/html')}</code> | Crawl Depth: <code>${ep.depth || 0}</code>
               </div>
               <div style="display: flex; gap: 8px;">
-                <button class="btn btn-xs btn-outline" onclick="navigator.clipboard.writeText(decodeURIComponent('${this.encodeInlineArg(ep.url)}'))">📋 Copy URL</button>
-                <button class="btn btn-xs btn-primary" onclick="window.app.sendLinkToRepeater('${this.encodeInlineArg(ep.url)}', decodeURIComponent('${this.encodeInlineArg(method)}'))">⚡ Send to HTTP Repeater</button>
+                <button class="btn btn-xs btn-outline" data-action="copy-text" data-copy-text="${this.escapeHtml(ep.url)}">📋 Copy URL</button>
+                <button class="btn btn-xs btn-primary" data-action="send-to-repeater" data-url="${this.escapeHtml(ep.url)}" data-method="${this.escapeHtml(method)}">⚡ Send to HTTP Repeater</button>
               </div>
             </div>
 
@@ -2254,9 +2254,9 @@ class ScanStreamManager {
       const scopeStr = endpointsCount > 0 ? `${endpointsCount} locations` : (this.currentTelemetryData.target_value || "Target Host");
 
       const viewFindingsBtn = t.findings_count > 0
-        ? `<button class="btn btn-xs btn-primary" onclick="window.app.viewToolFindings(decodeURIComponent('${this.encodeInlineArg(t.tool_name)}'))">🔍 View ${t.findings_count} Findings</button>`
+        ? `<button class="btn btn-xs btn-primary" data-action="view-tool-findings" data-tool="${this.escapeHtml(t.tool_name)}">🔍 View ${t.findings_count} Findings</button>`
         : "";
-      const viewLogsBtn = `<button class="btn btn-xs btn-outline" onclick="window.app.viewToolLogs(decodeURIComponent('${this.encodeInlineArg(t.tool_name)}'))">📜 View Logs</button>`;
+      const viewLogsBtn = `<button class="btn btn-xs btn-outline" data-action="view-tool-logs" data-tool="${this.escapeHtml(t.tool_name)}">📜 View Logs</button>`;
 
       return `
         <tr>
@@ -2382,9 +2382,23 @@ class ScanStreamManager {
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
+
+  filterFindingsBySeverity(severity) {
+    this.activeFilter = severity || "ALL";
+    if (this.filterTabs) {
+      this.filterTabs.forEach((tab) => {
+        if (tab.dataset.filter === this.activeFilter) {
+          tab.classList.add("active");
+        } else {
+          tab.classList.remove("active");
+        }
+      });
+    }
+    this.renderFindings();
+  }
 }
 
-// Global helpers for inline onclick event handlers
+// Global helpers and compatibility functions
 window.toggleCard = function (id) {
   const body = document.getElementById("body-" + id);
   const chev = document.getElementById("chev-" + id);
@@ -2423,8 +2437,126 @@ window.deleteAsset = async function (id) {
   }
 };
 
+window.filterFindingsBySeverity = function (sev) {
+  if (window.app) window.app.filterFindingsBySeverity(sev);
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new ScanStreamManager();
   // Load tool capabilities immediately on page load (Contract 04 v4.1.0)
   window.app.loadSystemCapabilities();
+
+  // Unified delegated click dispatcher for CSP compliant zero-inline-handler architecture
+  document.addEventListener("click", (e) => {
+    const actionEl = e.target.closest("[data-action]");
+    if (!actionEl) return;
+
+    const action = actionEl.getAttribute("data-action");
+    switch (action) {
+      case "filter-severity": {
+        const sev = actionEl.getAttribute("data-severity");
+        if (window.app) window.app.filterFindingsBySeverity(sev);
+        break;
+      }
+      case "set-target-subdomain": {
+        const sub = actionEl.getAttribute("data-subdomain");
+        if (window.app && sub) window.app.setTargetSubdomain(sub);
+        break;
+      }
+      case "copy-snippet": {
+        const targetId = actionEl.getAttribute("data-target-id");
+        if (targetId) window.copySnippet(targetId);
+        break;
+      }
+      case "toggle-finding": {
+        const cardId = actionEl.getAttribute("data-card-id");
+        if (cardId) window.toggleCard(cardId);
+        break;
+      }
+      case "filter-by-tool": {
+        e.stopPropagation();
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.filterByTool(tool);
+        break;
+      }
+      case "load-past-scan": {
+        const scanId = actionEl.getAttribute("data-scan-id");
+        if (window.app && scanId) window.app.loadPastScan(scanId);
+        break;
+      }
+      case "open-telemetry-modal": {
+        const scanId = actionEl.getAttribute("data-scan-id");
+        if (window.app && scanId) window.app.openTelemetryModal(scanId);
+        break;
+      }
+      case "delete-past-scan": {
+        const scanId = actionEl.getAttribute("data-scan-id");
+        if (window.app && scanId) window.app.deletePastScan(scanId);
+        break;
+      }
+      case "open-tool-instructions": {
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.openToolInstructionsModal(tool);
+        break;
+      }
+      case "cancel-tool": {
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.handleCancelTool(tool);
+        break;
+      }
+      case "reinstall-tool": {
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.handleInstallTool(tool, true);
+        break;
+      }
+      case "install-tool": {
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.handleInstallTool(tool, false);
+        break;
+      }
+      case "copy-text": {
+        const text = actionEl.getAttribute("data-copy-text");
+        if (text) {
+          navigator.clipboard.writeText(text).then(() => {
+            const orig = actionEl.textContent;
+            actionEl.textContent = "Copied!";
+            setTimeout(() => { actionEl.textContent = orig; }, 2000);
+          }).catch(() => {});
+        }
+        break;
+      }
+      case "audit-asset": {
+        const val = actionEl.getAttribute("data-target-value");
+        const type = actionEl.getAttribute("data-target-type");
+        if (val) window.auditAsset(val, type);
+        break;
+      }
+      case "delete-asset": {
+        const id = actionEl.getAttribute("data-asset-id");
+        if (id) window.deleteAsset(id);
+        break;
+      }
+      case "toggle-endpoint-dossier": {
+        const cardId = actionEl.getAttribute("data-card-id");
+        if (window.app && cardId) window.app.toggleEndpointDossier(cardId);
+        break;
+      }
+      case "send-to-repeater": {
+        const url = actionEl.getAttribute("data-url");
+        const method = actionEl.getAttribute("data-method");
+        if (window.app && url) window.app.sendLinkToRepeater(url, method);
+        break;
+      }
+      case "view-tool-findings": {
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.viewToolFindings(tool);
+        break;
+      }
+      case "view-tool-logs": {
+        const tool = actionEl.getAttribute("data-tool");
+        if (window.app && tool) window.app.viewToolLogs(tool);
+        break;
+      }
+    }
+  });
 });

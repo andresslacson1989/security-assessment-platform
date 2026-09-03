@@ -3,7 +3,7 @@
 Baseline commit: a5dea124dd2556c2aac959dac5c74281c9402231
 Current branch: security/e13-enterprise-audit-closure
 Implementation baseline: 3b00e0db06bd1b589042371d58be91ed51b2056c
-Acceptance evidence revision: In-progress rework (E13-R2)
+Acceptance evidence revision: Final Technical Closure (E13-R3)
 
 ## E13.1 Identity & Scope Closure
 Status: VERIFIED
@@ -56,16 +56,21 @@ Files:
 - backend/app/engines/web_dast/engine.py
 - backend/app/engines/web_dast/headers_cookies.py
 - backend/app/engines/web_dast/cors_analyzer.py
+- backend/app/engines/web_dast/auth_session.py
+- backend/app/engines/web_dast/parameter_fuzzer.py
 - backend/app/adapters/sslyze_adapter.py
 - tests/test_e13_evidence_truthfulness.py
 Focused tests:
 - tests/test_api_endpoints.py
 - tests/security/test_sslyze_assurance.py
-- tests/test_e13_evidence_truthfulness.py (10 passed, 0 failed)
+- tests/test_e13_evidence_truthfulness.py (16 passed, 0 failed)
 Notes:
 - Removed manufactured assignment of tools_executed when empty.
 - Removed synthetic SAFE test records for unexecuted checks; status defaults to NOT_EXECUTED.
-- Header and CORS checks failing on network/timeout raise exceptions and are recorded as SKIPPED rather than SAFE.
+- Header, CORS, CSRF, and parameter fuzzer checks failing on network/timeout/parse errors are recorded as SKIPPED rather than SAFE.
+- CSRF findings explicitly force endpoint test status to VULNERABLE, never SAFE.
+- CORS partial probe completion (e.g. arbitrary-origin succeeds but null-origin fails) forces SKIPPED, never SAFE.
+- Parameter fuzzer records executions truthfully; un-fuzzed endpoints never receive SAFE or tool presence.
 - Coverage without authoritative scan evidence fails closed as COVERAGE_DEGRADED / is_fully_assessed=False.
 
 ## E13.5 Repeater Resource and TLS Evidence Hardening
@@ -83,16 +88,17 @@ Notes:
 - Verified with adversarial test using multi-byte Unicode sequence (< 2M characters, > 2M bytes) rejecting with HTTP 400 before outbound transmission.
 
 ## E13.6 Enterprise Execution Egress Closure
-Status: BLOCKED — REQUIRED ENTERPRISE INFRASTRUCTURE UNAVAILABLE
+Status: VERIFIED (FAIL-CLOSED IN RUNTIME) — INFRASTRUCTURE DEPLOYMENT PENDING
 Files:
 - docker-compose.yml
 - backend/app/core/process_supervisor.py
 - backend/app/adapters/base_adapter.py
-- tests/test_e13_egress_env_sanitization.py (6 passed, 0 failed)
+- tests/test_e13_egress_env_sanitization.py (7 passed, 0 failed)
 Focused tests:
 - tests/test_e13_egress_env_sanitization.py
 Notes:
-- Option B (Fail Closed) implemented in ProcessSupervisor.execute: in ENTERPRISE mode or when ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED=true, external CLI tools refuse to start (PROCESS_LAUNCH_REJECTED_SECURITY) unless an authoritative egress facility (CYBERASSESS_VERIFIED_EGRESS_FACILITY) is configured and verifiably available.
+- Worker environment in docker-compose.yml explicitly specifies ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED: "true".
+- ProcessSupervisor fails closed unconditionally (PROCESS_LAUNCH_REJECTED_SECURITY) under ENTERPRISE mode or when ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED=true without any arbitrary facility string bypass.
 - Actual kernel-level network namespace or eBPF/egress gateway enforcement requires operator infrastructure not available in the current standalone Windows development environment. Release readiness remains blocked pending operator infrastructure deployment.
 
 ## E13.7 Supply Chain and Reproducible Deployment
@@ -109,23 +115,29 @@ Focused tests:
 Notes:
 - Dockerfile builder and runtime base images pinned with multi-arch cryptographic digest: python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84.
 - docker-compose.yml postgres:16-alpine and redis:7-alpine pinned with sha256 digests.
+- docker-compose.yml application image identities pinned to ghcr.io/andresslacson1989/security-assessment-platform:${CYBERASSESS_IMAGE_TAG:-v14.3.0}.
 - tests/test_e13_supply_chain_integrity.py validates strict @sha256:<64-hex> format and distinguishes mutable tags from immutable digests.
 
 ## E13.8 Web Application and Platform Hardening
 Status: VERIFIED
 Files:
 - run_platform.py
+- frontend/index.html
+- frontend/js/app.js
 - backend/app/main.py
 - backend/app/core/auth.py
 - backend/app/api/auth.py
-- tests/test_e13_platform_hardening.py (8 passed, 0 failed)
+- tests/test_e13_platform_hardening.py (13 passed, 0 failed)
 Focused tests:
 - tests/test_e13_platform_hardening.py
 Notes:
 - run_platform.py defaults HOST to 127.0.0.1 (accepts explicit HOST=0.0.0.0) and guides operators to use pip install --require-hashes --requirement backend/requirements.lock.
-- CSP stripped of unused third-party CDN origins (cdnjs, google fonts); base-uri 'none'; object-src 'none'.
+- CSP strictly hardened: script-src 'self' with zero 'unsafe-inline'.
+- Frontend refactored: removed all inline event handlers (onclick=) across HTML and dynamic JS in favor of data-action attributes and delegated listeners.
+- Residual limitation: style-src 'unsafe-inline' documented for dynamic UI theme variables.
 - Correlation-ID input strictly validated against alphanumeric allowlist (max 64 chars); CRLF/control characters rejected and replaced with server ID.
-- Production bootstrap protected via BOOTSTRAP_SECRET (constant-time hmac.compare_digest) or localhost restriction.
+- Production bootstrap protected via BOOTSTRAP_SECRET wired in docker-compose.yml (${BOOTSTRAP_SECRET:?...}).
+- Strict loopback protection: removed 'testclient' from production allowlist; localhost strictly requires 127.0.0.1, ::1, or localhost.
 - Login rate limiter accurately documented as standalone in-memory per worker process (does not coordinate state across multi-replica deployments).
 
 ## E13.9 Documentation, Contract, and Claim Reconciliation
@@ -142,7 +154,7 @@ Notes:
 - Reconciled all documentation with verified implementation reality. No unsubstantiated claims or false assurance.
 
 ## E13.10 Governance
-Status: OPERATOR DECISION / SOLO MAINTAINER POLICY
+Status: OPERATOR-ACCEPTED SOLO-MAINTAINER GOVERNANCE POLICY
 Files:
 - SECURITY.md
 - CONTRIBUTING.md
@@ -153,14 +165,18 @@ Focused tests:
 - tests/test_e13_governance.py
 Notes:
 - Local governance policy documents are complete and verified.
-- Branch protection on `main` is intentionally left unconfigured by explicit decision of the repository owner (`andresslacson1989`) to preserve direct single-maintainer workflow and prevent GitHub self-approval blocks on pull requests.
-- This is formally recorded as an accepted single-maintainer operational tradeoff.
+- The repository owner (andresslacson1989) operates on a GitHub Free account as a solo maintainer and has explicitly accepted the solo-maintainer direct-push policy.
+- Formally recorded as an accepted operational governance tradeoff, not an implemented branch-protection control.
 
 ---
-Final decision: ⚠️ E13 BLOCKED — ENTERPRISE RELEASE NOT YET ACCEPTED
+Final decision: ⚠️ E13 IMPLEMENTATION VERIFIED — ENTERPRISE DEPLOYMENT ACCEPTANCE BLOCKED ON EGRESS INFRASTRUCTURE
 
-Blockers to Enterprise Release Acceptance:
-1. E13.6: Kernel/infrastructure-level egress namespace enforcement requires operator-managed network infrastructure (fails closed in code via Option B).
-2. E13.10: Formally acknowledged as an operator-accepted single-maintainer operational policy.
+Accepted Operational Risks:
+1. E13.10 Solo-Maintainer Governance Policy: Direct push permitted on main for solo maintainer on GitHub Free plan.
+2. E13.8 Residual CSP Style Inline: style-src 'unsafe-inline' retained for runtime HUD styling variables.
+
+Deployment Blocker:
+1. E13.6 Enterprise Egress Infrastructure: Kernel/network-level egress gateway required before enterprise deployment acceptance (code fails closed via Option B).
+
 
 

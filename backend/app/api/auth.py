@@ -131,7 +131,7 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
                 )
         else:
             # If BOOTSTRAP_SECRET is not configured in production, only allow local initialization
-            if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+            if client_host not in ("127.0.0.1", "::1", "localhost"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Production bootstrap without configured BOOTSTRAP_SECRET requires localhost access.",

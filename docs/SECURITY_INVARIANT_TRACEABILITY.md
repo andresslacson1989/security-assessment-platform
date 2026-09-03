@@ -1,7 +1,7 @@
-# CyberAssess v13 — Enterprise Assessment Methodology, Tool Assurance & Production Readiness Traceability Matrix
+# CyberAssess v14 — Enterprise Assessment Methodology, Tool Assurance & Production Readiness Traceability Matrix
 
 ## Document Purpose & Authority
-This authoritative traceability matrix provides formal cross-verification between the **CyberAssess v13 Security Invariant Specifications**, the authoritative contract clauses, the concrete production implementations, and the dedicated adversarial regression test suite (tests/security/).
+This authoritative traceability matrix provides formal cross-verification between the **CyberAssess v14 Security Invariant Specifications**, the authoritative contract clauses, the concrete production implementations, and the dedicated adversarial regression test suite (tests/security/).
 
 In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production Path Proof*), passing helper unit tests alone do not constitute evidence of compliance. Each security control is validated against its actual production execution path under adversarial conditions.
 
@@ -118,17 +118,14 @@ Repository-level controls for the documented invariants are implemented and veri
 
 ---
 
-## 4. E13-R2 Final Audit Closure & Truthfulness Invariants
+## 4. E13-R3 Final Technical Closure & Truthfulness Invariants
 
 | Rework Invariant ID | Security Control Domain | Primary Specification | Concrete Implementation | Verification Suite | Status |
 |---|---|---|---|---|---|
-| **INV-R2.1** | Evidence Truthfulness & No Manufactured Assurance | Contract 02 §4, Audit R2.1 | `backend/app/api/scans.py`, `backend/app/core/models.py`, `backend/app/engines/web_dast/` | `tests/test_e13_evidence_truthfulness.py` (10/10 PASS) | **VERIFIED** |
-| **INV-R2.2** | Repeater Request Strict Byte Limit | Contract 04 §3, Audit R2.2 | `backend/app/api/tools.py` | `tests/test_e13_repeater_hardening.py` (9/9 PASS) | **VERIFIED** |
-| **INV-R2.3** | Enterprise Process Egress Fail-Closed (Option B) | Contract 03 §3, Audit R2.3 | `backend/app/core/process_supervisor.py` | `tests/test_e13_egress_env_sanitization.py` (6/6 PASS) | **VERIFIED (Fail-Closed); INFRASTRUCTURE BLOCKED** |
-| **INV-R2.4** | OCI Multi-Arch Cryptographic Digest Pinning | Contract 01 §7, Audit R2.4 | `Dockerfile`, `docker-compose.yml` | `tests/test_e13_supply_chain_integrity.py` (7/7 PASS) | **VERIFIED** |
-| **INV-R2.5** | Safe Platform Defaults & Hash-Locked Dependencies | Contract 01 §4, Audit R2.5 | `run_platform.py`, `backend/requirements.lock` | `tests/test_e13_platform_hardening.py` (8/8 PASS) | **VERIFIED** |
-| **INV-R2.6** | Content-Security-Policy Origin Hardening | Contract 08 §1, Audit R2.6 | `backend/app/main.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
-| **INV-R2.7** | Untrusted Correlation-ID Input Sanitization | Contract 08 §1, Audit R2.7 | `backend/app/main.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
-| **INV-R2.8** | Production Bootstrap Secret Protection | Contract 04 §1.1, Audit R2.8 | `backend/app/api/auth.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
-| **INV-R2.9** | In-Memory Login Rate Limiter Scope Disclosure | Contract 08 §1, Audit R2.9 | `backend/app/api/auth.py`, `README.md` | Doc & Code Inspection | **VERIFIED** |
-| **INV-R2.11** | Repository Governance Branch Protection Disclosure | Rule 0.1, Audit R2.11 | `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | GitHub API Query (HTTP 404) | **BLOCKED / OPERATOR ACTION REQUIRED** |
+| **INV-R3.1** | Evidence Truthfulness & No False Safe Evidence | Contract 02 §4, Audit R3.1 | `backend/app/api/scans.py`, `backend/app/core/models.py`, `backend/app/engines/web_dast/` | `tests/test_e13_evidence_truthfulness.py` (16/16 PASS) | **VERIFIED** |
+| **INV-R3.2** | Enterprise Egress Fail-Closed Wiring & No Facility Bypass | Contract 03 §3, Audit R3.2 | `docker-compose.yml`, `backend/app/core/process_supervisor.py` | `tests/test_e13_egress_env_sanitization.py` (7/7 PASS) | **VERIFIED (Fail-Closed); INFRASTRUCTURE BLOCKED** |
+| **INV-R3.3** | Production Bootstrap Secret in Compose & Loopback Hardening | Contract 04 §1.1, Audit R3.3 | `docker-compose.yml`, `backend/app/api/auth.py` | `tests/test_e13_platform_hardening.py` (13/13 PASS) | **VERIFIED** |
+| **INV-R3.4** | Complete CSP Hardening & Zero Inline Handlers | Contract 08 §1, Audit R3.4 | `frontend/index.html`, `frontend/js/app.js`, `backend/app/main.py` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
+| **INV-R3.5** | Documentation Truthfulness & Governance Reconciliation | Rule 0.1, Audit R3.5 | `docs/SECURITY_INVARIANT_TRACEABILITY.md`, `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | Doc & Code Inspection | **VERIFIED** |
+| **INV-R3.6** | Application Image Identity Pinning | Contract 01 §7, Audit R3.6 | `docker-compose.yml` | `docker-compose.yml` Inspection | **VERIFIED** |
+| **INV-R3.10** | Repository Governance Policy (Solo-Maintainer) | Rule 0.1, Audit R3.5 / E13.10 | `docs/E13_ENTERPRISE_AUDIT_CLOSURE.md` | Operator Direct-Push Policy Accepted | **OPERATOR-ACCEPTED SOLO-MAINTAINER GOVERNANCE POLICY** |

@@ -338,18 +338,16 @@ class ProcessSupervisor:
         if max_output_bytes <= 0:
             return ProcessExecutionResult(-1, "", "Invalid maximum output size")
 
-        # R2.3 / Option B: Enterprise external-tool execution must fail closed unless
-        # the required egress enforcement facility is configured and verifiably available.
+        # R3.2: Enterprise external-tool execution fails closed unconditionally when
+        # enterprise egress enforcement is required until an authoritative network verifier interface exists.
         operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "").strip().upper()
         egress_required = operating_mode == "ENTERPRISE" or os.environ.get("ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED", "").lower() in {"1", "true", "yes"}
         if egress_required:
-            verified_facility = os.environ.get("CYBERASSESS_VERIFIED_EGRESS_FACILITY", "").strip()
-            if not verified_facility:
-                return ProcessExecutionResult(
-                    -1,
-                    "",
-                    "PROCESS_LAUNCH_REJECTED_SECURITY: Enterprise egress network enforcement facility is not configured or verifiably available.",
-                )
+            return ProcessExecutionResult(
+                -1,
+                "",
+                "PROCESS_LAUNCH_REJECTED_SECURITY: Enterprise egress network enforcement facility is not configured or verifiably available.",
+            )
 
         creationflags = 0
         start_new_session = False

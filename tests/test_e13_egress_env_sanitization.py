@@ -127,25 +127,68 @@ def test_docker_compose_network_segmentation():
 
 
 @pytest.mark.asyncio
-async def test_enterprise_mode_fails_closed_without_verified_egress_facility():
+async def test_enterprise_mode_fails_closed_unconditionally():
     """
-    R2.3 Invariant:
+    R3.2 Invariant:
     Under ENTERPRISE mode / egress enforcement required, ProcessSupervisor MUST fail closed
-    and reject process launch unless a verified egress facility is explicitly configured.
+    unconditionally. Fake string facilities can never bypass the security gate.
     """
     supervisor = ProcessSupervisor.get_instance()
     cmd = [sys.executable, "-c", "print('hello')"]
 
-    # 1. Without verified egress facility configured -> MUST FAIL CLOSED
-    with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE", "CYBERASSESS_VERIFIED_EGRESS_FACILITY": ""}):
+    # 1. Under ENTERPRISE operating mode -> MUST FAIL CLOSED
+    with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE"}):
         res = await supervisor.execute(cmd, timeout=5.0)
         assert res.returncode == -1
         assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
         assert "egress network enforcement facility is not configured" in res.stderr
 
-    # 2. With verified egress facility configured -> Launch proceeds
-    with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE", "CYBERASSESS_VERIFIED_EGRESS_FACILITY": "egress-gw-v1"}):
+    # 2. Fake string bypass attempt -> MUST STILL FAIL CLOSED
+    with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE", "CYBERASSESS_VERIFIED_EGRESS_FACILITY": "fake-bypass"}):
+        res = await supervisor.execute(cmd, timeout=5.0)
+        assert res.returncode == -1
+        assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
+
+    # 3. Non-enterprise standalone mode -> Launch proceeds
+    with patch.dict(os.environ, {"OPERATING_MODE": "STANDALONE", "ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED": "false", "ENVIRONMENT": "development"}):
         res = await supervisor.execute(cmd, timeout=5.0)
         assert res.returncode == 0
         assert "hello" in res.stdout
+
+
+@pytest.mark.asyncio
+async def test_worker_docker_compose_environment_fails_closed_without_manual_operating_mode():
+    """
+    R3.2 Invariant:
+    Loading the actual docker-compose.yml environment for cyberassess-worker
+    proves the process fails closed with PROCESS_LAUNCH_REJECTED_SECURITY
+    without needing manual OPERATING_MODE=ENTERPRISE.
+    """
+    compose_path = os.path.join(os.path.dirname(__file__), "..", "docker-compose.yml")
+    with open(compose_path, "r", encoding="utf-8") as f:
+        compose = yaml.safe_load(f)
+
+    worker_env = compose["services"]["cyberassess-worker"]["environment"]
+    assert worker_env.get("ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED") == "true"
+
+    # Extract concrete environment dictionary from compose (ignoring unexpanded template interpolations)
+    simulated_env = {}
+    for k, v in worker_env.items():
+        if isinstance(v, str) and not v.startswith("${"):
+            simulated_env[k] = v
+
+    # Ensure OPERATING_MODE is NOT explicitly set in simulated_env
+    assert "OPERATING_MODE" not in simulated_env
+
+    supervisor = ProcessSupervisor.get_instance()
+    cmd = [sys.executable, "-c", "print('should not execute')"]
+
+    with patch.dict(os.environ, simulated_env, clear=False):
+        # Clear ambient OPERATING_MODE if set
+        os.environ.pop("OPERATING_MODE", None)
+        res = await supervisor.execute(cmd, timeout=5.0)
+        assert res.returncode == -1
+        assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
+        assert "egress network enforcement facility is not configured" in res.stderr
+
 
