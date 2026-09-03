@@ -42,27 +42,30 @@ def test_metasploit_command_is_fixed_to_non_destructive_auxiliary_scanner():
     assert command[:2] == ["msfconsole", "-q"]
 
 
-def test_sqlmap_command_enforces_bounded_batch_profile():
+def test_sqlmap_command_enforces_bounded_batch_profile(tmp_path):
     """SEC-032: sqlmap automation is fixed to the bounded non-destructive profile."""
-    command = SqlmapAdapter.build_command("sqlmap", "https://example.test/item?id=1", "C:\\workspace\\sqlmap")
+    command = SqlmapAdapter.build_command("sqlmap", "https://example.test/item?id=1", str(tmp_path / "sqlmap"))
     assert {"--batch", "--level=1", "--risk=1", "--threads=2", "--retries=1"}.issubset(command)
     assert not any(argument in command for argument in ("--dump", "--dump-all", "--os-shell"))
 
 
-def test_amass_command_is_passive_and_requires_absolute_output():
-    command = AmassAdapter.build_command("amass", "example.test", "C:\\workspace\\amass.jsonl")
+def test_amass_command_is_passive_and_requires_absolute_output(tmp_path):
+    command = AmassAdapter.build_command("amass", "example.test", str(tmp_path / "amass.jsonl"))
     assert command[1:4] == ["enum", "-passive", "-d"]
     with pytest.raises(ValueError):
         AmassAdapter.build_command("amass", "example.test", "relative.jsonl")
 
 
-def test_hydra_command_is_rate_limited_and_rejects_unsafe_inputs():
+def test_hydra_command_is_rate_limited_and_rejects_unsafe_inputs(tmp_path):
     """SEC-033: Hydra concurrency, delay, and protocol scope are bounded."""
-    command = HydraAdapter.build_command("hydra", "C:\\workspace\\users", "C:\\workspace\\passwords", "ssh", "192.0.2.10", 22, "C:\\workspace\\hydra.json")
+    username_file = str(tmp_path / "users")
+    password_file = str(tmp_path / "passwords")
+    output_file = str(tmp_path / "hydra.json")
+    command = HydraAdapter.build_command("hydra", username_file, password_file, "ssh", "192.0.2.10", 22, output_file)
     assert command[command.index("-t") + 1] == "2"
     assert command[command.index("-W") + 1] == "1"
     with pytest.raises(ValueError):
-        HydraAdapter.build_command("hydra", "C:\\workspace\\users", "C:\\workspace\\passwords", "telnet", "192.0.2.10", 23, "C:\\workspace\\hydra.json")
+        HydraAdapter.build_command("hydra", username_file, password_file, "telnet", "192.0.2.10", 23, output_file)
 
 
 def test_extended_findings_preserve_production_engine_attribution():
@@ -209,7 +212,7 @@ async def test_sqlmap_requires_authorized_validated_target_before_binary_executi
 
 
 @pytest.mark.asyncio
-async def test_sqlmap_binds_execution_to_validated_destination_and_host(monkeypatch):
+async def test_sqlmap_binds_execution_to_validated_destination_and_host(monkeypatch, tmp_path):
     adapter = SqlmapAdapter()
     captured = []
 
@@ -231,7 +234,7 @@ async def test_sqlmap_binds_execution_to_validated_destination_and_host(monkeypa
         AsyncMock(),
         require_managed_binary=True,
         validated_target=validated,
-        output_dir="C:\\workspace\\sqlmap",
+        output_dir=str(tmp_path / "sqlmap"),
     )
 
     command, kwargs = captured[0]
