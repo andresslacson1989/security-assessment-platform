@@ -155,7 +155,11 @@ class ScanOrchestrator:
             # In enterprise mode the API is control-plane only. A dedicated
             # worker claims the durable intent and performs the scan.
             task = asyncio.create_task(
-                queue_manager.enqueue_only(scan_job.id, scan_job.organization_id)
+                queue_manager.enqueue_only(
+                    scan_job.id,
+                    scan_job.organization_id,
+                    scan_job.cloud_credentials,
+                )
             )
         else:
             task = asyncio.create_task(

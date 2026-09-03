@@ -11,6 +11,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Callable, Awaitable, Protocol
 
+from app.core.models import CloudCredentialEnvelope
+from app.core.credential_handoff import encrypt_credential_envelope, decrypt_credential_envelope
+
 MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "5"))
 MAX_CONCURRENT_SCANS_PER_TENANT = int(os.getenv("MAX_CONCURRENT_SCANS_PER_TENANT", "2"))
 GLOBAL_SCAN_TIMEOUT_SECONDS = float(os.getenv("GLOBAL_SCAN_TIMEOUT_SECONDS", "300.0"))
@@ -18,7 +21,12 @@ EXECUTION_QUEUE_URL = os.getenv("EXECUTION_QUEUE_URL", "").strip()
 
 
 class DurableQueueBackend(Protocol):
-    async def enqueue(self, scan_id: str, organization_id: Optional[str]) -> str: ...
+    async def enqueue(
+        self,
+        scan_id: str,
+        organization_id: Optional[str],
+        credential_envelope: Optional[CloudCredentialEnvelope] = None,
+    ) -> str: ...
     async def complete(self, message_id: str) -> None: ...
     async def fail(self, message_id: str, error_code: str) -> None: ...
 
@@ -26,7 +34,7 @@ class DurableQueueBackend(Protocol):
 class DurableQueueConsumer(Protocol):
     async def consume_once(
         self,
-        handler: Callable[[str, Optional[str]], Awaitable[None]],
+        handler: Callable[..., Awaitable[None]],
         *,
         block_ms: int = 5000,
         reclaim_idle_ms: int = 60000,
@@ -64,15 +72,29 @@ class RedisDurableQueue:
                     raise
             self._group_ready = True
 
-    async def enqueue(self, scan_id: str, organization_id: Optional[str]) -> str:
+    async def enqueue(
+        self,
+        scan_id: str,
+        organization_id: Optional[str],
+        credential_envelope: Optional[CloudCredentialEnvelope] = None,
+    ) -> str:
         await self._ensure_group()
+        fields = {
+            "scan_id": scan_id,
+            "organization_id": organization_id or "",
+            "enqueued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if credential_envelope is not None:
+            if not organization_id:
+                raise ValueError("credential handoff requires a queue tenant")
+            fields["credential_envelope"] = encrypt_credential_envelope(
+                credential_envelope,
+                scan_id=scan_id,
+                organization_id=organization_id,
+            )
         message_id = await self._redis.xadd(
             self.stream_name,
-            {
-                "scan_id": scan_id,
-                "organization_id": organization_id or "",
-                "enqueued_at": datetime.now(timezone.utc).isoformat(),
-            },
+            fields,
         )
         return str(message_id)
 
@@ -90,7 +112,7 @@ class RedisDurableQueue:
 
     async def consume_once(
         self,
-        handler: Callable[[str, Optional[str]], Awaitable[None]],
+        handler: Callable[..., Awaitable[None]],
         *,
         block_ms: int = 5000,
         reclaim_idle_ms: int = 60000,
@@ -134,7 +156,30 @@ class RedisDurableQueue:
         try:
             if not scan_id:
                 raise ValueError("execution intent is missing scan_id")
-            await handler(scan_id, organization_id)
+            envelope = None
+            encrypted_envelope = str(fields.get("credential_envelope", "")).strip()
+            if encrypted_envelope:
+                if not organization_id:
+                    raise ValueError("credential handoff is missing queue tenant")
+                envelope = decrypt_credential_envelope(
+                    encrypted_envelope,
+                    scan_id=scan_id,
+                    organization_id=organization_id,
+                )
+            import inspect
+
+            signature = inspect.signature(handler)
+            accepts_three = any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            ) or len(signature.parameters) >= 3
+            if accepts_three:
+                await handler(scan_id, organization_id, envelope)
+            else:
+                if envelope is not None:
+                    raise ValueError("worker handler does not accept credential handoff")
+                await handler(scan_id, organization_id)
         except Exception as exc:
             await self.fail(str(message_id), type(exc).__name__)
         else:
@@ -183,11 +228,18 @@ class ScanQueueManager:
     def durable_enabled(self) -> bool:
         return self._durable_backend is not None
 
-    async def enqueue_only(self, scan_id: str, organization_id: Optional[str]) -> str:
+    async def enqueue_only(
+        self,
+        scan_id: str,
+        organization_id: Optional[str],
+        credential_envelope: Optional[CloudCredentialEnvelope] = None,
+    ) -> str:
         """Persist an enterprise execution intent without running it locally."""
         if self._durable_backend is None:
             raise RuntimeError("enqueue_only requires a durable execution backend")
-        return await self._durable_backend.enqueue(scan_id, organization_id)
+        if credential_envelope is None:
+            return await self._durable_backend.enqueue(scan_id, organization_id)
+        return await self._durable_backend.enqueue(scan_id, organization_id, credential_envelope)
 
     async def _tenant_semaphore(self, organization_id: Optional[str]) -> Optional[asyncio.Semaphore]:
         if not organization_id:

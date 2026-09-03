@@ -63,7 +63,7 @@ async def run_worker() -> None:
     queue = RedisDurableQueue(EXECUTION_QUEUE_URL)
     local_executor = ScanQueueManager()
 
-    async def handle(scan_id: str, organization_id: str | None) -> None:
+    async def handle(scan_id: str, organization_id: str | None, cloud_credentials=None) -> None:
         from app.core.models import ScanStatus
         from app.core.storage import get_scan, save_scan
 
@@ -72,6 +72,10 @@ async def run_worker() -> None:
             raise RuntimeError("queued scan no longer exists in authoritative storage")
         if organization_id is not None and job.organization_id != organization_id:
             raise RuntimeError("queued scan tenant binding failed")
+        if cloud_credentials is not None:
+            if cloud_credentials.organization_id != job.organization_id:
+                raise RuntimeError("queued credential envelope tenant binding failed")
+            job.cloud_credentials = cloud_credentials
         if not should_process_scan(job.status):
             return
 
