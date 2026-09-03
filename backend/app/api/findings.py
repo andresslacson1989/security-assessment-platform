@@ -199,7 +199,13 @@ async def update_finding_status(
     Enforces tenant ownership.
     """
     required_scope = "finding:risk_accept" if payload.status == FindingLifecycleStatus.RISK_ACCEPTED else "finding:triage"
-    if "*" not in (current_user.scopes or []) and required_scope not in (current_user.scopes or []):
+    user_scopes = set(current_user.scopes or [])
+    is_system_admin = (
+        current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+        and current_user.role == UserRole.ADMIN
+        and "*" in user_scopes
+    )
+    if not is_system_admin and required_scope not in user_scopes:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Access forbidden: Credentials lack required scope '{required_scope}'.",

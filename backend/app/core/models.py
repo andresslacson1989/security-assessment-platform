@@ -1109,10 +1109,17 @@ class UserProfile(BaseModel):
     role: UserRole = Field(default=UserRole.VIEWER)
     principal_type: PrincipalType = Field(default=PrincipalType.TENANT_PRINCIPAL)
     organization_id: str = Field(default="org-default")
-    scopes: List[str] = Field(default_factory=lambda: ["*"])
+    scopes: List[str] = Field(default_factory=list)
     is_active: bool = True
     created_at: datetime = Field(default_factory=utc_now)
     last_login_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_wildcard_scope(self) -> "UserProfile":
+        if "*" in self.scopes:
+            if self.principal_type != PrincipalType.SYSTEM_PRINCIPAL or self.role != UserRole.ADMIN:
+                raise ValueError("Wildcard scope '*' is restricted exclusively to SYSTEM_PRINCIPAL with ADMIN role.")
+        return self
 
 
 class APIKeyRecord(BaseModel):

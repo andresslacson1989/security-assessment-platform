@@ -18,6 +18,7 @@ from app.core.auth import (
     verify_password,
     validate_password_strength,
     create_access_token,
+    resolve_effective_scopes,
     revoke_token,
     get_current_user,
     require_admin,
@@ -132,6 +133,7 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
             detail="Platform is already initialized with an administrator. Bootstrap is closed.",
         ) from exc
 
+    user.scopes = resolve_effective_scopes(user)
     token = create_access_token(user)
     return BootstrapResponse(
         message="CyberAssess platform bootstrapped successfully.",
@@ -216,6 +218,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
         )
         db_manager._insert_audit_event_conn(conn, success_event)
 
+        user.scopes = resolve_effective_scopes(user)
         token = create_access_token(user)
         return LoginResponse(access_token=token, user=user)
 
@@ -295,13 +298,15 @@ async def create_user(
         )
     )
 
-    return UserProfile(
+    created_user = UserProfile(
         id=user_id,
         username=payload.username.strip(),
         email=payload.email.strip(),
         role=payload.role,
         organization_id=org_id,
     )
+    created_user.scopes = resolve_effective_scopes(created_user)
+    return created_user
 
 
 @router.post("/api-keys", response_model=APIKeyCreatedResponse, status_code=status.HTTP_201_CREATED, summary="Create Programmatic API Key")
@@ -320,7 +325,12 @@ async def create_api_key(
             detail="API key scopes must be a non-empty subset of the platform scope allowlist.",
         )
     caller_scopes = set(current_user.scopes or [])
-    if "*" not in caller_scopes and not requested_scopes.issubset(caller_scopes):
+    is_system_admin = (
+        current_user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
+        and current_user.role == UserRole.ADMIN
+        and "*" in caller_scopes
+    )
+    if not is_system_admin and not requested_scopes.issubset(caller_scopes):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="API key scopes cannot exceed the caller's effective permissions.",

@@ -39,13 +39,21 @@ def test_internal_target_requires_explicit_scope_even_for_admin_role():
     assert authorize_internal_target(admin_with_scope, "http://127.0.0.1") is True
 
 
-def test_internal_target_accepts_explicit_wildcard_scope():
-    analyst = UserProfile(
-        username="analyst", email="analyst@example.test", role=UserRole.SECURITY_ANALYST,
+def test_internal_target_accepts_system_admin_wildcard_scope():
+    # Tenant analyst cannot receive wildcard scope
+    with pytest.raises(ValueError, match="SYSTEM_PRINCIPAL with ADMIN role"):
+        UserProfile(
+            username="analyst", email="analyst@example.test", role=UserRole.SECURITY_ANALYST,
+            scopes=["*"]
+        )
+
+    # Only SYSTEM_PRINCIPAL + ADMIN may possess wildcard scope
+    sys_admin = UserProfile(
+        username="sys-admin", email="sysadmin@example.test", role=UserRole.ADMIN,
+        principal_type=PrincipalType.SYSTEM_PRINCIPAL,
         scopes=["*"]
     )
-
-    assert authorize_internal_target(analyst, "http://127.0.0.1") is True
+    assert authorize_internal_target(sys_admin, "http://127.0.0.1") is True
 
 
 @pytest.mark.asyncio
