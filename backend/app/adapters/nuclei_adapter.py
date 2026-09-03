@@ -6,6 +6,7 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 import json
 import re
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable
 
 from app.core.models import (
@@ -21,6 +22,7 @@ from app.core.models import (
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.ssrf_protector import bind_url_to_validated_target
+from app.core.template_trust import verify_managed_nuclei_templates
 
 
 SEVERITY_MAP = {
@@ -32,6 +34,8 @@ SEVERITY_MAP = {
 }
 
 APPROVED_VERSION = "3.2.0"
+MANAGED_TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "resources" / "nuclei-templates"
+MANAGED_TEMPLATES_TRUST_RECORD = MANAGED_TEMPLATES_DIR.parent / "nuclei-templates.trust.json"
 
 
 def normalize_target_url(target_value: str) -> str:
@@ -154,6 +158,13 @@ class NucleiAdapter(BaseToolAdapter):
             await emit_log(LogLevel.ERROR, "Nuclei execution blocked: executable is not a trusted managed installation.")
             return findings
 
+        if kwargs.get("require_managed_binary") and not verify_managed_nuclei_templates(
+            MANAGED_TEMPLATES_DIR, MANAGED_TEMPLATES_TRUST_RECORD
+        ):
+            self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+            await emit_log(LogLevel.ERROR, "Nuclei execution blocked: managed template set is missing or untrusted.")
+            return findings
+
         managed_check = (lambda: self.verify_managed_binary(nuclei_path)) if kwargs.get("require_managed_binary") else None
         if not await self.ensure_approved_version(custom_path, emit_log, pre_launch_check=managed_check):
             return findings
@@ -169,6 +180,7 @@ class NucleiAdapter(BaseToolAdapter):
             "-silent",
             "-tags", "cve,misconfig",
             "-severity", "low,medium,high,critical",
+            "-t", str(MANAGED_TEMPLATES_DIR),
             "-c", "5",
             "-rate-limit", "10",
             "-timeout", "10",

@@ -961,6 +961,7 @@ Stderr: Diagnostic logs
 
 ### 21. Forbidden Arguments
 - `-update-templates` (uncontrolled network pull in production), `-t <untrusted_local_path>`.
+- `-t` is permitted only for the server-managed pinned template set after source-commit, archive-digest, and extracted-tree-digest verification.
 
 ### 22. Input Schema
 - Normalized target URL string (`http://` or `https://`).

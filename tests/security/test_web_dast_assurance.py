@@ -157,6 +157,7 @@ async def test_e12_managed_execution_passes_prelaunch_check_to_process_boundary(
 
     with patch.object(adapter, "resolve_binary_path", return_value="/managed/tool"), \
          patch.object(adapter, "verify_managed_binary", return_value=True), \
+         patch("app.adapters.nuclei_adapter.verify_managed_nuclei_templates", return_value=True), \
          patch.object(adapter, "get_version", new=AsyncMock(return_value=version)), \
          patch.object(adapter, "execute_command", new=capture):
         await adapter.run(

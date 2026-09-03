@@ -542,6 +542,7 @@ class TestNucleiAdapter:
         assert command[command.index("-timeout") + 1] == "10"
         assert executed["kwargs"]["timeout"] == 90.0
         assert executed["kwargs"]["max_output_bytes"] == 10 * 1024 * 1024
+        assert command[command.index("-t") + 1].replace("\\", "/").endswith("resources/nuclei-templates")
 
 
 # ============================================================================

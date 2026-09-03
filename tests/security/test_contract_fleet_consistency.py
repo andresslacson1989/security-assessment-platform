@@ -91,6 +91,9 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "write_direct_artifact_trust_record" in dockerfile
     assert "write_source_artifact_trust_record" in dockerfile
     assert "-update-templates" not in dockerfile
+    assert "COPY --from=builder /tmp/bin/nuclei-templates /app/backend/resources/nuclei-templates" in dockerfile
+    assert "nuclei-templates.trust.json" in dockerfile
+    assert "source-commit, archive-digest, and extracted-tree-digest" in contract_09
     assert "COPY --from=builder /tmp/nmap-root/usr/local/bin/nmap /app/backend/bin/nmap" in dockerfile
     assert "COPY --from=builder /tmp/bin/amass /app/backend/bin/amass" in dockerfile
     assert "COPY --from=builder /tmp/bin/resources /app/backend/bin/resources" in dockerfile

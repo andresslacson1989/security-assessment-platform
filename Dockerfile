@@ -41,6 +41,17 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     chmod +x nuclei && \
     rm nuclei.zip
 
+# 1a. Nuclei community templates (pinned source snapshot)
+# The release currently exposes a checksum sidecar but no archive asset, so
+# the immutable Git tag commit and its codeload archive digest are pinned.
+RUN curl -fsSL https://codeload.github.com/projectdiscovery/nuclei-templates/tar.gz/83234ce456da3e90dda86dfbc5e605e64a846df3 -o nuclei-templates.tar.gz && \
+    echo "5b22a097bf0b828377574a82b98b4ed0d1227b4aae3ff6e3bedf97272e70ccc6  nuclei-templates.tar.gz" | sha256sum -c - && \
+    mkdir -p /tmp/bin/nuclei-templates && \
+    tar -xzf nuclei-templates.tar.gz --strip-components=1 -C /tmp/bin/nuclei-templates && \
+    test -n "$(find /tmp/bin/nuclei-templates -type f -print -quit)" && \
+    python3 -c 'import hashlib,json; from pathlib import Path; root=Path("/tmp/bin/nuclei-templates"); d=hashlib.sha256(); [ (d.update(p.relative_to(root).as_posix().encode()), d.update(b"\0"), d.update(hashlib.sha256(p.read_bytes()).digest()), d.update(b"\0")) for p in sorted(root.rglob("*")) if p.is_file() and not p.is_symlink() ]; json.dump({"source_commit":"83234ce456da3e90dda86dfbc5e605e64a846df3","archive_sha256":"5b22a097bf0b828377574a82b98b4ed0d1227b4aae3ff6e3bedf97272e70ccc6","template_tree_sha256":d.hexdigest(),"trust_status":"VALID"},open("/tmp/bin/nuclei-templates.trust.json","w"),sort_keys=True)' && \
+    rm nuclei-templates.tar.gz
+
 # 2. FFuF (v2.1.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
       curl -fsSL https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_arm64.tar.gz -o ffuf.tar.gz && echo "6ae920d09d5202762fca21967a460c6fb88135bdfa806bee4d3d2c430dcedeea  ffuf.tar.gz" | sha256sum -c - && tar -xzf ffuf.tar.gz ffuf; \
@@ -245,6 +256,8 @@ ENV PATH="$PATH:/opt/cyberassess/tool-venvs/sslyze/bin:/opt/cyberassess/tool-ven
 # Copy pre-compiled standalone Go binaries AFTER pip so pip packages cannot overwrite CLI tools (e.g. ProjectDiscovery httpx)
 RUN mkdir -p /app/backend/bin
 COPY --from=builder /tmp/bin/nuclei /app/backend/bin/nuclei
+COPY --from=builder /tmp/bin/nuclei-templates /app/backend/resources/nuclei-templates
+COPY --from=builder /tmp/bin/nuclei-templates.trust.json /app/backend/resources/nuclei-templates.trust.json
 COPY --from=builder /tmp/bin/ffuf /app/backend/bin/ffuf
 COPY --from=builder /tmp/bin/gitleaks /app/backend/bin/gitleaks
 # Trivy v0.50.0 has no currently downloadable official binary artifact;

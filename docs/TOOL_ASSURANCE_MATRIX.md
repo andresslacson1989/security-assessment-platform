@@ -110,12 +110,12 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Enterprise Maturity**: Production-Mature.
 - **Approved Release Version**: `v3.2.0`; exact runtime version enforcement is fail-closed.
 - **Upstream Project**: ProjectDiscovery (https://github.com/projectdiscovery/nuclei).
-- **Template Trust Policy**: Uses official curated `nuclei-templates` release; arbitrary user-provided template execution is restricted to authorized admin tenants.
+- **Template Trust Policy**: Uses the pinned official `nuclei-templates` source snapshot at commit `83234ce456da3e90dda86dfbc5e605e64a846df3`, verifies the archive SHA-256 and extracted template-tree digest at runtime, and rejects arbitrary user-provided template execution.
 - **Safety Controls**: Managed-process preflight, validated-destination pinning with Host preservation, explicit tenant active-probing authorization at both engine and adapter boundaries before production launch, concurrency/rate bounds, curated fixed template tags, and sanitized reproduction evidence. Arbitrary template execution is not enabled.
 - **Credential Handling**: Tenant credentials are not placed in CLI arguments; authenticated coverage is handled by the governed native HTTP session until secret-safe subprocess injection is implemented.
 - **Finding Normalization**: Maps `template-id` to canonical check catalog, extracts `reproduction_curl`, CVSS score, CWE mapping.
 - **Role Strategy**: **PRIMARY**. Complements native DAST engine.
-- **Runtime Evidence**: On 2026-09-02, the production image executed the managed Nuclei `v3.2.0` version probe as uid 999; the managed executable trust record verified successfully.
+- **Runtime Evidence**: On 2026-09-03, the production image executed the managed Nuclei `v3.2.0` version probe as uid 999; the managed executable and pinned template trust records verified successfully.
 
 ### 6. FFuF (Fast Web Parameter & Endpoint Fuzzer)
 - **Security Domain**: Web Fuzzing
@@ -157,7 +157,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E12 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented execution states, API visibility, exact-version fail-closed gates, destination binding, redirect confinement, and focused adversarial tests.
 - **Managed runtime status**: Managed Nuclei, FFuF, Katana, and Schemathesis paths were verified in the Linux production image under uid 999 with exact approved versions and valid trust records; no unmanaged executable was substituted.
-- **Acceptance evidence**: The current full repository regression completed with `465 passed, 4 skipped, 4 warnings`; the Linux production image also verified the managed runtime paths. FFuF and Nuclei launches are explicitly blocked at engine and adapter boundaries when tenant active-probing authorization is absent.
+- **Acceptance evidence**: The current full repository regression completed with `466 passed, 4 skipped, 4 warnings`; the Linux production image also verified the managed runtime paths. FFuF and Nuclei launches are explicitly blocked at engine and adapter boundaries when tenant active-probing authorization is absent.
 
 ### 9. Semgrep (Polyglot AST Static Analysis Engine)
 - **Security Domain**: Code SAST
@@ -211,7 +211,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 ### E13 Section Evidence Status
 - **Repository status**: `REPOSITORY_VERIFIED` for the implemented shared process-supervision, fallback-provenance, attribution, evidence-sanitization, authoritative-persistence, and 26-tool registry controls. Final section acceptance remains conditional on the limitations recorded below; no limitation is represented as a completed capability.
 - **Managed runtime status**: The current Linux production image verified managed direct-binary runtimes and trust records for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and the source-built Nmap runtime, plus the managed Retire.js package. It also verified the six isolated Python environments—SSLyze `5.2.0`, Bandit `1.7.8`, Semgrep `1.65.0`, Checkov `3.2.0`, Prowler `4.1.0`, and Schemathesis `3.20.0`—with valid lock-bound package trust records. All verification ran under UID 999; no unmanaged runtime is treated as evidence.
-- **Regression evidence**: The current focused orchestration/contract suite completed successfully; the current full repository regression completed with `465 passed, 4 skipped, 4 warnings`. Adapter subprocess environments are filtered at the shared launch boundary, rejected-discovery evidence is replayed in historical SSE snapshots, and all production Compose runtime services use read-only filesystems, dropped Linux capabilities, `no-new-privileges`, and an explicit hardened `/tmp`. A direct container probe confirmed `NoNewPrivs: 1`, denied writes outside the provisioned state volume, allowed `/tmp` state, and enforced `noexec` on `/tmp`.
+- **Regression evidence**: The current focused orchestration/contract suite completed successfully; the current full repository regression completed with `466 passed, 4 skipped, 4 warnings`. Adapter subprocess environments are filtered at the shared launch boundary, rejected-discovery evidence is replayed in historical SSE snapshots, and all production Compose runtime services use read-only filesystems, dropped Linux capabilities, `no-new-privileges`, and an explicit hardened `/tmp`. A direct container probe confirmed `NoNewPrivs: 1`, denied writes outside the provisioned state volume, allowed `/tmp` state, and enforced `noexec` on `/tmp`.
 - **Coverage limitation**: Native fallbacks are explicitly limited compared with the external tools; failed, blocked, timed-out, cancelled, or parser-degraded tools must remain visible as degraded coverage.
 
 ### 14. Trivy (Container, Filesystem & IaC Vulnerability Scanner)
