@@ -10,6 +10,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Callable, Awaitable, Protocol
+from urllib.parse import urlsplit
 
 from app.core.models import CloudCredentialEnvelope
 from app.core.credential_handoff import encrypt_credential_envelope, decrypt_credential_envelope
@@ -19,6 +20,31 @@ MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "5"))
 MAX_CONCURRENT_SCANS_PER_TENANT = int(os.getenv("MAX_CONCURRENT_SCANS_PER_TENANT", "2"))
 GLOBAL_SCAN_TIMEOUT_SECONDS = float(os.getenv("GLOBAL_SCAN_TIMEOUT_SECONDS", "300.0"))
 EXECUTION_QUEUE_URL = os.getenv("EXECUTION_QUEUE_URL", "").strip()
+ENVIRONMENT = os.getenv("ENVIRONMENT", "").strip().lower()
+
+
+def validate_execution_queue_url(redis_url: str, *, production: bool = False) -> str:
+    """Validate queue transport without exposing credentials in errors/logs."""
+    value = str(redis_url or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise RuntimeError("EXECUTION_QUEUE_URL is malformed") from exc
+    if parsed.scheme not in {"redis", "rediss"}:
+        raise RuntimeError("EXECUTION_QUEUE_URL must use redis:// or rediss://")
+    if not parsed.hostname:
+        raise RuntimeError("EXECUTION_QUEUE_URL must include a Redis host")
+    if production and not parsed.password:
+        raise RuntimeError("Production EXECUTION_QUEUE_URL must authenticate to Redis")
+    return value
+
+
+EXECUTION_QUEUE_URL = validate_execution_queue_url(
+    EXECUTION_QUEUE_URL,
+    production=ENVIRONMENT == "production",
+)
 
 
 class DurableQueueBackend(Protocol):
@@ -264,8 +290,5 @@ class ScanQueueManager:
         finally:
             self._active_count = max(0, self._active_count - 1)
 
-
-if EXECUTION_QUEUE_URL and not EXECUTION_QUEUE_URL.lower().startswith("redis://"):
-    raise RuntimeError("EXECUTION_QUEUE_URL must use redis:// for the enterprise queue backend")
 
 queue_manager = ScanQueueManager(durable_backend=RedisDurableQueue(EXECUTION_QUEUE_URL) if EXECUTION_QUEUE_URL else None)
