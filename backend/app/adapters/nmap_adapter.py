@@ -685,6 +685,7 @@ class NmapAdapter(BaseToolAdapter):
                     project_id=kwargs.get("project_id"),
                     asset_id=kwargs.get("asset_id"),
                     active_probing_granted=kwargs.get("active_probing_granted", False),
+                    allow_internal=kwargs.get("allow_internal", getattr(config, "allow_internal", False)),
                 )
             except Exception as e:
                 self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
@@ -709,8 +710,8 @@ class NmapAdapter(BaseToolAdapter):
         version_str = await self.get_version(nmap_path, pre_launch_check=managed_check)
         is_v_valid, v_err = self.verify_version(version_str)
         if not is_v_valid:
-            self.last_execution_state = NormalizedExecutionState.TOOL_EXECUTION_FAILED
-            await emit_log(LogLevel.ERROR, f"Nmap version rejected: {v_err}. Execution blocked.")
+            self.last_execution_state = NormalizedExecutionState.INVALID_VERSION
+            await emit_log(LogLevel.ERROR, f"Nmap version rejected: {v_err}. Execution blocked. (INVALID_VERSION)")
             return findings
 
         # 4. Classify Operation & Evaluate Three-Tier Authorization Check

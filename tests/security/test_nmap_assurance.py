@@ -169,7 +169,7 @@ class TestNmapDestinationBinding:
         to the pinned selected_destination IP and does not perform unvalidated hostname lookups.
         """
         # Create target with a non-routable dummy hostname but pinned to loopback IP
-        target = Target(name="Local Test", type=TargetType.IP, value="127.0.0.1")
+        target = Target(name="Internal Test", type=TargetType.IP, value="10.0.0.1")
         with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
             val_target = create_validated_target(target, allow_internal=True)
 
@@ -180,7 +180,7 @@ class TestNmapDestinationBinding:
             config=config,
         )
         assert err is None
-        assert cmd[-1] == "127.0.0.1"
+        assert cmd[-1] == "10.0.0.1"
 
     def test_ssrf_forbidden_target_blocked(self):
         target = Target(name="Internal AWS Metadata", type=TargetType.IP, value="169.254.169.254")

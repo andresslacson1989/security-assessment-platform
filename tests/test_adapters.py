@@ -369,7 +369,7 @@ class TestNmapAdapter:
             with patch.object(adapter, "get_version", return_value="Nmap 7.95"):
                 with patch.object(adapter, "execute_command", return_value=(0, NMAP_SAMPLE_XML, "")):
                     with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
-                        res = await adapter.run(target, config, mock_log, mock_finding)
+                        res = await adapter.run(target, config, mock_log, mock_finding, allow_internal=True)
 
         assert len(res) == 4  # Port 80 was closed, so 4 open ports
         assert len(findings) == 4
@@ -405,7 +405,7 @@ class TestNmapAdapter:
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/nmap"):
             with patch.object(adapter, "get_version", return_value="Nmap 7.94"):
                 with patch("app.core.ssrf_protector.is_ip_allowed", return_value=(True, None)):
-                    res = await adapter.run(target, config, mock_log, mock_finding)
+                    res = await adapter.run(target, config, mock_log, mock_finding, allow_internal=True)
 
         assert len(res) == 0
         assert any("INVALID_VERSION" in l[1] for l in logs)

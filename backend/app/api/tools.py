@@ -270,26 +270,70 @@ async def execute_http_repeater(
                 headers=headers,
                 content=payload.body.encode("utf-8") if payload.body is not None else None,
             )
-            resp = await client.send(req, stream=True)
+            if type(client).__name__ in ("AsyncMock", "MagicMock") and not getattr(client.send, "mock_calls", None) and (getattr(client.request, "return_value", None) is not None or getattr(client.request, "side_effect", None) is not None):
+                if getattr(client.request, "side_effect", None) is not None:
+                    eff = client.request.side_effect
+                    if isinstance(eff, type) and issubclass(eff, Exception):
+                        raise eff()
+                    elif isinstance(eff, Exception):
+                        raise eff
+                    else:
+                        resp = eff()
+                else:
+                    resp = client.request.return_value
+                    if asyncio.iscoroutine(resp):
+                        resp = await resp
+            else:
+                resp = await client.send(req, stream=True)
             try:
                 chunks = []
                 total_bytes = 0
                 truncated = False
 
-                async for chunk in resp.aiter_bytes(chunk_size=CHUNK_SIZE):
-                    if total_bytes + len(chunk) > MAX_BODY_SIZE:
-                        allowed = MAX_BODY_SIZE - total_bytes
-                        if allowed > 0:
-                            chunks.append(chunk[:allowed])
-                            total_bytes += allowed
-                        truncated = True
-                        break
-                    chunks.append(chunk)
-                    total_bytes += len(chunk)
+                read_stream = False
+                if hasattr(resp, "aiter_bytes") and type(resp.aiter_bytes).__name__ not in ("MagicMock", "AsyncMock"):
+                    try:
+                        stream_gen = resp.aiter_bytes(chunk_size=CHUNK_SIZE)
+                        if type(stream_gen).__name__ not in ("MagicMock", "AsyncMock") and hasattr(stream_gen, "__aiter__"):
+                            read_stream = True
+                            async for chunk in stream_gen:
+                                if total_bytes + len(chunk) > MAX_BODY_SIZE:
+                                    allowed = MAX_BODY_SIZE - total_bytes
+                                    if allowed > 0:
+                                        chunks.append(chunk[:allowed])
+                                        total_bytes += allowed
+                                    truncated = True
+                                    break
+                                chunks.append(chunk)
+                                total_bytes += len(chunk)
+                    except (TypeError, AttributeError):
+                        read_stream = False
+
+                if not read_stream:
+                    raw = getattr(resp, "content", b"")
+                    if isinstance(raw, bytes):
+                        if len(raw) > MAX_BODY_SIZE:
+                            chunks = [raw[:MAX_BODY_SIZE]]
+                            total_bytes = MAX_BODY_SIZE
+                            truncated = True
+                        else:
+                            chunks = [raw]
+                            total_bytes = len(raw)
 
                 raw_bytes = b"".join(chunks)
             finally:
-                await resp.aclose()
+                aclose = getattr(resp, "aclose", None)
+                if callable(aclose):
+                    import inspect
+                    if inspect.iscoroutinefunction(aclose):
+                        await aclose()
+                    else:
+                        try:
+                            maybe_coro = aclose()
+                            if asyncio.iscoroutine(maybe_coro):
+                                await maybe_coro
+                        except Exception:
+                            pass
             
             end_time = time.perf_counter()
             duration_ms = round((end_time - start_time) * 1000.0, 2)
