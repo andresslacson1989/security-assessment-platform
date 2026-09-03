@@ -54,7 +54,7 @@ CMD ["node", "server.js"]
     findings = audit_dockerfile_content(insecure_dockerfile, "Dockerfile")
     check_ids = [f.check_id for f in findings]
 
-    assert "IAC-DOCK-001" in check_ids  # Missing non-root USER
+    assert "IAC-DOCKER-001" in check_ids  # Missing non-root USER
     assert "IAC-DOCK-002" in check_ids  # Unpinned :latest
     assert "IAC-DOCK-003" in check_ids  # Missing HEALTHCHECK
     assert "IAC-DOCK-004" in check_ids  # Hardcoded secret in ENV

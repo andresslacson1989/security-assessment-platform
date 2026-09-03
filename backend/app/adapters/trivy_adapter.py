@@ -33,7 +33,7 @@ SEVERITY_MAP = {
 class TrivyAdapter(BaseToolAdapter):
     """
     Hybrid tool adapter for Aqua Security Trivy vulnerability and dependency scanner.
-    Normalizes JSON scan output into canonical SAST-DEP-001 and IAC-DOCK-xxx findings.
+    Normalizes JSON scan output into canonical SAST-DEP-001 and IAC-DOCKER findings.
     """
     approved_version = "0.50.0"
 
@@ -191,7 +191,7 @@ class TrivyAdapter(BaseToolAdapter):
             # 2. Process Misconfigurations (IaC / Dockerfile / K8s)
             misconfigurations = res.get("Misconfigurations", []) or []
             for m in misconfigurations:
-                misc_id = m.get("ID") or "IAC-DOCK-001"
+                misc_id = m.get("ID") or "IAC-DOCKER-001"
                 title = m.get("Title") or "IaC Security Misconfiguration"
                 description = m.get("Description") or f"Misconfiguration {misc_id} identified in {target_file}."
                 message = m.get("Message") or description
@@ -201,9 +201,9 @@ class TrivyAdapter(BaseToolAdapter):
 
                 severity, cvss_score = SEVERITY_MAP.get(severity_raw, (Severity.HIGH, 7.8))
 
-                check_id = "IAC-DOCK-001"
+                check_id = "IAC-DOCKER-001"
                 if "root" in title.lower() or "user" in title.lower():
-                    check_id = "IAC-DOCK-001"
+                    check_id = "IAC-DOCKER-001"
                 elif "healthcheck" in title.lower():
                     check_id = "IAC-DOCK-003"
                 elif "secret" in title.lower():

@@ -282,7 +282,7 @@ RUN apt-get update && apt-get install -y curl
 """
     dock_findings = audit_dockerfile_content(dockerfile, "Dockerfile")
     dock_ids = {f.check_id for f in dock_findings}
-    assert "IAC-DOCK-001" in dock_ids  # Root user
+    assert "IAC-DOCKER-001" in dock_ids  # Root user
     assert "IAC-DOCK-002" in dock_ids  # Unpinned :latest tag
     assert "IAC-DOCK-005" in dock_ids  # Secret in ENV
 

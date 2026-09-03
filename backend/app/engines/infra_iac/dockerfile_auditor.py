@@ -155,12 +155,12 @@ def audit_dockerfile_content(content: str, file_path_str: str) -> List[Finding]:
                 fingerprint=calculate_fingerprint("IAC-DOCK-006", f"{file_path_str}:{line_num}", "sudo_usage"),
             ))
 
-    # Check for missing non-root USER directive (IAC-DOCK-001)
+    # Check for missing non-root USER directive (IAC-DOCKER-001)
     if not has_non_root_user:
         findings.append(Finding(
             scan_id="auto",
             engine="infra_iac",
-            check_id="IAC-DOCK-001",
+            check_id="IAC-DOCKER-001",
             category="Container Hardening",
             title="Container Runs as Root User (Missing Non-Root USER Directive)",
             severity=Severity.HIGH,
@@ -179,7 +179,7 @@ def audit_dockerfile_content(content: str, file_path_str: str) -> List[Finding]:
                 observed_value="No non-root USER instruction found",
                 expected_value="USER appuser (UID > 0)",
             ),
-            fingerprint=calculate_fingerprint("IAC-DOCK-001", file_path_str, "root_user"),
+            fingerprint=calculate_fingerprint("IAC-DOCKER-001", file_path_str, "root_user"),
         ))
 
     # Check for missing HEALTHCHECK (IAC-DOCK-003)

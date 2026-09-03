@@ -127,7 +127,7 @@ class CheckovAdapter(BaseToolAdapter):
                     check_type = item.get("check_type", "terraform").lower()
                     c_id_upper = c_id.upper()
                     if "docker" in check_type or "dockerfile" in file_path.lower() or c_id_upper.startswith("CKV_DOCKER"):
-                        canonical_id = "IAC-DOCK-001"
+                        canonical_id = "IAC-DOCKER-001"
                         category = "Container Posture"
                     elif "k8s" in check_type or "kubernetes" in check_type or c_id_upper.startswith("CKV_K8S"):
                         canonical_id = "IAC-K8S-001"

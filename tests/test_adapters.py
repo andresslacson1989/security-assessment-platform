@@ -718,7 +718,7 @@ class TestTrivyAdapter:
         assert "requests@2.28.0" in sca.evidence.location
         assert "2.31.0" in sca.remediation
 
-        dock = next(f for f in res if f.check_id == "IAC-DOCK-001")
+        dock = next(f for f in res if f.check_id == "IAC-DOCKER-001")
         assert dock.source_tool == "trivy"
         assert dock.engine == "infra_iac"
         assert dock.severity == Severity.HIGH
@@ -1048,7 +1048,7 @@ class TestCheckovAdapter:
                 findings = await adapter.run(target, config, mock_log, mock_finding)
 
         assert len(findings) == 2
-        dock_f = next(f for f in findings if f.check_id == "IAC-DOCK-001")
+        dock_f = next(f for f in findings if f.check_id == "IAC-DOCKER-001")
         assert dock_f.severity == Severity.HIGH
         assert dock_f.source_tool == "checkov"
 
