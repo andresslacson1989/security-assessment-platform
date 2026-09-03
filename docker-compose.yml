@@ -37,6 +37,8 @@ services:
     volumes:
       # Persistent host volume for scan reports and database
       - ./data:/app/data
+    networks:
+      - control-plane
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/system/health"]
       interval: 30s
@@ -81,6 +83,10 @@ services:
       ENVIRONMENT: production
     volumes:
       - ./data:/app/data
+    networks:
+      - control-plane
+      - data-plane
+      - provider-egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,6 +131,9 @@ services:
       ENVIRONMENT: production
     volumes:
       - ./data:/app/data
+    networks:
+      - data-plane
+      - execution-egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -142,6 +151,8 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
     volumes:
       - cyberassess-postgres:/var/lib/postgresql/data
+    networks:
+      - data-plane
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -156,6 +167,8 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - cyberassess-redis:/data
+    networks:
+      - data-plane
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -165,3 +178,24 @@ services:
 volumes:
   cyberassess-postgres:
   cyberassess-redis:
+
+networks:
+  # The standalone service is intentionally kept on its own host-facing
+  # network. It is not the enterprise execution plane.
+  control-plane:
+    driver: bridge
+  # Database and queue traffic stays on an internal-only network. No host
+  # port is published for either persistence service.
+  data-plane:
+    driver: bridge
+    internal: true
+  # The worker's external network is a deployment attachment point for the
+  # host firewall/egress gateway. Compose itself does not enforce a target
+  # allowlist on this network; production deployment must apply that policy.
+  execution-egress:
+    driver: bridge
+  # Native platform-owned provider clients use this separate attachment.
+  # Exact provider URLs remain enforced in application code; destination
+  # filtering for all external processes remains an infrastructure control.
+  provider-egress:
+    driver: bridge

@@ -32,6 +32,30 @@ def test_runtime_writable_state_is_explicitly_provisioned():
         assert any(str(volume).startswith("./data:/app/data") for volume in volumes)
 
 
+def test_enterprise_compose_separates_data_and_execution_networks():
+    compose = yaml.safe_load((REPOSITORY_ROOT / "docker-compose.yml").read_text())
+    networks = compose["networks"]
+
+    assert networks["data-plane"]["internal"] is True
+    assert "ports" not in compose["services"]["postgres"]
+    assert "ports" not in compose["services"]["redis"]
+
+    worker_networks = set(compose["services"]["cyberassess-worker"]["networks"])
+    assert worker_networks == {"data-plane", "execution-egress"}
+    assert "ports" not in compose["services"]["cyberassess-worker"]
+
+    api_networks = set(compose["services"]["cyberassess-enterprise"]["networks"])
+    assert api_networks == {"control-plane", "data-plane", "provider-egress"}
+
+
+def test_compose_documents_external_egress_control_as_required():
+    deployment_doc = (REPOSITORY_ROOT / "docs" / "DOCKER_COMPOSE_DEPLOYMENT.md").read_text()
+    assert "do not provide a dynamic, per-tenant" in deployment_doc
+    assert "destination allowlist" in deployment_doc
+    assert "assured external-tool execution" in deployment_doc
+    assert "default-deny external traffic" in deployment_doc
+
+
 def test_managed_artifacts_are_not_owned_by_runtime_user():
     """Trust records and executables must remain outside the worker's write set."""
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
