@@ -1396,12 +1396,14 @@ class TestKatanaAdapter:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/katana"), \
              patch.object(adapter, "get_version", new=AsyncMock(return_value="katana v1.0.5")), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
+             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))) as execute_mock:
             findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
             assert len(findings) == 1
             assert len(endpoints) == 1
             assert endpoints[0].url == "https://spa.example.com/api/v1/users"
             assert findings[0].check_id == "DAST-SPA-001"
+            command = execute_mock.await_args.kwargs["cmd"]
+            assert command[-1] == "-jc"
 
 
 # ============================================================================

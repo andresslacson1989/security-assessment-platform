@@ -88,7 +88,7 @@ class KatanaAdapter(BaseToolAdapter):
 
         await emit_log(LogLevel.INFO, f"Executing Katana dynamic crawler on: {target_url}")
         # Standard fast crawl command
-        cmd = [binary, "-u", target_url, "-jsonl", "-silent", "-d", str(min(config.crawler.max_depth, 3)), "-c", "5"]
+        cmd = [binary, "-u", target_url, "-jsonl", "-silent", "-d", str(min(config.crawler.max_depth, 3)), "-c", "5", "-jc"]
         if host_header:
             cmd.extend(["-H", f"Host: {host_header}"])
 
