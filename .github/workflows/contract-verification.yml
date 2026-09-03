@@ -37,3 +37,26 @@ jobs:
           OPERATING_MODE: TEST
           JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
         run: python -m pytest -q
+
+  container:
+    name: Hardened production image verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build production image
+        run: docker build --tag cyberassess-contract-runtime .
+
+      - name: Smoke-test hardened runtime
+        run: >-
+          docker run --rm --read-only --cap-drop=ALL
+          --security-opt=no-new-privileges
+          --tmpfs /tmp:rw,noexec,nosuid,nodev
+          --user cyberassess
+          --entrypoint /bin/sh cyberassess-contract-runtime
+          -c "test \"$(id -u)\" -ne 0 &&
+          test ! -w /app/backend/bin/subfinder &&
+          test ! -w /app/backend/bin/subfinder.trust.json &&
+          test ! -w /opt/cyberassess/tool-venvs/sslyze/bin/sslyze.trust.json"

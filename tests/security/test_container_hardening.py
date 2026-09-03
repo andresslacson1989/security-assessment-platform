@@ -54,3 +54,13 @@ def test_ci_verifies_the_hash_locked_runtime_dependency_set():
     assert "cache-dependency-path: backend/requirements.lock" in workflow
     assert "pip install --require-hashes --requirement backend/requirements.lock" in workflow
     assert "backend/requirements.txt" not in workflow
+
+
+def test_ci_builds_and_smoke_tests_the_hardened_production_image():
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml").read_text()
+    assert "name: Hardened production image verification" in workflow
+    assert "docker build --tag cyberassess-contract-runtime ." in workflow
+    assert "--cap-drop=ALL" in workflow
+    assert "--security-opt=no-new-privileges" in workflow
+    assert "--user cyberassess" in workflow
+    assert "test ! -w /app/backend/bin/subfinder.trust.json" in workflow
