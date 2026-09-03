@@ -51,6 +51,14 @@ def check_prerequisites():
 def main():
     check_prerequisites()
 
+    operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "PRODUCTION").strip().upper()
+    os.environ["OPERATING_MODE"] = operating_mode
+    if operating_mode == "PRODUCTION":
+        jwt_secret = os.environ.get("JWT_SECRET", "").strip()
+        if not jwt_secret or len(jwt_secret) < 32 or jwt_secret.lower() in {"dev-secret", "change-me", "secret"}:
+            print("\n[ERROR] Production mode requires a secure JWT_SECRET with at least 32 characters.")
+            sys.exit(1)
+
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8000"))
     display_host = "localhost" if host == "0.0.0.0" else host

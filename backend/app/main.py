@@ -88,11 +88,22 @@ else:
     # Explicit trusted local frontend origins
     ALLOWED_ORIGINS = _load_allowed_origins(None)
 
+operating_mode = (os.getenv("OPERATING_MODE") or os.getenv("ENVIRONMENT") or "PRODUCTION").strip().upper()
+enable_docs = os.getenv("ENABLE_DOCS", "false").strip().lower() in {"1", "true", "yes"}
+docs_enabled = (operating_mode != "PRODUCTION") or enable_docs
+
+docs_url = "/docs" if docs_enabled else None
+redoc_url = "/redoc" if docs_enabled else None
+openapi_url = "/openapi.json" if docs_enabled else None
+
 app = FastAPI(
     title=APP_TITLE,
     version=APP_VERSION,
     description=f"Enterprise Automated Security Assessment Platform (Contract v{CONTRACT_VERSION}, Ruleset v{RULESET_VERSION}).",
     lifespan=lifespan,
+    docs_url=docs_url,
+    redoc_url=redoc_url,
+    openapi_url=openapi_url,
 )
 
 
@@ -136,6 +147,9 @@ async def security_headers_and_correlation_middleware(request: Request, call_nex
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "

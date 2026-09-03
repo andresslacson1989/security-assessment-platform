@@ -143,6 +143,33 @@ async def bootstrap(payload: BootstrapRequest, request: Request) -> BootstrapRes
     )
 
 
+import time
+from collections import defaultdict
+
+_LOGIN_ATTEMPTS: Dict[str, List[float]] = defaultdict(list)
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 60.0
+
+
+def check_login_rate_limit(key: str) -> None:
+    now = time.monotonic()
+    attempts = _LOGIN_ATTEMPTS[key]
+    _LOGIN_ATTEMPTS[key] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    if len(_LOGIN_ATTEMPTS[key]) >= _MAX_LOGIN_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please wait before retrying.",
+            headers={"Retry-After": str(int(_LOGIN_WINDOW_SECONDS))},
+        )
+
+
+def record_failed_login(key: str) -> None:
+    _LOGIN_ATTEMPTS[key].append(time.monotonic())
+
+
+def reset_failed_logins(key: str) -> None:
+    _LOGIN_ATTEMPTS.pop(key, None)
+
 @router.post("/login", response_model=LoginResponse, summary="User Authentication & Token Issuance")
 async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     """
@@ -150,7 +177,9 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     Strictly verifies PBKDF2 hash with constant-time comparison.
     """
     username = payload.username.strip()
-    source_ip = request.client.host if request.client else None
+    source_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{source_ip}:{username}"
+    check_login_rate_limit(rate_key)
 
     with db_manager._connection_scope() as conn:
         cur = conn.cursor()
@@ -158,6 +187,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
         row = cur.fetchone()
 
         if not row or not verify_password(payload.password, row["hashed_password"]):
+            record_failed_login(rate_key)
             # Record failed login audit event inline (same connection)
             fail_event = AuditEvent(
                 actor=username or "unknown",
@@ -174,6 +204,7 @@ async def login(payload: LoginRequest, request: Request) -> LoginResponse:
                 detail="Invalid username or password.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        reset_failed_logins(rate_key)
 
         if not bool(row["is_active"]):
             raise HTTPException(

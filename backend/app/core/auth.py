@@ -145,6 +145,8 @@ def verify_password(password: str, hashed: str) -> bool:
         if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
             return False
         iterations = int(parts[1])
+        if iterations < 100_000:
+            return False
         salt = base64.b64decode(parts[2].encode("ascii"))
         expected_hash = base64.b64decode(parts[3].encode("ascii"))
         
