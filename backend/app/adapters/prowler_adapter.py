@@ -28,6 +28,11 @@ class ProwlerAdapter(BaseToolAdapter):
     """
     approved_version = "4.1.0"
     package_name = "prowler"
+    # Prowler 4.1.0 emits AWS Security Finding Format only for AWS.  Keep
+    # non-AWS capability explicitly limited until provider-specific output and
+    # credential-file handoff are implemented; never run a provider with the
+    # wrong credential namespace or fall back to ambient worker credentials.
+    assured_providers = frozenset({"aws"})
 
     @staticmethod
     def _parse_asff_report(payload: str) -> List[Dict[str, Any]]:
@@ -111,6 +116,14 @@ class ProwlerAdapter(BaseToolAdapter):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: only cloud-account or Kubernetes targets are supported.")
                 return findings
+            provider = str(validated_target.authorization_context.get("cloud_provider", "")).strip().lower()
+            if provider not in self.assured_providers:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(
+                    LogLevel.ERROR,
+                    "Prowler execution blocked: this assured adapter path supports AWS only; non-AWS coverage remains limited.",
+                )
+                return findings
             if not validated_target.authorization_context.get("active_probing_granted"):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: explicit active cloud-audit authorization is required.")
@@ -124,7 +137,7 @@ class ProwlerAdapter(BaseToolAdapter):
             if (
                 envelope.organization_id != validated_target.organization_id
                 or envelope.asset_id != validated_target.asset_id
-                or envelope.provider != validated_target.authorization_context.get("cloud_provider")
+                or envelope.provider.strip().lower() != provider
                 or envelope.expires_at.tzinfo is None
                 or envelope.expires_at <= utc_now()
             ):
@@ -164,7 +177,7 @@ class ProwlerAdapter(BaseToolAdapter):
         execution_env = None
         sensitive_env_keys = None
         if kwargs.get("require_managed_binary"):
-            provider = validated_target.authorization_context.get("cloud_provider")
+            provider = str(validated_target.authorization_context.get("cloud_provider", "")).strip().lower()
             temp_output_dir = tempfile.TemporaryDirectory(prefix="cyberassess-prowler-")
             output_path = str(Path(temp_output_dir.name) / "prowler-asff.json")
             cmd = [binary, provider, "-M", "json-asff", "--output-filename", output_path, "--quiet"]

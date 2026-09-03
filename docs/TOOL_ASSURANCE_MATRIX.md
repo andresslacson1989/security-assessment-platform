@@ -258,11 +258,11 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 
 ### 19. Prowler (Cloud Security Posture Assessment)
 - **Security Domain**: Cloud Security (CSPM)
-- **Purpose**: Assesses AWS, Azure, GCP, and Kubernetes environments against CIS Benchmarks, NIST SP 800-53, and ISO 27001.
+- **Purpose**: Assesses AWS, Azure, GCP, and Kubernetes environments against CIS Benchmarks, NIST SP 800-53, and ISO 27001; the assured v4.1.0 report path is currently AWS-only, with non-AWS coverage explicitly limited.
 - **Enterprise Maturity**: Enterprise-Grade.
 - **Upstream Project**: Prowler (https://github.com/prowler-cloud/prowler).
 - **Supported target boundary**: `CLOUD_ACCOUNT` and `KUBERNETES_CLUSTER` only. The assured adapter fails closed when a gateway-issued cloud `ValidatedTarget` is absent or when a local filesystem/IaC target is supplied; it is not a generic local manifest scanner.
-- **Credential Governance**: The public scan API accepts no credential material. Assured execution requires a worker-side `CloudCredentialEnvelope` bound to the organization, inventory asset, provider, and expiry; durable queue handoff uses authenticated AES-GCM ciphertext, and only approved ephemeral AWS credential variables are injected at launch. IAM Role AssumeRole / Workload Identity remains preferred, and raw long-lived static credentials are rejected.
+- **Credential Governance**: The public scan API accepts no credential material. Assured AWS execution requires a worker-side `CloudCredentialEnvelope` bound to the organization, inventory asset, provider, and expiry; durable queue handoff uses authenticated AES-GCM ciphertext, and only approved ephemeral AWS credential variables are injected at launch. Non-AWS external execution fails closed until provider-specific credential-file/environment and output controls exist. IAM Role AssumeRole / Workload Identity remains preferred, and raw long-lived static credentials are rejected.
 - **Fallback Governance**: If assured Prowler execution is unavailable, blocked, or produces an unusable report, the infrastructure engine evaluates only explicit worker-supplied posture observations through `cloud_posture.py`; missing observations are reported as degraded coverage and never treated as a clean result.
 - **Role Strategy**: **PRIMARY**. Cloud posture auditing.
 

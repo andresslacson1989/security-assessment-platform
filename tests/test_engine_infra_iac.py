@@ -373,6 +373,47 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
 
 
 @pytest.mark.asyncio
+async def test_prowler_assured_path_fails_closed_for_non_aws_provider(tmp_path):
+    adapter = ProwlerAdapter()
+    target = Target(name="Azure subscription", type=TargetType.CLOUD_ACCOUNT, value="azure://subscription-123")
+    validated = create_validated_target(
+        target,
+        organization_id="org-a",
+        asset_id="asset-a",
+        active_probing_granted=True,
+    )
+    execute = AsyncMock()
+
+    async def log_cb(*_args):
+        return None
+
+    with patch.object(adapter, "resolve_binary_path", return_value=str(tmp_path / "prowler")), \
+         patch.object(adapter, "execute_command", execute):
+        findings = await adapter.run(
+            target,
+            ScanConfig(),
+            log_cb,
+            AsyncMock(),
+            require_managed_binary=True,
+            validated_target=validated,
+            cloud_credentials=CloudCredentialEnvelope(
+                organization_id="org-a",
+                asset_id="asset-a",
+                provider="azure",
+                credentials={
+                    "AWS_ACCESS_KEY_ID": "wrong-namespace",
+                    "AWS_SECRET_ACCESS_KEY": "wrong-namespace",
+                },
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            ),
+        )
+
+    assert findings == []
+    assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cloud_posture_failure_uses_observation_only_native_fallback(monkeypatch):
     engine = InfraIacAssessmentEngine()
     target = Target(name="AWS account", type=TargetType.CLOUD_ACCOUNT, value="aws://123456789012")
