@@ -22,6 +22,11 @@ class CredentialHandoffError(ValueError):
     """Raised when encrypted worker credential handoff cannot be trusted."""
 
 
+def require_credential_handoff_key() -> bytes:
+    """Validate the separately provisioned durable-handoff key at startup."""
+    return _key_from_environment()
+
+
 def _key_from_environment() -> bytes:
     value = os.getenv("CLOUD_CREDENTIALS_ENCRYPTION_KEY", "").strip()
     if not value:

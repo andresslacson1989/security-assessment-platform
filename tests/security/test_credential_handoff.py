@@ -9,6 +9,7 @@ from app.core.credential_handoff import (
     CredentialHandoffError,
     decrypt_credential_envelope,
     encrypt_credential_envelope,
+    require_credential_handoff_key,
 )
 from app.core.models import CloudCredentialEnvelope
 
@@ -47,6 +48,14 @@ def test_credential_handoff_requires_separately_provisioned_key(monkeypatch):
     monkeypatch.delenv("CLOUD_CREDENTIALS_ENCRYPTION_KEY", raising=False)
     with pytest.raises(CredentialHandoffError):
         encrypt_credential_envelope(_envelope(), scan_id="scan-a", organization_id="org-a")
+
+
+def test_credential_handoff_startup_validation_requires_a_32_byte_key(monkeypatch):
+    monkeypatch.setenv("CLOUD_CREDENTIALS_ENCRYPTION_KEY", base64.urlsafe_b64encode(b"z" * 32).decode("ascii"))
+    assert require_credential_handoff_key() == b"z" * 32
+    monkeypatch.setenv("CLOUD_CREDENTIALS_ENCRYPTION_KEY", base64.urlsafe_b64encode(b"short").decode("ascii"))
+    with pytest.raises(CredentialHandoffError):
+        require_credential_handoff_key()
 
 
 @pytest.mark.asyncio

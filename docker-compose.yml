@@ -77,6 +77,7 @@ services:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must reference the enterprise PostgreSQL service}"
       EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
+      CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
     volumes:
       - ./data:/app/data
@@ -120,6 +121,7 @@ services:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must reference the enterprise PostgreSQL service}"
       EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
+      CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
     volumes:
       - ./data:/app/data

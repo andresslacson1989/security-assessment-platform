@@ -54,6 +54,10 @@ register_default_engines()
 async def lifespan(app: FastAPI):
     """Application startup & shutdown lifespan hook."""
     register_default_engines()
+    if os.getenv("EXECUTION_QUEUE_URL", "").strip() and os.getenv("ENVIRONMENT", "").strip().lower() == "production":
+        from app.core.credential_handoff import require_credential_handoff_key
+
+        require_credential_handoff_key()
     yield
 
 

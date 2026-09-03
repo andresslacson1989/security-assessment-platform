@@ -43,6 +43,10 @@ async def run_worker() -> None:
 
     if not EXECUTION_QUEUE_URL:
         raise RuntimeError("EXECUTION_QUEUE_URL is required for the enterprise worker")
+    if os.getenv("ENVIRONMENT", "").strip().lower() == "production":
+        from app.core.credential_handoff import require_credential_handoff_key
+
+        require_credential_handoff_key()
 
     from app.engines.network.engine import NetworkAssessmentEngine
     from app.engines.web_dast.engine import WebDastAssessmentEngine
