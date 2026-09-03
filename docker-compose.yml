@@ -1,5 +1,5 @@
 # ==============================================================================
-# CyberAssess Platform - Production Docker Compose Orchestration
+# CyberAssess Platform - Standalone + Enterprise Docker Compose Orchestration
 # Authoritative Contract References: contracts/01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md (§4.2),
 # contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (§3)
 # ==============================================================================
@@ -7,11 +7,13 @@
 version: '3.8'
 
 services:
+  # Standalone/local profile. Public binding remains explicit at the Compose
+  # boundary because container port publishing is itself an operator choice.
   cyberassess:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    image: ${CYBERASSESS_LOCAL_IMAGE:-cyberassess:local}
     container_name: cyberassess-platform
     restart: unless-stopped
     mem_limit: 2g
@@ -29,13 +31,12 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${CYBERASSESS_PORT:-8000}:8000"
     environment:
       - HOST=0.0.0.0
       - PORT=8000
       - PYTHONUNBUFFERED=1
     volumes:
-      # Persistent host volume for scan reports and database
       - ./data:/app/data
     networks:
       - control-plane
@@ -46,14 +47,11 @@ services:
       retries: 3
       start_period: 10s
 
-  # Enterprise profile: PostgreSQL persistence and Redis Streams dispatch.
-  # Keep DATABASE_URL, POSTGRES_PASSWORD, and other credentials outside source control.
+  # Enterprise control plane. The image reference MUST be supplied by the
+  # operator and should be an immutable digest reference (name@sha256:...).
   cyberassess-enterprise:
     profiles: ["enterprise"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    image: ${CYBERASSESS_IMAGE:?CYBERASSESS_IMAGE must be an immutable production image reference}
     container_name: cyberassess-platform-enterprise
     restart: unless-stopped
     mem_limit: 2g
@@ -71,14 +69,15 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev
     ports:
-      - "8000:8000"
+      - "${CYBERASSESS_BIND_ADDRESS:-127.0.0.1}:${CYBERASSESS_PORT:-8000}:8000"
     environment:
       HOST: 0.0.0.0
       PORT: 8000
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must reference the enterprise PostgreSQL service}"
-      EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-cyberassess}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-cyberassess}"
+      EXECUTION_QUEUE_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
+      TARGET_GATEWAY_SEAL_SECRET: "${TARGET_GATEWAY_SEAL_SECRET:?TARGET_GATEWAY_SEAL_SECRET must be separately provisioned}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
     volumes:
@@ -99,12 +98,13 @@ services:
       retries: 3
       start_period: 10s
 
+  # Enterprise execution plane. The execution-egress network is external on
+  # purpose: CyberAssess refuses to manufacture an unrestricted bridge and
+  # delegates packet-level destination enforcement to a separately governed
+  # firewall/egress-gateway network owned by infrastructure.
   cyberassess-worker:
     profiles: ["enterprise"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ghcr.io/andresslacson1989/security-assessment-platform:latest
+    image: ${CYBERASSESS_IMAGE:?CYBERASSESS_IMAGE must be an immutable production image reference}
     container_name: cyberassess-worker
     restart: unless-stopped
     mem_limit: 2g
@@ -124,9 +124,10 @@ services:
     command: ["python", "/app/run_worker.py"]
     environment:
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must reference the enterprise PostgreSQL service}"
-      EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-cyberassess}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-cyberassess}"
+      EXECUTION_QUEUE_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
+      TARGET_GATEWAY_SEAL_SECRET: "${TARGET_GATEWAY_SEAL_SECRET:?TARGET_GATEWAY_SEAL_SECRET must be separately provisioned}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
       ENVIRONMENT: production
     volumes:
@@ -142,7 +143,7 @@ services:
 
   postgres:
     profiles: ["enterprise"]
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     container_name: cyberassess-postgres
     restart: unless-stopped
     environment:
@@ -161,16 +162,18 @@ services:
 
   redis:
     profiles: ["enterprise"]
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: cyberassess-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
     volumes:
       - cyberassess-redis:/data
     networks:
       - data-plane
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -180,22 +183,19 @@ volumes:
   cyberassess-redis:
 
 networks:
-  # The standalone service is intentionally kept on its own host-facing
-  # network. It is not the enterprise execution plane.
   control-plane:
     driver: bridge
-  # Database and queue traffic stays on an internal-only network. No host
-  # port is published for either persistence service.
   data-plane:
     driver: bridge
     internal: true
-  # The worker's external network is a deployment attachment point for the
-  # host firewall/egress gateway. Compose itself does not enforce a target
-  # allowlist on this network; production deployment must apply that policy.
+
+  # These are NOT created by this Compose project. Infrastructure must
+  # provision them with destination filtering/egress-gateway policy first.
+  # Defaults are stable names so standalone parsing does not require enterprise
+  # variables; `docker compose --profile enterprise up` fails if they are absent.
   execution-egress:
-    driver: bridge
-  # Native platform-owned provider clients use this separate attachment.
-  # Exact provider URLs remain enforced in application code; destination
-  # filtering for all external processes remains an infrastructure control.
+    external: true
+    name: ${CYBERASSESS_EXECUTION_EGRESS_NETWORK:-cyberassess-execution-egress}
   provider-egress:
-    driver: bridge
+    external: true
+    name: ${CYBERASSESS_PROVIDER_EGRESS_NETWORK:-cyberassess-provider-egress}
