@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.core.models import (
@@ -1561,8 +1562,13 @@ class TestSupplyChainAdapters:
             ],
         }
 
+        async def write_syft_output(cmd, **_kwargs):
+            output_arg = next(argument for argument in cmd if argument.startswith("cyclonedx-json="))
+            Path(output_arg.split("=", 1)[1]).write_text(json.dumps(mock_cyclonedx), encoding="utf-8")
+            return 0, "", ""
+
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/syft"), \
-             patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_cyclonedx), ""))):
+             patch.object(adapter, "safe_execute_subprocess", new=write_syft_output):
             findings = await adapter.run(target, config, emit_log, emit_finding, record_sbom_report=record_sbom)
             assert len(findings) == 1
             assert findings[0].check_id == "SCA-SBOM-001"

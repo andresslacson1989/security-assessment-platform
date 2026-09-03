@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 
 from app.core.models import (
@@ -72,15 +74,28 @@ class SyftAdapter(BaseToolAdapter):
             config.adapters.syft_path or config.adapters.custom_syft_path, emit_log, pre_launch_check=managed_check
         ):
             return findings
-        cmd = [binary, scan_path, "-o", "cyclonedx-json", "-q"]
+        output_path = None
+        try:
+            output_fd, output_path = tempfile.mkstemp(prefix="cyberassess-syft-", suffix=".json")
+            os.close(output_fd)
+            cmd = [binary, f"dir:{scan_path}", "-o", f"cyclonedx-json={output_path}"]
 
-        code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
+            code, stdout, stderr = await self.execute_command(cmd, timeout=60.0, emit_log=emit_log, pre_launch_check=managed_check)
+            report_output = stdout
+            if output_path and Path(output_path).is_file() and Path(output_path).stat().st_size:
+                report_output = Path(output_path).read_text(encoding="utf-8")
+        finally:
+            if output_path:
+                try:
+                    Path(output_path).unlink()
+                except FileNotFoundError:
+                    pass
         if code != 0 and not stdout:
             await emit_log(LogLevel.WARNING, f"Syft exited with code {code}: {stderr.strip()[:200]}")
             return findings
 
         try:
-            sbom_data = json.loads(stdout)
+            sbom_data = json.loads(report_output)
             raw_components = sbom_data.get("components", [])
 
             components: List[SBOMComponent] = []
@@ -110,7 +125,7 @@ class SyftAdapter(BaseToolAdapter):
                 format=SBOMExportFormat.CYCLONEDX_JSON,
                 spec_version="1.5",
                 components=components,
-                raw_document=stdout,
+                raw_document=report_output,
             )
 
             if record_sbom_report:
@@ -145,8 +160,8 @@ class SyftAdapter(BaseToolAdapter):
             await emit_log(LogLevel.INFO, f"Syft cataloged {len(components)} software components into CycloneDX SBOM.")
 
         except Exception as e:
-            self._record_execution(code, stdout, stderr, parser_error=True)
+            self._record_execution(code, report_output, stderr, parser_error=True)
             await emit_log(LogLevel.WARNING, f"Syft SBOM processing error: {e}")
 
-        self._record_execution(code, stdout, stderr, findings_count=len(findings))
+        self._record_execution(code, report_output, stderr, findings_count=len(findings))
         return findings
