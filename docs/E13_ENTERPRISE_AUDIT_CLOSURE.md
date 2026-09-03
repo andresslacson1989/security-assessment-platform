@@ -142,7 +142,7 @@ Notes:
 - Reconciled all documentation with verified implementation reality. No unsubstantiated claims or false assurance.
 
 ## E13.10 Governance
-Status: BLOCKED / OPERATOR ACTION REQUIRED
+Status: OPERATOR DECISION / SOLO MAINTAINER POLICY
 Files:
 - SECURITY.md
 - CONTRIBUTING.md
@@ -153,17 +153,14 @@ Focused tests:
 - tests/test_e13_governance.py
 Notes:
 - Local governance policy documents are complete and verified.
-- Branch protection on `main` is NOT active on GitHub (verified via `gh api repos/andresslacson1989/security-assessment-platform/branches/main/protection` returning HTTP 404).
-- Operator action required by repository owner in GitHub Settings -> Branches -> Add branch protection rule for `main`:
-  1. Require a pull request before merging (Require approvals: 1).
-  2. Require status checks to pass before merging (`ci`).
-  3. Do not allow bypassing the above settings.
-  4. Enforce for administrators.
+- Branch protection on `main` is intentionally left unconfigured by explicit decision of the repository owner (`andresslacson1989`) to preserve direct single-maintainer workflow and prevent GitHub self-approval blocks on pull requests.
+- This is formally recorded as an accepted single-maintainer operational tradeoff.
 
 ---
 Final decision: ⚠️ E13 BLOCKED — ENTERPRISE RELEASE NOT YET ACCEPTED
 
 Blockers to Enterprise Release Acceptance:
-1. E13.6: Kernel/infrastructure-level egress namespace enforcement requires operator-managed network infrastructure (fails closed in code).
-2. E13.10: GitHub branch protection on `main` requires administrator configuration in GitHub repository settings.
+1. E13.6: Kernel/infrastructure-level egress namespace enforcement requires operator-managed network infrastructure (fails closed in code via Option B).
+2. E13.10: Formally acknowledged as an operator-accepted single-maintainer operational policy.
+
 
