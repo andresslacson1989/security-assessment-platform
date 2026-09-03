@@ -56,7 +56,7 @@ jobs:
           --tmpfs /tmp:rw,noexec,nosuid,nodev
           --user cyberassess
           --entrypoint /bin/sh cyberassess-contract-runtime
-          -c "test \"$(id -u)\" -ne 0 &&
+          -c 'test "$(id -u)" -ne 0 &&
           test ! -w /app/backend/bin/subfinder &&
           test ! -w /app/backend/bin/subfinder.trust.json &&
-          test ! -w /opt/cyberassess/tool-venvs/sslyze/bin/sslyze.trust.json"
+          test ! -w /opt/cyberassess/tool-venvs/sslyze/bin/sslyze.trust.json'

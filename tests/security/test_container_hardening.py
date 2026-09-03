@@ -63,4 +63,5 @@ def test_ci_builds_and_smoke_tests_the_hardened_production_image():
     assert "--cap-drop=ALL" in workflow
     assert "--security-opt=no-new-privileges" in workflow
     assert "--user cyberassess" in workflow
+    assert "-c 'test \"$(id -u)\" -ne 0" in workflow
     assert "test ! -w /app/backend/bin/subfinder.trust.json" in workflow
