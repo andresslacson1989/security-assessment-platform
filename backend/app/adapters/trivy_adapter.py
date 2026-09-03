@@ -72,7 +72,7 @@ class TrivyAdapter(BaseToolAdapter):
         **kwargs,
     ) -> List[Finding]:
         """
-        Executes Trivy filesystem scan: trivy fs --format json <repo_path>
+        Executes Trivy filesystem scan in offline mode: trivy fs --format json --offline-scan <repo_path>
         Parses JSON results for vulnerabilities and misconfigurations.
         """
         findings: List[Finding] = []
@@ -97,6 +97,7 @@ class TrivyAdapter(BaseToolAdapter):
             trivy_path,
             "fs",
             "--format", "json",
+            "--offline-scan",
             repo_path,
         ]
 

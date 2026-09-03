@@ -705,7 +705,7 @@ class TestTrivyAdapter:
         async def mock_finding(f): findings.append(f)
 
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/trivy"):
-            with patch.object(adapter, "execute_command", return_value=(0, json.dumps(TRIVY_SAMPLE_JSON), "")):
+            with patch.object(adapter, "execute_command", new_callable=AsyncMock, return_value=(0, json.dumps(TRIVY_SAMPLE_JSON), "")) as execute_mock:
                 res = await adapter.run(target, config, mock_log, mock_finding)
 
         assert len(res) == 2
@@ -723,6 +723,9 @@ class TestTrivyAdapter:
         assert dock.engine == "infra_iac"
         assert dock.severity == Severity.HIGH
         assert "root" in dock.title.lower()
+        command = execute_mock.await_args.args[0]
+        assert command[:4] == ["/usr/bin/trivy", "fs", "--format", "json"]
+        assert command[4] == "--offline-scan"
 
 
 # ============================================================================
