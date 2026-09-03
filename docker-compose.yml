@@ -4,8 +4,6 @@
 # contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md (§3)
 # ==============================================================================
 
-version: '3.8'
-
 services:
   cyberassess:
     build:
