@@ -1,8 +1,10 @@
-"""Contract 03/04 execution-decision request and lifecycle endpoints."""
+"""Contract 03/04 typed execution request, approval, and revocation API."""
 
 from __future__ import annotations
 
 from datetime import timedelta
+import hashlib
+import json
 import os
 import secrets
 from typing import Any, Dict, Optional
@@ -10,17 +12,17 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.core.auth import UserProfile, authorize_internal_target, decode_access_token, require_admin
+from app.core.auth import UserProfile, UserRole, authorize_internal_target, decode_access_token, require_permission
 from app.core.db import db_manager
-from app.core.models import ExecutionDecisionRecord, Target, TargetType, utc_now
+from app.core.models import AssetType, ExecutionRequestRecord, Target, TargetType, utc_now
 from app.core.ssrf_protector import SSRFProtectionError, create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION, get_operation_policy
 
 router = APIRouter()
 
 
-class ExecutionDecisionRequest(BaseModel):
-    """Server-validated operation request; executable paths and shell text are forbidden."""
+class ExecutionRequestPayload(BaseModel):
+    """Typed request input; executable paths, shell text, and credential values are not fields."""
 
     target_type: TargetType
     target_value: str = Field(..., min_length=1, max_length=2048)
@@ -33,6 +35,10 @@ class ExecutionDecisionRequest(BaseModel):
     account_impact_budget: Dict[str, int] = Field(default_factory=dict)
     credential_scope: Dict[str, str] = Field(default_factory=dict)
     expires_in_seconds: int = Field(default=900, ge=60, le=3600)
+
+
+class ApprovalPayload(BaseModel):
+    request_fingerprint: str = Field(..., min_length=64, max_length=64)
     confirm_owned_target: bool = Field(..., description="Explicit acknowledgement that the target is owned or authorized.")
 
 
@@ -49,80 +55,154 @@ def _session_jti(authorization: Optional[str]) -> str:
     return jti
 
 
-@router.post("/request", status_code=status.HTTP_201_CREATED)
-async def request_execution_decision(
-    payload: ExecutionDecisionRequest,
-    authorization: Optional[str] = Header(default=None),
-    current_user: UserProfile = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Create one explicit admin-approved, tenant-bound execution decision."""
-    if not payload.confirm_owned_target:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Explicit owned-target acknowledgement is required before approval.")
+def _asset_target_type(asset_type: AssetType) -> TargetType:
+    mapping = {
+        AssetType.WEB_APPLICATION: TargetType.URL,
+        AssetType.API_ENDPOINT: TargetType.URL,
+        AssetType.DOMAIN: TargetType.DOMAIN,
+        AssetType.IP_ADDRESS: TargetType.IP,
+        AssetType.IAC_TEMPLATE: TargetType.IAC_MANIFEST,
+        AssetType.CLOUD_ACCOUNT: TargetType.CLOUD_ACCOUNT,
+        AssetType.KUBERNETES_CLUSTER: TargetType.KUBERNETES_CLUSTER,
+    }
+    try:
+        return mapping[asset_type]
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="Asset type is not executable through this API.") from exc
+
+
+def _validate_policy_input(payload: ExecutionRequestPayload) -> dict[str, Any]:
     policy = get_operation_policy(payload.tool_id, payload.operation_family)
-    if policy is None or any(payload.operation_options.get(k) != v for k, v in policy.get("required_options", {}).items()):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requested operation is not represented by the canonical policy.")
+    if policy is None:
+        raise HTTPException(status_code=422, detail="Requested operation is not represented by the canonical policy.")
+    required = dict(policy.get("required_options", {}))
+    if payload.operation_options != required:
+        raise HTTPException(status_code=422, detail="Operation options must exactly match the typed canonical operation schema.")
+    forbidden = {"shell", "shell_command", "executable", "executable_path", "output_path", "credential_path", "provider_config", "env", "destination"}
+    if any(str(key).lower() in forbidden for key in payload.operation_options):
+        raise HTTPException(status_code=422, detail="Operation contains a forbidden client-controlled execution field.")
+    max_budget = dict(policy.get("resource_budget", {}))
+    resource_budget = payload.resource_budget or max_budget
+    if set(resource_budget) - set(max_budget) or any(
+        not isinstance(value, int) or value <= 0 or value > max_budget[key]
+        for key, value in resource_budget.items()
+    ):
+        raise HTTPException(status_code=422, detail="Requested resource budget exceeds the canonical policy ceiling.")
+    account_budget = payload.account_impact_budget or {"max_operations": 1}
+    if any(not isinstance(value, int) or value < 0 for value in account_budget.values()) or account_budget.get("max_operations", 0) > 1:
+        raise HTTPException(status_code=422, detail="Requested account-impact budget exceeds the canonical policy ceiling.")
+    if payload.credential_scope != {"provider": "aws"}:
+        raise HTTPException(status_code=422, detail="Credential scope must exactly match the approved provider boundary.")
+    return {"policy": policy, "resource_budget": resource_budget, "account_budget": account_budget}
+
+
+def _fingerprint(values: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+@router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/", status_code=status.HTTP_202_ACCEPTED, include_in_schema=False)
+async def create_execution_request(
+    payload: ExecutionRequestPayload,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    current_user: UserProfile = Depends(require_permission(required_scope="execution:request")),
+) -> Dict[str, Any]:
+    if not idempotency_key or not idempotency_key.strip() or len(idempotency_key.strip()) > 128:
+        raise HTTPException(status_code=422, detail="A unique Idempotency-Key header is required.")
+    policy_data = _validate_policy_input(payload)
     asset = db_manager.get_asset(payload.asset_id, organization_id=current_user.organization_id)
-    if not asset or (payload.project_id is not None and asset.project_id != payload.project_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Authorized inventory asset not found.")
-    jti = _session_jti(authorization)
-    worker_identity = os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip()
-    if not worker_identity:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No authoritative worker identity is configured.")
+    if not asset:
+        raise HTTPException(status_code=404, detail="Authorized inventory asset not found.")
+    expected_type = _asset_target_type(asset.type)
+    if expected_type != payload.target_type or asset.project_id != payload.project_id or asset.target_value.strip() != payload.target_value.strip():
+        raise HTTPException(status_code=409, detail="Execution target does not exactly match the authorized inventory asset.")
+    if not asset.active_probing_granted:
+        raise HTTPException(status_code=403, detail="The inventory asset has no active-assessment authorization.")
     try:
         validated_target = create_validated_target(
-            Target(name=asset.name, type=payload.target_type, value=payload.target_value.strip()),
+            Target(name=asset.name, type=expected_type, value=asset.target_value.strip()),
             organization_id=current_user.organization_id,
             project_id=asset.project_id,
             asset_id=asset.id,
             active_probing_granted=True,
-            allow_internal=authorize_internal_target(current_user, payload.target_value),
+            allow_internal=authorize_internal_target(current_user, asset.target_value),
         )
     except SSRFProtectionError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Target authorization failed: {exc}") from exc
-    decision = ExecutionDecisionRecord(
-        id=f"exec-{secrets.token_hex(12)}",
-        organization_id=current_user.organization_id,
-        project_id=asset.project_id,
-        asset_id=asset.id,
-        target_id=validated_target.target_id,
+        raise HTTPException(status_code=400, detail=f"Target authorization failed: {exc}") from exc
+    fingerprint_values = {
+        "organization_id": current_user.organization_id, "project_id": asset.project_id,
+        "asset_id": asset.id, "target_id": validated_target.target_id,
+        "authorization_decision_id": validated_target.authorization_decision_id,
+        "target_policy_version": validated_target.policy_version, "tool_id": payload.tool_id,
+        "operation_family": payload.operation_family, "operation_options": payload.operation_options,
+        "operation_policy_revision": OPERATION_POLICY_REVISION,
+        "resource_budget": policy_data["resource_budget"], "account_impact_budget": policy_data["account_budget"],
+        "credential_scope": payload.credential_scope,
+    }
+    request = ExecutionRequestRecord(
+        id=f"req-{secrets.token_hex(12)}", idempotency_key=idempotency_key.strip(),
+        request_fingerprint=_fingerprint(fingerprint_values), organization_id=current_user.organization_id,
+        project_id=asset.project_id, asset_id=asset.id, target_id=validated_target.target_id,
         authorization_decision_id=validated_target.authorization_decision_id,
-        target_policy_version=validated_target.policy_version,
-        tool_id=payload.tool_id,
-        operation_family=payload.operation_family,
-        operation_options=payload.operation_options,
-        operation_policy_revision=OPERATION_POLICY_REVISION,
-        approval_state="APPROVED",
-        approver_user_id=current_user.id,
-        session_jti=jti,
-        worker_identity=worker_identity,
-        resource_budget=payload.resource_budget or dict(policy.get("resource_budget", {})),
-        account_impact_budget=payload.account_impact_budget,
-        credential_scope=payload.credential_scope,
-        expires_at=utc_now() + timedelta(seconds=payload.expires_in_seconds),
+        target_policy_version=validated_target.policy_version, tool_id=payload.tool_id,
+        operation_family=payload.operation_family, operation_options=payload.operation_options,
+        operation_policy_revision=OPERATION_POLICY_REVISION, resource_budget=policy_data["resource_budget"],
+        account_impact_budget=policy_data["account_budget"], credential_scope=payload.credential_scope,
+        requested_by_user_id=current_user.id, expires_at=utc_now() + timedelta(seconds=payload.expires_in_seconds),
     )
     try:
-        db_manager.create_execution_decision(decision)
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Execution decision failed authoritative validation.") from exc
+        saved = db_manager.create_execution_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Execution request idempotency or authority conflict.") from exc
     return {
-        "decision_id": decision.id,
-        "approval_state": decision.approval_state,
-        "warning": "This approval permits the requested operation only against the owned or authorized target. It must not affect any other person’s property or website.",
-        "expires_at": decision.expires_at.isoformat(),
-        "operation_policy_revision": decision.operation_policy_revision,
+        "request_id": saved.id, "state": saved.state, "request_fingerprint": saved.request_fingerprint,
+        "warning": "Approval permits the exact operation only against the owned or authorized target. It must not affect any other person’s property or website.",
+        "expires_at": saved.expires_at.isoformat(), "operation_policy_revision": saved.operation_policy_revision,
     }
 
 
-@router.get("/{decision_id}")
-async def get_execution_decision(decision_id: str, current_user: UserProfile = Depends(require_admin)) -> Dict[str, Any]:
-    decision = db_manager.get_execution_decision(decision_id, organization_id=current_user.organization_id)
-    if not decision:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution decision not found.")
-    return decision.model_dump(exclude={"credential_scope"})
+@router.post("/{request_id}/approve", status_code=status.HTTP_202_ACCEPTED)
+async def approve_execution_request(
+    request_id: str,
+    payload: ApprovalPayload,
+    authorization: Optional[str] = Header(default=None),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    current_user: UserProfile = Depends(require_permission(required_scope="execution:approve", allowed_roles=[UserRole.ADMIN])),
+) -> Dict[str, Any]:
+    if not idempotency_key:
+        raise HTTPException(status_code=422, detail="A unique Idempotency-Key header is required.")
+    if not payload.confirm_owned_target:
+        raise HTTPException(status_code=400, detail="Explicit owned-target acknowledgement is required before approval.")
+    result, decision_id = db_manager.approve_execution_request(
+        request_id, current_user.organization_id, payload.request_fingerprint,
+        idempotency_key,
+        current_user.id, _session_jti(authorization), os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
+    )
+    if result == "NOT_FOUND":
+        raise HTTPException(status_code=404, detail="Execution request not found.")
+    if result == "REPLAY":
+        return {"request_id": request_id, "decision_id": decision_id, "state": "AUTHORIZED", "idempotent_replay": True}
+    if result == "EXPIRED":
+        raise HTTPException(status_code=409, detail="Execution request has expired.")
+    if result != "AUTHORIZED":
+        raise HTTPException(status_code=409, detail="Execution request cannot be authorized in its current state.")
+    return {"request_id": request_id, "decision_id": decision_id, "state": "AUTHORIZED", "idempotent_replay": False}
 
 
-@router.post("/{decision_id}/revoke")
-async def revoke_execution_decision(decision_id: str, current_user: UserProfile = Depends(require_admin)) -> Dict[str, Any]:
-    if not db_manager.revoke_execution_decision(decision_id, organization_id=current_user.organization_id, actor=current_user.username):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution decision not found or already revoked.")
-    return {"decision_id": decision_id, "revoked": True}
+@router.get("/{request_id}")
+async def get_execution_request(request_id: str, current_user: UserProfile = Depends(require_permission(required_scope="execution:read"))) -> Dict[str, Any]:
+    request = db_manager.get_execution_request(request_id, organization_id=current_user.organization_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Execution request not found.")
+    return {"request_id": request.id, "state": request.state, "request_fingerprint": request.request_fingerprint,
+            "organization_id": request.organization_id, "project_id": request.project_id, "asset_id": request.asset_id,
+            "target_id": request.target_id, "tool_id": request.tool_id, "operation_family": request.operation_family,
+            "operation_policy_revision": request.operation_policy_revision, "created_at": request.created_at.isoformat(),
+            "expires_at": request.expires_at.isoformat(), "approved_decision_id": request.approved_decision_id}
+
+
+@router.post("/{request_id}/revoke")
+async def revoke_execution_request(request_id: str, current_user: UserProfile = Depends(require_permission(required_scope="execution:revoke", allowed_roles=[UserRole.ADMIN]))) -> Dict[str, Any]:
+    if not db_manager.revoke_execution_decision(request_id, organization_id=current_user.organization_id, actor=current_user.username):
+        raise HTTPException(status_code=404, detail="Execution request or decision not found.")
+    return {"request_id": request_id, "revoked": True}

@@ -1175,6 +1175,35 @@ class ExecutionDecisionRecord(BaseModel):
     consumed_at: Optional[datetime] = None
 
 
+class ExecutionRequestRecord(BaseModel):
+    """Durable pre-approval execution request and its immutable fingerprint."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    id: str
+    idempotency_key: str
+    request_fingerprint: str
+    organization_id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    target_id: str
+    authorization_decision_id: str
+    target_policy_version: str
+    tool_id: str
+    operation_family: str
+    operation_options: Dict[str, Any] = Field(default_factory=dict)
+    operation_policy_revision: str
+    resource_budget: Dict[str, int] = Field(default_factory=dict)
+    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
+    credential_scope: Dict[str, str] = Field(default_factory=dict)
+    requested_by_user_id: str
+    state: str = "REQUESTED"
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    approved_decision_id: Optional[str] = None
+    approval_idempotency_key: Optional[str] = None
+
+
 class APIKeyRecord(BaseModel):
     key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")
     key_hash: str
@@ -1364,6 +1393,8 @@ class AuditAction(str, Enum):
     EXECUTION_DECISION_CREATED = "EXECUTION_DECISION_CREATED"
     EXECUTION_DECISION_REVOKED = "EXECUTION_DECISION_REVOKED"
     EXECUTION_DECISION_CONSUMED = "EXECUTION_DECISION_CONSUMED"
+    EXECUTION_REQUESTED = "EXECUTION_REQUESTED"
+    EXECUTION_AUTHORIZED = "EXECUTION_AUTHORIZED"
     FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"
     FINDING_ASSIGNED = "FINDING_ASSIGNED"
     FINDING_COMMENTED = "FINDING_COMMENTED"

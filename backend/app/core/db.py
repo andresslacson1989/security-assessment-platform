@@ -39,6 +39,7 @@ from app.core.models import (
     PrincipalType,
     Evidence,
     ExecutionDecisionRecord,
+    ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
 )
@@ -357,6 +358,37 @@ class DatabaseManager:
                 FOREIGN KEY (approver_user_id, organization_id) REFERENCES users(id, organization_id)
             );
 
+            -- Immutable request recorded before administrator approval.
+            CREATE TABLE IF NOT EXISTS execution_requests (
+                id TEXT PRIMARY KEY,
+                idempotency_key TEXT NOT NULL,
+                request_fingerprint TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                project_id TEXT,
+                asset_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                authorization_decision_id TEXT NOT NULL,
+                target_policy_version TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                operation_family TEXT NOT NULL,
+                operation_options_json TEXT NOT NULL DEFAULT '{}',
+                operation_policy_revision TEXT NOT NULL,
+                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                requested_by_user_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'REQUESTED',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                approved_decision_id TEXT,
+                approval_idempotency_key TEXT,
+                UNIQUE (organization_id, idempotency_key),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
+                FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
+                FOREIGN KEY (requested_by_user_id, organization_id) REFERENCES users(id, organization_id)
+            );
+
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
@@ -491,6 +523,7 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit_events(organization_id, timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_execution_decisions_scope ON execution_decisions(organization_id, asset_id, tool_id, operation_family);
             CREATE INDEX IF NOT EXISTS idx_execution_decisions_session ON execution_decisions(session_jti, revoked_at, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_execution_requests_scope ON execution_requests(organization_id, state, created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_id_org ON assets(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
@@ -507,6 +540,7 @@ class DatabaseManager:
                 "ALTER TABLE assets ADD COLUMN active_probing_granted INTEGER NOT NULL DEFAULT 0;",
                 "ALTER TABLE assets ADD COLUMN live_secret_verification_granted INTEGER NOT NULL DEFAULT 0;",
                 "ALTER TABLE execution_decisions ADD COLUMN consumed_at TEXT;",
+                "ALTER TABLE execution_requests ADD COLUMN approval_idempotency_key TEXT;",
             ]
             for migration_index, mig in enumerate(migrations):
                 savepoint = f"schema_migration_{migration_index}"
@@ -735,6 +769,139 @@ class DatabaseManager:
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,))
             return bool(cur.fetchone())
+
+    def create_execution_request(self, request: ExecutionRequestRecord) -> Optional[ExecutionRequestRecord]:
+        """Persist an idempotent REQUESTED execution record with tenant checks."""
+        with self._connection_scope() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM execution_requests WHERE organization_id = ? AND idempotency_key = ?", (request.organization_id, request.idempotency_key))
+            existing_row = cur.fetchone()
+            existing = self.get_execution_request(existing_row["id"], organization_id=request.organization_id) if existing_row else None
+            if existing:
+                if existing.idempotency_key == request.idempotency_key and existing.request_fingerprint == request.request_fingerprint:
+                    return existing
+                raise ValueError("execution request idempotency conflict")
+            if request.state != "REQUESTED" or not is_canonical_operation_policy_revision(request.operation_policy_revision):
+                raise ValueError("execution request state or policy revision is invalid")
+            policy = get_operation_policy(request.tool_id, request.operation_family)
+            if policy is None or any(request.operation_options.get(k) != v for k, v in policy.get("required_options", {}).items()):
+                raise ValueError("execution request does not conform to the canonical policy row")
+            if any(not isinstance(value, int) or value <= 0 for value in request.resource_budget.values()):
+                raise ValueError("execution request resource budget is invalid")
+            if any(not isinstance(value, int) or value < 0 for value in request.account_impact_budget.values()):
+                raise ValueError("execution request account-impact budget is invalid")
+            if request.credential_scope.get("provider") != request.operation_options.get("provider"):
+                raise ValueError("execution request credential scope is not policy-bound")
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM organizations WHERE id = ? AND is_active = 1", (request.organization_id,))
+            if not cur.fetchone():
+                raise ValueError("execution request organization is invalid")
+            cur.execute("SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))", (request.asset_id, request.organization_id, request.project_id, request.project_id))
+            if not cur.fetchone():
+                raise ValueError("execution request asset is not tenant-bound")
+            cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND is_active = 1", (request.requested_by_user_id, request.organization_id))
+            if not cur.fetchone():
+                raise ValueError("execution request principal is invalid")
+            conn.execute(
+                """INSERT INTO execution_requests (
+                    id, idempotency_key, request_fingerprint, organization_id, project_id,
+                    asset_id, target_id, authorization_decision_id, target_policy_version,
+                    tool_id, operation_family, operation_options_json, operation_policy_revision,
+                    resource_budget_json, account_impact_budget_json, credential_scope_json,
+                    requested_by_user_id, state, created_at, expires_at, approved_decision_id, approval_idempotency_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (request.id, request.idempotency_key, request.request_fingerprint, request.organization_id, request.project_id,
+                 request.asset_id, request.target_id, request.authorization_decision_id, request.target_policy_version,
+                 request.tool_id, request.operation_family, json.dumps(request.operation_options, sort_keys=True, separators=(",", ":")),
+                 request.operation_policy_revision, json.dumps(request.resource_budget, sort_keys=True, separators=(",", ":")),
+                 json.dumps(request.account_impact_budget, sort_keys=True, separators=(",", ":")), json.dumps(request.credential_scope, sort_keys=True, separators=(",", ":")),
+                 request.requested_by_user_id, request.state, request.created_at.isoformat(), request.expires_at.isoformat(), None, None),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=request.requested_by_user_id,
+                organization_id=request.organization_id, action=AuditAction.EXECUTION_REQUESTED,
+                object_type="execution_request", object_id=request.id, result="SUCCESS",
+                details={"tool_id": request.tool_id, "operation_family": request.operation_family, "request_fingerprint": request.request_fingerprint},
+            ))
+            return request
+
+    def get_execution_request(self, request_id: str, organization_id: Optional[str] = None) -> Optional[ExecutionRequestRecord]:
+        with self._connection_scope() as conn:
+            query = "SELECT * FROM execution_requests WHERE id = ?"
+            params: List[Any] = [request_id]
+            if organization_id is not None:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+            cur = conn.cursor(); cur.execute(query, params); row = cur.fetchone()
+            if not row:
+                return None
+            return ExecutionRequestRecord(
+                id=row["id"], idempotency_key=row["idempotency_key"], request_fingerprint=row["request_fingerprint"],
+                organization_id=row["organization_id"], project_id=row["project_id"], asset_id=row["asset_id"],
+                target_id=row["target_id"], authorization_decision_id=row["authorization_decision_id"],
+                target_policy_version=row["target_policy_version"], tool_id=row["tool_id"], operation_family=row["operation_family"],
+                operation_options=json.loads(row["operation_options_json"]), operation_policy_revision=row["operation_policy_revision"],
+                resource_budget=json.loads(row["resource_budget_json"]), account_impact_budget=json.loads(row["account_impact_budget_json"]),
+                credential_scope=json.loads(row["credential_scope_json"]), requested_by_user_id=row["requested_by_user_id"],
+                state=row["state"], created_at=datetime.fromisoformat(row["created_at"]), expires_at=datetime.fromisoformat(row["expires_at"]),
+                approved_decision_id=row["approved_decision_id"],
+                approval_idempotency_key=row["approval_idempotency_key"] if "approval_idempotency_key" in row.keys() else None,
+            )
+
+    def approve_execution_request(
+        self, request_id: str, organization_id: str, request_fingerprint: str, approval_idempotency_key: str,
+        approver_user_id: str, session_jti: str, worker_identity: str,
+    ) -> tuple[str, Optional[str]]:
+        """Atomically authorize a request or return an idempotent/conflict result."""
+        with self._connection_scope() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (request_id, organization_id))
+            row = cur.fetchone()
+            if not row:
+                return "NOT_FOUND", None
+            if row["request_fingerprint"] != request_fingerprint:
+                return "CONFLICT", None
+            if row["state"] == "AUTHORIZED":
+                if row["approval_idempotency_key"] != approval_idempotency_key:
+                    return "CONFLICT", None
+                return "REPLAY", row["approved_decision_id"]
+            if row["state"] != "REQUESTED":
+                return "CONFLICT", None
+            now = utc_now()
+            if datetime.fromisoformat(row["expires_at"]) <= now:
+                return "EXPIRED", None
+            cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1", (approver_user_id, organization_id))
+            if not cur.fetchone() or not session_jti or not worker_identity:
+                return "DENIED", None
+            decision_id = f"dec-{uuid.uuid4().hex[:16]}"
+            cur.execute(
+                """UPDATE execution_requests SET state = 'AUTHORIZED', approved_decision_id = ?, approval_idempotency_key = ?
+                   WHERE id = ? AND organization_id = ? AND state = 'REQUESTED'""",
+                (decision_id, approval_idempotency_key, request_id, organization_id),
+            )
+            if cur.rowcount != 1:
+                return "CONFLICT", None
+            conn.execute(
+                """INSERT INTO execution_decisions (
+                    id, organization_id, project_id, asset_id, target_id, authorization_decision_id,
+                    target_policy_version, tool_id, operation_family, operation_options_json,
+                    operation_policy_revision, approval_state, approver_user_id, session_jti,
+                    worker_identity, resource_budget_json, account_impact_budget_json,
+                    credential_scope_json, created_at, expires_at, revoked_at, consumed_at
+                ) SELECT ?, organization_id, project_id, asset_id, target_id, authorization_decision_id,
+                    target_policy_version, tool_id, operation_family, operation_options_json,
+                    operation_policy_revision, 'APPROVED', ?, ?, ?, resource_budget_json,
+                    account_impact_budget_json, credential_scope_json, ?, expires_at, NULL, NULL
+                    FROM execution_requests WHERE id = ? AND organization_id = ?""",
+                (decision_id, approver_user_id, session_jti, worker_identity, now.isoformat(), request_id, organization_id),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
+                organization_id=organization_id, action=AuditAction.EXECUTION_AUTHORIZED,
+                object_type="execution_request", object_id=request_id, result="SUCCESS",
+                details={"decision_id": decision_id, "request_fingerprint": request_fingerprint},
+            ))
+            return "AUTHORIZED", decision_id
 
     def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
         """Persist one immutable authorization decision transactionally."""
