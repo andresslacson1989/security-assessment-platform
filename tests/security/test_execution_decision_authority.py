@@ -790,7 +790,7 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
             "created_at, started_at, finished_at FROM execution_runs_legacy WHERE 0"
         )
         conn.execute("DROP TABLE execution_runs_legacy")
-    with pytest.raises(RuntimeError, match="dispatch schema lacks tenant-bound foreign key"):
+    with pytest.raises(RuntimeError, match="execution dispatch schema lacks"):
         DatabaseManager(db_path)
 
 
