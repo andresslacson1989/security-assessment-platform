@@ -757,6 +757,71 @@ class DatabaseManager:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (migration_version, utc_now().isoformat()))
 
+            # Version 2 is an immutable remediation for databases that already
+            # recorded version 1 before PostgreSQL constraint reconciliation was
+            # idempotent.  It is intentionally separate from version 1 so an
+            # applied migration definition is never changed in place.
+            remediation_version = 2
+            remediation_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (remediation_version,)).fetchone()
+            if not remediation_applied:
+                if isinstance(self, PostgresDatabaseManager):
+                    duplicate_parent = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_requests GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                    if duplicate_parent:
+                        raise ValueError("execution_runs remediation blocked: duplicate execution request parent keys require audited reconciliation")
+                    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
+                    constraints = conn.execute("""
+                        SELECT c.conname,
+                               array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                               array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                        JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                          ON parent_cols.ordinality = local_cols.ordinality
+                        JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+                        WHERE t.relname = 'execution_runs'
+                          AND pt.relname = 'execution_requests'
+                          AND n.nspname = current_schema()
+                          AND pn.nspname = current_schema()
+                          AND c.contype = 'f'
+                        GROUP BY c.conname
+                    """).fetchall()
+                    desired = []
+                    for constraint in constraints:
+                        local_columns = list(constraint["local_columns"] or [])
+                        parent_columns = list(constraint["parent_columns"] or [])
+                        if local_columns == ["request_id", "organization_id"] and parent_columns == ["id", "organization_id"]:
+                            desired.append(constraint)
+                        elif local_columns == ["request_id"] and parent_columns == ["id"]:
+                            safe_name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
+                            conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    for duplicate_constraint in desired[1:]:
+                        safe_name = '"' + str(duplicate_constraint["conname"]).replace('"', '""') + '"'
+                        conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    if not desired:
+                        conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
+                    final_count = conn.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                          AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                          AND c.contype = 'f'
+                          AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id, organization_id)%'
+                    """).fetchone()
+                    if not final_count or final_count["count"] != 1:
+                        raise ValueError("execution_runs remediation failed postcondition: expected exactly one composite tenant foreign key")
+                else:
+                    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (remediation_version, utc_now().isoformat()))
+
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
     # ========================================================================

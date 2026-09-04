@@ -329,6 +329,7 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
                 parent_unique.append([column[2] for column in sorted(columns, key=lambda value: value[0])])
         assert ["id", "organization_id"] in parent_unique
         assert conn.execute("SELECT version FROM schema_migrations WHERE version = 1").fetchone()
+        assert conn.execute("SELECT version FROM schema_migrations WHERE version = 2").fetchone()
 
 
 def test_legacy_execution_runs_duplicate_preflight_fails_closed(tmp_path):
