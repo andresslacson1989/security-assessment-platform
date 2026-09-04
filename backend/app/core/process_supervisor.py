@@ -30,6 +30,7 @@ class ProcessExecutionStatus(str, Enum):
 
     COMPLETED = "COMPLETED"
     SECURITY_REJECTED = "SECURITY_REJECTED"
+    CANCELLED = "CANCELLED"
     TIMED_OUT = "TIMED_OUT"
     OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"
     NOT_FOUND = "NOT_FOUND"
@@ -48,6 +49,8 @@ class ProcessExecutionResult(NamedTuple):
     def execution_status(self) -> ProcessExecutionStatus:
         if self.stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY"):
             return ProcessExecutionStatus.SECURITY_REJECTED
+        if self.stderr.startswith("PROCESS_LAUNCH_CANCELLED"):
+            return ProcessExecutionStatus.CANCELLED
         if self.stderr.startswith("Output exceeded maximum"):
             return ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED
         if self.stderr.startswith("Execution timed out"):
@@ -561,6 +564,7 @@ class ProcessSupervisor:
             return stdout, stderr, limit_reached.is_set() or timed_out
 
         proc_ref: list[Optional[subprocess.Popen]] = [None]
+        cancellation_requested = threading.Event()
 
         def _run_sync() -> ProcessExecutionResult:
             nonlocal proc_ref
@@ -587,6 +591,9 @@ class ProcessSupervisor:
                             timeout=timeout,
                             max_output_bytes=max_output_bytes,
                         )
+                        if cancellation_requested.is_set():
+                            execution_capability.release_claim()
+                            return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")
                     if credential_handoff is not None and type(credential_handoff) is not CredentialEnvironmentHandoff:
@@ -619,6 +626,10 @@ class ProcessSupervisor:
                         "",
                         f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid launch capability ({type(exc).__name__})",
                     )
+                if cancellation_requested.is_set():
+                    if execution_capability is not None:
+                        execution_capability.release_claim()
+                    return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -649,7 +660,7 @@ class ProcessSupervisor:
                     execution_capability.release_claim()
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
-                if execution_capability is not None and proc is None:
+                if execution_capability is not None:
                     execution_capability.release_claim()
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
@@ -661,8 +672,11 @@ class ProcessSupervisor:
         try:
             return await asyncio.to_thread(_run_sync)
         except asyncio.CancelledError:
+            cancellation_requested.set()
             if proc_ref[0] and proc_ref[0].pid:
                 self.kill_process_tree(proc_ref[0].pid)
+            elif execution_capability is not None:
+                execution_capability.release_claim()
             raise
 
 

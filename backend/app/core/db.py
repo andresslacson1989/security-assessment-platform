@@ -1084,6 +1084,7 @@ class DatabaseManager:
             )
             if cur.rowcount == 1:
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_CONSUMED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
             return cur.rowcount == 1
 
     def release_execution_decision_claim(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str) -> bool:
