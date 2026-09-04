@@ -352,7 +352,7 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
                 ("req-a", "org-a"),
             ).fetchone()
             events = conn.execute(
-                "SELECT id, timestamp, organization_id, actor, action, result, correlation_id, details_json, "
+                "SELECT id, timestamp, organization_id, actor, action, object_type, result, correlation_id, details_json, "
                 "previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s",
                 ("req-a",),
             ).fetchall()
@@ -362,12 +362,14 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
         assert events[0]["organization_id"] == "org-a"
         assert events[0]["actor"] == "admin"
         assert events[0]["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+        assert events[0]["object_type"] == "execution_request"
         assert events[0]["result"] == "FAILURE"
         assert events[0]["correlation_id"] is not None
         assert events[0]["event_hash"]
         assert events[0]["previous_event_hash"] is None
         assert events[0]["sequence_number"] == 1
         _assert_audit_event_hash(events[0])
+        assert '"reason_code": "APPROVED_DECISION_REFERENCE_MISSING"' in events[0]["details_json"]
         assert "shared-id" not in events[0]["details_json"]
 
 

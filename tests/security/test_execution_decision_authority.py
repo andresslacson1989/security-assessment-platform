@@ -7,7 +7,7 @@ import json
 import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
-from app.core.models import AuditAction, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
+from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -346,7 +346,7 @@ def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_pat
             ("req-a", "org-a"),
         ).fetchone()
         events = conn.execute(
-            "SELECT organization_id, actor, action, result, correlation_id, details_json, "
+            "SELECT organization_id, actor, action, object_type, result, correlation_id, details_json, "
             "previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = ?",
             ("req-a",),
         ).fetchall()
@@ -356,6 +356,8 @@ def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_pat
     assert events[0]["organization_id"] == "org-a"
     assert events[0]["actor"] == "admin"
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
+    assert events[0]["object_type"] == "execution_request"
+    assert events[0]["object_type"] == "execution_request"
     assert events[0]["result"] == "FAILURE"
     assert events[0]["correlation_id"] == "corr-cross-tenant"
     assert events[0]["event_hash"]
@@ -368,7 +370,41 @@ def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_pat
             ("req-a",),
         ).fetchone()
     _assert_audit_event_hash(event)
+    assert json.loads(events[0]["details_json"]) == {"reason_code": "APPROVED_DECISION_REFERENCE_MISSING"}
     assert "shared-id" not in events[0]["details_json"]
+
+
+def test_audit_chain_continuity_is_verified_for_multiple_events(tmp_path):
+    from app.core.db import DatabaseManager
+
+    database = DatabaseManager(tmp_path / "audit-chain.db")
+    database.record_audit_event(AuditEvent(
+        id="audit-chain-one", actor="admin", organization_id="org-chain",
+        action=AuditAction.EXECUTION_REQUESTED, object_type="execution_request",
+        object_id="request-chain", result="SUCCESS", details={"step": 1},
+        correlation_id="corr-chain",
+    ))
+    database.record_audit_event(AuditEvent(
+        id="audit-chain-two", actor="admin", organization_id="org-chain",
+        action=AuditAction.EXECUTION_CANCEL_REQUESTED, object_type="execution_request",
+        object_id="request-chain", result="SUCCESS", details={"step": 2},
+        correlation_id="corr-chain",
+    ))
+
+    with database._connection_scope() as conn:
+        events = conn.execute(
+            "SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, "
+            "details_json, previous_event_hash, event_hash, sequence_number "
+            "FROM audit_events ORDER BY sequence_number",
+        ).fetchall()
+    assert len(events) == 2
+    for event in events:
+        _assert_audit_event_hash(event)
+    assert events[0]["sequence_number"] == 1
+    assert events[0]["previous_event_hash"] is None
+    assert events[1]["sequence_number"] == 2
+    assert events[1]["previous_event_hash"] == events[0]["event_hash"]
+    assert database.verify_audit_log_integrity() == (True, None)
 
 
 def test_execution_run_rejects_cross_tenant_request_and_invalid_transitions(tmp_path):
