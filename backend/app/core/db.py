@@ -649,6 +649,8 @@ class DatabaseManager:
                         FROM pg_constraint c
                         JOIN pg_class t ON t.oid = c.conrelid
                         JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
                         JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
                         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
                         JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
@@ -656,6 +658,8 @@ class DatabaseManager:
                         JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
                         WHERE t.relname = 'execution_runs'
                           AND pt.relname = 'execution_requests'
+                          AND n.nspname = current_schema()
+                          AND pn.nspname = current_schema()
                           AND c.contype = 'f'
                         GROUP BY c.conname
                     """).fetchall()
@@ -673,6 +677,20 @@ class DatabaseManager:
                     if not has_desired:
                         conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
                 else:
+                    parent_indexes = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                    has_parent_unique = False
+                    for index in parent_indexes:
+                        if not index["unique"]:
+                            continue
+                        columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                        if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                            has_parent_unique = True
+                            break
+                    if not has_parent_unique:
+                        duplicate_parent = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_requests GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                        if duplicate_parent:
+                            raise ValueError("execution_runs migration blocked: execution_requests lacks a unique tenant parent key and contains duplicates")
+                        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
                     foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
                     grouped_foreign_keys = {}
                     for row in foreign_key_rows:
@@ -723,6 +741,19 @@ class DatabaseManager:
                         FROM execution_runs_legacy
                     """)
                     conn.execute("DROP TABLE execution_runs_legacy")
+                if not isinstance(self, PostgresDatabaseManager):
+                    postcondition_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    postcondition_groups = {}
+                    for row in postcondition_rows:
+                        postcondition_groups.setdefault(row["id"], []).append(row)
+                    if not any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_requests" for row in rows)
+                        for rows in postcondition_groups.values()
+                    ):
+                        raise ValueError("execution_runs migration failed postcondition: composite tenant foreign key is absent")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (migration_version, utc_now().isoformat()))
 

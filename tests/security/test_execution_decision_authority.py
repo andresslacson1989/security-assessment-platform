@@ -322,6 +322,12 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
             (0, "request_id", "id"), (1, "organization_id", "organization_id")
         }
         assert len({row[0] for row in composite}) == 1
+        parent_unique = []
+        for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
+            if index[2]:
+                columns = conn.execute(f"PRAGMA index_info('{index[1].replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                parent_unique.append([column[2] for column in sorted(columns, key=lambda value: value[0])])
+        assert ["id", "organization_id"] in parent_unique
         assert conn.execute("SELECT version FROM schema_migrations WHERE version = 1").fetchone()
 
 
