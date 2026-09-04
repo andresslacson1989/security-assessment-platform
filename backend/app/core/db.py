@@ -515,9 +515,10 @@ class DatabaseManager:
             defs = [str(r["definition"]).upper().replace(' ', '') for r in constraints]
             if sum(1 for r in constraints if r["contype"] == "p") != 1 or not any("PRIMARYKEY(EXECUTION_ID)" in d for d in defs):
                 raise RuntimeError("execution dispatch schema primary key drifted")
-            if not any("CHECK((STATEIN('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED'))" in d or "CHECK((STATEIN('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED'))" in d for d in defs):
+            state_check = "CHECK((STATE=ANY(ARRAY['PENDING'::TEXT,'CLAIMED'::TEXT,'COMPLETED'::TEXT,'FAILED'::TEXT,'BLOCKED'::TEXT])))"
+            if sum(1 for d in defs if d == state_check) != 1:
                 raise RuntimeError("execution dispatch schema state constraint drifted")
-            if not any("CHECK((ATTEMPT_COUNT>=0))" in d or "CHECK((ATTEMPT_COUNT>=0))" in d for d in defs):
+            if sum(1 for d in defs if d == "CHECK((ATTEMPT_COUNT>=0))") != 1:
                 raise RuntimeError("execution dispatch schema attempt constraint drifted")
         else:
             rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
