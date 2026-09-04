@@ -862,3 +862,192 @@ async def test_installers_idempotent_when_already_assured():
         sb_exec.assert_not_awaited()
 
 
+# ============================================================================
+# Checkpoint 2 & 3 — Nmap Resource Integrity & Pre-launch Verification
+# ============================================================================
+
+import struct as _struct
+import tempfile as _tempfile
+
+
+def _make_cpio_newc_header(name: bytes, filesize: int, mode: int, nlink: int = 1) -> bytes:
+    """Build a minimal CPIO newc (070701) header for test payloads."""
+    namesize = len(name) + 1  # include NUL terminator
+    header = (
+        b"070701"                          # magic
+        + b"00000001"                      # ino
+        + f"{mode:08X}".encode()           # mode
+        + b"00000000"                      # uid
+        + b"00000000"                      # gid
+        + f"{nlink:08X}".encode()          # nlink
+        + b"00000000"                      # mtime
+        + f"{filesize:08X}".encode()       # filesize
+        + b"00000000"                      # devmajor
+        + b"00000000"                      # devminor
+        + b"00000000"                      # rdevmajor
+        + b"00000000"                      # rdevminor
+        + f"{namesize:08X}".encode()       # namesize
+        + b"00000000"                      # check
+    )
+    assert len(header) == 110
+    entry = header + name + b"\x00"
+    pad = (4 - (len(entry) % 4)) % 4
+    entry += b"\x00" * pad
+    if filesize > 0:
+        entry += b"X" * filesize
+        pad2 = (4 - (filesize % 4)) % 4
+        entry += b"\x00" * pad2
+    return entry
+
+
+def _make_trailer() -> bytes:
+    return _make_cpio_newc_header(b"TRAILER!!!", 0, 0)
+
+
+def _make_rpm_with_cpio(cpio_payload: bytes) -> bytes:
+    """Wrap a raw CPIO payload in a minimal RPM shell (lead + sig header + gen header + zstd payload)."""
+    import zstandard
+    cctx = zstandard.ZstdCompressor()
+    compressed = cctx.compress(cpio_payload)
+
+    lead = b"\xed\xab\xee\xdb" + b"\x00" * 92
+
+    def _hdr(il: int = 0, dl: int = 0) -> bytes:
+        return b"\x8e\xad\xe8\x01" + b"\x00" * 4 + _struct.pack("!2I", il, dl)
+
+    sig = _hdr()
+    rem = (len(lead) + len(sig)) % 8
+    pad = (8 - rem) % 8
+    gen = _hdr()
+    return lead + sig + b"\x00" * pad + gen + compressed
+
+
+def _nmap_extractor():
+    from app.installers.nmap_artifact_installer import NmapArtifactInstaller
+    return NmapArtifactInstaller._extract_rpm_payload
+
+
+# ---- Resource integrity tests (Checkpoint 2 & 3) ----
+
+def test_nmap_accepts_intact_managed_resource_tree():
+    """verify_resource_manifest returns True when on-disk tree exactly matches the stored manifest."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        (res_dir / "scripts").mkdir()
+        (res_dir / "scripts" / "banner.nse").write_bytes(b"-- banner script")
+
+        manifest = build_resource_manifest(res_dir)
+        assert len(manifest) == 2
+        assert "nmap-services" in manifest
+        assert "scripts/banner.nse" in manifest
+        assert verify_resource_manifest(res_dir, manifest) is True
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rejects_modified_managed_resource():
+    """verify_resource_manifest returns False when a managed resource file has been modified."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        script = res_dir / "nmap-services"
+        script.write_bytes(b"original content")
+
+        manifest = build_resource_manifest(res_dir)
+        assert verify_resource_manifest(res_dir, manifest) is True
+
+        script.write_bytes(b"TAMPERED content")
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rejects_missing_managed_resource():
+    """verify_resource_manifest returns False when a hash-bound resource has been deleted."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        (res_dir / "nmap-os-db").write_bytes(b"os data")
+
+        manifest = build_resource_manifest(res_dir)
+        assert verify_resource_manifest(res_dir, manifest) is True
+
+        (res_dir / "nmap-os-db").unlink()
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rejects_extra_unexpected_file_in_resource_tree():
+    """verify_resource_manifest returns False when an unexpected file appears in the resource tree."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+
+        manifest = build_resource_manifest(res_dir)
+
+        (res_dir / "injected.nse").write_bytes(b"malicious script")
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_manifest_rejects_symlinked_resource_dir():
+    """build_resource_manifest raises ValueError when the resource dir itself is a symlink."""
+    from app.core.binary_trust import build_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        real_dir = base / "real_nmap"
+        real_dir.mkdir()
+        link_dir = base / "link_nmap"
+        os.symlink(str(real_dir), str(link_dir))
+
+        with pytest.raises(ValueError, match="symlink"):
+            build_resource_manifest(link_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_build_direct_artifact_trust_record_embeds_resource_manifest():
+    """build_direct_artifact_trust_record embeds resource_manifest and RESOURCE_TREE_INTEGRITY_VERIFIED claim."""
+    from app.core.binary_trust import build_direct_artifact_trust_record, get_managed_bin_dir
+
+    managed_dir = get_managed_bin_dir()
+    fake_bin = managed_dir / "nmap"
+    if not fake_bin.exists():
+        pytest.skip("Managed nmap binary not present on this dev machine")
+
+    res_manifest = {"nmap-services": "a" * 64, "scripts/banner.nse": "b" * 64}
+    record = build_direct_artifact_trust_record(
+        "nmap",
+        str(fake_bin),
+        installer_version="14.3.0",
+        resource_manifest=res_manifest,
+    )
+    assert "RESOURCE_TREE_INTEGRITY_VERIFIED" in record["claims"]
+    assert record["resource_manifest"] == dict(sorted(res_manifest.items()))
+
+

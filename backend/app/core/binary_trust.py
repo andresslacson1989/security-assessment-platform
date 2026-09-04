@@ -14,6 +14,8 @@ from typing import Any, Optional
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_TRUST_RECORD_BYTES = 1024 * 1024
+# Reject any resource-tree entry whose relative path resolves outside its own dir.
+_MAX_RESOURCE_MANIFEST_ENTRIES = 4096
 
 
 def get_managed_bin_dir() -> Path:
@@ -56,6 +58,65 @@ def _sha256_file(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
+def build_resource_manifest(resource_dir: Path) -> dict[str, str]:
+    """Produce a deterministic {relative_path: sha256} manifest for a resource tree.
+
+    Only regular, non-symlink files are included.  Paths are normalised to forward
+    slashes and sorted so the result is byte-for-byte reproducible across platforms.
+
+    Raises ValueError if:
+    - resource_dir is a symlink
+    - any entry resolves outside resource_dir (path traversal)
+    - the tree exceeds _MAX_RESOURCE_MANIFEST_ENTRIES entries
+    """
+    root = Path(os.path.abspath(str(resource_dir)))
+    if resource_dir.is_symlink():
+        raise ValueError("resource directory must not be a symlink")
+    manifest: dict[str, str] = {}
+    for entry in sorted(root.rglob("*")):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        abs_entry = Path(os.path.abspath(str(entry)))
+        # Reject traversal
+        try:
+            abs_entry.relative_to(root)
+        except ValueError:
+            raise ValueError(f"resource path escapes managed directory: {entry}")
+        rel = abs_entry.relative_to(root).as_posix()
+        manifest[rel] = _sha256_file(abs_entry)
+        if len(manifest) > _MAX_RESOURCE_MANIFEST_ENTRIES:
+            raise ValueError("resource tree exceeds maximum permitted entry count")
+    return dict(sorted(manifest.items()))
+
+
+def verify_resource_manifest(resource_dir: Path, manifest: dict[str, str]) -> bool:
+    """Return True iff the on-disk resource tree exactly matches the stored manifest.
+
+    Fails closed on: modified file, deleted file, extra unexpected file, symlink,
+    path outside the directory, and any I/O error.
+    """
+    try:
+        if not isinstance(manifest, dict) or resource_dir.is_symlink():
+            return False
+        root = Path(os.path.abspath(str(resource_dir)))
+        if not root.is_dir():
+            return False
+        # Build actual snapshot
+        actual: dict[str, str] = {}
+        for entry in root.rglob("*"):
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            abs_entry = Path(os.path.abspath(str(entry)))
+            try:
+                rel = abs_entry.relative_to(root).as_posix()
+            except ValueError:
+                return False
+            actual[rel] = _sha256_file(abs_entry)
+        # Compare deterministically
+        return dict(sorted(actual.items())) == dict(sorted(manifest.items()))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
 
 def _normalized_version(value: Any) -> str:
     return str(value or "").strip().lstrip("v")
@@ -189,6 +250,17 @@ def verify_managed_binary_artifact(
                 return False
             if record.get("artifact_sha256") != expected_sha or record.get("artifact_filename") != expected_asset:
                 return False
+
+        # If the trust record embeds a resource manifest, verify the on-disk tree now.
+        # Installation creates the manifest; execution must verify it — never repair it.
+        stored_manifest = record.get("resource_manifest")
+        if stored_manifest is not None:
+            if "RESOURCE_TREE_INTEGRITY_VERIFIED" not in claims:
+                return False
+            resource_dir = managed_dir / "resources" / tool_name
+            if not verify_resource_manifest(resource_dir, stored_manifest):
+                return False
+
         return True
     except (OSError, UnicodeError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return False
@@ -199,12 +271,19 @@ def build_direct_artifact_trust_record(
     binary: str,
     *,
     installer_version: str,
+    resource_manifest: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
-    """Create a managed record after the image builder verifies the release archive.
+    """Create a managed record after the installer verifies the release archive.
 
-    The Docker builder performs the archive SHA-256 check before the executable is
-    copied into the managed directory. This function binds that manifest entry to
-    the exact executable bytes and emits only the claims supported by that check.
+    Binds the manifest entry to the exact executable bytes and, when
+    ``resource_manifest`` is supplied, cryptographically hash-binds the
+    runtime resource tree (e.g. NSE scripts, signatures) so that pre-launch
+    verification can detect any tampering of supporting files.
+
+    Args:
+        resource_manifest: Optional dict produced by :func:`build_resource_manifest`.
+            When provided, a ``RESOURCE_TREE_INTEGRITY_VERIFIED`` claim is added and
+            the manifest is embedded in the trust record.
     """
     from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
@@ -228,7 +307,8 @@ def build_direct_artifact_trust_record(
     if not expected_sha or not expected_asset:
         raise ValueError("manifest has no platform-specific direct artifact identity")
 
-    return {
+    claims = ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"]
+    record: dict[str, Any] = {
         "tool_id": f"TOOL-{tool_name.upper()}",
         "tool_version": f"v{manifest['version']}",
         "artifact_filename": expected_asset,
@@ -239,8 +319,14 @@ def build_direct_artifact_trust_record(
         "architecture": architecture,
         "installer_version": installer_version,
         "trust_status": "VALID",
-        "claims": ["ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"],
+        "claims": claims,
     }
+    if resource_manifest is not None:
+        if not isinstance(resource_manifest, dict):
+            raise ValueError("resource_manifest must be a dict mapping relative paths to sha256 digests")
+        claims.append("RESOURCE_TREE_INTEGRITY_VERIFIED")
+        record["resource_manifest"] = dict(sorted(resource_manifest.items()))
+    return record
 
 
 def write_direct_artifact_trust_record(
@@ -248,12 +334,19 @@ def write_direct_artifact_trust_record(
     binary: str,
     *,
     installer_version: str,
+    resource_manifest: Optional[dict[str, str]] = None,
 ) -> Path:
-    """Atomically persist a direct-artifact trust record beside its executable."""
+    """Atomically persist a direct-artifact trust record beside its executable.
+
+    Args:
+        resource_manifest: Optional dict from :func:`build_resource_manifest` to
+            cryptographically hash-bind the runtime resource tree to the trust record.
+    """
     record = build_direct_artifact_trust_record(
         tool_name,
         binary,
         installer_version=installer_version,
+        resource_manifest=resource_manifest,
     )
     destination = Path(f"{os.path.abspath(binary)}.trust.json")
     temporary = destination.with_name(f".{destination.name}.tmp")

@@ -1,7 +1,8 @@
 """
 Direct Artifact Installer for Nmap Network & Port Scanner (Contract 03 & Contract 09).
 Downloads official Insecure.Org release package, verifies SHA-256 integrity,
-extracts binary and supporting data files, and creates cryptographic trust record.
+extracts binary and supporting data files, and creates a cryptographic hash-bound
+managed trust record (not cryptographically signed — no private key is used).
 """
 from __future__ import annotations
 
@@ -27,7 +28,11 @@ except ImportError:
 
 from app.core.models import ToolInstallMethod
 from app.core.version import APP_VERSION
-from app.core.binary_trust import write_direct_artifact_trust_record, verify_managed_binary_artifact
+from app.core.binary_trust import (
+    write_direct_artifact_trust_record,
+    verify_managed_binary_artifact,
+    build_resource_manifest,
+)
 from app.installers.base_installer import (
     BaseToolInstaller,
     SecurityError,
@@ -293,7 +298,7 @@ class NmapArtifactInstaller(BaseToolInstaller):
             if code != 0 or not match or match.group(1) != manifest["version"]:
                 raise SecurityError(f"Extracted Nmap executable failed runtime version check: {output}")
 
-            await emit_progress(90, "Promoting binary and writing cryptographic trust record...")
+            await emit_progress(90, "Promoting binary and writing hash-bound managed trust record...")
 
             # Promote binary
             os.replace(staged_binary, final_binary)
@@ -303,15 +308,23 @@ class NmapArtifactInstaller(BaseToolInstaller):
                 shutil.rmtree(final_resources)
             os.replace(staged_resources, final_resources)
 
-            # Write direct artifact trust record
+            # Build deterministic resource manifest AFTER promotion so hashes
+            # reflect exactly the files that will be used at runtime.
+            await emit_log("Building cryptographic resource tree manifest (NSE scripts, signatures)...")
+            res_manifest = build_resource_manifest(final_resources)
+            await emit_log(f"Resource manifest bound: {len(res_manifest)} file(s) hash-locked.")
+
+            # Write direct artifact trust record — hash-binds both binary and resource tree.
+            # Installation creates trust. Execution verifies trust. Execution never repairs trust.
             write_direct_artifact_trust_record(
                 tool_name=self.tool_name,
                 binary=str(final_binary),
                 installer_version=APP_VERSION,
+                resource_manifest=res_manifest,
             )
 
             await emit_progress(100, f"Successfully installed and assured {self.display_name} (v{manifest['version']}).")
-            await emit_log(f"Nmap v{manifest['version']} is cryptographically assured and ready for scans.")
+            await emit_log(f"Nmap v{manifest['version']} is cryptographically hash-bound and ready for scans.")
             return True
 
         except asyncio.CancelledError:
