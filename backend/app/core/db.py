@@ -1431,8 +1431,14 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             if run.state not in EXECUTION_RUN_STATES or not run.request_id or not run.organization_id:
                 raise ValueError("execution run state or identity is invalid")
-            if not conn.execute("SELECT 1 FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone():
+            if run.state != "REQUESTED":
+                raise ValueError("execution run must be created in REQUESTED state")
+            request_row = conn.execute("SELECT state, approved_decision_id, expires_at FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()
+            if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"] or datetime.fromisoformat(request_row["expires_at"]) <= utc_now():
                 raise ValueError("execution run request is not tenant-bound")
+            decision_row = conn.execute("SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL AND expires_at > ?", (request_row["approved_decision_id"], run.organization_id, utc_now().isoformat())).fetchone()
+            if not decision_row:
+                raise ValueError("execution run has no current approved decision")
             conn.execute(
                 """INSERT INTO execution_runs (execution_id, request_id, organization_id, state, worker_identity, process_id, process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, correlation_id, created_at, started_at, finished_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1447,7 +1453,7 @@ class DatabaseManager:
                 return False
             now = utc_now().isoformat()
             cur = conn.execute(
-                "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','FAILED','TIMED_OUT','CANCELLED','PARTIAL_RESULTS_WITH_WARNING') THEN ? ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ?",
+                "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','PARTIAL_RESULTS_WITH_WARNING','FAILED','TIMED_OUT','CANCELLED','EXECUTION_BLOCKED') THEN COALESCE(finished_at, ?) ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ?",
                 (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state),
             )
             if cur.rowcount == 1:
