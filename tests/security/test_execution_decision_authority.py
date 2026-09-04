@@ -894,3 +894,36 @@ def test_execution_schema_partial_index_fails_closed(tmp_path):
         conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, organization_id) WHERE state = 'SUCCEEDED'")
     with pytest.raises(ValueError, match="schema health check"):
         DatabaseManager(db_path)
+
+
+def test_v5_cleans_only_the_known_migration_owned_parent_key(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "known-v4-duplicate.db"
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+        conn.commit()
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        names = {row[1] for row in conn.execute("PRAGMA index_list(execution_decisions)").fetchall()}
+        versions = {row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+    assert "uq_execution_decisions_id_org" not in names
+    assert 5 in versions
+
+
+def test_v5_rejects_unknown_parent_key_duplicates_without_recording_success(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "unknown-v4-duplicate.db"
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE UNIQUE INDEX operator_owned_decision_parent_key ON execution_decisions(id, organization_id)")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+        conn.commit()
+    with pytest.raises(ValueError, match="unknown duplicate decision parent keys"):
+        DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT 1 FROM schema_migrations WHERE version = 5").fetchone() is None
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'operator_owned_decision_parent_key'").fetchone()
