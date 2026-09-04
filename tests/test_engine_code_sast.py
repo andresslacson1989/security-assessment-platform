@@ -161,7 +161,20 @@ async def test_code_sast_engine_full_run():
     temp_dir = Path(tempfile.mkdtemp())
     try:
         target = Target(name="Local Repo", type=TargetType.LOCAL_PATH, value=str(temp_dir))
-        config = ScanConfig(adapters=ToolAdapterConfig(enable_semgrep=False, enable_bandit=False, enable_gitleaks=False, enable_checkov=False, enable_trivy=False))
+        config = ScanConfig(
+            adapters=ToolAdapterConfig(
+                enable_semgrep=False,
+                enable_bandit=False,
+                enable_gitleaks=False,
+                enable_checkov=False,
+                enable_trivy=False,
+                enable_syft=False,
+                enable_grype=False,
+                enable_retirejs=False,
+                enable_trufflehog=False,
+                enable_osv_scanner=False,
+            )
+        )
 
         logs = []
         progress_updates = []
