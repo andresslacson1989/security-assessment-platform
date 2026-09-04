@@ -49,7 +49,14 @@ class TrivyAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check)
+        # Trivy 0.50.0 loads its default relative config even for --version.
+        # Use a server-selected read-only null config so probing is independent
+        # of the service working directory and cannot write there.
+        returncode, stdout, stderr = await self.execute_command(
+            [path, "--config", "/dev/null", "--version"],
+            timeout=5.0,
+            pre_launch_check=pre_launch_check,
+        )
         output = stdout or stderr
         if output:
             for line in output.splitlines():

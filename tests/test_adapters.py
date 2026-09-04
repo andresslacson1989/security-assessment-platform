@@ -1072,6 +1072,34 @@ class TestCheckovAdapter:
 # ============================================================================
 
 class TestCapabilitiesAndRegistry:
+    def test_package_adapter_resolves_its_managed_virtual_environment(self, tmp_path, monkeypatch):
+        venv_root = tmp_path / "tool-venvs"
+        binary_dir = venv_root / "semgrep" / ("Scripts" if os.name == "nt" else "bin")
+        binary_dir.mkdir(parents=True)
+        binary = binary_dir / ("semgrep.exe" if os.name == "nt" else "semgrep")
+        binary.write_bytes(b"managed semgrep")
+        binary.chmod(0o755)
+        monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(venv_root))
+
+        adapter = SemgrepAdapter()
+
+        assert adapter.resolve_binary_path() == str(binary)
+        custom = tmp_path / "custom-semgrep.exe"
+        custom.write_bytes(b"unmanaged semgrep")
+        assert adapter.resolve_binary_path(str(custom)) == str(custom)
+
+    @pytest.mark.asyncio
+    async def test_trivy_version_probe_uses_explicit_non_writing_config(self):
+        adapter = TrivyAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/managed/trivy"), patch.object(
+            adapter,
+            "execute_command",
+            new=AsyncMock(return_value=(0, "Version: 0.50.0\n", "")),
+        ) as execute:
+            assert await adapter.get_version() == "trivy 0.50.0"
+
+        assert execute.await_args.args[0] == ["/managed/trivy", "--config", "/dev/null", "--version"]
+
     def test_adapter_registry(self):
         registry = get_adapter_registry()
         expected_tools = {

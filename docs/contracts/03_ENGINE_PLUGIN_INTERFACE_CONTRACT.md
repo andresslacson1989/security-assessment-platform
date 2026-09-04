@@ -90,6 +90,11 @@ Binary installation must follow this strict 8-step lifecycle:
 8. REGISTRATION: Register active tool status with the platform adapter registry. Capability registration and backend-owned toolbox/system capability snapshots are observational only; cached status MUST NOT replace live pre-launch executable integrity and exact-version verification.
 ```
 
+### 2.2.1 Managed Package-Adapter Resolution
+For every adapter backed by `PACKAGE_MANAGER_MODE`, the shared adapter resolver MUST search the installer-owned per-tool virtual environment before the active application environment, system `PATH`, or platform auto-discovery paths. Capability discovery and runtime execution MUST resolve the same canonical managed executable path. An explicit custom path may be used for diagnostics, but it MUST remain subject to the managed trust gate and MUST NOT be treated as enterprise-assured merely because it reports the approved version. A missing, inaccessible, or unverified managed environment MUST remain fail-closed and MUST expose the native fallback/degraded state.
+
+Version probes that require a tool configuration file MUST use a server-selected, non-writing configuration path and MUST NOT depend on permissions or files in the service working directory.
+
 ### 2.3 Strict Verification Invariants
 - **No Silent Bypass:** If `expected_sha256` is missing or invalid, installation MUST FAIL CLOSED.
 - **Approved source-build exceptions:** Trivy `v0.50.0` and Nmap `7.95` may use `SOURCE_BUILD_MODE` because

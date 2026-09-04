@@ -55,6 +55,8 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "process-local, 60-second cache" in contract_04
     assert "observational only" in contract_03
     assert "Capability Detection Cache Vectors" in contract_08
+    assert "Managed Resolution and Probe Vectors" in contract_08
+    assert "Managed Package-Adapter Resolution" in contract_03
     assert "observational telemetry only" in contract_09
     assert "`grype`: `v0.74.0`" in contract_08
     assert "`nmap`: `7.95` -> verified official source archive" in contract_08

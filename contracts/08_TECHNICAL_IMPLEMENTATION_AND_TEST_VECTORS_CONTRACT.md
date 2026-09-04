@@ -136,6 +136,12 @@ The authenticated capability endpoint uses a process-local 60-second cache and m
 
 To achieve deterministic CI verification across environments without requiring external binary dependencies, test suites must use the following authoritative mock outputs:
 
+### 6.1.1 Managed Resolution and Probe Vectors
+- A package adapter with a valid executable in `backend/.tool-venvs/<tool>/bin` (or `Scripts` on Windows) MUST resolve that executable before the application environment or system `PATH`.
+- A configured custom executable MUST remain the selected path for diagnostics and MUST still fail the assurance gate unless its managed trust record validates the exact executable identity.
+- A Trivy `v0.50.0` version probe MUST pass a server-selected non-writing config path and MUST not depend on a writable or readable `trivy.yaml` in the service working directory.
+- Capability discovery MUST report `ADAPTER_ACTIVE` only after managed resolution, trust verification, and exact runtime version verification all succeed.
+
 ### 6.1 Metasploit Framework (`MetasploitAdapter`) Mock Fixtures
 ```python
 # Version check mock

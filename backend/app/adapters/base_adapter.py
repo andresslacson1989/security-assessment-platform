@@ -131,14 +131,35 @@ class BaseToolAdapter(ABC):
 
     def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
         """
-        Deterministic 5-Tier Binary Resolution Order:
+        Deterministic managed-first binary resolution order:
         Tier 1: Explicit custom configured path (if file exists and is executable or on PATH)
         Tier 2: In-App Managed Binaries directory ('backend/bin/<tool_name>[.exe|.bat|.cmd|.pl]')
-        Tier 3: Active Python environment Scripts / bin directory (for pip-installed tools)
-        Tier 4: System PATH discovery via shutil.which(tool_name)
-        Tier 5: Platform-Specific Auto-Discovery (Windows Registry, multi-drive Program Files, package managers, Unix paths)
+        Tier 3: Per-tool managed Python environment (for package-managed adapters)
+        Tier 4: Active Python environment Scripts / bin directory
+        Tier 5: System PATH discovery via shutil.which(tool_name)
+        Tier 6: Platform-Specific Auto-Discovery (Windows Registry, multi-drive Program Files, package managers, Unix paths)
+
+        The per-tool environment is resolved here, at the shared adapter
+        boundary, so capability discovery and execution select the same
+        installer-owned executable identity. Custom paths remain diagnostic
+        inputs and are never silently replaced by managed paths.
         """
         local_bin_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+
+        if not custom_path and getattr(self, "package_name", None):
+            from app.core.package_trust import get_tool_venv_dir
+
+            venv_dir = get_tool_venv_dir(self.tool_name)
+            venv_bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+            binary_name = getattr(self, "binary_name", self.tool_name)
+            candidates = (
+                venv_bin_dir / f"{binary_name}.exe",
+                venv_bin_dir / binary_name,
+            )
+            for candidate in candidates:
+                if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                    return str(candidate)
+
         return resolve_tool_binary(
             tool_name=self.tool_name,
             custom_path=custom_path,
