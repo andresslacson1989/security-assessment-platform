@@ -98,24 +98,15 @@ class NpmToolInstaller(BaseToolInstaller):
 
     @staticmethod
     def _npm_environment(config_path: Path) -> dict[str, str]:
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.lower().startswith("npm_config_")
-            and key.lower() not in {"node_options", "node_path"}
+        return {
+            "NPM_CONFIG_USERCONFIG": str(config_path),
+            "NPM_CONFIG_REGISTRY": "https://registry.npmjs.org/",
+            "NPM_CONFIG_STRICT_SSL": "true",
+            "NPM_CONFIG_IGNORE_SCRIPTS": "true",
+            "NPM_CONFIG_AUDIT": "false",
+            "NPM_CONFIG_FUND": "false",
+            "NPM_CONFIG_UPDATE_NOTIFIER": "false",
         }
-        env.update(
-            {
-                "NPM_CONFIG_USERCONFIG": str(config_path),
-                "NPM_CONFIG_REGISTRY": "https://registry.npmjs.org/",
-                "NPM_CONFIG_STRICT_SSL": "true",
-                "NPM_CONFIG_IGNORE_SCRIPTS": "true",
-                "NPM_CONFIG_AUDIT": "false",
-                "NPM_CONFIG_FUND": "false",
-                "NPM_CONFIG_UPDATE_NOTIFIER": "false",
-            }
-        )
-        return env
 
     async def install(self, emit_log: LogCallback, emit_progress: ProgressCallback, force: bool = False) -> bool:
         existing_path = self.resolve_binary_path()

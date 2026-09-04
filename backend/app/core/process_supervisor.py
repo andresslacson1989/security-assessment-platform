@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from enum import Enum
-from typing import Callable, NamedTuple, Optional, Set
+from typing import Callable, Dict, NamedTuple, Optional, Set
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
@@ -244,6 +244,9 @@ class ProcessSupervisor:
                 except Exception as fallback_exc:
                     logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
 
+    # Complete reviewed baseline inherited from the worker process. Credentials,
+    # proxy configuration, loader hooks, interpreter/module injection,
+    # package-manager configuration, and tokens are intentionally excluded.
     _SAFE_ENVIRONMENT_KEYS = frozenset({
         "PATH",
         "PATHEXT",
@@ -278,32 +281,57 @@ class ProcessSupervisor:
         "LC_CTYPE",
         "PYTHONIOENCODING",
         "PYTHONUNBUFFERED",
-        "PYTHONPATH",
         "COMSPEC",
+    })
+
+    # Exact operation-specific names allowed from a caller. Values must still
+    # be derived from server-controlled paths or policy.
+    _APPROVED_OPERATION_ENVIRONMENT_KEYS = frozenset({
+        "CGO_ENABLED",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_TERMINAL_PROMPT",
+        "GOARCH",
+        "GOCACHE",
+        "GOOS",
+        "GOMODCACHE",
+        "GOTOOLCHAIN",
+        "NMAPDIR",
+        "NPM_CONFIG_AUDIT",
+        "NPM_CONFIG_FUND",
+        "NPM_CONFIG_IGNORE_SCRIPTS",
+        "NPM_CONFIG_REGISTRY",
+        "NPM_CONFIG_STRICT_SSL",
+        "NPM_CONFIG_UPDATE_NOTIFIER",
+        "NPM_CONFIG_USERCONFIG",
+    })
+
+    _AMBIENT_PROXY_KEYS = frozenset({
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
     })
 
     @classmethod
     def sanitize_environment(cls, custom_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """
-        Builds a strictly curated environment for subprocess execution:
-        - Never leaks application secrets (JWT_SECRET, DATABASE_URL, etc.).
-        - Only inherits safe system keys from host.
-        - Applies SCANNER_EGRESS_PROXY if configured; otherwise strips ambient proxy variables.
-        """
-        source = custom_env if custom_env is not None else os.environ
-        clean: Dict[str, str] = {}
-        for k, v in source.items():
-            k_upper = str(k).upper()
-            if k_upper in cls._SAFE_ENVIRONMENT_KEYS:
-                if any(sec in k_upper for sec in ["SECRET", "PASSWORD", "DATABASE", "REDIS", "KEY", "TOKEN", "CREDENTIAL"]):
-                    continue
-                clean[str(k)] = str(v)
+        Build the only environment that may reach a supervised child.
 
-        if custom_env is not None:
-            for k, v in custom_env.items():
-                k_upper = str(k).upper()
-                if not any(sec in k_upper for sec in ["SECRET", "PASSWORD", "DATABASE", "REDIS"]):
-                    clean[str(k)] = str(v)
+        The worker baseline is deny-by-default: only exact reviewed baseline
+        names are inherited. Caller input can add only exact reviewed operation
+        names; it is never merged wholesale. Ambient proxy variables are always
+        removed. SCANNER_EGRESS_PROXY is translated only when configured by the
+        server policy.
+        """
+        clean: Dict[str, str] = {}
+        for key in cls._SAFE_ENVIRONMENT_KEYS:
+            value = os.environ.get(key)
+            if value is not None:
+                clean[key] = str(value)
+
+        if custom_env:
+            for key, value in custom_env.items():
+                normalized_key = str(key).upper()
+                if normalized_key in cls._SAFE_ENVIRONMENT_KEYS or normalized_key in cls._APPROVED_OPERATION_ENVIRONMENT_KEYS:
+                    clean[normalized_key] = str(value)
 
         scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
         if scanner_proxy:
@@ -313,9 +341,9 @@ class ProcessSupervisor:
             clean["http_proxy"] = scanner_proxy
             clean["https_proxy"] = scanner_proxy
             clean["all_proxy"] = scanner_proxy
-        else:
-            for p in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
-                clean.pop(p, None)
+        for proxy_key in cls._AMBIENT_PROXY_KEYS:
+            if not scanner_proxy or proxy_key in {"NO_PROXY", "no_proxy"}:
+                clean.pop(proxy_key, None)
 
         return clean
 

@@ -309,7 +309,7 @@ class SourceBuildInstaller(BaseToolInstaller):
                         expected_compiler_sha = manifest.get("build_toolchain_sha256", {}).get(platform_key)
                         if not compiler or not expected_compiler_sha or self._sha256_file(compiler) != expected_compiler_sha:
                             raise SecurityError("Pinned Nmap compiler/toolchain verification failed")
-                        env = {"HOME": temp, "PATH": os.environ.get("PATH", "")}
+                        env = {"HOME": temp}
                         commands = [
                             (["./configure", "--prefix=/usr/local", "--without-zenmap"], 50, "Configuring Nmap from the verified source archive..."),
                             (["make", "-j2"], 75, "Building Nmap from the verified source archive..."),

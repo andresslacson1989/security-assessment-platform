@@ -4,7 +4,6 @@ Inspects commit history (git log -p) for leaked credentials and hardcoded secret
 """
 
 from __future__ import annotations
-import os
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -38,7 +37,7 @@ async def audit_git_commit_history(repo_path: str, max_commits: int = 100) -> Li
             cwd=cwd,
             timeout=8.0,
             max_output_bytes=10 * 1024 * 1024,
-            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
+            env={"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
         )
         if returncode not in (0, 1):
             return findings
