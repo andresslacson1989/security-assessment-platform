@@ -468,6 +468,27 @@ class DatabaseManager:
                 f"missing={sorted(missing)!r}, mismatched={sorted(wrong_type)!r}"
             )
 
+    def _verify_execution_dispatch_schema(self, conn) -> None:
+        """Fail closed if dispatch intents are not tenant-bound and lease-capable."""
+        required = {"execution_id", "organization_id", "state", "attempt_count", "created_at",
+                    "claimed_at", "completed_at", "last_error", "claimed_by", "claim_token",
+                    "lease_expires_at", "correlation_id"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'").fetchall()
+            if {r["column_name"] for r in rows} != required:
+                raise RuntimeError("execution dispatch schema columns drifted")
+        else:
+            rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
+            if {r["name"] for r in rows} != required:
+                raise RuntimeError("execution dispatch schema columns drifted")
+        grouped = {}
+        for row in conn.execute("PRAGMA foreign_key_list(execution_dispatch_intents)").fetchall() if not isinstance(self, PostgresDatabaseManager) else []:
+            grouped.setdefault(row["id"], []).append(row)
+        if not isinstance(self, PostgresDatabaseManager):
+            valid = any(len(v) == 2 and sorted((x["seq"], x["from"], x["to"]) for x in v) == [(0, "execution_id", "execution_id"), (1, "organization_id", "organization_id")] and all(x["table"] == "execution_runs" for x in v) for v in grouped.values())
+            if not valid:
+                raise RuntimeError("execution dispatch schema lacks tenant-bound foreign key")
+
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
         with self._connection_scope() as conn:
@@ -633,6 +654,7 @@ class DatabaseManager:
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 finished_at TEXT,
+                UNIQUE (execution_id, organization_id),
                 FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
                 FOREIGN KEY (approved_decision_id, organization_id) REFERENCES execution_decisions(id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
@@ -641,13 +663,13 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS execution_dispatch_intents (
                 execution_id TEXT PRIMARY KEY,
                 organization_id TEXT NOT NULL,
-                state TEXT NOT NULL DEFAULT 'PENDING',
-                attempt_count INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED', 'BLOCKED')),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
                 created_at TEXT NOT NULL,
                 claimed_at TEXT,
                 completed_at TEXT,
                 last_error TEXT,
-                FOREIGN KEY (execution_id) REFERENCES execution_runs(execution_id),
+                FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
 
@@ -1382,16 +1404,55 @@ class DatabaseManager:
                 if not exists:
                     conn.execute("""CREATE TABLE execution_dispatch_intents (
                         execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
-                        state TEXT NOT NULL DEFAULT 'PENDING', attempt_count INTEGER NOT NULL DEFAULT 0,
+                        state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED', 'BLOCKED')),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
                         created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
-                        FOREIGN KEY (execution_id) REFERENCES execution_runs(execution_id),
+                        FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
                         FOREIGN KEY (organization_id) REFERENCES organizations(id)
                     )""")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_version, utc_now().isoformat()))
 
+            dispatch_binding_version = 8
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_binding_version,)).fetchone():
+                # The composite parent key is required before SQLite will validate
+                # the tenant-bound foreign key during the compatibility rebuild.
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
+                bad = conn.execute("""SELECT i.execution_id FROM execution_dispatch_intents i
+                    LEFT JOIN execution_runs r ON r.execution_id=i.execution_id AND r.organization_id=i.organization_id
+                    WHERE r.execution_id IS NULL LIMIT 1""").fetchone()
+                if bad:
+                    raise RuntimeError("dispatch migration v8 refused orphan or cross-tenant intent")
+                if isinstance(self, PostgresDatabaseManager):
+                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claimed_by TEXT")
+                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claim_token TEXT")
+                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN lease_expires_at TEXT")
+                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN correlation_id TEXT")
+                    conn.execute("ALTER TABLE execution_dispatch_intents DROP CONSTRAINT IF EXISTS execution_dispatch_intents_execution_id_fkey")
+                    conn.execute("ALTER TABLE execution_dispatch_intents ADD CONSTRAINT execution_dispatch_intents_run_org_fkey FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id)")
+                else:
+                    # Safe recovery from an interrupted, migration-owned rebuild.
+                    conn.execute("DROP TABLE IF EXISTS execution_dispatch_intents_v8")
+                    conn.execute("""CREATE TABLE execution_dispatch_intents_v8 (
+                        execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                        created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
+                        claimed_by TEXT, claim_token TEXT, lease_expires_at TEXT, correlation_id TEXT,
+                        FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                        FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                    )""")
+                    conn.execute("""INSERT INTO execution_dispatch_intents_v8
+                        (execution_id,organization_id,state,attempt_count,created_at,claimed_at,completed_at,last_error)
+                        SELECT execution_id,organization_id,state,attempt_count,created_at,claimed_at,completed_at,last_error
+                        FROM execution_dispatch_intents""")
+                    conn.execute("DROP TABLE execution_dispatch_intents")
+                    conn.execute("ALTER TABLE execution_dispatch_intents_v8 RENAME TO execution_dispatch_intents")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_binding_version, utc_now().isoformat()))
+
             self._verify_execution_snapshot_schema(conn)
             self._verify_execution_authority_binding_schema(conn)
             self._verify_execution_compatibility_schema(conn)
+            self._verify_execution_dispatch_schema(conn)
 
             # Migration rows prove history, not present-day schema integrity.
             # Recheck the safety-critical execution invariants on every startup

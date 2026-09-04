@@ -790,27 +790,8 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
             "created_at, started_at, finished_at FROM execution_runs_legacy WHERE 0"
         )
         conn.execute("DROP TABLE execution_runs_legacy")
-    DatabaseManager(db_path)
-    with sqlite3.connect(db_path) as conn:
-        foreign_keys = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
-        composite = [row for row in foreign_keys if row[2] == "execution_requests"]
-        assert {(row[1], row[3], row[4]) for row in composite} == {
-            (0, "request_id", "id"), (1, "organization_id", "organization_id")
-        }
-        assert len({row[0] for row in composite}) == 1
-        decision_composite = [row for row in foreign_keys if row[2] == "execution_decisions"]
-        assert {(row[1], row[3], row[4]) for row in decision_composite} == {
-            (0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")
-        }
-        assert len({row[0] for row in decision_composite}) == 1
-        parent_unique = []
-        for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
-            if index[2]:
-                columns = conn.execute(f"PRAGMA index_info('{index[1].replace(chr(39), chr(39) + chr(39))}')").fetchall()
-                parent_unique.append([column[2] for column in sorted(columns, key=lambda value: value[0])])
-        assert ["id", "organization_id"] in parent_unique
-        assert conn.execute("SELECT version FROM schema_migrations WHERE version = 1").fetchone()
-        assert conn.execute("SELECT version FROM schema_migrations WHERE version = 2").fetchone()
+    with pytest.raises(RuntimeError, match="dispatch schema lacks tenant-bound foreign key"):
+        DatabaseManager(db_path)
 
 
 def test_legacy_execution_runs_duplicate_preflight_fails_closed(tmp_path):
@@ -841,7 +822,7 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     DatabaseManager(db_path)
     with database._connection_scope() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions[-3:] == [5, 6, 7]
+        assert versions[-3:] == [6, 7, 8]
 
 
 def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
