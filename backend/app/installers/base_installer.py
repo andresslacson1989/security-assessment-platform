@@ -79,9 +79,9 @@ class BaseToolInstaller(ABC):
         return False
 
     @property
-    def install_command_hint(self) -> Optional[str]:
+    def install_command_hint(self) -> str:
         """Manual CLI instructions if in-app automation is unavailable."""
-        return None
+        return ""
 
     @property
     def download_url(self) -> Optional[str]:

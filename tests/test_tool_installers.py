@@ -148,17 +148,15 @@ def test_retire_manifest_records_official_npm_tarball_identity():
     assert entry["sha256_checksums"]["npm_tarball"] == "1352bd6054d92d261b4d85dbfd75c4cee800f583573b5d9d0c45b56e3282c280"
 
 
-def test_nmap_manifest_records_verified_source_build_identity():
+def test_nmap_manifest_records_verified_direct_artifact_identity():
     entry = PINNED_TOOL_MANIFEST["nmap"]
 
     assert entry["version"] == "7.95"
-    assert entry["trust_mode"] == "SOURCE_BUILD_MODE"
+    assert entry["trust_mode"] == "DIRECT_ARTIFACT_MODE"
     assert entry["repo"] == "nmap/nmap"
-    assert "insecure-org" not in entry["repo"]
-    assert entry["source_revision"] == "svn-r39734"
-    assert entry["sha256_checksums"]["source_archive"] == "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778"
-    assert entry["build_toolchain_sha256"]["linux_amd64"] == "75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8"
-    assert "source archive" in entry["integrity_note"]
+    assert entry["sha256_checksums"]["linux_amd64"] == "c0465e70217565bd825554e37b5a419221fd688ebcf9ad5633303d69a2287206"
+    assert entry["executable_sha256"]["linux_amd64"] == "f344bee202f0befb3c2f9cfd7fdd81d6332fe857d0076552f53b3cea115ee80a"
+    assert "Insecure.Org" in entry["integrity_note"]
 
 
 def test_manifest_audit_reports_assured_and_incomplete_registry_entries():
@@ -182,12 +180,13 @@ def test_trivy_uses_the_verified_source_build_installer():
     assert SOURCE_BUILD_CONFIG["trivy"]["go_version"] == PINNED_TOOL_MANIFEST["trivy"]["build_toolchain"]
 
 
-def test_nmap_uses_the_verified_source_build_installer():
+def test_nmap_uses_the_verified_artifact_installer():
+    from app.installers.nmap_artifact_installer import NmapArtifactInstaller
     installer = ToolInstallationManager().get_installer("nmap")
-    assert isinstance(installer, SourceBuildInstaller)
-    assert PINNED_TOOL_MANIFEST["nmap"]["trust_mode"] == "SOURCE_BUILD_MODE"
-    assert PINNED_TOOL_MANIFEST["nmap"]["direct_release_artifact_available"] is False
-    assert SOURCE_BUILD_CONFIG["nmap"]["source_revision"] == PINNED_TOOL_MANIFEST["nmap"]["source_revision"]
+    assert isinstance(installer, NmapArtifactInstaller)
+    assert PINNED_TOOL_MANIFEST["nmap"]["trust_mode"] == "DIRECT_ARTIFACT_MODE"
+    assert PINNED_TOOL_MANIFEST["nmap"]["direct_release_artifact_available"] is True
+    assert PINNED_TOOL_MANIFEST["nmap"]["sha256_checksums"]["linux_amd64"] == "c0465e70217565bd825554e37b5a419221fd688ebcf9ad5633303d69a2287206"
 
 
 def test_amass_manifest_uses_verified_platform_release_archives():
@@ -200,22 +199,10 @@ def test_amass_manifest_uses_verified_platform_release_archives():
 
 
 @pytest.mark.asyncio
-async def test_nmap_source_identity_is_checked_against_installer_policy():
-    installer = SourceBuildInstaller("nmap")
-    client = MagicMock()
-    manifest = PINNED_TOOL_MANIFEST["nmap"]
-
-    await installer._verify_source_identity(client, manifest)
-
-    with patch.dict(manifest, {"source_revision": "svn-r99999"}):
-        with pytest.raises(SecurityError, match="source revision"):
-            await installer._verify_source_identity(client, manifest)
-
-
-@pytest.mark.asyncio
-async def test_nmap_source_build_fails_closed_on_unsupported_platform(monkeypatch):
-    installer = SourceBuildInstaller("nmap")
-    monkeypatch.setattr(installer, "_platform_key", lambda: (_ for _ in ()).throw(RuntimeError("Linux only")))
+async def test_nmap_artifact_installer_fails_closed_on_unsupported_platform(monkeypatch):
+    from app.installers.nmap_artifact_installer import NmapArtifactInstaller
+    installer = NmapArtifactInstaller("nmap")
+    monkeypatch.setattr(installer, "_platform_key", lambda: "windows_amd64")
     logs = []
     progress = []
 
@@ -226,7 +213,7 @@ async def test_nmap_source_build_fails_closed_on_unsupported_platform(monkeypatc
 
     assert result is False
     assert progress[-1][0] == 100
-    assert any("Linux only" in message for message in logs)
+    assert any("supports linux/amd64" in message for message in logs)
 
 
 def test_github_release_installer_requires_exact_release_tag():

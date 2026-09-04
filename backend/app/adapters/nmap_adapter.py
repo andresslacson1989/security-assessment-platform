@@ -65,7 +65,7 @@ TOOL_ID = "TOOL-NMAP"
 TOOL_NAME = "nmap"
 APPROVED_VERSION = "7.95"
 APPROVED_VERSION_FULL = "Nmap 7.95"
-TRUST_MODE = "SOURCE_BUILD_MODE"
+TRUST_MODE = "DIRECT_ARTIFACT_MODE"
 ROLE = "PRIMARY"
 SECURITY_DOMAIN = "NETWORK / PERIMETER / EASM"
 DEFAULT_OPERATION_CLASS = ToolOperationClass.ACTIVE_READ_ONLY
@@ -424,8 +424,13 @@ class NmapAdapter(BaseToolAdapter):
         if not path:
             return None
 
+        env = {}
+        resources_dir = os.path.abspath(os.path.join(os.path.dirname(path), "resources", "nmap"))
+        if os.path.isdir(resources_dir):
+            env["NMAPDIR"] = resources_dir
+
         returncode, stdout, _ = await self.execute_command(
-            [path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check,
+            [path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check, env=env if env else None,
         )
         if returncode == 0 and stdout:
             first_line = stdout.splitlines()[0].strip()
@@ -761,11 +766,17 @@ class NmapAdapter(BaseToolAdapter):
         )
 
         # 6. Execute via ProcessSupervisor
+        env = {}
+        resources_dir = os.path.abspath(os.path.join(os.path.dirname(nmap_path), "resources", "nmap"))
+        if os.path.isdir(resources_dir):
+            env["NMAPDIR"] = resources_dir
+
         returncode, stdout, stderr = await self.execute_command(
             cmd,
             timeout=timeout_sec,
             emit_log=emit_log,
             pre_launch_check=managed_check,
+            env=env if env else None,
         )
 
         # Handle Timeout & Cancellation

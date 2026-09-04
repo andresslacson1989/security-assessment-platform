@@ -50,6 +50,7 @@ class BaseToolAdapter(ABC):
         "PYTHONUNBUFFERED",
         "SYSTEMDRIVE",
         "COMSPEC",
+        "NMAPDIR",
     })
 
     @classmethod

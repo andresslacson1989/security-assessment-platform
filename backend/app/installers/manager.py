@@ -24,6 +24,7 @@ from app.installers.github_release_installer import GithubReleaseInstaller
 from app.installers.source_build_installer import SourceBuildInstaller
 from app.installers.system_installer import SystemToolHelper
 from app.installers.npm_installer import NpmToolInstaller
+from app.installers.nmap_artifact_installer import NmapArtifactInstaller
 from app.core.tool_fleet import SUPPORTED_TOOL_IDS
 
 logger = logging.getLogger("cyberassess.installers.manager")
@@ -64,7 +65,7 @@ class ToolInstallationManager:
             "amass": GithubReleaseInstaller("amass"),
 
             # Approved verified source-build, direct-artifact, and package-manager tools
-            "nmap": SourceBuildInstaller("nmap"),
+            "nmap": NmapArtifactInstaller("nmap"),
             "retire": NpmToolInstaller("retire"),
             "metasploit": SystemToolHelper("metasploit"),
             "sqlmap": SystemToolHelper("sqlmap"),
