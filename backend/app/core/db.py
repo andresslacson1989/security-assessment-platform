@@ -271,6 +271,10 @@ class DatabaseManager:
     def _ensure_migration_ledger(self) -> None:
         """Bootstrap the independent migration-event ledger before schema work."""
         with self._connection_scope() as conn:
+            if isinstance(self, PostgresDatabaseManager):
+                ledger_exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchone() is not None
+            else:
+                ledger_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone() is not None
             conn.execute("""CREATE TABLE IF NOT EXISTS schema_migration_events (
                 event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
                 migration_name TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED')),
@@ -281,9 +285,16 @@ class DatabaseManager:
                 rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
                 UNIQUE (attempt_id, event_type)
             )""")
-            # Remove only the explicitly migration-owned redundant index from
-            # the prior bootstrap; the table-level UNIQUE is canonical.
-            conn.execute("DROP INDEX IF EXISTS uq_schema_migration_attempt_event")
+            if ledger_exists:
+                if not isinstance(self, PostgresDatabaseManager):
+                    legacy_index = conn.execute("SELECT 1 FROM pragma_index_list('schema_migration_events') WHERE name='uq_schema_migration_attempt_event'").fetchone()
+                    if legacy_index:
+                        cols = conn.execute("PRAGMA index_info('uq_schema_migration_attempt_event')").fetchall()
+                        if [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] != ["attempt_id", "event_type"]:
+                            raise RuntimeError("migration ledger legacy index identity is ambiguous; reconciliation required")
+                        conn.execute("DROP INDEX uq_schema_migration_attempt_event")
+                self._verify_migration_ledger(conn)
+                return
             if isinstance(self, PostgresDatabaseManager):
                 conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
                     LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
