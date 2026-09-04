@@ -621,8 +621,7 @@ time.sleep(60)
         if grandchild_pid:
             # Check OS process existence
             if sys.platform == "win32":
-                check_cmd = f"tasklist /FI \"PID eq {grandchild_pid}\""
-                out = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+                out = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild_pid}"], capture_output=True, text=True)
                 assert str(grandchild_pid) not in out.stdout or "No tasks" in out.stdout
             else:
                 with pytest.raises(OSError):
