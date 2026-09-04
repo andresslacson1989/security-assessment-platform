@@ -860,7 +860,7 @@ class DatabaseManager:
                     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
                     WHERE i.relname = 'uq_execution_runs_request'
                       AND t.relname = 'execution_runs' AND n.nspname = current_schema()
-                      AND x.indisunique
+                      AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
                     GROUP BY i.oid
                 """).fetchall()
                 if not any(list(row["columns"] or []) == ["request_id", "organization_id"] for row in run_index):
@@ -875,7 +875,7 @@ class DatabaseManager:
                     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
                     WHERE i.relname = 'uq_execution_requests_id_org'
                       AND t.relname = 'execution_requests' AND n.nspname = current_schema()
-                      AND x.indisunique
+                      AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
                     GROUP BY i.oid
                 """).fetchall()
                 if not any(list(row["columns"] or []) == ["id", "organization_id"] for row in parent_index):
@@ -905,7 +905,7 @@ class DatabaseManager:
                 run_indexes = conn.execute("PRAGMA index_list(execution_runs)").fetchall()
                 run_index_valid = False
                 for index in run_indexes:
-                    if index["unique"] and index["name"] == "uq_execution_runs_request":
+                    if index["unique"] and index["name"] == "uq_execution_runs_request" and not index["partial"]:
                         index_name = str(index["name"]).replace("'", "''")
                         columns = conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()
                         run_index_valid = [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["request_id", "organization_id"]
@@ -914,7 +914,7 @@ class DatabaseManager:
                     raise ValueError("execution schema health check failed: unique execution-run request index is absent")
                 parent_index_valid = False
                 for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
-                    if index["unique"]:
+                    if index["unique"] and not index["partial"]:
                         index_name = str(index["name"]).replace("'", "''")
                         columns = conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()
                         if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
