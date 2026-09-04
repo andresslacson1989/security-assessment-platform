@@ -154,4 +154,4 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     }
 
     for contract_file in canonical.glob("*.md"):
-        assert (mirror / contract_file.name).read_text(encoding="utf-8") == contract_file.read_text(encoding="utf-8")
+        assert (mirror / contract_file.name).read_bytes() == contract_file.read_bytes()
