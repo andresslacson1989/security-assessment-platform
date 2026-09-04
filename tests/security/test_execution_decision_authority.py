@@ -181,6 +181,31 @@ def test_current_migration_ledger_fails_closed_on_row_tampering(tmp_path):
         DatabaseManager(path)
 
 
+def test_failure_ledger_sequence_is_causal_when_timestamps_match(tmp_path):
+    path = tmp_path / "failure-sequence.sqlite3"
+    database = DatabaseManager(path)
+    database._migration_attempt_id = "failure-attempt"
+    database._migration_transaction_id = "failure-tx"
+    database._migration_schema_name = str(path)
+    database._migration_spec = MIGRATION_REGISTRY[-1]
+    spec = database._migration_spec
+    with database._connection_scope() as connection:
+        connection.execute(
+            "INSERT INTO schema_migration_events (event_id, attempt_id, migration_version, migration_id, migration_name, registry_revision, event_sequence, event_type, event_at, backend, schema_name, previous_schema_version, target_schema_version, migration_checksum, runner_identity, transaction_context_id, context_json, rollback_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("failure-start", "failure-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", "failure-tx", "{}", "PENDING"),
+        )
+    database._record_migration_failure(RuntimeError("controlled failure"))
+
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(
+            "SELECT event_type, event_sequence FROM schema_migration_events "
+            "WHERE attempt_id = 'failure-attempt' ORDER BY event_sequence"
+        ).fetchall()
+    assert rows == [("FAILED", 2), ("ROLLED_BACK", 3)]
+
+    DatabaseManager(path)
+
+
 def _issue(store, target, **kwargs):
     import os
     os.environ["CYBERASSESS_WORKER_IDENTITY"] = "worker-1"
