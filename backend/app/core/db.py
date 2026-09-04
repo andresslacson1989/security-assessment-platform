@@ -503,6 +503,16 @@ class DatabaseManager:
                 GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
             if len(parent) != 1:
                 raise RuntimeError("execution dispatch schema lacks exact parent execution key")
+            constraints = conn.execute("""SELECT c.contype, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents'""").fetchall()
+            defs = [str(r["definition"]).upper().replace(' ', '') for r in constraints]
+            if sum(1 for r in constraints if r["contype"] == "p") != 1 or not any("PRIMARYKEY(EXECUTION_ID)" in d for d in defs):
+                raise RuntimeError("execution dispatch schema primary key drifted")
+            if not any("CHECK((STATEIN('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED'))" in d or "CHECK((STATEIN('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED'))" in d for d in defs):
+                raise RuntimeError("execution dispatch schema state constraint drifted")
+            if not any("CHECK((ATTEMPT_COUNT>=0))" in d or "CHECK((ATTEMPT_COUNT>=0))" in d for d in defs):
+                raise RuntimeError("execution dispatch schema attempt constraint drifted")
         else:
             rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
             expected = {
@@ -534,8 +544,9 @@ class DatabaseManager:
             grouped.setdefault(row["id"], []).append(row)
         if not isinstance(self, PostgresDatabaseManager):
             valid = any(len(v) == 2 and sorted((x["seq"], x["from"], x["to"]) for x in v) == [(0, "execution_id", "execution_id"), (1, "organization_id", "organization_id")] and all(x["table"] == "execution_runs" for x in v) for v in grouped.values())
-            if not valid:
-                raise RuntimeError("execution dispatch schema lacks tenant-bound foreign key")
+            org = any(len(v) == 1 and v[0]["from"] == "organization_id" and v[0]["to"] == "id" and v[0]["table"] == "organizations" for v in grouped.values())
+            if not valid or not org or len(grouped) != 2:
+                raise RuntimeError("execution dispatch schema contains unexpected foreign keys")
 
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
