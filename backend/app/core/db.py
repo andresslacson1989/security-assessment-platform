@@ -203,12 +203,17 @@ class PostgresDatabaseManager:
                 open=True,
             )
             self._ensure_migration_ledger()
+            self._begin_migration_attempt()
             self._init_db()
-        except Exception:
+        except Exception as exc:
             # Initialization can fail after the pool has opened (for example,
             # on schema drift).  Never leak those connections on a failed
             # manager construction.
             if self._pool is not None:
+                try:
+                    self._record_migration_failure(exc)
+                except Exception as audit_exc:
+                    logger.error("migration failure event could not be persisted: error_type=%s", type(audit_exc).__name__)
                 try:
                     self._pool.close()
                 except Exception as cleanup_exc:
@@ -254,7 +259,12 @@ class DatabaseManager:
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_migration_ledger()
-        self._init_db()
+        self._begin_migration_attempt()
+        try:
+            self._init_db()
+        except Exception as exc:
+            self._record_migration_failure(exc)
+            raise
 
     @classmethod
     def get_instance(cls) -> DatabaseManager:
@@ -308,6 +318,37 @@ class DatabaseManager:
                     CREATE TRIGGER IF NOT EXISTS schema_migration_events_no_delete
                     BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;""")
             self._verify_migration_ledger(conn)
+
+    def _begin_migration_attempt(self) -> None:
+        self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
+        self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
+        self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
+                "STARTED", now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                self._migration_schema_name, 7, 8,
+                "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "PENDING"))
+
+    def _record_migration_failure(self, exc: Exception) -> None:
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            for event_type, rollback_status in (("FAILED", "CONFIRMED"), ("ROLLED_BACK", "CONFIRMED")):
+                conn.execute("""INSERT INTO schema_migration_events
+                    (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
+                     previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                     error_class,error_message,context_json,rollback_status)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                    f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
+                    event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                    self._migration_schema_name, 7, 8,
+                    "bootstrap-v8", "database-startup", self._migration_transaction_id,
+                    type(exc).__name__, str(exc)[:500], "{}", rollback_status))
 
     def _verify_migration_ledger(self, conn) -> None:
         """Reject any existing migration ledger that cannot be trusted."""
@@ -1806,6 +1847,16 @@ class DatabaseManager:
                     for rows in health_groups.values()
                 ):
                     raise ValueError("execution schema health check failed: composite tenant foreign key is absent")
+
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
+                "SUCCEEDED", utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                self._migration_schema_name, 7, 8,
+                "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
