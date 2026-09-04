@@ -111,6 +111,18 @@ def test_postgres_manager_closes_pool_when_initialization_fails(monkeypatch):
     assert pool.closed is True
 
 
+def test_postgres_manager_preserves_initialization_failure_when_pool_close_fails(monkeypatch):
+    class Pool:
+        def close(self):
+            raise OSError("pool close failure")
+
+    monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(ConnectionPool=lambda **kwargs: Pool()))
+    monkeypatch.setattr(PostgresDatabaseManager, "_init_db", lambda self: (_ for _ in ()).throw(RuntimeError("authoritative schema failure")))
+
+    with pytest.raises(RuntimeError, match="authoritative schema failure"):
+        PostgresDatabaseManager("postgresql://user:pass@127.0.0.1/cyberassess_test")
+
+
 @pytest.mark.asyncio
 async def test_queue_records_and_acknowledges_durable_execution_intent():
     from app.core.queue import ScanQueueManager

@@ -204,7 +204,12 @@ class PostgresDatabaseManager:
             # on schema drift).  Never leak those connections on a failed
             # manager construction.
             if self._pool is not None:
-                self._pool.close()
+                try:
+                    self._pool.close()
+                except Exception:
+                    # Cleanup is best-effort here; preserve the authoritative
+                    # initialization failure for the caller and audit trail.
+                    pass
             raise
 
     @contextmanager
