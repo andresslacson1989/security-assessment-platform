@@ -8,6 +8,8 @@ import sqlite3
 import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
+from app.core.db import DatabaseManager
+from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
@@ -77,6 +79,53 @@ def _decision(target, **changes):
     }
     values.update(changes)
     return ExecutionDecisionRecord(**values)
+
+
+def test_migration_ledger_records_registry_identity(tmp_path):
+    database = DatabaseManager(tmp_path / "identity.sqlite3")
+    with database._connection_scope() as conn:
+        rows = conn.execute(
+            "SELECT migration_version, migration_id, registry_revision, event_type "
+            "FROM schema_migration_events ORDER BY rowid"
+        ).fetchall()
+
+    assert rows
+    expected = {spec.version: (spec.migration_id, spec.registry_revision) for spec in MIGRATION_REGISTRY}
+    assert all((row["migration_id"], row["registry_revision"]) == expected[row["migration_version"]] for row in rows)
+    assert {row["event_type"] for row in rows} == {"STARTED", "SUCCEEDED"}
+
+
+def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
+    path = tmp_path / "legacy-ledger.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE schema_migration_events (
+            event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
+            migration_name TEXT NOT NULL, event_type TEXT NOT NULL, event_at TEXT NOT NULL,
+            backend TEXT NOT NULL, schema_name TEXT NOT NULL, previous_schema_version INTEGER,
+            target_schema_version INTEGER NOT NULL, migration_checksum TEXT NOT NULL,
+            runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
+            error_code TEXT, error_class TEXT, error_message TEXT,
+            context_json TEXT NOT NULL DEFAULT '{}', rollback_status TEXT NOT NULL,
+            UNIQUE (attempt_id, event_type)
+        );
+        INSERT INTO schema_migration_events VALUES
+            ('event-1', 'attempt-1', 8, 'dispatch-tenant-binding', 'SUCCEEDED',
+             '2026-01-01T00:00:00+00:00', 'SQLITE', 'legacy', 7, 8, 'sha256:legacy',
+             'test', 'tx-1', NULL, NULL, NULL, '{}', 'NOT_APPLICABLE');
+    """)
+    conn.commit()
+    conn.close()
+
+    DatabaseManager(path)
+    with sqlite3.connect(path) as upgraded:
+        upgraded.row_factory = sqlite3.Row
+        row = upgraded.execute(
+            "SELECT migration_id, registry_revision FROM schema_migration_events WHERE event_id = 'event-1'"
+        ).fetchone()
+
+    spec = next(spec for spec in MIGRATION_REGISTRY if spec.version == 8)
+    assert (row["migration_id"], row["registry_revision"]) == (spec.migration_id, spec.registry_revision)
 
 
 def _issue(store, target, **kwargs):

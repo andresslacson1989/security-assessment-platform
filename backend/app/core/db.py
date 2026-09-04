@@ -288,7 +288,8 @@ class DatabaseManager:
                 ledger_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone() is not None
             conn.execute("""CREATE TABLE IF NOT EXISTS schema_migration_events (
                 event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
-                migration_name TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED')),
+                migration_id TEXT NOT NULL, migration_name TEXT NOT NULL, registry_revision TEXT NOT NULL,
+                event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED')),
                 event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
                 schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
                 migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
@@ -297,6 +298,9 @@ class DatabaseManager:
                 UNIQUE (attempt_id, event_type)
             )""")
             if ledger_exists:
+                existing = {r["column_name"] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchall()} if isinstance(self, PostgresDatabaseManager) else {r["name"] for r in conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()}
+                if not {"migration_id", "registry_revision"}.issubset(existing):
+                    self._upgrade_migration_ledger_identity(conn, existing)
                 if not isinstance(self, PostgresDatabaseManager):
                     legacy_index = conn.execute("SELECT 1 FROM pragma_index_list('schema_migration_events') WHERE name='uq_schema_migration_attempt_event'").fetchone()
                     if legacy_index:
@@ -320,6 +324,68 @@ class DatabaseManager:
                     BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;""")
             self._verify_migration_ledger(conn)
 
+    def _upgrade_migration_ledger_identity(self, conn, existing_columns: set[str]) -> None:
+        """Add registry identity to a legacy ledger without losing its history.
+
+        The identity is derived only from the immutable numeric migration version
+        and the checked-in registry.  Unknown versions fail closed.  SQLite uses
+        a transactional table rebuild because it cannot add a NOT NULL column to
+        a populated table; PostgreSQL uses the equivalent constrained alteration.
+        """
+        specs_by_version = {spec.version: spec for spec in MIGRATION_REGISTRY}
+        rows = conn.execute("SELECT * FROM schema_migration_events ORDER BY event_id").fetchall()
+        identities = {}
+        for row in rows:
+            version = int(row["migration_version"])
+            spec = specs_by_version.get(version)
+            if spec is None:
+                raise RuntimeError(f"migration ledger contains unknown migration version {version}; operator reconciliation required")
+            identities[row["event_id"]] = (spec.migration_id, spec.registry_revision)
+
+        if isinstance(self, PostgresDatabaseManager):
+            if "migration_id" not in existing_columns:
+                conn.execute("ALTER TABLE schema_migration_events ADD COLUMN migration_id TEXT")
+            if "registry_revision" not in existing_columns:
+                conn.execute("ALTER TABLE schema_migration_events ADD COLUMN registry_revision TEXT")
+            conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update_delete ON schema_migration_events")
+            conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
+                LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
+            for event_id, (migration_id, registry_revision) in identities.items():
+                conn.execute("UPDATE schema_migration_events SET migration_id = ?, registry_revision = ? WHERE event_id = ?", (migration_id, registry_revision, event_id))
+            conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN migration_id SET NOT NULL")
+            conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN registry_revision SET NOT NULL")
+            conn.execute("""CREATE TRIGGER schema_migration_events_no_update_delete
+                BEFORE UPDATE OR DELETE ON schema_migration_events FOR EACH ROW
+                EXECUTE FUNCTION schema_migration_events_immutable()""")
+            return
+
+        conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update")
+        conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_delete")
+        conn.execute("ALTER TABLE schema_migration_events RENAME TO schema_migration_events_legacy_identity")
+        conn.execute("""CREATE TABLE schema_migration_events (
+            event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
+            migration_id TEXT NOT NULL, migration_name TEXT NOT NULL, registry_revision TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED')),
+            event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
+            schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
+            migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
+            error_code TEXT, error_class TEXT, error_message TEXT, context_json TEXT NOT NULL DEFAULT '{}',
+            rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
+            UNIQUE (attempt_id, event_type)
+        )""")
+        columns = ["event_id", "attempt_id", "migration_version", "migration_id", "migration_name", "registry_revision", "event_type", "event_at", "backend", "schema_name", "previous_schema_version", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "error_code", "error_class", "error_message", "context_json", "rollback_status"]
+        placeholders = ",".join("?" for _ in columns)
+        for row in rows:
+            values = [row[name] for name in columns if name not in {"migration_id", "registry_revision"}]
+            migration_id, registry_revision = identities[row["event_id"]]
+            values = values[:3] + [migration_id] + values[3:4] + [registry_revision] + values[4:]
+            conn.execute(f"INSERT INTO schema_migration_events ({','.join(columns)}) VALUES ({placeholders})", tuple(values))
+        conn.execute("DROP TABLE schema_migration_events_legacy_identity")
+        conn.executescript("""CREATE TRIGGER schema_migration_events_no_update
+            BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;
+            CREATE TRIGGER schema_migration_events_no_delete
+            BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;""")
+
     def _begin_migration_attempt(self) -> None:
         with self._connection_scope() as conn:
             version_row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone() if (conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'").fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()) else None
@@ -337,11 +403,12 @@ class DatabaseManager:
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
             conn.execute("""INSERT INTO schema_migration_events
-                (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                  context_json,rollback_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version, self._migration_spec.name,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
+                self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
                 "STARTED", now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, self._migration_spec.previous_version, self._migration_spec.target_version,
                 self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "PENDING"))
@@ -353,11 +420,12 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             for event_type, rollback_status in (("FAILED", "CONFIRMED"), ("ROLLED_BACK", "CONFIRMED")):
                 conn.execute("""INSERT INTO schema_migration_events
-                    (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
+                    (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_type,event_at,backend,schema_name,
                      previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                      error_class,error_message,context_json,rollback_status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                    f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version, self._migration_spec.name,
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                    f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
+                    self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
                     event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                     self._migration_schema_name, 7, 8,
                     self._migration_spec.checksum, "database-startup", self._migration_transaction_id,
@@ -365,14 +433,14 @@ class DatabaseManager:
 
     def _verify_migration_ledger(self, conn) -> None:
         """Reject any existing migration ledger that cannot be trusted."""
-        required = {"event_id", "attempt_id", "migration_version", "migration_name", "event_type", "event_at", "backend", "schema_name", "previous_schema_version", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "error_code", "error_class", "error_message", "context_json", "rollback_status"}
+        required = {"event_id", "attempt_id", "migration_version", "migration_id", "migration_name", "registry_revision", "event_type", "event_at", "backend", "schema_name", "previous_schema_version", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "error_code", "error_class", "error_message", "context_json", "rollback_status"}
         if isinstance(self, PostgresDatabaseManager):
             rows = conn.execute("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchall()
             actual = {r["column_name"] for r in rows}
             if actual != required:
                 raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
             definitions = {r["column_name"]: (str(r["data_type"]).lower(), r["is_nullable"], r["column_default"]) for r in rows}
-            required_not_null = {"event_id", "attempt_id", "migration_version", "migration_name", "event_type", "event_at", "backend", "schema_name", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "context_json", "rollback_status"}
+            required_not_null = {"event_id", "attempt_id", "migration_version", "migration_id", "migration_name", "registry_revision", "event_type", "event_at", "backend", "schema_name", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "context_json", "rollback_status"}
             for name in required:
                 expected_type = "integer" if name in {"migration_version", "previous_schema_version", "target_schema_version"} else "text"
                 expected_default = "'{}'::text" if name == "context_json" else None
@@ -410,7 +478,7 @@ class DatabaseManager:
             rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
             if {r["name"] for r in rows} != required:
                 raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
-            expected = {"event_id": ("text", False, None), "attempt_id": ("text", True, None), "migration_version": ("integer", True, None), "migration_name": ("text", True, None), "event_type": ("text", True, None), "event_at": ("text", True, None), "backend": ("text", True, None), "schema_name": ("text", True, None), "previous_schema_version": ("integer", False, None), "target_schema_version": ("integer", True, None), "migration_checksum": ("text", True, None), "runner_identity": ("text", True, None), "transaction_context_id": ("text", True, None), "error_code": ("text", False, None), "error_class": ("text", False, None), "error_message": ("text", False, None), "context_json": ("text", True, "'{}'"), "rollback_status": ("text", True, None)}
+            expected = {"event_id": ("text", False, None), "attempt_id": ("text", True, None), "migration_version": ("integer", True, None), "migration_id": ("text", True, None), "migration_name": ("text", True, None), "registry_revision": ("text", True, None), "event_type": ("text", True, None), "event_at": ("text", True, None), "backend": ("text", True, None), "schema_name": ("text", True, None), "previous_schema_version": ("integer", False, None), "target_schema_version": ("integer", True, None), "migration_checksum": ("text", True, None), "runner_identity": ("text", True, None), "transaction_context_id": ("text", True, None), "error_code": ("text", False, None), "error_class": ("text", False, None), "error_message": ("text", False, None), "context_json": ("text", True, "'{}'"), "rollback_status": ("text", True, None)}
             actual = {r["name"]: (str(r["type"]).strip().lower(), bool(r["notnull"]), r["dflt_value"]) for r in rows}
             if any(actual[n] != expected[n] for n in required):
                 raise RuntimeError("migration ledger column definitions drifted")
@@ -1863,11 +1931,12 @@ class DatabaseManager:
 
             if getattr(self, "_migration_attempt_id", None):
                 conn.execute("""INSERT INTO schema_migration_events
-                (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                  context_json,rollback_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version, self._migration_spec.name,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
+                self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
                 "SUCCEEDED", utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, 7, 8,
                 self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
