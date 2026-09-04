@@ -6,6 +6,7 @@ import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
 from app.core.models import ExecutionDecisionRecord, Target, TargetType
+from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
@@ -178,3 +179,36 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     assert stored.consumed_at is not None
     events, _ = database.list_audit_events(organization_id="org-a", limit=20)
     assert {event.action.value for event in events} >= {"EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CONSUMED"}
+
+
+def test_revoke_route_resolves_request_id_to_linked_decision():
+    import asyncio
+    from app.api import executions
+
+    class RequestAwareStore:
+        def __init__(self):
+            self.called = None
+
+        def revoke_execution_request(self, *args, **kwargs):
+            self.called = (args, kwargs)
+            return True
+
+    store = RequestAwareStore()
+    original = executions.db_manager
+    executions.db_manager = store
+    try:
+        user = UserProfile(id="admin-1", username="admin", email="admin@example.test", role=UserRole.ADMIN, organization_id="org-a")
+        result = asyncio.run(executions.revoke_execution_request("request-1", user))
+    finally:
+        executions.db_manager = original
+    assert result == {"request_id": "request-1", "revoked": True}
+    assert store.called == (("request-1",), {"organization_id": "org-a", "actor": "admin"})
+
+
+def test_approval_session_must_match_authenticated_principal(monkeypatch):
+    from app.api import executions
+
+    monkeypatch.setattr(executions, "decode_access_token", lambda _token: {"sub": "other-user", "org_id": "org-other", "jti": "session-1"})
+    user = UserProfile(id="admin-1", username="admin", email="admin@example.test", role=UserRole.ADMIN, organization_id="org-a")
+    with pytest.raises(Exception, match="does not match"):
+        executions._session_jti("Bearer token", user)

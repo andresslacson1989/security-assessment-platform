@@ -42,13 +42,15 @@ class ApprovalPayload(BaseModel):
     confirm_owned_target: bool = Field(..., description="Explicit acknowledgement that the target is owned or authorized.")
 
 
-def _session_jti(authorization: Optional[str]) -> str:
+def _session_jti(authorization: Optional[str], current_user: UserProfile) -> str:
     if not authorization:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer session is required.")
     parts = authorization.split(" ", 1)
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer session is required.")
     payload = decode_access_token(parts[1].strip())
+    if str(payload.get("sub", "")) != current_user.id or str(payload.get("org_id", "")) != current_user.organization_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Approval session does not match the authenticated principal.")
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authenticated session has no decision binding.")
@@ -176,7 +178,7 @@ async def approve_execution_request(
     result, decision_id = db_manager.approve_execution_request(
         request_id, current_user.organization_id, payload.request_fingerprint,
         idempotency_key,
-        current_user.id, _session_jti(authorization), os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
+        current_user.id, _session_jti(authorization, current_user), os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
     )
     if result == "NOT_FOUND":
         raise HTTPException(status_code=404, detail="Execution request not found.")
@@ -203,6 +205,6 @@ async def get_execution_request(request_id: str, current_user: UserProfile = Dep
 
 @router.post("/{request_id}/revoke")
 async def revoke_execution_request(request_id: str, current_user: UserProfile = Depends(require_permission(required_scope="execution:revoke", allowed_roles=[UserRole.ADMIN]))) -> Dict[str, Any]:
-    if not db_manager.revoke_execution_decision(request_id, organization_id=current_user.organization_id, actor=current_user.username):
+    if not db_manager.revoke_execution_request(request_id, organization_id=current_user.organization_id, actor=current_user.username):
         raise HTTPException(status_code=404, detail="Execution request or decision not found.")
     return {"request_id": request_id, "revoked": True}

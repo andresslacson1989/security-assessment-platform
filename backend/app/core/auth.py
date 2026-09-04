@@ -529,6 +529,12 @@ async def get_current_user(
     Supports Bearer and X-API-Key headers. Streaming clients must use the
     Authorization header; credentials are never accepted in URLs.
     """
+    if isinstance(authorization, str) and authorization.strip() and isinstance(x_api_key, str) and x_api_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conflicting authentication credentials are not permitted.",
+        )
+
     # 1. API Key Authentication (Hashed Token Lookup)
     if isinstance(x_api_key, str) and x_api_key.strip():
         key_hash = hashlib.sha256(x_api_key.strip().encode("utf-8")).hexdigest()

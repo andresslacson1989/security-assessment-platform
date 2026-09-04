@@ -870,6 +870,14 @@ class DatabaseManager:
             now = utc_now()
             if datetime.fromisoformat(row["expires_at"]) <= now:
                 return "EXPIRED", None
+            cur.execute(
+                """SELECT id FROM assets WHERE id = ? AND organization_id = ?
+                   AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
+                   AND active_probing_granted = 1""",
+                (row["asset_id"], organization_id, row["project_id"], row["project_id"]),
+            )
+            if not cur.fetchone():
+                return "DENIED", None
             cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1", (approver_user_id, organization_id))
             if not cur.fetchone() or not session_jti or not worker_identity:
                 return "DENIED", None
@@ -1328,6 +1336,28 @@ class DatabaseManager:
             else:
                 cur.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
             return cur.rowcount > 0
+
+    def revoke_execution_request(self, request_id: str, organization_id: str, actor: str) -> bool:
+        """Atomically revoke a tenant-scoped request and its linked decision."""
+        if not organization_id or not actor:
+            return False
+        with self._connection_scope() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?", (request_id, organization_id))
+            row = cur.fetchone()
+            if not row:
+                return False
+            now = utc_now().isoformat()
+            if row["approved_decision_id"]:
+                cur.execute("UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL", (now, row["approved_decision_id"], organization_id))
+            cur.execute("UPDATE execution_requests SET state = 'REVOKED' WHERE id = ? AND organization_id = ? AND state != 'REVOKED'", (request_id, organization_id))
+            changed = cur.rowcount > 0
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DECISION_REVOKED, object_type="execution_request", object_id=request_id,
+                result="SUCCESS" if changed else "REPLAY", details={"decision_id": row["approved_decision_id"]},
+            ))
+            return changed or row["state"] == "REVOKED"
 
     def _row_to_asset(self, row: sqlite3.Row) -> Asset:
         return Asset(
