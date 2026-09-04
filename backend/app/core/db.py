@@ -820,6 +820,30 @@ class DatabaseManager:
                         raise ValueError("execution_runs remediation failed postcondition: expected exactly one composite tenant foreign key")
                 else:
                     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
+                    foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    grouped_foreign_keys = {}
+                    for row in foreign_key_rows:
+                        grouped_foreign_keys.setdefault(row["id"], []).append(row)
+                    if not any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_requests" for row in rows)
+                        for rows in grouped_foreign_keys.values()
+                    ):
+                        raise ValueError("execution_runs remediation failed postcondition: version-1 schema has no exact composite tenant foreign key")
+                    parent_indexes = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                    has_parent_unique = False
+                    for index in parent_indexes:
+                        if not index["unique"]:
+                            continue
+                        index_name = str(index["name"]).replace("'", "''")
+                        columns = conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()
+                        if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                            has_parent_unique = True
+                            break
+                    if not has_parent_unique:
+                        raise ValueError("execution_runs remediation failed postcondition: tenant parent key is not unique")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (remediation_version, utc_now().isoformat()))
 
     # ========================================================================

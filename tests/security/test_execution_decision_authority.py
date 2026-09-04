@@ -348,3 +348,16 @@ def test_legacy_execution_runs_duplicate_preflight_fails_closed(tmp_path):
         conn.execute("INSERT INTO execution_runs (execution_id, request_id, organization_id, state, assurance_state, coverage_state, created_at) VALUES ('run-a', 'req-a', 'org-a', 'FAILED', 'UNVERIFIED', 'UNAVAILABLE', ?), ('run-b', 'req-a', 'org-a', 'FAILED', 'UNVERIFIED', 'UNAVAILABLE', ?)", (now, now))
     with pytest.raises(ValueError, match="duplicate runs"):
         DatabaseManager(db_path)
+
+
+def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "version-two-rerun.db"
+    database = DatabaseManager(db_path)
+    with database._connection_scope() as conn:
+        conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+    DatabaseManager(db_path)
+    with database._connection_scope() as conn:
+        versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
+        assert versions[-2:] == [1, 2]
