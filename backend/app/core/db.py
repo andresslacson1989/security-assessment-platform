@@ -323,6 +323,9 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             version_row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone() if (conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'").fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()) else None
             if version_row and version_row["version"] is not None and int(version_row["version"]) >= 8:
+                terminal = conn.execute("SELECT 1 FROM schema_migration_events WHERE migration_version = ? AND event_type = 'SUCCEEDED' LIMIT 1", (int(version_row["version"]),)).fetchone()
+                if not terminal:
+                    raise RuntimeError("migration outcome reconciliation required: applied schema version has no durable SUCCEEDED event")
                 self._migration_attempt_id = None
                 self._migration_transaction_id = None
                 return
