@@ -340,6 +340,17 @@ class DatabaseManager:
             spec = specs_by_version.get(version)
             if spec is None:
                 raise RuntimeError(f"migration ledger contains unknown migration version {version}; operator reconciliation required")
+            expected_backend = "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE"
+            if (
+                row["migration_name"] != spec.name
+                or row["migration_checksum"] != spec.checksum
+                or row["target_schema_version"] != spec.target_version
+                or row["previous_schema_version"] != spec.previous_version
+                or row["backend"] != expected_backend
+            ):
+                raise RuntimeError(
+                    f"migration ledger identity mismatch for version {version}; operator reconciliation required"
+                )
             identities[row["event_id"]] = (spec.migration_id, spec.registry_revision)
 
         if isinstance(self, PostgresDatabaseManager):
@@ -359,6 +370,7 @@ class DatabaseManager:
                 EXECUTE FUNCTION schema_migration_events_immutable()""")
             return
 
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update")
         conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_delete")
         conn.execute("ALTER TABLE schema_migration_events RENAME TO schema_migration_events_legacy_identity")
@@ -381,10 +393,10 @@ class DatabaseManager:
             values = values[:3] + [migration_id] + values[3:4] + [registry_revision] + values[4:]
             conn.execute(f"INSERT INTO schema_migration_events ({','.join(columns)}) VALUES ({placeholders})", tuple(values))
         conn.execute("DROP TABLE schema_migration_events_legacy_identity")
-        conn.executescript("""CREATE TRIGGER schema_migration_events_no_update
-            BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;
-            CREATE TRIGGER schema_migration_events_no_delete
-            BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;""")
+        conn.execute("""CREATE TRIGGER schema_migration_events_no_update
+            BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
+        conn.execute("""CREATE TRIGGER schema_migration_events_no_delete
+            BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
 
     def _begin_migration_attempt(self) -> None:
         with self._connection_scope() as conn:

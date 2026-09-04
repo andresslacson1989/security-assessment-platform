@@ -97,6 +97,7 @@ def test_migration_ledger_records_registry_identity(tmp_path):
 
 def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
     path = tmp_path / "legacy-ledger.sqlite3"
+    spec = next(spec for spec in MIGRATION_REGISTRY if spec.version == 8)
     conn = sqlite3.connect(path)
     conn.executescript("""
         CREATE TABLE schema_migration_events (
@@ -109,11 +110,11 @@ def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
             context_json TEXT NOT NULL DEFAULT '{}', rollback_status TEXT NOT NULL,
             UNIQUE (attempt_id, event_type)
         );
-        INSERT INTO schema_migration_events VALUES
-            ('event-1', 'attempt-1', 8, 'dispatch-tenant-binding', 'SUCCEEDED',
-             '2026-01-01T00:00:00+00:00', 'SQLITE', 'legacy', 7, 8, 'sha256:legacy',
-             'test', 'tx-1', NULL, NULL, NULL, '{}', 'NOT_APPLICABLE');
     """)
+    conn.execute(
+        "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("event-1", "attempt-1", 8, spec.name, "SUCCEEDED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", "tx-1", None, None, None, "{}", "NOT_APPLICABLE"),
+    )
     conn.commit()
     conn.close()
 
@@ -124,8 +125,39 @@ def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
             "SELECT migration_id, registry_revision FROM schema_migration_events WHERE event_id = 'event-1'"
         ).fetchone()
 
-    spec = next(spec for spec in MIGRATION_REGISTRY if spec.version == 8)
     assert (row["migration_id"], row["registry_revision"]) == (spec.migration_id, spec.registry_revision)
+
+
+def test_legacy_migration_ledger_fails_closed_on_forged_identity(tmp_path):
+    path = tmp_path / "forged-ledger.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE schema_migration_events (
+            event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
+            migration_name TEXT NOT NULL, event_type TEXT NOT NULL, event_at TEXT NOT NULL,
+            backend TEXT NOT NULL, schema_name TEXT NOT NULL, previous_schema_version INTEGER,
+            target_schema_version INTEGER NOT NULL, migration_checksum TEXT NOT NULL,
+            runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
+            error_code TEXT, error_class TEXT, error_message TEXT,
+            context_json TEXT NOT NULL DEFAULT '{}', rollback_status TEXT NOT NULL,
+            UNIQUE (attempt_id, event_type)
+        );
+    """)
+    conn.execute(
+        "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("event-1", "attempt-1", 8, "FORGED-NAME", "SUCCEEDED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, "sha256:forged", "test", "tx-1", None, None, None, "{}", "NOT_APPLICABLE"),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        DatabaseManager(path)
+
+    with sqlite3.connect(path) as unchanged:
+        row = unchanged.execute(
+            "SELECT migration_name, migration_checksum FROM schema_migration_events WHERE event_id = 'event-1'"
+        ).fetchone()
+    assert row == ("FORGED-NAME", "sha256:forged")
 
 
 def _issue(store, target, **kwargs):
