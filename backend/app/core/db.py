@@ -1160,6 +1160,9 @@ class DatabaseManager:
                             columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                             if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
                                 parent_keys.append(index["name"])
+                    if len(parent_keys) > 1 and "uq_execution_decisions_id_org" in parent_keys:
+                        conn.execute("DROP INDEX uq_execution_decisions_id_org")
+                        parent_keys.remove("uq_execution_decisions_id_org")
                     if not parent_keys:
                         duplicate = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_decisions GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
                         if duplicate:
@@ -1279,8 +1282,13 @@ class DatabaseManager:
                             columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                             if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
                                 parent_keys.append(index["name"])
+                    if len(parent_keys) > 1 and "uq_execution_decisions_id_org" in parent_keys:
+                        conn.execute("DROP INDEX uq_execution_decisions_id_org")
+                        parent_keys.remove("uq_execution_decisions_id_org")
                     if not parent_keys:
                         conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                    elif len(parent_keys) > 1:
+                        raise ValueError("execution authority cleanup blocked: unknown duplicate decision parent keys require audited reconciliation")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (cleanup_version, utc_now().isoformat()))
 
             self._verify_execution_snapshot_schema(conn)
