@@ -202,6 +202,7 @@ class PostgresDatabaseManager:
                 max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
                 open=True,
             )
+            self._ensure_migration_ledger()
             self._init_db()
         except Exception:
             # Initialization can fail after the pool has opened (for example,
@@ -252,6 +253,7 @@ class DatabaseManager:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_migration_ledger()
         self._init_db()
 
     @classmethod
@@ -265,6 +267,21 @@ class DatabaseManager:
                     else:
                         cls._instance = cls()
         return cls._instance
+
+    def _ensure_migration_ledger(self) -> None:
+        """Bootstrap the independent migration-event ledger before schema work."""
+        with self._connection_scope() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS schema_migration_events (
+                event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
+                migration_name TEXT NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED')),
+                event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
+                schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
+                migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
+                error_code TEXT, error_class TEXT, error_message TEXT, context_json TEXT NOT NULL DEFAULT '{}',
+                rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
+                UNIQUE (attempt_id, event_type)
+            )""")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_schema_migration_attempt_event ON schema_migration_events(attempt_id, event_type)")
 
     def _get_connection(self) -> sqlite3.Connection:
         try:
