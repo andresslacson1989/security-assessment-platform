@@ -317,8 +317,11 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
     DatabaseManager(db_path)
     with sqlite3.connect(db_path) as conn:
         foreign_keys = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
-        assert any(row[3] == "request_id" and row[4] == "id" for row in foreign_keys)
-        assert any(row[3] == "organization_id" and row[4] == "organization_id" for row in foreign_keys)
+        composite = [row for row in foreign_keys if row[2] == "execution_requests"]
+        assert {(row[1], row[3], row[4]) for row in composite} == {
+            (0, "request_id", "id"), (1, "organization_id", "organization_id")
+        }
+        assert len({row[0] for row in composite}) == 1
         assert conn.execute("SELECT version FROM schema_migrations WHERE version = 1").fetchone()
 
 

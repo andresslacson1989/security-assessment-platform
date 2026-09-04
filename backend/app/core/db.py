@@ -642,22 +642,49 @@ class DatabaseManager:
                     if inconsistent:
                         raise ValueError("execution_runs PostgreSQL migration blocked: orphaned or cross-tenant reference requires audited reconciliation before upgrade")
                     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
-                    constraint = conn.execute("""
-                        SELECT c.conname
+                    constraints = conn.execute("""
+                        SELECT c.conname,
+                               array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                               array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
                         FROM pg_constraint c
                         JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                        JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                          ON parent_cols.ordinality = local_cols.ordinality
+                        JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
                         WHERE t.relname = 'execution_runs'
+                          AND pt.relname = 'execution_requests'
                           AND c.contype = 'f'
-                          AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id) %'
-                        LIMIT 1
-                    """).fetchone()
-                    if constraint:
-                        safe_name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
-                        conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
-                    conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
+                        GROUP BY c.conname
+                    """).fetchall()
+                    desired_columns = ["request_id", "organization_id"]
+                    desired_parent_columns = ["id", "organization_id"]
+                    has_desired = False
+                    for constraint in constraints:
+                        local_columns = list(constraint["local_columns"] or [])
+                        parent_columns = list(constraint["parent_columns"] or [])
+                        if local_columns == desired_columns and parent_columns == desired_parent_columns:
+                            has_desired = True
+                        elif local_columns == ["request_id"] and parent_columns == ["id"]:
+                            safe_name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
+                            conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    if not has_desired:
+                        conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
                 else:
-                    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs'").fetchone()["sql"] or ""
-                if not isinstance(self, PostgresDatabaseManager) and "FOREIGN KEY (request_id, organization_id)" not in table_sql:
+                    foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    grouped_foreign_keys = {}
+                    for row in foreign_key_rows:
+                        grouped_foreign_keys.setdefault(row["id"], []).append(row)
+                    has_composite_fk = any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_requests" for row in rows)
+                        for rows in grouped_foreign_keys.values()
+                    )
+                if not isinstance(self, PostgresDatabaseManager) and not has_composite_fk:
                     conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
                     conn.execute("""
                         CREATE TABLE execution_runs (
