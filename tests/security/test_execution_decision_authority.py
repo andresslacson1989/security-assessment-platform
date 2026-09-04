@@ -206,6 +206,24 @@ def test_failure_ledger_sequence_is_causal_when_timestamps_match(tmp_path):
     DatabaseManager(path)
 
 
+def test_orphaned_migration_attempt_is_durably_reconciled(tmp_path):
+    path = tmp_path / "orphaned-migration.sqlite3"
+    database = DatabaseManager(path)
+    spec = MIGRATION_REGISTRY[-1]
+    with database._connection_scope() as connection:
+        connection.execute(
+            "INSERT INTO schema_migration_events (event_id, attempt_id, migration_version, migration_id, migration_name, registry_revision, event_sequence, event_type, event_at, backend, schema_name, previous_schema_version, target_schema_version, migration_checksum, runner_identity, transaction_context_id, context_json, rollback_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("orphan-start", "orphan-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", "orphan-tx", "{}", "PENDING"),
+        )
+
+    DatabaseManager(path)
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT event_type, event_sequence, rollback_status FROM schema_migration_events WHERE attempt_id = 'orphan-attempt' ORDER BY event_sequence DESC LIMIT 1"
+        ).fetchone()
+    assert row == ("RECONCILIATION_REQUIRED", 2, "UNKNOWN")
+
+
 def _issue(store, target, **kwargs):
     import os
     os.environ["CYBERASSESS_WORKER_IDENTITY"] = "worker-1"
