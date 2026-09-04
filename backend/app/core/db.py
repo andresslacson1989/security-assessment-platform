@@ -281,6 +281,9 @@ class DatabaseManager:
                 rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
                 UNIQUE (attempt_id, event_type)
             )""")
+            # Remove only the explicitly migration-owned redundant index from
+            # the prior bootstrap; the table-level UNIQUE is canonical.
+            conn.execute("DROP INDEX IF EXISTS uq_schema_migration_attempt_event")
             if isinstance(self, PostgresDatabaseManager):
                 conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
                     LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
@@ -341,7 +344,7 @@ class DatabaseManager:
                 if index["unique"]:
                     cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                     unique.append([c["name"] for c in sorted(cols, key=lambda c: c["seqno"])])
-            if ["attempt_id", "event_type"] not in unique:
+            if unique.count(["attempt_id", "event_type"]) != 1 or unique.count(["event_id"]) != 1 or len(unique) != 2:
                 raise RuntimeError("migration ledger attempt/event uniqueness drifted")
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"].upper()
             allowed_values = ("'STARTED'", "'SUCCEEDED'", "'FAILED'", "'ROLLED_BACK'", "'ROLLBACK_FAILED'", "'SQLITE'", "'POSTGRESQL'", "'NOT_APPLICABLE'", "'PENDING'", "'CONFIRMED'", "'UNKNOWN'")
@@ -350,6 +353,10 @@ class DatabaseManager:
             triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
             if not {"schema_migration_events_no_update", "schema_migration_events_no_delete"}.issubset(triggers):
                 raise RuntimeError("migration ledger append-only protection is absent")
+            trigger_sql = {r["name"]: "".join(str(r["sql"]).upper().split()) for r in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
+            for name, operation in (("schema_migration_events_no_update", "UPDATE"), ("schema_migration_events_no_delete", "DELETE")):
+                if trigger_sql.get(name) != f"CREATETRIGGER{name.upper()}BEFORE{operation}ONSCHEMA_MIGRATION_EVENTSBEGINSELECTRAISE(ABORT,'SCHEMA_MIGRATION_EVENTSISAPPEND-ONLY');END":
+                    raise RuntimeError("migration ledger append-only trigger definition drifted")
 
     def _get_connection(self) -> sqlite3.Connection:
         try:
