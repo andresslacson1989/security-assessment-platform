@@ -19,8 +19,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set
-from urllib.parse import urlparse
-
 from app.core.tool_operation_policy import is_canonical_operation_policy_revision
 
 logger = logging.getLogger("cyberassess.process_supervisor")
@@ -137,7 +135,12 @@ class CredentialEnvironmentHandoff:
                 if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
                     raise ValueError("credential handoff contains an invalid value")
                 values[key] = value
-        return values
+        # Structural validation is deliberately not authorization.  There is
+        # currently no authoritative decision verifier that binds the exact
+        # tool/operation, target policy, approval, budget, and worker identity
+        # at this boundary.  Never release credentials until that capability
+        # exists; fail closed rather than treating caller metadata as proof.
+        raise ValueError("authoritative credential release verifier is not configured")
 
 
 class ProcessSupervisor:

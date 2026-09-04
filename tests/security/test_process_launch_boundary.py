@@ -123,8 +123,8 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypass():
-    """Only an authorized typed handoff may provide credential variables."""
+async def test_typed_credential_handoff_cannot_release_credentials_without_verifier():
+    """Metadata alone must never authorize credential release to a child."""
     handoff = CredentialEnvironmentHandoff(
         organization_id="org-test",
         asset_id="asset-test",
@@ -161,12 +161,9 @@ async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypa
         max_output_bytes=1024 * 1024,
     )
 
-    assert result.execution_status is ProcessExecutionStatus.COMPLETED
-    observed = json.loads(result.stdout)
-    assert observed["AWS_ACCESS_KEY_ID"] == "AKIA_TEST"
-    assert observed["AWS_SECRET_ACCESS_KEY"] == "secret-test"
-    assert observed["AWS_SESSION_TOKEN"] == "session-test"
-    assert "DATABASE_URL" not in observed
+    assert result.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
+    assert result.returncode == 126
+    assert result.stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY")
 
 
 def test_typed_credential_handoff_rejects_caller_defined_keys_and_is_immutable():
