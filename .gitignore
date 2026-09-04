@@ -58,4 +58,7 @@ Thumbs.db
 # In-App downloaded binaries
 backend/bin/*
 !backend/bin/.gitkeep
+
+# Scratch and temporary scripts
+scratch/
 .pytest-tmp/
