@@ -186,6 +186,8 @@ async def approve_execution_request(
         return {"request_id": request_id, "decision_id": decision_id, "execution_id": execution_id, "state": "AUTHORIZED", "idempotent_replay": True}
     if result == "EXPIRED":
         raise HTTPException(status_code=409, detail="Execution request has expired.")
+    if result == "CORRELATION_REQUIRED":
+        raise HTTPException(status_code=503, detail="Execution observability context is unavailable; approval was not applied.")
     if result != "AUTHORIZED":
         raise HTTPException(status_code=409, detail="Execution request cannot be authorized in its current state.")
     return {"request_id": request_id, "decision_id": decision_id, "execution_id": execution_id, "state": "AUTHORIZED", "idempotent_replay": False}
@@ -197,6 +199,8 @@ async def get_execution_request(request_id: str, current_user: UserProfile = Dep
     if not request:
         raise HTTPException(status_code=404, detail="Execution request not found.")
     run = db_manager.get_execution_run_for_request(request.id, current_user.organization_id)
+    if request.state == "AUTHORIZED" and run is None:
+        raise HTTPException(status_code=409, detail="Execution authority invariant failed: authorized request has no durable run.")
     return {"request_id": request.id, "state": request.state, "request_fingerprint": request.request_fingerprint,
             "organization_id": request.organization_id, "project_id": request.project_id, "asset_id": request.asset_id,
             "target_id": request.target_id, "tool_id": request.tool_id, "operation_family": request.operation_family,

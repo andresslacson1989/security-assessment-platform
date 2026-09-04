@@ -259,6 +259,48 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert run_events[0]["correlation_id"] == "corr-approval-run"
 
 
+def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
+    from app.core.db import DatabaseManager
+
+    database = DatabaseManager(tmp_path / "missing-correlation.db")
+    assert database.approve_execution_request(
+        "missing-request", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+    ) == ("CORRELATION_REQUIRED", None, None)
+
+
+def test_authorized_request_without_run_fails_closed_at_api_observation_boundary(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from app.api import executions
+    from app.core.models import ExecutionRequestRecord
+
+    request = ExecutionRequestRecord(
+        id="req-orphan", idempotency_key="idem", request_fingerprint="f" * 64,
+        organization_id="org-a", asset_id="asset-a", target_id="target-a",
+        authorization_decision_id="auth-a", target_policy_version="v1", tool_id="nmap",
+        operation_family="safe", operation_policy_revision=OPERATION_POLICY_REVISION,
+        requested_by_user_id="admin-a", state="AUTHORIZED",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5), approved_decision_id="decision-a",
+    )
+
+    class InconsistentStore:
+        def get_execution_request(self, request_id, organization_id=None):
+            return request if request_id == request.id and organization_id == request.organization_id else None
+
+        def get_execution_run_for_request(self, request_id, organization_id):
+            return None
+
+    original = executions.db_manager
+    executions.db_manager = InconsistentStore()
+    try:
+        user = UserProfile(id="admin-a", username="admin", email="admin@example.test", role=UserRole.ADMIN, organization_id="org-a")
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(executions.get_execution_request("req-orphan", user))
+    finally:
+        executions.db_manager = original
+    assert exc_info.value.status_code == 409
+
+
 def test_revoke_route_resolves_request_id_to_linked_decision():
     import asyncio
     from app.api import executions

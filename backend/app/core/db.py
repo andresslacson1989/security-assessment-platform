@@ -1309,7 +1309,7 @@ class DatabaseManager:
         """Atomically authorize a request or return an idempotent/conflict result."""
         correlation_id = get_correlation_id()
         if not correlation_id:
-            return "DENIED", None, None
+            return "CORRELATION_REQUIRED", None, None
         with self._connection_scope() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (request_id, organization_id))
