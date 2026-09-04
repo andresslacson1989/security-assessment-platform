@@ -216,15 +216,22 @@ ToolDefinition
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `nmap --version` -> Regex `Nmap version\s+([0-9\.]+)`
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
-- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `SOURCE_BUILD_MODE` for the approved Linux production image, using the official Nmap source archive and pinned GCC toolchain; unmanaged package-manager binaries remain diagnostic-only unless a separately verified installation record exists.
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` Dual-mode support:
+  1. `SOURCE_BUILD_MODE`: Approved source build for the hardened Linux production image, compiling from the official Nmap source archive with a pinned GCC toolchain.
+  2. `DIRECT_ARTIFACT_MODE`: Direct release artifact mode for dynamic, user-space installation on supported Linux x86-64 environments using the official Insecure.Org release package. Unmanaged package-manager binaries remain diagnostic-only unless a separately verified installation record exists.
 - **Resolver Path:** Tier 1: custom diagnostic path, Tier 2: managed `backend/bin/nmap[.exe]`, later tiers diagnostic-only and never sufficient for assured execution.
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` `nmap --version` runtime probe.
-- **Artifact Integrity (SHA-256):** `[REPOSITORY_VERIFIED]` The official `nmap-7.95.tar.bz2` source archive is pinned to `e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778` and verified before compilation.
-- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved `linux/amd64` build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation; other target architectures fail closed until separately pinned.
+- **Artifact Integrity (SHA-256):**
+  - Official Source Archive (`nmap-7.95.tar.bz2`): `[REPOSITORY_VERIFIED]` Pinned to `e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778` and verified before compilation.
+  - Official Release Package (`nmap-7.95-1.x86_64.rpm`): `[REPOSITORY_VERIFIED]` Pinned to `c0465e70217565bd825554e37b5a419221fd688ebcf9ad5633303d69a2287206` and verified before extraction.
+  - Extracted Binary (`backend/bin/nmap`): `[REPOSITORY_VERIFIED]` Pinned to `f344bee202f0befb3c2f9cfd7fdd81d6332fe857d0076552f53b3cea115ee80a`.
+- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved `linux/amd64` source build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation; other target architectures fail closed until separately pinned.
+- **Runtime Resource Tree Integrity (`RESOURCE_TREE_INTEGRITY_VERIFIED`):** `[CYBERASSESS_REQUIRED]` Supporting runtime assets (`usr/share/nmap/*`: NSE scripts, `nmap-services`, `nmap-os-db`) extracted to `backend/bin/resources/nmap` are hash-locked via `build_resource_manifest()`, producing a deterministic sorted SHA-256 manifest embedded in `nmap.trust.json`. Pre-launch verification fails closed on any modified, missing, or extraneous file.
+- **Extraction Security Boundary Controls:** `[CYBERASSESS_REQUIRED]` Direct-artifact RPM unpacking via `_extract_rpm_payload()` enforces path-traversal sequence rejection, `os.path.commonpath` boundary checks, absolute path rejection, symlink rejection (`0o120000`), hardlink rejection (`nlink > 1`), duplicate path rejection, strict hexadecimal header parsing, and quota limits (max 100 MiB per single file, max 150 MiB decompressed payload, max 8192 entries, max 4096-byte header names).
 - **Provenance / Attestation:** `[UPSTREAM_REFERENCE]` Nmap publishes an Insecure.Org GPG signing key (`43D0F654`); the CyberAssess verified source-build record does not claim upstream release-binary provenance unless that signature is separately verified.
-- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Verified managed source-built executable in `backend/bin/`.
+- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Verified managed executable in `backend/bin/` with hash-bound trust record.
 
 ### 10. Required Permissions & Privileges
 - `[UPSTREAM_VERIFIED]` Unprivileged TCP connect scanning (`-sT` mode via standard user socket). Root/Administrator raw socket privileges (`-sS` SYN stealth) are strictly PROHIBITED in automated background scans to prevent privilege escalation risks.
@@ -3789,7 +3796,7 @@ Stderr: Diagnostic logs
 
 | Tool ID | Display Name | Security Class | Trust Mode | Role | Primary Check IDs | Test Suite Reference | Upstream Project |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `SOURCE_BUILD_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
+| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `SOURCE_BUILD_MODE / DIRECT_ARTIFACT_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
 | `TOOL-SSLYZE` | SSLyze | `ACTIVE_READ_ONLY` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `NET-TLS-001/2/3` | `tests/test_adapters.py::TestSslyzeAdapter` | Nabla C0d3 |
 | `TOOL-SUBFINDER` | Subfinder | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `NET-OSINT-001` | `tests/test_adapters.py::TestSubfinderAdapter` | ProjectDiscovery |
 | `TOOL-HTTPX` | httpx | `ACTIVE_READ_ONLY` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `NET-HTTP-001` | `tests/test_adapters.py::TestHttpxAdapter` | ProjectDiscovery |

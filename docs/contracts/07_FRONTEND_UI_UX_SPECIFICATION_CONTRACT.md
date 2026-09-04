@@ -26,8 +26,14 @@
    - View canonical findings with SLA countdown timers, correlation tags, contributing tools, and inline status modification (`OPEN`, `IN_PROGRESS`, `FIXED`, `RISK_ACCEPTED`).
 4. **Pentester Workbench (HTTP Repeater):**
    - Safe interactive HTTP repeater enforcing SSRF controls, size limits, and formatted request/response inspection.
-5. **Toolbox Manager:**
+5. **Toolbox Manager (`#toolbox-modal`):**
    - Real-time tool capabilities fleet status (26 tools) with 1-click installation telemetry stream.
+   - **Viewport Ergonomics & Geometry:**
+     - Modal Card (`.modal-card--toolbox`): Responsive viewport bounds capped at `width: 95vw` (max `1280px`) and `height: 92vh` (max `94vh`) in a flex-column layout to fit modern desktop and widescreen SOC displays without overflow clipping.
+     - Actions Bar (`.toolbox-actions-bar`): Fixed header region (`flex-shrink: 0`) hosting summary telemetry chips and batch action controls.
+     - Scrollable Fleet Table (`.toolbox-table-container`): Responsive height with `min-height: 200px` and `max-height: calc(100% - 240px)`, auto vertical and horizontal overflow scrolling.
+     - Sticky Header (`.toolbox-table thead th`): Positioned `sticky; top: 0; z-index: 10` with solid background (`#1e293b`) preserving column identifiers during deep fleet navigation.
+     - Installation Terminal Viewport (`.toolbox-terminal-log`): Fixed bounded scrolling height of `180px` (`min-height: 160px`), `overflow-y: auto`, `white-space: pre-wrap`, `word-break: break-word` with dark terminal styling (`#020617`), eliminating log clipping and inner nested scroll traps.
 6. **Assessment Intelligence & Telemetry Hub (`#telemetry-hub-modal`):**
    - Viewport Ergonomics: Uses responsive 92vh viewport with unified modal-body vertical scrolling to eliminate inner nested scroll traps and prevent content clipping on expanded dossiers.
    - **Tested Links & Endpoints (Per-Link Grouped Matrix)**: Each crawled link renders as an expandable card displaying:

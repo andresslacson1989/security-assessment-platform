@@ -78,7 +78,19 @@ class ToolInstallationManager:
         self._tool_to_task: Dict[str, str] = {}
         self._subscribers: Set[asyncio.Queue] = set()
         self._tool_cache: Dict[str, ToolInstallationInfo] = {}
-        self._pip_lock: asyncio.Lock = asyncio.Lock()
+        self._pip_lock_obj: Optional[asyncio.Lock] = None
+        self._pip_lock_loop: Optional[Any] = None
+
+    @property
+    def _pip_lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._pip_lock_obj is None or self._pip_lock_loop != loop:
+            self._pip_lock_obj = asyncio.Lock()
+            self._pip_lock_loop = loop
+        return self._pip_lock_obj
 
     @classmethod
     def get_instance(cls) -> ToolInstallationManager:

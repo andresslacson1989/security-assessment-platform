@@ -78,6 +78,35 @@ All direct-release binary artifacts in `tool_manifest.py` MUST specify authentic
 
 The approved source-build exceptions are Trivy `v0.50.0` and Nmap `7.95`: their immutable source identities and pinned build toolchains are verified before reproducible builds, and the resulting executables are hashed and bound to their installation records. A verified source build does not claim upstream release-binary provenance and MUST NOT replace an available direct release artifact.
 
+### 4.1 Nmap Dual Trust & Direct Artifact Specification
+In addition to the container `SOURCE_BUILD_MODE` exception, Nmap `7.95` provides an official direct-release package mode (`DIRECT_ARTIFACT_MODE`) for supported Linux x86-64 host environments:
+- **Official Upstream Package:** `nmap-7.95-1.x86_64.rpm` (`https://nmap.org/dist/nmap-7.95-1.x86_64.rpm`)
+- **Package Archive Digest (SHA-256):** `c0465e70217565bd825554e37b5a419221fd688ebcf9ad5633303d69a2287206`
+- **Extracted Executable Digest (SHA-256):** `f344bee202f0befb3c2f9cfd7fdd81d6332fe857d0076552f53b3cea115ee80a`
+- **Supported Platform:** `linux_amd64` (Linux ELF 64-bit; host unsupported on Windows NT without WSL/container virtualization)
+
+### 4.2 Runtime Resource Tree Integrity Hash-Binding (`RESOURCE_TREE_INTEGRITY_VERIFIED`)
+Nmap execution relies extensively on external runtime data files and NSE scripts (`nmap-services`, `nmap-os-db`, `nmap-service-probes`, `scripts/*`). To prevent script-injection and signature tampering:
+1. **Deterministic Resource Manifest:** Post-extraction, `build_resource_manifest(resource_dir)` recursively inspects the supporting resource tree (`backend/bin/resources/nmap/`), normalizes relative paths to forward slashes, calculates SHA-256 digests for each file, and produces a byte-for-byte reproducible sorted manifest.
+2. **Cryptographic Hash-Binding:** The resource manifest is embedded directly into `nmap.trust.json` accompanied by the `RESOURCE_TREE_INTEGRITY_VERIFIED` claim.
+3. **Pre-Launch Verification Gate:** Prior to process execution, `verify_managed_binary_artifact()` invokes `verify_resource_manifest()` to confirm that on-disk resources match the stored manifest exactly. Pre-launch execution fails closed on:
+   - Modified file content in any script or data file.
+   - Missing or deleted resource file.
+   - Extra unexpected file injected into the resource directory tree.
+   - Symbolic links inside the resource tree.
+4. **Environment Isolation:** During execution, `NMAPDIR` is set to the validated resource directory, ensuring Nmap executes exclusively against verified scripts.
+
+### 4.3 RPM/CPIO Extraction Security Boundary Controls
+Direct-artifact unpacking via `_extract_rpm_payload()` enforces strict sandbox boundaries:
+- **Directory Traversal Rejection:** Rejects any entry containing `..` in its path tokens and enforces `os.path.commonpath` boundary checks against the target directories.
+- **Absolute Path Rejection:** Rejects paths starting with `/`.
+- **Symlink Entry Rejection:** Rejects CPIO entries with symbolic link mode (`mode & 0o170000 == 0o120000`).
+- **Hardlink Entry Rejection:** Rejects non-directory entries with link count greater than 1 (`nlink > 1`).
+- **File Type Whitelist:** Only extracts regular files (`IS_REG`) and directories (`IS_DIR`); safely drops FIFOs, sockets, character devices, and block devices.
+- **Duplicate Destination Rejection:** Rejects duplicate destination paths, preventing Zip-Slip overwrite vulnerabilities.
+- **Extraction Quotas:** Enforces maximum single file size (100 MiB), maximum decompressed payload (150 MiB), maximum archive entries (8192), and maximum header path length (4096 bytes).
+- **Header Parsing Validation:** Strictly verifies hexadecimal formatting of CPIO `070701` / `070702` header fields, failing closed on non-hexadecimal data.
+
 If an archive checksum does not match, the installer MUST abort immediately, delete quarantined files, and emit an audit event.
 
 ---

@@ -97,6 +97,12 @@ Binary installation must follow this strict 8-step lifecycle:
   Each build MUST use the immutable source identity, pinned build toolchain identity, verified build inputs,
   reproducible build controls, and a generated executable trust record declared in Contract 09. Exact runtime
   version and pre-launch integrity verification remain mandatory.
+- **Dual-Mode and Direct Artifact Support:** In addition to the container `SOURCE_BUILD_MODE` exception, Nmap `7.95`
+  supports portable `DIRECT_ARTIFACT_MODE` dynamic installation for supported Linux x86-64 host environments using the
+  official Insecure.Org release package (`nmap-7.95-1.x86_64.rpm`). The installer strictly enforces SHA-256 archive
+  verification, CPIO extraction boundary hardening (rejecting traversal sequences, absolute paths, symlinks, hardlinks,
+  and duplicate entries), and deterministic cryptographic hash-binding of the runtime resource directory tree
+  (`resources/nmap` containing NSE scripts and signatures) under the `RESOURCE_TREE_INTEGRITY_VERIFIED` claim.
 - **Atomic Replacement:** Production executables are never overwritten in-place during download; promotion occurs only after 100% verification passes.
 
 ---
@@ -189,6 +195,10 @@ External tool subprocesses must be executed and governed exclusively through the
 ### 4.6 Nmap (`NmapAdapter`)
 - **Tool Binary:** `nmap`
 - **Domain:** Network Port Scanning & Service Fingerprinting
+- **Trust Architecture:** Dual installation modes supported:
+  - `SOURCE_BUILD_MODE` for the hardened Linux production image (compiled from pinned source archive `nmap-7.95.tar.bz2` with GCC toolchain).
+  - `DIRECT_ARTIFACT_MODE` for standalone dynamic installation on supported Linux x86-64 environments (extracted from official `nmap-7.95-1.x86_64.rpm` with resource manifest hash-locking).
+- **Resource Tree Integrity:** If the managed installation includes a supporting resource directory (`resources/nmap`), the adapter automatically passes `NMAPDIR` pointing to the verified directory tree, and pre-launch verification ensures all NSE scripts, signatures, and data files match their cryptographic SHA-256 hash manifest (`RESOURCE_TREE_INTEGRITY_VERIFIED`). Any modification, deletion, or injection of unexpected files causes pre-launch execution to fail closed.
 - **Version Probing:** `nmap --version` -> Regex `Nmap version ([0-9\.]+)`
 - **Execution Command:** `nmap -sV -sC --version-light -T4 -oX - <target_host>`
 - **Output Parsing:** XML ElementTree parser extracting `<port>`, `<service>`, script results (`ssl-cert`, `http-title`), mapping to `NET-PORT-001`, `NET-PORT-002`, `NET-TLS-001` with `source_tool="nmap"`.

@@ -131,7 +131,25 @@ This document serves as the authoritative verification and closure record for th
 
 ---
 
+## Contract Reconciliation & Fleet Consistency Audit
+
+- **Contracts Updated**:
+  - `contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md` (§2.3 Invariants & §4.6 Nmap Adapter): Documented dual trust architecture (`SOURCE_BUILD_MODE` container build + `DIRECT_ARTIFACT_MODE` dynamic installer) and automatic `NMAPDIR` resource binding.
+  - `contracts/07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md` (§2.5 Toolbox Manager): Documented `.modal-card--toolbox` bounded geometry (95vw width, 92vh height), sticky header, responsive table container, and 180px fixed scrolling terminal log.
+  - `contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md` (§4 Supply Chain): Added Nmap direct artifact specification (`nmap-7.95-1.x86_64.rpm`), package digest `c0465e70...`, binary digest `f344bee2...`, runtime resource tree hash-binding (`RESOURCE_TREE_INTEGRITY_VERIFIED`), and adversarial CPIO extraction boundary controls.
+  - `contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md` (§TOOL 01 Sections 8 & 9, Part III Traceability): Documented dual trust modes, source + RPM artifact digests, resource manifest verification, extraction quota limits, and updated traceability table.
+  - `docs/TOOL_ASSURANCE_MATRIX.md`: Updated Nmap taxonomy entry and runtime evidence to document both container source-built executable and dynamic Linux x86-64 RPM installer.
+- **Contract Mirror Parity**:
+  - All 10 contract files verified 100% byte-for-byte identical between `contracts/` and `docs/contracts/` via `tests/security/test_contract_fleet_consistency.py`.
+- **Event Loop Serialization Hardening**:
+  - `ToolInstallationManager._pip_lock` updated in `backend/app/installers/manager.py` with dynamic event-loop binding to ensure robust cross-test concurrency across asynchronous test runners.
+- **Comprehensive Regression**:
+  - Test command: `python -m pytest --basetemp="scratch/tmp" -q`
+  - Result: 654 passed, 0 failed, 6 skipped, 9 warnings in 570.45s (9m 30s).
+
+---
+
 ## Checkpoint 8 — Git State & Working Tree Audit
 
 - **Branch**: `security/nmap-installer-closure`
-- **Working Tree**: Clean (all changes committed or gitignored).
+- **Working Tree**: Ready for final commit and remote push.
