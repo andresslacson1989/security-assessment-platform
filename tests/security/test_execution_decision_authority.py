@@ -216,7 +216,8 @@ def test_orphaned_migration_attempt_is_durably_reconciled(tmp_path):
             ("orphan-start", "orphan-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", "orphan-tx", "{}", "PENDING"),
         )
 
-    DatabaseManager(path)
+    with pytest.raises(RuntimeError, match="unresolved migration attempt"):
+        DatabaseManager(path)
     with sqlite3.connect(path) as connection:
         row = connection.execute(
             "SELECT event_type, event_sequence, rollback_status FROM schema_migration_events WHERE attempt_id = 'orphan-attempt' ORDER BY event_sequence DESC LIMIT 1"

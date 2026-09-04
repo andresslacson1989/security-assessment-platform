@@ -299,7 +299,7 @@ class DatabaseManager:
             )""")
             if ledger_exists:
                 existing = {r["column_name"] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchall()} if isinstance(self, PostgresDatabaseManager) else {r["name"] for r in conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()}
-                if not {"migration_id", "registry_revision", "event_sequence"}.issubset(existing):
+                if not {"migration_id", "registry_revision", "event_sequence"}.issubset(existing) or self._migration_ledger_requires_integrity_upgrade(conn):
                     self._upgrade_migration_ledger_identity(conn, existing)
                 if not isinstance(self, PostgresDatabaseManager):
                     legacy_index = conn.execute("SELECT 1 FROM pragma_index_list('schema_migration_events') WHERE name='uq_schema_migration_attempt_event'").fetchone()
@@ -373,12 +373,21 @@ class DatabaseManager:
             conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update_delete ON schema_migration_events")
             conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
                 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
+            event_check = conn.execute("""SELECT conname FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events'
+                  AND c.contype = 'c' AND pg_get_constraintdef(c.oid) ILIKE '%EVENT_TYPE%'""").fetchall()
+            for row in event_check:
+                conn.execute(f"ALTER TABLE schema_migration_events DROP CONSTRAINT {row['conname']}")
+            conn.execute("""ALTER TABLE schema_migration_events ADD CONSTRAINT ck_schema_migration_event_type
+                CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED'))""")
             for event_id, (migration_id, registry_revision) in identities.items():
                 conn.execute("UPDATE schema_migration_events SET migration_id = ?, registry_revision = ?, event_sequence = ? WHERE event_id = ?", (migration_id, registry_revision, sequence_by_event_id[event_id], event_id))
             conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN migration_id SET NOT NULL")
             conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN registry_revision SET NOT NULL")
             conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN event_sequence SET NOT NULL")
-            conn.execute("ALTER TABLE schema_migration_events ADD CONSTRAINT uq_schema_migration_attempt_sequence UNIQUE (attempt_id, event_sequence)")
+            if not self._migration_ledger_has_sequence_unique(conn):
+                conn.execute("ALTER TABLE schema_migration_events ADD CONSTRAINT uq_schema_migration_attempt_sequence UNIQUE (attempt_id, event_sequence)")
             conn.execute("""CREATE TRIGGER schema_migration_events_no_update_delete
                 BEFORE UPDATE OR DELETE ON schema_migration_events FOR EACH ROW
                 EXECUTE FUNCTION schema_migration_events_immutable()""")
@@ -412,6 +421,32 @@ class DatabaseManager:
         conn.execute("""CREATE TRIGGER schema_migration_events_no_delete
             BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
 
+    def _migration_ledger_has_sequence_unique(self, conn) -> bool:
+        if isinstance(self, PostgresDatabaseManager):
+            row = conn.execute("""SELECT 1 FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events'
+                  AND c.contype = 'u' AND pg_get_constraintdef(c.oid) ILIKE '%(attempt_id, event_sequence)%'""").fetchone()
+            return row is not None
+        for index in conn.execute("PRAGMA index_list(schema_migration_events)").fetchall():
+            if index["unique"]:
+                columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["attempt_id", "event_sequence"]:
+                    return True
+        return False
+
+    def _migration_ledger_requires_integrity_upgrade(self, conn) -> bool:
+        """Detect post-column ledger constraint drift requiring a schema upgrade."""
+        if isinstance(self, PostgresDatabaseManager):
+            checks = conn.execute("""SELECT pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events' AND c.contype = 'c'""").fetchall()
+            event_check = "RECONCILIATION_REQUIRED" in " ".join(str(row["definition"]) for row in checks)
+            return not event_check or not self._migration_ledger_has_sequence_unique(conn)
+        sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"]).upper()
+        return "RECONCILIATION_REQUIRED" not in sql or not self._migration_ledger_has_sequence_unique(conn)
+
     def _reconcile_orphaned_attempts(self, conn) -> None:
         """Persist an explicit terminal state for attempts left open by a crash."""
         rows = conn.execute("SELECT * FROM schema_migration_events ORDER BY attempt_id, event_sequence").fetchall()
@@ -439,6 +474,9 @@ class DatabaseManager:
 
     def _begin_migration_attempt(self) -> None:
         with self._connection_scope() as conn:
+            unresolved = conn.execute("SELECT 1 FROM schema_migration_events WHERE event_type = 'RECONCILIATION_REQUIRED' AND rollback_status = 'UNKNOWN' LIMIT 1").fetchone()
+            if unresolved:
+                raise RuntimeError("migration reconciliation required: unresolved migration attempt is blocking startup")
             version_row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone() if (conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'").fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()) else None
             if version_row and version_row["version"] is not None and int(version_row["version"]) >= 8:
                 terminal = conn.execute("SELECT 1 FROM schema_migration_events WHERE migration_version = ? AND event_type = 'SUCCEEDED' LIMIT 1", (int(version_row["version"]),)).fetchone()
