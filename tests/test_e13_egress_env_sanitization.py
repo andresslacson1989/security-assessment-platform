@@ -52,22 +52,19 @@ def test_supervisor_environment_sanitization_blocks_secrets():
             os.environ.pop(k, None)
 
 
-def test_scanner_egress_proxy_propagation_when_configured():
-    """When SCANNER_EGRESS_PROXY is configured, tools receive standard proxy variables."""
+def test_scanner_egress_proxy_injection_is_disabled_without_authoritative_verifier():
+    """Self-attested proxy records must never reach a supervised child."""
     os.environ["SCANNER_EGRESS_PROXY"] = "http://egress-proxy.corp.internal:8080"
     try:
-        sanitized = ProcessSupervisor.sanitize_environment(
-            scanner_egress_proxy=VerifiedEgressProxy(
+        with pytest.raises(ValueError, match="authoritative egress verifier"):
+            ProcessSupervisor.sanitize_environment(
+                scanner_egress_proxy=VerifiedEgressProxy(
                 proxy_url=os.environ["SCANNER_EGRESS_PROXY"],
                 worker_identity="worker-test",
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
                 verified_by="test-egress-verifier",
+                )
             )
-        )
-        assert sanitized.get("HTTP_PROXY") == "http://egress-proxy.corp.internal:8080"
-        assert sanitized.get("HTTPS_PROXY") == "http://egress-proxy.corp.internal:8080"
-        assert sanitized.get("ALL_PROXY") == "http://egress-proxy.corp.internal:8080"
-        assert sanitized.get("http_proxy") == "http://egress-proxy.corp.internal:8080"
     finally:
         os.environ.pop("SCANNER_EGRESS_PROXY", None)
 

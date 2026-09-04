@@ -19,6 +19,7 @@ from app.core.models import (
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.core.process_supervisor import CredentialEnvironmentHandoff, CredentialExecutionContext
+from app.core.tool_operation_policy import is_canonical_operation_policy_revision
 
 logger = logging.getLogger("cyberassess.adapters.prowler")
 
@@ -164,9 +165,9 @@ class ProwlerAdapter(BaseToolAdapter):
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: cloud credential envelope is invalid.")
                 return findings
             operation_policy_revision = str(kwargs.get("operation_policy_revision", "")).strip()
-            if not operation_policy_revision:
+            if not is_canonical_operation_policy_revision(operation_policy_revision):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
-                await emit_log(LogLevel.ERROR, "Prowler execution blocked: operation policy revision is required.")
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: operation policy revision is not canonical.")
                 return findings
 
         managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None

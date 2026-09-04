@@ -21,6 +21,8 @@ from types import MappingProxyType
 from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set
 from urllib.parse import urlparse
 
+from app.core.tool_operation_policy import is_canonical_operation_policy_revision
+
 logger = logging.getLogger("cyberassess.process_supervisor")
 
 
@@ -82,16 +84,7 @@ class VerifiedEgressProxy:
     verified_by: str
 
     def materialize(self) -> str:
-        if not self.worker_identity or not self.verified_by:
-            raise ValueError("egress proxy provenance is incomplete")
-        if self.expires_at.tzinfo is None or self.expires_at <= datetime.now(timezone.utc):
-            raise ValueError("egress proxy capability is expired")
-        parsed = urlparse(self.proxy_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError("egress proxy URL is invalid")
-        if any(ord(char) < 32 for char in self.proxy_url):
-            raise ValueError("egress proxy URL contains control characters")
-        return self.proxy_url
+        raise ValueError("authoritative egress verifier is not configured")
 
 
 @dataclass(frozen=True)
@@ -427,7 +420,7 @@ class ProcessSupervisor:
             for key, value in custom_env.items():
                 normalized_key = str(key).upper()
                 if normalized_key in cls._APPROVED_OPERATION_ENVIRONMENT_KEYS:
-                    clean[normalized_key] = str(value)
+                    clean[normalized_key] = cls._validate_operation_environment_value(normalized_key, value)
 
         scanner_proxy = scanner_egress_proxy.materialize() if scanner_egress_proxy else ""
         if scanner_proxy:
@@ -442,6 +435,22 @@ class ProcessSupervisor:
                 clean.pop(proxy_key, None)
 
         return clean
+
+    @staticmethod
+    def _validate_operation_environment_value(key: str, value: object) -> str:
+        """Validate both the name and the value of operation-scoped env input."""
+        if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
+            raise ValueError(f"invalid value for approved environment key {key}")
+        if key in {"NMAPDIR", "GOCACHE", "NPM_CONFIG_USERCONFIG"}:
+            if not os.path.isabs(value) or ".." in os.path.normpath(value).split(os.sep):
+                raise ValueError(f"non-canonical path for approved environment key {key}")
+        elif key in {"GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"} and value not in {"0", "1"}:
+            raise ValueError(f"invalid boolean value for approved environment key {key}")
+        elif key == "NPM_CONFIG_IGNORE_SCRIPTS" and value.lower() not in {"true", "false"}:
+            raise ValueError(f"invalid boolean value for approved environment key {key}")
+        elif key == "GOTOOLCHAIN" and value not in {"auto", "local"}:
+            raise ValueError(f"invalid toolchain value for approved environment key {key}")
+        return value
 
     async def execute(
         self,
@@ -556,6 +565,12 @@ class ProcessSupervisor:
                         "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
                     )
                 try:
+                    if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
+                        raise TypeError("scanner egress capability type is not approved")
+                    if credential_handoff is not None and type(credential_handoff) is not CredentialEnvironmentHandoff:
+                        raise TypeError("credential handoff type is not approved")
+                    if credential_context is not None and type(credential_context) is not CredentialExecutionContext:
+                        raise TypeError("credential execution context type is not approved")
                     clean_env = self.sanitize_environment(
                         env,
                         scanner_egress_proxy=scanner_egress_proxy,
@@ -573,6 +588,8 @@ class ProcessSupervisor:
                             )
                         ):
                             raise ValueError("credential handoff context mismatch")
+                        if not is_canonical_operation_policy_revision(credential_context.operation_policy_revision):
+                            raise ValueError("operation policy revision is not canonical")
                         clean_env.update(credential_handoff.materialize())
                 except (AttributeError, TypeError, ValueError) as exc:
                     return ProcessExecutionResult(

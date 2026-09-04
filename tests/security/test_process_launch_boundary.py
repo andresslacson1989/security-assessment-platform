@@ -17,6 +17,7 @@ from app.core.process_supervisor import (
     ProcessSupervisor,
     VerifiedEgressProxy,
 )
+from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 
 FORBIDDEN_IMPORTS = {"subprocess", "asyncio.subprocess"}
@@ -93,12 +94,6 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
     result = await ProcessSupervisor.get_instance().execute(
         [sys.executable, "-c", child_code],
         env=dangerous,
-        scanner_egress_proxy=VerifiedEgressProxy(
-            proxy_url="http://scanner.example:3128",
-            worker_identity="worker-test",
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            verified_by="test-egress-verifier",
-        ),
         timeout=10.0,
         max_output_bytes=1024 * 1024,
     )
@@ -122,9 +117,9 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
     assert observed["GIT_TERMINAL_PROMPT"] == "0"
     assert observed["NPM_CONFIG_IGNORE_SCRIPTS"] == "true"
     assert observed["GOTOOLCHAIN"] == "local"
-    assert observed["HTTP_PROXY"] == "http://scanner.example:3128"
-    assert observed["HTTPS_PROXY"] == "http://scanner.example:3128"
-    assert observed["ALL_PROXY"] == "http://scanner.example:3128"
+    assert "HTTP_PROXY" not in observed
+    assert "HTTPS_PROXY" not in observed
+    assert "ALL_PROXY" not in observed
 
 
 @pytest.mark.asyncio
@@ -136,7 +131,7 @@ async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypa
         provider="aws",
         authorization_decision_id="decision-test",
         request_id="request-test",
-        operation_policy_revision="opr-test",
+        operation_policy_revision=OPERATION_POLICY_REVISION,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         credentials={
             "AWS_ACCESS_KEY_ID": "AKIA_TEST",
@@ -150,7 +145,7 @@ async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypa
         provider="aws",
         authorization_decision_id="decision-test",
         request_id="request-test",
-        operation_policy_revision="opr-test",
+        operation_policy_revision=OPERATION_POLICY_REVISION,
     )
     child_code = "import json, os; print(json.dumps(dict(os.environ), sort_keys=True))"
     result = await ProcessSupervisor.get_instance().execute(
@@ -182,7 +177,7 @@ def test_typed_credential_handoff_rejects_caller_defined_keys_and_is_immutable()
         provider="aws",
         authorization_decision_id="decision-test",
         request_id="request-test",
-        operation_policy_revision="opr-test",
+        operation_policy_revision=OPERATION_POLICY_REVISION,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         credentials={"LD_PRELOAD": "/tmp/inject.so"},
     )
@@ -190,6 +185,41 @@ def test_typed_credential_handoff_rejects_caller_defined_keys_and_is_immutable()
         handoff.materialize()
     with pytest.raises(TypeError):
         handoff.credentials["AWS_ACCESS_KEY_ID"] = "mutated"
+
+
+@pytest.mark.asyncio
+async def test_unknown_operation_policy_revision_is_rejected():
+    handoff = CredentialEnvironmentHandoff(
+        organization_id="org-test",
+        asset_id="asset-test",
+        provider="aws",
+        authorization_decision_id="decision-test",
+        request_id="request-test",
+        operation_policy_revision="fake-revision",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        credentials={"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "secret"},
+    )
+    context = CredentialExecutionContext(
+        organization_id="org-test",
+        asset_id="asset-test",
+        provider="aws",
+        authorization_decision_id="decision-test",
+        request_id="request-test",
+        operation_policy_revision="fake-revision",
+    )
+    result = await ProcessSupervisor.get_instance().execute(
+        [sys.executable, "-c", "raise SystemExit(99)"],
+        credential_handoff=handoff,
+        credential_context=context,
+    )
+    assert result.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
+
+
+def test_approved_environment_values_are_validated():
+    with pytest.raises(ValueError):
+        ProcessSupervisor.sanitize_environment({"NMAPDIR": "..\\outside"})
+    with pytest.raises(ValueError):
+        ProcessSupervisor.sanitize_environment({"GOTOOLCHAIN": "attacker"})
 
 
 @pytest.mark.asyncio
