@@ -42,6 +42,7 @@ from app.core.models import (
     sanitize_sensitive_data,
     utc_now,
 )
+from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
 
@@ -348,7 +349,8 @@ class DatabaseManager:
                 credential_scope_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                revoked_at TEXT
+                revoked_at TEXT,
+                consumed_at TEXT
             );
 
             -- Attack Surface Assets Inventory Table
@@ -497,6 +499,7 @@ class DatabaseManager:
                 "ALTER TABLE audit_events ADD COLUMN sequence_number INTEGER;",
                 "ALTER TABLE assets ADD COLUMN active_probing_granted INTEGER NOT NULL DEFAULT 0;",
                 "ALTER TABLE assets ADD COLUMN live_secret_verification_granted INTEGER NOT NULL DEFAULT 0;",
+                "ALTER TABLE execution_decisions ADD COLUMN consumed_at TEXT;",
             ]
             for migration_index, mig in enumerate(migrations):
                 savepoint = f"schema_migration_{migration_index}"
@@ -729,6 +732,32 @@ class DatabaseManager:
     def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
         """Persist one immutable authorization decision transactionally."""
         with self._connection_scope() as conn:
+            if decision.approval_state != "APPROVED":
+                raise ValueError("only an approved execution decision may be persisted")
+            if not is_canonical_operation_policy_revision(decision.operation_policy_revision):
+                raise ValueError("execution decision policy revision is not canonical")
+            policy = get_operation_policy(decision.tool_id, decision.operation_family)
+            if policy is None or any(
+                decision.operation_options.get(key) != value
+                for key, value in policy.get("required_options", {}).items()
+            ):
+                raise ValueError("execution decision does not conform to the canonical policy row")
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM organizations WHERE id = ? AND is_active = 1", (decision.organization_id,))
+            if not cur.fetchone():
+                raise ValueError("execution decision organization does not exist or is inactive")
+            cur.execute(
+                "SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))",
+                (decision.asset_id, decision.organization_id, decision.project_id, decision.project_id),
+            )
+            if not cur.fetchone():
+                raise ValueError("execution decision asset is not bound to the authorized tenant/project")
+            cur.execute(
+                "SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1",
+                (decision.approver_user_id, decision.organization_id),
+            )
+            if not cur.fetchone():
+                raise ValueError("execution decision approver is not an active tenant administrator")
             conn.execute(
                 """
                 INSERT INTO execution_decisions (
@@ -764,6 +793,18 @@ class DatabaseManager:
                     decision.revoked_at.isoformat() if decision.revoked_at else None,
                 ),
             )
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=decision.approver_user_id,
+                    organization_id=decision.organization_id,
+                    action=AuditAction.EXECUTION_DECISION_CREATED,
+                    object_type="execution_decision", object_id=decision.id,
+                    result="SUCCESS",
+                    details={"tool_id": decision.tool_id, "operation_family": decision.operation_family,
+                             "asset_id": decision.asset_id, "approval_state": decision.approval_state},
+                ),
+            )
 
     def get_execution_decision(self, decision_id: str, organization_id: Optional[str] = None) -> Optional[ExecutionDecisionRecord]:
         """Load an execution decision with an optional mandatory tenant filter."""
@@ -792,7 +833,45 @@ class DatabaseManager:
                 created_at=datetime.fromisoformat(row["created_at"]),
                 expires_at=datetime.fromisoformat(row["expires_at"]),
                 revoked_at=datetime.fromisoformat(row["revoked_at"]) if row["revoked_at"] else None,
+                consumed_at=datetime.fromisoformat(row["consumed_at"]) if row["consumed_at"] else None,
             )
+
+    def claim_execution_decision(
+        self,
+        decision_id: str,
+        organization_id: str,
+        session_jti: str,
+        worker_identity: str,
+        policy_revision: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically consume one approved decision at the launch boundary."""
+        now = now or utc_now()
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                """
+                UPDATE execution_decisions
+                SET consumed_at = ?
+                WHERE id = ? AND organization_id = ? AND session_jti = ?
+                  AND worker_identity = ? AND operation_policy_revision = ?
+                  AND approval_state = 'APPROVED'
+                  AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ?
+                """,
+                (now.isoformat(), decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat()),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity,
+                    organization_id=organization_id,
+                    action=AuditAction.EXECUTION_DECISION_CONSUMED,
+                    object_type="execution_decision", object_id=decision_id,
+                    result="SUCCESS", details={"worker_identity": worker_identity},
+                ),
+            )
+            return True
 
     def revoke_execution_decision(self, decision_id: str, organization_id: Optional[str] = None) -> bool:
         """Revoke a decision without deleting its audit-relevant record."""
@@ -803,7 +882,19 @@ class DatabaseManager:
                 query += " AND organization_id = ?"
                 params.append(organization_id)
             cur = conn.execute(query, params)
-            return cur.rowcount > 0
+            changed = cur.rowcount > 0
+            if changed:
+                self._insert_audit_event_conn(
+                    conn,
+                    AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
+                        organization_id=organization_id or "org-default",
+                        action=AuditAction.EXECUTION_DECISION_REVOKED,
+                        object_type="execution_decision", object_id=decision_id,
+                        result="SUCCESS", details={"decision_id": decision_id},
+                    ),
+                )
+            return changed
 
     # ========================================================================
     # 2. Immutable Audit Logging with Cryptographic Chained Hashes

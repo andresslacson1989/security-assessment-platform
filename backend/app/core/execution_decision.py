@@ -14,6 +14,7 @@ from app.core.db import db_manager
 from app.core.models import ExecutionDecisionRecord, ValidatedTarget
 from app.core.ssrf_protector import validate_validated_target
 from app.core.tool_operation_policy import (
+    OPERATION_POLICY_REVISION,
     get_operation_policy,
     is_canonical_operation_policy_revision,
 )
@@ -38,6 +39,7 @@ class ExecutionDecisionCapability:
     command_digest: str
     worker_identity: str
     _issuer_token: object
+    database: Any
 
     def assert_valid_for_launch(
         self,
@@ -58,6 +60,47 @@ class ExecutionDecisionCapability:
             or self.worker_identity != worker_identity
         ):
             raise ExecutionDecisionError("execution capability does not match the launch request")
+
+    def revalidate_and_claim(
+        self,
+        *,
+        tool_id: str,
+        operation_family: str,
+        operation_options: dict[str, Any],
+        command: list[str],
+        worker_identity: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> None:
+        """Re-read authority and atomically reserve this decision for one launch."""
+        self.assert_valid_for_launch(
+            tool_id=tool_id, operation_family=operation_family,
+            operation_options=operation_options, command=command,
+            worker_identity=worker_identity,
+        )
+        decision = self.database.get_execution_decision(
+            self.decision.id, organization_id=self.decision.organization_id,
+        )
+        if decision is None or decision != self.decision:
+            raise ExecutionDecisionError("execution decision changed after capability issuance")
+        now = datetime.now(timezone.utc)
+        if decision.revoked_at is not None or decision.consumed_at is not None or decision.expires_at <= now:
+            raise ExecutionDecisionError("execution decision is revoked, expired, or already consumed")
+        if self.database.is_token_revoked(decision.session_jti):
+            raise ExecutionDecisionError("approving administrator session is revoked")
+        if not is_canonical_operation_policy_revision(decision.operation_policy_revision):
+            raise ExecutionDecisionError("execution policy revision is no longer current")
+        timeout_limit = decision.resource_budget.get("timeout_seconds")
+        output_limit = decision.resource_budget.get("max_output_bytes")
+        if timeout_limit is None or output_limit is None or timeout <= 0 or max_output_bytes <= 0:
+            raise ExecutionDecisionError("execution resource budget is incomplete")
+        if timeout > float(timeout_limit) or max_output_bytes > int(output_limit):
+            raise ExecutionDecisionError("launch request exceeds approved resource budget")
+        if not self.database.claim_execution_decision(
+            decision.id, decision.organization_id, decision.session_jti,
+            decision.worker_identity, decision.operation_policy_revision, now=now,
+        ):
+            raise ExecutionDecisionError("execution decision could not be atomically claimed")
 
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:
@@ -124,6 +167,13 @@ def issue_execution_capability(
         raise ExecutionDecisionError("requested tool operation is not represented by the policy")
     if _operation_digest(decision.operation_options) != _operation_digest(operation_options):
         raise ExecutionDecisionError("execution operation options do not match the approved decision")
+    required_options = policy.get("required_options", {})
+    if any(decision.operation_options.get(key) != value for key, value in required_options.items()):
+        raise ExecutionDecisionError("execution options do not satisfy the canonical policy row")
+    if decision.operation_policy_revision != OPERATION_POLICY_REVISION:
+        raise ExecutionDecisionError("execution decision revision does not match the loaded policy artifact")
+    if decision.credential_scope.get("provider") != decision.operation_options.get("provider"):
+        raise ExecutionDecisionError("credential scope is not bound to the approved provider")
     if decision.resource_budget and any(int(value) <= 0 for value in decision.resource_budget.values()):
         raise ExecutionDecisionError("execution resource budget is invalid")
     if decision.account_impact_budget and any(int(value) < 0 for value in decision.account_impact_budget.values()):
@@ -138,4 +188,5 @@ def issue_execution_capability(
         command_digest=command_digest,
         worker_identity=worker_identity,
         _issuer_token=_CAPABILITY_TOKEN,
+        database=database,
     )

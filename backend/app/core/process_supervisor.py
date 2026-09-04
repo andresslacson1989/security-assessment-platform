@@ -578,12 +578,14 @@ class ProcessSupervisor:
                     if credential_handoff is not None and execution_capability is None:
                         raise ExecutionDecisionError("credential release requires an execution decision capability")
                     if execution_capability is not None:
-                        execution_capability.assert_valid_for_launch(
+                        execution_capability.revalidate_and_claim(
                             tool_id=tool_id,
                             operation_family=operation_family,
                             operation_options=operation_options or {},
                             command=cmd,
                             worker_identity=os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
+                            timeout=timeout,
+                            max_output_bytes=max_output_bytes,
                         )
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")

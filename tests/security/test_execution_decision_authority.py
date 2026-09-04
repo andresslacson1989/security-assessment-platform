@@ -23,6 +23,12 @@ class FakeDecisionStore:
     def is_token_revoked(self, _jti):
         return self.revoked
 
+    def claim_execution_decision(self, decision_id, organization_id, session_jti, worker_identity, policy_revision, now=None):
+        if self.revoked or self.decision.consumed_at is not None:
+            return False
+        self.decision = self.decision.model_copy(update={"consumed_at": now or datetime.now(timezone.utc)})
+        return True
+
 
 def _target():
     return create_validated_target(
@@ -88,6 +94,47 @@ def test_factory_issued_capability_binds_exact_request(monkeypatch):
         )
 
 
+def test_launch_revalidation_consumes_decision_once_and_enforces_budget(monkeypatch):
+    monkeypatch.setenv("CYBERASSESS_WORKER_IDENTITY", "worker-1")
+    target = _target()
+    store = FakeDecisionStore(_decision(target))
+    capability = _issue(store, target)
+    options = {"provider": "aws", "output_format": "json-asff", "quiet": True}
+    command = ["/managed/prowler", "aws", "-M", "json-asff"]
+
+    capability.revalidate_and_claim(
+        tool_id="prowler", operation_family="cloud_audit", operation_options=options,
+        command=command, worker_identity="worker-1", timeout=120, max_output_bytes=10485760,
+    )
+    with pytest.raises(ExecutionDecisionError, match="consumed|changed"):
+        capability.revalidate_and_claim(
+            tool_id="prowler", operation_family="cloud_audit", operation_options=options,
+            command=command, worker_identity="worker-1", timeout=120, max_output_bytes=10485760,
+        )
+
+
+def test_launch_revalidation_rejects_expired_or_over_budget_decision(monkeypatch):
+    monkeypatch.setenv("CYBERASSESS_WORKER_IDENTITY", "worker-1")
+    target = _target()
+    store = FakeDecisionStore(_decision(target))
+    capability = _issue(store, target)
+    with pytest.raises(ExecutionDecisionError, match="budget"):
+        capability.revalidate_and_claim(
+            tool_id="prowler", operation_family="cloud_audit",
+            operation_options={"provider": "aws", "output_format": "json-asff", "quiet": True},
+            command=["/managed/prowler", "aws", "-M", "json-asff"],
+            worker_identity="worker-1", timeout=121, max_output_bytes=10485760,
+        )
+    store.decision = store.decision.model_copy(update={"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)})
+    with pytest.raises(ExecutionDecisionError, match="changed|expired"):
+        capability.revalidate_and_claim(
+            tool_id="prowler", operation_family="cloud_audit",
+            operation_options={"provider": "aws", "output_format": "json-asff", "quiet": True},
+            command=["/managed/prowler", "aws", "-M", "json-asff"],
+            worker_identity="worker-1", timeout=120, max_output_bytes=10485760,
+        )
+
+
 @pytest.mark.parametrize("changes", [
     {"approval_state": "REVOKED"},
     {"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)},
@@ -108,3 +155,25 @@ def test_revoked_approver_session_fails_closed(monkeypatch):
     target = _target()
     with pytest.raises(ExecutionDecisionError):
         _issue(FakeDecisionStore(_decision(target), revoked=True), target)
+
+
+def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
+    from app.core.db import DatabaseManager
+
+    database = DatabaseManager(tmp_path / "authority.db")
+    now = datetime.now(timezone.utc).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-a", "Org A", "org-a", now))
+        conn.execute("INSERT INTO assets (id, organization_id, project_id, name, type, target_value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("asset-a", "org-a", "project-a", "AWS account", "CLOUD_ACCOUNT", "aws://123456789012", now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, ?, 'ADMIN', ?, 1, ?)", ("admin-1", "admin", "admin@example.test", "hash", "org-a", now))
+
+    target = _target()
+    decision = _decision(target)
+    database.create_execution_decision(decision)
+    assert database.get_execution_decision(decision.id, organization_id="org-a").id == decision.id
+    assert database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION)
+    assert not database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION)
+    stored = database.get_execution_decision(decision.id, organization_id="org-a")
+    assert stored.consumed_at is not None
+    events, _ = database.list_audit_events(organization_id="org-a", limit=20)
+    assert {event.action.value for event in events} >= {"EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CONSUMED"}

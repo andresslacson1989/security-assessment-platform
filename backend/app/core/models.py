@@ -1172,6 +1172,7 @@ class ExecutionDecisionRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
     revoked_at: Optional[datetime] = None
+    consumed_at: Optional[datetime] = None
 
 
 class APIKeyRecord(BaseModel):
@@ -1360,6 +1361,9 @@ class AuditAction(str, Enum):
     TOOL_INSTALL_STARTED = "TOOL_INSTALL_STARTED"
     TOOL_INSTALL_COMPLETED = "TOOL_INSTALL_COMPLETED"
     TOOL_INSTALL_FAILED = "TOOL_INSTALL_FAILED"
+    EXECUTION_DECISION_CREATED = "EXECUTION_DECISION_CREATED"
+    EXECUTION_DECISION_REVOKED = "EXECUTION_DECISION_REVOKED"
+    EXECUTION_DECISION_CONSUMED = "EXECUTION_DECISION_CONSUMED"
     FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"
     FINDING_ASSIGNED = "FINDING_ASSIGNED"
     FINDING_COMMENTED = "FINDING_COMMENTED"

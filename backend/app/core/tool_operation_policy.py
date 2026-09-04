@@ -20,6 +20,7 @@ _POLICY_DOCUMENT: Mapping[str, Any] = MappingProxyType({
             "tool_id": "prowler",
             "operation_family": "cloud_audit",
             "option_or_module_class": "provider_audit",
+            "required_options": MappingProxyType({"provider": "aws", "output_format": "json-asff", "quiet": True}),
             "capability_state": "AVAILABLE",
             "default_profile_behavior": "EXPLICIT_AUTHORIZATION_REQUIRED",
             "approval_level": "ELEVATED_APPROVAL_REQUIRED",
