@@ -884,6 +884,18 @@ def test_execution_snapshot_schema_wrong_definition_fails_closed(tmp_path):
         DatabaseManager(db_path)
 
 
+def test_execution_v6_schema_drift_fails_closed_after_version_is_recorded(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "execution-v6-drift.db"
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE execution_decisions DROP COLUMN claim_token")
+        conn.commit()
+    with pytest.raises(RuntimeError, match="execution compatibility schema verification failed"):
+        DatabaseManager(db_path)
+
+
 def test_execution_schema_partial_index_fails_closed(tmp_path):
     from app.core.db import DatabaseManager
 

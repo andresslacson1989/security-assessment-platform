@@ -430,6 +430,44 @@ class DatabaseManager:
                 f"expected one parent key and one decision binding, got {parent_count} and {binding_count}"
             )
 
+    def _verify_execution_compatibility_schema(self, conn) -> None:
+        """Verify the v6 execution-plane columns on every startup."""
+        expected = {
+            "execution_decisions": {"consumed_at", "claim_owner", "claim_expires_at", "started_at", "claim_token"},
+            "execution_requests": {"approval_idempotency_key"},
+        }
+        missing = []
+        wrong_type = []
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute(
+                "SELECT table_name, column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns WHERE table_schema = current_schema() "
+                "AND table_name IN ('execution_decisions', 'execution_requests')"
+            ).fetchall()
+            actual = {(row["table_name"], row["column_name"]): row for row in rows}
+            for table, columns in expected.items():
+                for column in columns:
+                    row = actual.get((table, column))
+                    if not row:
+                        missing.append(f"{table}.{column}")
+                    elif str(row["data_type"]).lower() != "text" or row["is_nullable"] != "YES" or row["column_default"] is not None:
+                        wrong_type.append(f"{table}.{column}")
+        else:
+            for table, columns in expected.items():
+                rows = conn.execute(f"PRAGMA table_info('{table}')").fetchall()
+                actual = {row["name"]: row for row in rows}
+                for column in columns:
+                    row = actual.get(column)
+                    if not row:
+                        missing.append(f"{table}.{column}")
+                    elif str(row["type"]).strip().lower() != "text" or bool(row["notnull"]) or row["dflt_value"] is not None:
+                        wrong_type.append(f"{table}.{column}")
+        if missing or wrong_type:
+            raise RuntimeError(
+                "execution compatibility schema verification failed: "
+                f"missing={sorted(missing)!r}, mismatched={sorted(wrong_type)!r}"
+            )
+
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
         with self._connection_scope() as conn:
@@ -1327,6 +1365,7 @@ class DatabaseManager:
 
             self._verify_execution_snapshot_schema(conn)
             self._verify_execution_authority_binding_schema(conn)
+            self._verify_execution_compatibility_schema(conn)
 
             # Migration rows prove history, not present-day schema integrity.
             # Recheck the safety-critical execution invariants on every startup
