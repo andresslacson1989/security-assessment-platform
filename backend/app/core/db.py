@@ -1479,7 +1479,7 @@ class DatabaseManager:
                     parent_key = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
                         JOIN pg_namespace n ON n.oid=t.relnamespace JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON TRUE
                         JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
-                        WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indpred IS NULL
+                        WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indpred IS NULL AND i.indisvalid AND i.indisready
                         GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
                     if not parent_key:
                         conn.execute("CREATE UNIQUE INDEX execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
@@ -1516,6 +1516,10 @@ class DatabaseManager:
                     # interrupted migration must be reconciled explicitly.
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents_v8'").fetchone():
                         raise RuntimeError("dispatch migration v8 found an existing recovery artifact; manual reconciliation required")
+                    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()}
+                    partial_columns = existing_columns & {"claimed_by", "claim_token", "lease_expires_at", "correlation_id"}
+                    if partial_columns:
+                        raise RuntimeError(f"dispatch migration v8 found partial lease columns: {sorted(partial_columns)!r}")
                     conn.execute("""CREATE TABLE execution_dispatch_intents_v8 (
                         execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
                         state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
