@@ -18,7 +18,7 @@ from app.core.models import (
     CloudCredentialEnvelope, utc_now,
 )
 from app.adapters.base_adapter import BaseToolAdapter
-from app.core.process_supervisor import CredentialEnvironmentHandoff
+from app.core.process_supervisor import CredentialEnvironmentHandoff, CredentialExecutionContext
 
 logger = logging.getLogger("cyberassess.adapters.prowler")
 
@@ -163,6 +163,11 @@ class ProwlerAdapter(BaseToolAdapter):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: cloud credential envelope is invalid.")
                 return findings
+            operation_policy_revision = str(kwargs.get("operation_policy_revision", "")).strip()
+            if not operation_policy_revision:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: operation policy revision is required.")
+                return findings
 
         managed_check = (lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None
         if kwargs.get("require_managed_binary") and not managed_check():
@@ -181,6 +186,7 @@ class ProwlerAdapter(BaseToolAdapter):
         report_payload = None
         temp_output_dir = None
         credential_handoff = None
+        credential_context = None
         if kwargs.get("require_managed_binary"):
             provider = str(validated_target.authorization_context.get("cloud_provider", "")).strip().lower()
             temp_output_dir = tempfile.TemporaryDirectory(prefix="cyberassess-prowler-")
@@ -191,9 +197,18 @@ class ProwlerAdapter(BaseToolAdapter):
                 asset_id=envelope.asset_id,
                 provider=envelope.provider,
                 authorization_decision_id=validated_target.authorization_decision_id,
+                request_id=str(scan_id),
+                operation_policy_revision=operation_policy_revision,
                 expires_at=envelope.expires_at,
                 credentials=credentials,
-                allowed_keys=frozenset(allowed_credentials),
+            )
+            credential_context = CredentialExecutionContext(
+                organization_id=envelope.organization_id,
+                asset_id=envelope.asset_id,
+                provider=envelope.provider,
+                authorization_decision_id=validated_target.authorization_decision_id,
+                request_id=str(scan_id),
+                operation_policy_revision=operation_policy_revision,
             )
         else:
             cmd = [binary, "aws", "-M", "json", "--quiet"]
@@ -205,6 +220,7 @@ class ProwlerAdapter(BaseToolAdapter):
                 emit_log=emit_log,
                 pre_launch_check=managed_check,
                 credential_handoff=credential_handoff,
+                credential_context=credential_context,
                 max_output_bytes=10 * 1024 * 1024,
             )
             if output_path:

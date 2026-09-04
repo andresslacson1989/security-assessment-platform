@@ -365,6 +365,7 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
             require_managed_binary=True,
             validated_target=validated,
             cloud_credentials=credentials,
+            operation_policy_revision="opr-test",
         )
 
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]

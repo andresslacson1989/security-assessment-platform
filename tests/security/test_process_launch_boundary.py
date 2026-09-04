@@ -12,8 +12,10 @@ import pytest
 
 from app.core.process_supervisor import (
     CredentialEnvironmentHandoff,
+    CredentialExecutionContext,
     ProcessExecutionStatus,
     ProcessSupervisor,
+    VerifiedEgressProxy,
 )
 
 
@@ -91,7 +93,12 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
     result = await ProcessSupervisor.get_instance().execute(
         [sys.executable, "-c", child_code],
         env=dangerous,
-        scanner_egress_proxy="http://scanner.example:3128",
+        scanner_egress_proxy=VerifiedEgressProxy(
+            proxy_url="http://scanner.example:3128",
+            worker_identity="worker-test",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            verified_by="test-egress-verifier",
+        ),
         timeout=10.0,
         max_output_bytes=1024 * 1024,
     )
@@ -128,17 +135,22 @@ async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypa
         asset_id="asset-test",
         provider="aws",
         authorization_decision_id="decision-test",
+        request_id="request-test",
+        operation_policy_revision="opr-test",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         credentials={
             "AWS_ACCESS_KEY_ID": "AKIA_TEST",
             "AWS_SECRET_ACCESS_KEY": "secret-test",
             "AWS_SESSION_TOKEN": "session-test",
         },
-        allowed_keys=frozenset({
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-        }),
+    )
+    context = CredentialExecutionContext(
+        organization_id="org-test",
+        asset_id="asset-test",
+        provider="aws",
+        authorization_decision_id="decision-test",
+        request_id="request-test",
+        operation_policy_revision="opr-test",
     )
     child_code = "import json, os; print(json.dumps(dict(os.environ), sort_keys=True))"
     result = await ProcessSupervisor.get_instance().execute(
@@ -149,6 +161,7 @@ async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypa
             "DATABASE_URL": "caller-value",
         },
         credential_handoff=handoff,
+        credential_context=context,
         timeout=10.0,
         max_output_bytes=1024 * 1024,
     )
@@ -161,8 +174,47 @@ async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypa
     assert "DATABASE_URL" not in observed
 
 
-def test_caller_cannot_override_supervisor_baseline():
+def test_typed_credential_handoff_rejects_caller_defined_keys_and_is_immutable():
+    """Provider policy, not the caller, owns credential keys and material."""
+    handoff = CredentialEnvironmentHandoff(
+        organization_id="org-test",
+        asset_id="asset-test",
+        provider="aws",
+        authorization_decision_id="decision-test",
+        request_id="request-test",
+        operation_policy_revision="opr-test",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        credentials={"LD_PRELOAD": "/tmp/inject.so"},
+    )
+    with pytest.raises(ValueError):
+        handoff.materialize()
+    with pytest.raises(TypeError):
+        handoff.credentials["AWS_ACCESS_KEY_ID"] = "mutated"
+
+
+@pytest.mark.asyncio
+async def test_invalid_egress_capability_is_typed_security_rejection():
+    invalid_proxy = VerifiedEgressProxy(
+        proxy_url="https://proxy.example.test",
+        worker_identity="worker-1",
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        verified_by="policy-service",
+    )
+
+    result = await ProcessSupervisor.get_instance().execute(
+        [sys.executable, "-c", "raise SystemExit(99)"],
+        scanner_egress_proxy=invalid_proxy,
+    )
+
+    assert result.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
+    assert result.returncode == 126
+    assert "invalid launch capability" in result.stderr
+
+
+def test_caller_cannot_override_supervisor_baseline(monkeypatch):
     """Caller env may not replace process-resolution or runtime directories."""
+    for key in ("PATH", "SYSTEMROOT", "TEMP", "HOME", "TMPDIR"):
+        monkeypatch.setenv(key, f"supervisor-{key.lower()}")
     sanitized = ProcessSupervisor.sanitize_environment({
         "PATH": "caller-controlled",
         "SYSTEMROOT": "caller-controlled",
@@ -170,9 +222,8 @@ def test_caller_cannot_override_supervisor_baseline():
         "HOME": "caller-controlled",
         "TMPDIR": "caller-controlled",
     })
-    for key, value in sanitized.items():
-        if key in {"PATH", "SYSTEMROOT", "TEMP", "HOME", "TMPDIR"}:
-            assert value != "caller-controlled"
+    for key in ("PATH", "SYSTEMROOT", "TEMP", "HOME", "TMPDIR"):
+        assert sanitized[key] == f"supervisor-{key.lower()}"
 
 
 def test_direct_caller_environment_inputs_are_explicit():

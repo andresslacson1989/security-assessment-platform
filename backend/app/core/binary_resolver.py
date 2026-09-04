@@ -24,6 +24,13 @@ import subprocess
 import sys
 from typing import Callable, Optional, List
 
+from app.core.process_supervisor import (
+    CredentialEnvironmentHandoff,
+    CredentialExecutionContext,
+    ProcessExecutionResult,
+    VerifiedEgressProxy,
+)
+
 logger = logging.getLogger("cyberassess.binary_resolver")
 
 
@@ -239,9 +246,10 @@ async def safe_execute_subprocess(
     max_output_bytes: int = 10 * 1024 * 1024,
     pre_launch_check: Optional[Callable[[], bool]] = None,
     execution_id: Optional[str] = None,
-    scanner_egress_proxy: Optional[str] = None,
-    credential_handoff: Optional[object] = None,
-) -> "ProcessExecutionResult":
+    scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
+    credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
+    credential_context: Optional[CredentialExecutionContext] = None,
+) -> ProcessExecutionResult:
     """
     Loop-agnostic safe subprocess execution helper.
     Delegates to central ProcessSupervisor to track subprocesses and guarantee
@@ -250,7 +258,7 @@ async def safe_execute_subprocess(
     if not cmd:
         return -1, "", "Empty command provided"
 
-    from app.core.process_supervisor import ProcessExecutionResult, process_supervisor
+    from app.core.process_supervisor import process_supervisor
     result = await process_supervisor.execute(
         cmd=cmd,
         timeout=timeout,
@@ -261,6 +269,7 @@ async def safe_execute_subprocess(
         execution_id=execution_id,
         scanner_egress_proxy=scanner_egress_proxy,
         credential_handoff=credential_handoff,
+        credential_context=credential_context,
     )
     code, stdout, stderr = result
     if "<3>WSL" in stderr:

@@ -13,7 +13,12 @@ from typing import Any, Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
-from app.core.process_supervisor import CredentialEnvironmentHandoff, ProcessExecutionStatus
+from app.core.process_supervisor import (
+    CredentialEnvironmentHandoff,
+    CredentialExecutionContext,
+    ProcessExecutionStatus,
+    VerifiedEgressProxy,
+)
 
 
 class BaseToolAdapter(ABC):
@@ -236,8 +241,9 @@ class BaseToolAdapter(ABC):
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
         pre_launch_check: Optional[Callable[[], bool]] = None,
         sensitive_env_keys: Optional[set[str]] = None,
-        scanner_egress_proxy: Optional[str] = None,
+        scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
         credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
+        credential_context: Optional[CredentialExecutionContext] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -259,6 +265,7 @@ class BaseToolAdapter(ABC):
             pre_launch_check=pre_launch_check,
             scanner_egress_proxy=scanner_egress_proxy,
             credential_handoff=credential_handoff,
+            credential_context=credential_context,
         )
         code, stdout, stderr = result
         process_status = getattr(result, "execution_status", None)

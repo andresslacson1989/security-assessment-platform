@@ -12,11 +12,12 @@ Validates:
 import os
 import sys
 import json
+from datetime import datetime, timedelta, timezone
 import yaml
 from unittest.mock import patch
 import pytest
 
-from app.core.process_supervisor import ProcessSupervisor
+from app.core.process_supervisor import ProcessSupervisor, VerifiedEgressProxy
 from app.adapters.base_adapter import BaseToolAdapter
 
 
@@ -56,7 +57,12 @@ def test_scanner_egress_proxy_propagation_when_configured():
     os.environ["SCANNER_EGRESS_PROXY"] = "http://egress-proxy.corp.internal:8080"
     try:
         sanitized = ProcessSupervisor.sanitize_environment(
-            scanner_egress_proxy=os.environ["SCANNER_EGRESS_PROXY"]
+            scanner_egress_proxy=VerifiedEgressProxy(
+                proxy_url=os.environ["SCANNER_EGRESS_PROXY"],
+                worker_identity="worker-test",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                verified_by="test-egress-verifier",
+            )
         )
         assert sanitized.get("HTTP_PROXY") == "http://egress-proxy.corp.internal:8080"
         assert sanitized.get("HTTPS_PROXY") == "http://egress-proxy.corp.internal:8080"

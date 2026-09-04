@@ -17,7 +17,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Dict, FrozenSet, Mapping, NamedTuple, Optional, Set
+from types import MappingProxyType
+from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set
+from urllib.parse import urlparse
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
@@ -59,6 +61,40 @@ class ProcessExecutionResult(NamedTuple):
 
 
 @dataclass(frozen=True)
+class CredentialExecutionContext:
+    """Exact authorization context expected by one supervised launch."""
+
+    organization_id: str
+    asset_id: str
+    provider: str
+    authorization_decision_id: str
+    request_id: str
+    operation_policy_revision: str
+
+
+@dataclass(frozen=True)
+class VerifiedEgressProxy:
+    """Explicit, expiring egress capability issued by an authoritative verifier."""
+
+    proxy_url: str
+    worker_identity: str
+    expires_at: datetime
+    verified_by: str
+
+    def materialize(self) -> str:
+        if not self.worker_identity or not self.verified_by:
+            raise ValueError("egress proxy provenance is incomplete")
+        if self.expires_at.tzinfo is None or self.expires_at <= datetime.now(timezone.utc):
+            raise ValueError("egress proxy capability is expired")
+        parsed = urlparse(self.proxy_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("egress proxy URL is invalid")
+        if any(ord(char) < 32 for char in self.proxy_url):
+            raise ValueError("egress proxy URL contains control characters")
+        return self.proxy_url
+
+
+@dataclass(frozen=True)
 class CredentialEnvironmentHandoff:
     """Typed, tenant-bound credential material for one supervised launch."""
 
@@ -66,28 +102,43 @@ class CredentialEnvironmentHandoff:
     asset_id: str
     provider: str
     authorization_decision_id: str
+    request_id: str
+    operation_policy_revision: str
     expires_at: datetime
     credentials: Mapping[str, str]
-    allowed_keys: FrozenSet[str]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "credentials", dict(self.credentials))
-        object.__setattr__(self, "allowed_keys", frozenset(self.allowed_keys))
+        object.__setattr__(self, "provider", self.provider.strip().lower())
+        object.__setattr__(self, "credentials", MappingProxyType(dict(self.credentials)))
 
     def materialize(self) -> Dict[str, str]:
-        """Validate metadata and return only the exact approved child keys."""
+        """Validate metadata and return only the centrally approved child keys."""
+        approved_keys = {
+            "aws": frozenset({
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+            }),
+        }.get(self.provider)
         if not self.organization_id or not self.asset_id or not self.provider:
             raise ValueError("credential handoff scope is incomplete")
         if not self.authorization_decision_id:
             raise ValueError("credential handoff authorization decision is missing")
+        if not self.request_id or not self.operation_policy_revision:
+            raise ValueError("credential handoff execution binding is incomplete")
         if self.expires_at.tzinfo is None or self.expires_at <= datetime.now(timezone.utc):
             raise ValueError("credential handoff is expired")
-        if not isinstance(self.credentials, Mapping):
-            raise ValueError("credential handoff credentials are not a mapping")
-        if set(self.credentials) - set(self.allowed_keys):
+        if approved_keys is None:
+            raise ValueError("credential provider is not approved")
+        if set(self.credentials) - approved_keys:
             raise ValueError("credential handoff contains an unapproved key")
+        if self.provider == "aws" and not {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        }.issubset(self.credentials):
+            raise ValueError("credential handoff is missing required AWS credentials")
         values: Dict[str, str] = {}
-        for key in self.allowed_keys:
+        for key in approved_keys:
             if key in self.credentials:
                 value = self.credentials[key]
                 if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
@@ -355,7 +406,7 @@ class ProcessSupervisor:
         cls,
         custom_env: Optional[Dict[str, str]] = None,
         *,
-        scanner_egress_proxy: Optional[str] = None,
+        scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
     ) -> Dict[str, str]:
         """
         Build the only environment that may reach a supervised child.
@@ -378,7 +429,7 @@ class ProcessSupervisor:
                 if normalized_key in cls._APPROVED_OPERATION_ENVIRONMENT_KEYS:
                     clean[normalized_key] = str(value)
 
-        scanner_proxy = str(scanner_egress_proxy or "").strip()
+        scanner_proxy = scanner_egress_proxy.materialize() if scanner_egress_proxy else ""
         if scanner_proxy:
             clean["HTTP_PROXY"] = scanner_proxy
             clean["HTTPS_PROXY"] = scanner_proxy
@@ -401,8 +452,9 @@ class ProcessSupervisor:
         max_output_bytes: int = 10 * 1024 * 1024,
         pre_launch_check: Optional[Callable[[], bool]] = None,
         execution_id: Optional[str] = None,
-        scanner_egress_proxy: Optional[str] = None,
+        scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
         credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
+        credential_context: Optional[CredentialExecutionContext] = None,
     ) -> ProcessExecutionResult:
         """
         Executes a subprocess with execution tracking, timeout enforcement,
@@ -503,19 +555,31 @@ class ProcessSupervisor:
                         "",
                         "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
                     )
-                clean_env = self.sanitize_environment(
-                    env,
-                    scanner_egress_proxy=scanner_egress_proxy,
-                )
-                if credential_handoff is not None:
-                    try:
+                try:
+                    clean_env = self.sanitize_environment(
+                        env,
+                        scanner_egress_proxy=scanner_egress_proxy,
+                    )
+                    if credential_handoff is not None:
+                        if credential_context is None or any(
+                            getattr(credential_handoff, field) != getattr(credential_context, field)
+                            for field in (
+                                "organization_id",
+                                "asset_id",
+                                "provider",
+                                "authorization_decision_id",
+                                "request_id",
+                                "operation_policy_revision",
+                            )
+                        ):
+                            raise ValueError("credential handoff context mismatch")
                         clean_env.update(credential_handoff.materialize())
-                    except (TypeError, ValueError) as exc:
-                        return ProcessExecutionResult(
-                            126,
-                            "",
-                            f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid credential handoff ({type(exc).__name__})",
-                        )
+                except (AttributeError, TypeError, ValueError) as exc:
+                    return ProcessExecutionResult(
+                        126,
+                        "",
+                        f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid launch capability ({type(exc).__name__})",
+                    )
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
