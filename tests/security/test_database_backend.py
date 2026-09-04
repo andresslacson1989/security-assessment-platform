@@ -1,10 +1,12 @@
 """Contract 01 database backend compatibility and selection tests."""
 
 import asyncio
+import sys
+import types
 
 import pytest
 
-from app.core.db import _PostgresConnection, _PostgresRow, _qmark_to_postgres, DatabaseManager
+from app.core.db import _PostgresConnection, _PostgresRow, _qmark_to_postgres, DatabaseManager, PostgresDatabaseManager
 
 
 def test_worker_does_not_reexecute_terminal_authoritative_scan_states():
@@ -87,6 +89,26 @@ def test_database_manager_selects_postgres_for_enterprise_url(monkeypatch):
         assert manager.database_url.startswith("postgresql://")
     finally:
         DatabaseManager._instance = original_instance
+
+
+def test_postgres_manager_closes_pool_when_initialization_fails(monkeypatch):
+    class Pool:
+        closed = False
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def close(self):
+            self.closed = True
+
+    pool = Pool()
+    monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(ConnectionPool=lambda **kwargs: pool))
+    monkeypatch.setattr(PostgresDatabaseManager, "_init_db", lambda self: (_ for _ in ()).throw(RuntimeError("schema failure")))
+
+    with pytest.raises(RuntimeError, match="schema failure"):
+        PostgresDatabaseManager("postgresql://user:pass@127.0.0.1/cyberassess_test")
+
+    assert pool.closed is True
 
 
 @pytest.mark.asyncio

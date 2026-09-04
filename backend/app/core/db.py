@@ -190,13 +190,22 @@ class PostgresDatabaseManager:
                 "Enterprise mode requires psycopg[binary,pool] to be installed."
             ) from exc
         self.database_url = database_url
-        self._pool = ConnectionPool(
-            conninfo=database_url,
-            min_size=int(os.getenv("POSTGRES_POOL_MIN_SIZE", "1")),
-            max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
-            open=True,
-        )
-        self._init_db()
+        self._pool = None
+        try:
+            self._pool = ConnectionPool(
+                conninfo=database_url,
+                min_size=int(os.getenv("POSTGRES_POOL_MIN_SIZE", "1")),
+                max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
+                open=True,
+            )
+            self._init_db()
+        except Exception:
+            # Initialization can fail after the pool has opened (for example,
+            # on schema drift).  Never leak those connections on a failed
+            # manager construction.
+            if self._pool is not None:
+                self._pool.close()
+            raise
 
     @contextmanager
     def _connection_scope(self):

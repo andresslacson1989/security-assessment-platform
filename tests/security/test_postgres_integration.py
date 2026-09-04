@@ -125,10 +125,10 @@ def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
             """).fetchone()
             assert legacy["count"] == 0
 
-            # A second manager initialization exercises migration idempotency and
-            # the startup health path against the real PostgreSQL service.
-            second = PostgresDatabaseManager(manager.database_url)
-            second._pool.close()
+        # A second manager initialization exercises migration idempotency and
+        # the startup health path after the first transaction has completed.
+        second = PostgresDatabaseManager(manager.database_url)
+        second._pool.close()
 
 
 def test_postgres_version_two_remediates_legacy_request_fk():
