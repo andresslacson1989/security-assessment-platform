@@ -239,6 +239,8 @@ async def safe_execute_subprocess(
     max_output_bytes: int = 10 * 1024 * 1024,
     pre_launch_check: Optional[Callable[[], bool]] = None,
     execution_id: Optional[str] = None,
+    scanner_egress_proxy: Optional[str] = None,
+    credential_handoff: Optional[object] = None,
 ) -> "ProcessExecutionResult":
     """
     Loop-agnostic safe subprocess execution helper.
@@ -257,6 +259,8 @@ async def safe_execute_subprocess(
         max_output_bytes=max_output_bytes,
         pre_launch_check=pre_launch_check,
         execution_id=execution_id,
+        scanner_egress_proxy=scanner_egress_proxy,
+        credential_handoff=credential_handoff,
     )
     code, stdout, stderr = result
     if "<3>WSL" in stderr:

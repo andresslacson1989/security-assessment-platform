@@ -13,7 +13,7 @@ from typing import Any, Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
-from app.core.process_supervisor import ProcessExecutionStatus
+from app.core.process_supervisor import CredentialEnvironmentHandoff, ProcessExecutionStatus
 
 
 class BaseToolAdapter(ABC):
@@ -24,61 +24,16 @@ class BaseToolAdapter(ABC):
     safe_execute_subprocess = staticmethod(safe_execute_subprocess)
     last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
-    # External tools must not inherit ambient credentials, proxy settings, or
-    # provider configuration from the API/worker process.  Adapters may add
-    # further server-derived values (for example Subfinder's isolated HOME),
-    # but only this non-sensitive execution baseline is inherited by default.
-    _SAFE_ENVIRONMENT_KEYS = frozenset({
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "HOME",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_DATA_HOME",
-        "TMP",
-        "TEMP",
-        "TMPDIR",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "PYTHONIOENCODING",
-        "PYTHONUNBUFFERED",
-        "SYSTEMDRIVE",
-        "COMSPEC",
-        "NMAPDIR",
-    })
-
     @classmethod
     def _governed_environment(cls, supplied: Optional[dict], sensitive_keys: Optional[set[str]] = None) -> dict:
         """Return a server-governed environment without ambient secrets/egress settings."""
-        source = supplied if supplied is not None else os.environ
-        allowed_sensitive = {str(key).upper() for key in (sensitive_keys or set())}
-        env = {
+        # ProcessSupervisor owns the only environment allowlist. This layer
+        # must not merge ambient values or translate proxy configuration.
+        return {
             str(key): str(value)
-            for key, value in source.items()
-            if (
-                str(key).upper() in cls._SAFE_ENVIRONMENT_KEYS
-                or (supplied is not None and str(key).upper() in allowed_sensitive)
-            )
-            and value is not None
+            for key, value in (supplied or {}).items()
+            if value is not None
         }
-        scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
-        if scanner_proxy:
-            env["HTTP_PROXY"] = scanner_proxy
-            env["HTTPS_PROXY"] = scanner_proxy
-            env["ALL_PROXY"] = scanner_proxy
-            env["http_proxy"] = scanner_proxy
-            env["https_proxy"] = scanner_proxy
-            env["all_proxy"] = scanner_proxy
-        else:
-            for p in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
-                env.pop(p, None)
-        return env
 
     @staticmethod
     def _state_for_process_status(status: Optional[ProcessExecutionStatus]) -> Optional[NormalizedExecutionState]:
@@ -281,6 +236,8 @@ class BaseToolAdapter(ABC):
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
         pre_launch_check: Optional[Callable[[], bool]] = None,
         sensitive_env_keys: Optional[set[str]] = None,
+        scanner_egress_proxy: Optional[str] = None,
+        credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -300,6 +257,8 @@ class BaseToolAdapter(ABC):
             env=self._governed_environment(env, sensitive_keys=sensitive_env_keys),
             max_output_bytes=max_output_bytes,
             pre_launch_check=pre_launch_check,
+            scanner_egress_proxy=scanner_egress_proxy,
+            credential_handoff=credential_handoff,
         )
         code, stdout, stderr = result
         process_status = getattr(result, "execution_status", None)

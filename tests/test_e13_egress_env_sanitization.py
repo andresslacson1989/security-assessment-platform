@@ -55,7 +55,9 @@ def test_scanner_egress_proxy_propagation_when_configured():
     """When SCANNER_EGRESS_PROXY is configured, tools receive standard proxy variables."""
     os.environ["SCANNER_EGRESS_PROXY"] = "http://egress-proxy.corp.internal:8080"
     try:
-        sanitized = ProcessSupervisor.sanitize_environment()
+        sanitized = ProcessSupervisor.sanitize_environment(
+            scanner_egress_proxy=os.environ["SCANNER_EGRESS_PROXY"]
+        )
         assert sanitized.get("HTTP_PROXY") == "http://egress-proxy.corp.internal:8080"
         assert sanitized.get("HTTPS_PROXY") == "http://egress-proxy.corp.internal:8080"
         assert sanitized.get("ALL_PROXY") == "http://egress-proxy.corp.internal:8080"

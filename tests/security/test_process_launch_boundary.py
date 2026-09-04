@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
 import pytest
 
-from app.core.process_supervisor import ProcessExecutionStatus, ProcessSupervisor
+from app.core.process_supervisor import (
+    CredentialEnvironmentHandoff,
+    ProcessExecutionStatus,
+    ProcessSupervisor,
+)
 
 
 FORBIDDEN_IMPORTS = {"subprocess", "asyncio.subprocess"}
@@ -86,6 +91,7 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
     result = await ProcessSupervisor.get_instance().execute(
         [sys.executable, "-c", child_code],
         env=dangerous,
+        scanner_egress_proxy="http://scanner.example:3128",
         timeout=10.0,
         max_output_bytes=1024 * 1024,
     )
@@ -114,13 +120,75 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
     assert observed["ALL_PROXY"] == "http://scanner.example:3128"
 
 
+@pytest.mark.asyncio
+async def test_typed_credential_handoff_reaches_child_without_env_allowlist_bypass():
+    """Only an authorized typed handoff may provide credential variables."""
+    handoff = CredentialEnvironmentHandoff(
+        organization_id="org-test",
+        asset_id="asset-test",
+        provider="aws",
+        authorization_decision_id="decision-test",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        credentials={
+            "AWS_ACCESS_KEY_ID": "AKIA_TEST",
+            "AWS_SECRET_ACCESS_KEY": "secret-test",
+            "AWS_SESSION_TOKEN": "session-test",
+        },
+        allowed_keys=frozenset({
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        }),
+    )
+    child_code = "import json, os; print(json.dumps(dict(os.environ), sort_keys=True))"
+    result = await ProcessSupervisor.get_instance().execute(
+        [sys.executable, "-c", child_code],
+        env={
+            "AWS_ACCESS_KEY_ID": "caller-value",
+            "AWS_SECRET_ACCESS_KEY": "caller-value",
+            "DATABASE_URL": "caller-value",
+        },
+        credential_handoff=handoff,
+        timeout=10.0,
+        max_output_bytes=1024 * 1024,
+    )
+
+    assert result.execution_status is ProcessExecutionStatus.COMPLETED
+    observed = json.loads(result.stdout)
+    assert observed["AWS_ACCESS_KEY_ID"] == "AKIA_TEST"
+    assert observed["AWS_SECRET_ACCESS_KEY"] == "secret-test"
+    assert observed["AWS_SESSION_TOKEN"] == "session-test"
+    assert "DATABASE_URL" not in observed
+
+
+def test_caller_cannot_override_supervisor_baseline():
+    """Caller env may not replace process-resolution or runtime directories."""
+    sanitized = ProcessSupervisor.sanitize_environment({
+        "PATH": "caller-controlled",
+        "SYSTEMROOT": "caller-controlled",
+        "TEMP": "caller-controlled",
+        "HOME": "caller-controlled",
+        "TMPDIR": "caller-controlled",
+    })
+    for key, value in sanitized.items():
+        if key in {"PATH", "SYSTEMROOT", "TEMP", "HOME", "TMPDIR"}:
+            assert value != "caller-controlled"
+
+
 def test_direct_caller_environment_inputs_are_explicit():
     """Prevent callers from reintroducing ambient environment wholesale."""
     repository_root = Path(__file__).resolve().parents[2]
     caller_files = (
         repository_root / "backend/app/engines/code_sast/git_history_scanner.py",
+        repository_root / "backend/app/core/binary_resolver.py",
+        repository_root / "backend/app/installers/github_release_installer.py",
+        repository_root / "backend/app/installers/nmap_artifact_installer.py",
         repository_root / "backend/app/installers/npm_installer.py",
         repository_root / "backend/app/installers/source_build_installer.py",
+        repository_root / "backend/app/installers/system_installer.py",
+        repository_root / "backend/app/installers/pip_installer.py",
+        repository_root / "backend/app/adapters/base_adapter.py",
+        repository_root / "backend/app/adapters/prowler_adapter.py",
     )
     for path in caller_files:
         source = path.read_text(encoding="utf-8")

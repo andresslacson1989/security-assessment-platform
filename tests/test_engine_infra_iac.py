@@ -315,12 +315,12 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
         active_probing_granted=True,
     )
     commands = []
-    environments = []
+    handoffs = []
     findings = []
 
     async def execute(command, **kwargs):
         commands.append(command)
-        environments.append(dict(kwargs.get("env") or {}))
+        handoffs.append(kwargs.get("credential_handoff"))
         if command[-1] == "-v":
             return 0, "prowler 4.1.0", ""
         report_path = command[command.index("--output-filename") + 1]
@@ -368,7 +368,12 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
         )
 
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
-    assert environments[-1] == credentials.credentials
+    assert handoffs[-1] is not None
+    assert handoffs[-1].organization_id == "org-a"
+    assert handoffs[-1].asset_id == "asset-a"
+    assert handoffs[-1].provider == "aws"
+    assert handoffs[-1].authorization_decision_id == validated.authorization_decision_id
+    assert dict(handoffs[-1].credentials) == credentials.credentials
     assert findings[-1].severity == Severity.CRITICAL
 
 

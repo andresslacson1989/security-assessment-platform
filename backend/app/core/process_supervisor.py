@@ -14,8 +14,10 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Dict, NamedTuple, Optional, Set
+from typing import Callable, Dict, FrozenSet, Mapping, NamedTuple, Optional, Set
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
@@ -54,6 +56,44 @@ class ProcessExecutionResult(NamedTuple):
         if self.returncode == 0:
             return ProcessExecutionStatus.COMPLETED
         return ProcessExecutionStatus.FAILED
+
+
+@dataclass(frozen=True)
+class CredentialEnvironmentHandoff:
+    """Typed, tenant-bound credential material for one supervised launch."""
+
+    organization_id: str
+    asset_id: str
+    provider: str
+    authorization_decision_id: str
+    expires_at: datetime
+    credentials: Mapping[str, str]
+    allowed_keys: FrozenSet[str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "credentials", dict(self.credentials))
+        object.__setattr__(self, "allowed_keys", frozenset(self.allowed_keys))
+
+    def materialize(self) -> Dict[str, str]:
+        """Validate metadata and return only the exact approved child keys."""
+        if not self.organization_id or not self.asset_id or not self.provider:
+            raise ValueError("credential handoff scope is incomplete")
+        if not self.authorization_decision_id:
+            raise ValueError("credential handoff authorization decision is missing")
+        if self.expires_at.tzinfo is None or self.expires_at <= datetime.now(timezone.utc):
+            raise ValueError("credential handoff is expired")
+        if not isinstance(self.credentials, Mapping):
+            raise ValueError("credential handoff credentials are not a mapping")
+        if set(self.credentials) - set(self.allowed_keys):
+            raise ValueError("credential handoff contains an unapproved key")
+        values: Dict[str, str] = {}
+        for key in self.allowed_keys:
+            if key in self.credentials:
+                value = self.credentials[key]
+                if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
+                    raise ValueError("credential handoff contains an invalid value")
+                values[key] = value
+        return values
 
 
 class ProcessSupervisor:
@@ -311,7 +351,12 @@ class ProcessSupervisor:
     })
 
     @classmethod
-    def sanitize_environment(cls, custom_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    def sanitize_environment(
+        cls,
+        custom_env: Optional[Dict[str, str]] = None,
+        *,
+        scanner_egress_proxy: Optional[str] = None,
+    ) -> Dict[str, str]:
         """
         Build the only environment that may reach a supervised child.
 
@@ -319,7 +364,7 @@ class ProcessSupervisor:
         names are inherited. Caller input can add only exact reviewed operation
         names; it is never merged wholesale. Ambient proxy variables are always
         removed. SCANNER_EGRESS_PROXY is translated only when configured by the
-        server policy.
+        server policy. Baseline keys cannot be overridden by caller input.
         """
         clean: Dict[str, str] = {}
         for key in cls._SAFE_ENVIRONMENT_KEYS:
@@ -330,10 +375,10 @@ class ProcessSupervisor:
         if custom_env:
             for key, value in custom_env.items():
                 normalized_key = str(key).upper()
-                if normalized_key in cls._SAFE_ENVIRONMENT_KEYS or normalized_key in cls._APPROVED_OPERATION_ENVIRONMENT_KEYS:
+                if normalized_key in cls._APPROVED_OPERATION_ENVIRONMENT_KEYS:
                     clean[normalized_key] = str(value)
 
-        scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
+        scanner_proxy = str(scanner_egress_proxy or "").strip()
         if scanner_proxy:
             clean["HTTP_PROXY"] = scanner_proxy
             clean["HTTPS_PROXY"] = scanner_proxy
@@ -356,6 +401,8 @@ class ProcessSupervisor:
         max_output_bytes: int = 10 * 1024 * 1024,
         pre_launch_check: Optional[Callable[[], bool]] = None,
         execution_id: Optional[str] = None,
+        scanner_egress_proxy: Optional[str] = None,
+        credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
     ) -> ProcessExecutionResult:
         """
         Executes a subprocess with execution tracking, timeout enforcement,
@@ -456,7 +503,19 @@ class ProcessSupervisor:
                         "",
                         "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
                     )
-                clean_env = self.sanitize_environment(env)
+                clean_env = self.sanitize_environment(
+                    env,
+                    scanner_egress_proxy=scanner_egress_proxy,
+                )
+                if credential_handoff is not None:
+                    try:
+                        clean_env.update(credential_handoff.materialize())
+                    except (TypeError, ValueError) as exc:
+                        return ProcessExecutionResult(
+                            126,
+                            "",
+                            f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid credential handoff ({type(exc).__name__})",
+                        )
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,

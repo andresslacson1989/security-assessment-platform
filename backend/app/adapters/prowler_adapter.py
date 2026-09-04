@@ -18,6 +18,7 @@ from app.core.models import (
     CloudCredentialEnvelope, utc_now,
 )
 from app.adapters.base_adapter import BaseToolAdapter
+from app.core.process_supervisor import CredentialEnvironmentHandoff
 
 logger = logging.getLogger("cyberassess.adapters.prowler")
 
@@ -179,15 +180,21 @@ class ProwlerAdapter(BaseToolAdapter):
         output_path = None
         report_payload = None
         temp_output_dir = None
-        execution_env = None
-        sensitive_env_keys = None
+        credential_handoff = None
         if kwargs.get("require_managed_binary"):
             provider = str(validated_target.authorization_context.get("cloud_provider", "")).strip().lower()
             temp_output_dir = tempfile.TemporaryDirectory(prefix="cyberassess-prowler-")
             output_path = str(Path(temp_output_dir.name) / "prowler-asff.json")
             cmd = [binary, provider, "-M", "json-asff", "--output-filename", output_path, "--quiet"]
-            execution_env = dict(credentials)
-            sensitive_env_keys = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+            credential_handoff = CredentialEnvironmentHandoff(
+                organization_id=envelope.organization_id,
+                asset_id=envelope.asset_id,
+                provider=envelope.provider,
+                authorization_decision_id=validated_target.authorization_decision_id,
+                expires_at=envelope.expires_at,
+                credentials=credentials,
+                allowed_keys=frozenset(allowed_credentials),
+            )
         else:
             cmd = [binary, "aws", "-M", "json", "--quiet"]
 
@@ -197,8 +204,7 @@ class ProwlerAdapter(BaseToolAdapter):
                 timeout=120.0 if kwargs.get("require_managed_binary") else 60.0,
                 emit_log=emit_log,
                 pre_launch_check=managed_check,
-                env=execution_env,
-                sensitive_env_keys=sensitive_env_keys,
+                credential_handoff=credential_handoff,
                 max_output_bytes=10 * 1024 * 1024,
             )
             if output_path:
@@ -210,8 +216,6 @@ class ProwlerAdapter(BaseToolAdapter):
                 except (OSError, UnicodeError):
                     await emit_log(LogLevel.WARNING, "Prowler report file could not be read; retaining supervised stdout only.")
         finally:
-            if execution_env is not None:
-                execution_env.clear()
             if temp_output_dir is not None:
                 temp_output_dir.cleanup()
 
