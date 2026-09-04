@@ -13,6 +13,7 @@ import pytest
 import psycopg
 
 from app.core.db import PostgresDatabaseManager
+from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 
 POSTGRES_TEST_URL = os.getenv("CYBERASSESS_POSTGRES_TEST_URL", "").strip()
@@ -223,6 +224,50 @@ def test_postgres_health_rejects_same_name_wrong_column_parent_index():
             conn.execute("CREATE UNIQUE INDEX uq_execution_requests_id_org ON execution_requests(id, created_at)")
         with pytest.raises(ValueError, match="schema health check"):
             PostgresDatabaseManager(manager.database_url)
+
+
+def test_postgres_missing_linked_decision_failure_is_durable_and_state_preserving():
+    with _isolated_manager() as manager:
+        now = "2026-01-01T00:00:00+00:00"
+        with manager._connection_scope() as conn:
+            conn.execute(
+                "INSERT INTO organizations (id, name, slug, created_at) VALUES (%s, %s, %s, %s)",
+                ("org-invariant", "Invariant Org", "invariant-org", now),
+            )
+            conn.execute("""
+                INSERT INTO users (id, username, email, hashed_password, organization_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, ("user-invariant", "invariant-user", "invariant@example.invalid", "not-a-password", "org-invariant", now))
+            conn.execute("""
+                INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, ("asset-invariant", "org-invariant", "Invariant Asset", "DOMAIN", "example.invalid", now, now))
+            conn.execute("""
+                INSERT INTO execution_requests (
+                    id, idempotency_key, request_fingerprint, organization_id,
+                    asset_id, target_id, authorization_decision_id, target_policy_version,
+                    tool_id, operation_family, operation_policy_revision,
+                    requested_by_user_id, state, created_at, expires_at, approved_decision_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, ("req-invariant", "idem-invariant", "f" * 64, "org-invariant", "asset-invariant",
+                  "target-invariant", "auth-invariant", "v1", "nmap", "safe", OPERATION_POLICY_REVISION,
+                  "user-invariant", "AUTHORIZED", now, "2099-01-01T00:00:00+00:00", "missing-decision"))
+
+        with pytest.raises(ValueError, match="invalid approved decision"):
+            manager.revoke_execution_request("req-invariant", "org-invariant", "admin")
+
+        with manager._connection_scope() as conn:
+            request = conn.execute("SELECT state FROM execution_requests WHERE id = %s", ("req-invariant",)).fetchone()
+            events = conn.execute("""
+                SELECT action, object_type, result, details_json
+                FROM audit_events WHERE object_id = %s
+            """, ("req-invariant",)).fetchall()
+        assert request["state"] == "AUTHORIZED"
+        assert len(events) == 1
+        assert events[0]["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+        assert events[0]["object_type"] == "execution_request"
+        assert events[0]["result"] == "FAILURE"
+        assert "APPROVED_DECISION_REFERENCE_MISSING" in events[0]["details_json"]
 
 
 def test_postgres_migration_rejects_duplicate_runs_before_recording_version():
