@@ -1,0 +1,89 @@
+"""Authoritative database-migration identity registry.
+
+Migration numbers are database-transition numbers and are intentionally
+separate from the contract/model version in :mod:`app.core.version`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+from typing import Callable, Optional
+
+from app.core.version import CONTRACT_VERSION, SCHEMA_VERSION
+
+REGISTRY_REVISION = "migration-registry-v1"
+
+
+@dataclass(frozen=True)
+class MigrationSpec:
+    version: int
+    migration_id: str
+    name: str
+    previous_version: Optional[int]
+    target_version: int
+    contract_schema_version: str
+    contract_version: str
+    registry_revision: str
+    checksum: str
+    apply: Optional[Callable] = None
+    verify: Optional[Callable] = None
+    reconcile: Optional[Callable] = None
+    backend_policy: str = "SQLITE_AND_POSTGRESQL"
+
+
+def _checksum(material: dict) -> str:
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+_DESCRIPTORS = (
+    (1, "execution-runs-tenant-binding", "Execution runs tenant binding", None, "execution_runs tenant composite request binding"),
+    (2, "execution-runs-tenant-binding-remediation", "Execution runs tenant binding remediation", 1, "execution_runs legacy binding remediation"),
+    (3, "execution-runs-snapshot-metadata", "Execution runs snapshot metadata", 2, "execution_runs immutable snapshot columns"),
+    (4, "execution-authority-tenant-binding", "Execution authority tenant binding", 3, "execution_runs decision composite binding"),
+    (5, "execution-authority-parent-key-cleanup", "Execution authority parent-key cleanup", 4, "migration-owned duplicate parent cleanup"),
+    (6, "execution-compatibility-columns", "Execution compatibility columns", 5, "decision/request compatibility columns"),
+    (7, "execution-dispatch-intents", "Execution dispatch intents", 6, "durable execution dispatch intent table"),
+    (8, "execution-dispatch-tenant-binding", "Execution dispatch tenant binding", 7, "tenant-bound dispatch lease columns and foreign keys"),
+)
+
+
+def _make_spec(version: int, migration_id: str, name: str, previous: Optional[int], manifest: str) -> MigrationSpec:
+    material = {
+        "version": version,
+        "migration_id": migration_id,
+        "name": name,
+        "previous_version": previous,
+        "target_version": version,
+        "contract_schema_version": SCHEMA_VERSION,
+        "contract_version": CONTRACT_VERSION,
+        "registry_revision": REGISTRY_REVISION,
+        "canonical_manifest": manifest,
+        "postcondition_manifest_revision": "execution-postconditions-v1",
+    }
+    return MigrationSpec(
+        version=version, migration_id=migration_id, name=name,
+        previous_version=previous, target_version=version,
+        contract_schema_version=SCHEMA_VERSION, contract_version=CONTRACT_VERSION,
+        registry_revision=REGISTRY_REVISION, checksum=_checksum(material),
+    )
+
+
+MIGRATION_REGISTRY = tuple(_make_spec(*descriptor) for descriptor in _DESCRIPTORS)
+
+
+def validate_registry() -> None:
+    versions = [spec.version for spec in MIGRATION_REGISTRY]
+    ids = [spec.migration_id for spec in MIGRATION_REGISTRY]
+    if versions != sorted(set(versions)) or any(spec.target_version != spec.version for spec in MIGRATION_REGISTRY):
+        raise RuntimeError("migration registry versions are not strictly ordered and unique")
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("migration registry migration_id values are not unique")
+    for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7]):
+        if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71:
+            raise RuntimeError(f"migration registry linkage/checksum invalid for version {spec.version}")
+
+
+validate_registry()

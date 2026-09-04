@@ -50,6 +50,7 @@ from app.core.models import (
     sanitize_sensitive_data,
     utc_now,
 )
+from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 from app.core.correlation import get_correlation_id
 
@@ -332,6 +333,7 @@ class DatabaseManager:
         self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
         self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
         self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
+        self._migration_spec = MIGRATION_REGISTRY[-1]
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
             conn.execute("""INSERT INTO schema_migration_events
@@ -341,8 +343,8 @@ class DatabaseManager:
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                 f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
                 "STARTED", now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
-                self._migration_schema_name, 7, 8,
-                "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "PENDING"))
+                self._migration_schema_name, self._migration_spec.previous_version, self._migration_spec.target_version,
+                self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "PENDING"))
 
     def _record_migration_failure(self, exc: Exception) -> None:
         if not getattr(self, "_migration_attempt_id", None):
@@ -355,10 +357,10 @@ class DatabaseManager:
                      previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                      error_class,error_message,context_json,rollback_status)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                    f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
+                    f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version, self._migration_spec.name,
                     event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                     self._migration_schema_name, 7, 8,
-                    "bootstrap-v8", "database-startup", self._migration_transaction_id,
+                    self._migration_spec.checksum, "database-startup", self._migration_transaction_id,
                     type(exc).__name__, str(exc)[:500], "{}", rollback_status))
 
     def _verify_migration_ledger(self, conn) -> None:
@@ -1865,10 +1867,10 @@ class DatabaseManager:
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                  context_json,rollback_status)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version, self._migration_spec.name,
                 "SUCCEEDED", utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, 7, 8,
-                    "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
+                self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
