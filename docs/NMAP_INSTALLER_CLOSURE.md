@@ -129,7 +129,7 @@ This document serves as the authoritative verification and closure record for th
 ### Authoritative Linux GitHub Actions CI Suite
 - **Environment**: Ubuntu Linux runner (`.github/workflows/ci.yml`)
 - **Execution**: Full test fleet runs in standard Linux environment with unconstrained symlink support and POSIX process controls.
-- **Verification Authority**: Zero platform skips for symlink and POSIX process group suites on Linux CI. All symlink rejection, resource integrity, CPIO extraction boundaries, and process launch boundaries execute to full completion.
+- **Verification Authority**: Linux CI provides the authoritative execution environment for symlink and POSIX process group suites. The CI run completed with `616 passed, 3 skipped, 0 failed`; the three skips are the two Subfinder managed-binary runtime checks and one managed Nmap binary check, each skipped because the approved managed executable was not installed on the runner. The available symlink rejection, resource integrity, CPIO extraction boundaries, and process launch boundaries executed to completion.
 
 ---
 
@@ -169,10 +169,10 @@ Completed:
 - Checkpoint 3: Explicit Nmap trust-mode authorization (manifest allowed_trust_modes; binary_trust functions enforce explicit mode authorization)
 - Checkpoint 4: Documentation correction (distinguish Windows local vs Linux CI numbers, accurate platform skip accounting)
 - Checkpoint 5: Full regression (663 passed, 0 failed, 9 platform skips on Windows NT; static security audit verified 0 verify=False, 0 shell=True, 0 trust_env=True, 0 chmod 777)
-- Checkpoint 6: Authoritative CI verification (Run 33843991075: Full repository verification PASSED in 49s, Hardened production image verification PASSED in 9m1s)
+- Checkpoint 6: Authoritative CI verification (Run 33844689260: Full repository verification PASSED with `616 passed, 3 skipped, 0 failed`; Hardened production image verification PASSED in 8m58s)
 
 Remaining:
-None
+- Managed Subfinder and Nmap runtime execution remains unverified in CI when the approved managed binaries are not installed; this is an environment-evidence limitation, not a test failure.
 
 Final Status:
 ACCEPTED — READY FOR REVIEW (DO NOT MERGE TO MAIN)
