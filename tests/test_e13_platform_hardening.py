@@ -107,6 +107,22 @@ def test_run_platform_host_defaults_and_pip_guidance():
     assert "backend/requirements.lock" in content
 
 
+def test_systemd_service_uses_dedicated_non_root_runtime_configuration():
+    """Tool probes must not write configuration beneath the root-owned app directory."""
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    with open(os.path.join(root_dir, "deploy", "cyberassess.service"), "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "User=cyberassess" in content
+    assert "RuntimeDirectory=cyberassess" in content
+    assert "RuntimeDirectoryMode=0700" in content
+    assert "Environment=HOME=/run/cyberassess" in content
+    assert "Environment=XDG_CONFIG_HOME=/run/cyberassess/.config" in content
+    assert "ProtectSystem=full" in content
+    assert "NoNewPrivileges=true" in content
+    assert "/opt/cyberassess/.config" not in content
+
+
 @pytest.mark.asyncio
 async def test_csp_contains_no_unnecessary_external_origins():
     """

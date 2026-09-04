@@ -1,0 +1,38 @@
+[Unit]
+Description=CyberAssess Security Assessment Platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cyberassess
+Group=cyberassess
+WorkingDirectory=/opt/cyberassess
+EnvironmentFile=/etc/cyberassess.env
+Environment=HOST=0.0.0.0
+Environment=PORT=8000
+Environment=PYTHONUNBUFFERED=1
+Environment=OPERATING_MODE=PRODUCTION
+Environment=ALLOWED_ORIGINS=http://192.168.99.66:8000,http://localhost:8000,http://127.0.0.1:8000
+Environment=ENABLE_DOCS=false
+# External tools must write only to this service-owned ephemeral runtime area.
+RuntimeDirectory=cyberassess
+RuntimeDirectoryMode=0700
+Environment=HOME=/run/cyberassess
+Environment=USERPROFILE=/run/cyberassess
+Environment=APPDATA=/run/cyberassess/.config
+Environment=LOCALAPPDATA=/run/cyberassess/.local
+Environment=XDG_CONFIG_HOME=/run/cyberassess/.config
+Environment=XDG_CACHE_HOME=/run/cyberassess/.cache
+Environment=XDG_DATA_HOME=/run/cyberassess/.local/share
+ExecStart=/opt/cyberassess/venv/bin/python run_platform.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/cyberassess/data /opt/cyberassess/backend/bin /run/cyberassess
+
+[Install]
+WantedBy=multi-user.target
