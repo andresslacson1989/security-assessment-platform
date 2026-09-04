@@ -252,14 +252,17 @@ class NmapArtifactInstaller(BaseToolInstaller):
                 continue
 
             # --- Path sanitisation ---
-            # Strip leading ./ and / characters; reject anything that still contains ..
-            clean_name = raw_name.lstrip("./")
-            # Reject absolute paths not caught by lstrip (shouldn't happen but be explicit)
-            if raw_name.startswith("/"):
+            # Inspect raw path components before stripping prefix: normalize \ to /
+            norm_name = raw_name.replace("\\", "/")
+            if norm_name.startswith("/"):
                 raise SecurityError(f"CPIO absolute path rejected: {raw_name}")
-            # Reject traversal sequences anywhere in the path
-            parts = clean_name.replace("\\", "/").split("/")
-            if ".." in parts:
+            raw_parts = norm_name.split("/")
+            if ".." in raw_parts:
+                raise SecurityError(f"CPIO path traversal sequence rejected: {raw_name}")
+
+            # Deliberate single ./ prefix removal
+            clean_name = norm_name[2:] if norm_name.startswith("./") else norm_name
+            if clean_name.startswith("/") or ".." in clean_name.split("/"):
                 raise SecurityError(f"CPIO path traversal sequence rejected: {raw_name}")
 
             # --- Extract relevant entries ---

@@ -162,19 +162,19 @@ Starting SHA:
 40673577c355fa78bfaee92b9bb896156d638ecd
 
 Current checkpoint:
-2
+3
 
 Completed:
 - Checkpoint 1: Resource symlink rejection (fail-closed on any symlink anywhere in resource tree, max entry count limit 4096 enforced)
+- Checkpoint 2: CPIO leading traversal rejection (raw path components inspected before prefix stripping, backslash normalization, reject component == '..', exact prefix check replacing lstrip)
 
 Remaining:
-2. CPIO leading traversal rejection
 3. Explicit Nmap trust-mode authorization
 4. Documentation correction
 5. Full regression
 6. CI verification
 
 Next action:
-Harden CPIO extraction in nmap_artifact_installer.py to reject leading traversal before normalization.
+Enforce explicit trust-mode authorization for Nmap in tool manifest and binary trust verification.
 
 

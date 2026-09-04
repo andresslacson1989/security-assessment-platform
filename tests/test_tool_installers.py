@@ -1312,3 +1312,88 @@ def test_nmap_rpm_extraction_rejects_malformed_hex_in_header():
             extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_leading_parent_traversal_binary():
+    """_extract_rpm_payload raises SecurityError when binary path begins with leading parent traversal."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"../usr/bin/nmap", 4, IS_REG | 0o755)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_leading_parent_traversal_resource():
+    """_extract_rpm_payload raises SecurityError when resource path begins with leading parent traversal."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"../usr/share/nmap/nmap-services", 4, IS_REG | 0o644)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_dot_slash_parent_traversal():
+    """_extract_rpm_payload raises SecurityError when entry contains ./.. traversal sequence."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"./../usr/bin/nmap", 4, IS_REG | 0o755)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_backslash_parent_traversal():
+    """_extract_rpm_payload raises SecurityError when entry contains backslash traversal sequence."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"..\\usr\\bin\\nmap", 4, IS_REG | 0o755)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
