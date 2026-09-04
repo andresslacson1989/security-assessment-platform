@@ -341,7 +341,7 @@ class DatabaseManager:
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                  context_json,rollback_status)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version, self._migration_spec.name,
                 "STARTED", now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, self._migration_spec.previous_version, self._migration_spec.target_version,
                 self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "PENDING"))
