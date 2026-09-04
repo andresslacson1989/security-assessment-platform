@@ -162,19 +162,19 @@ Starting SHA:
 40673577c355fa78bfaee92b9bb896156d638ecd
 
 Current checkpoint:
-3
+4
 
 Completed:
 - Checkpoint 1: Resource symlink rejection (fail-closed on any symlink anywhere in resource tree, max entry count limit 4096 enforced)
 - Checkpoint 2: CPIO leading traversal rejection (raw path components inspected before prefix stripping, backslash normalization, reject component == '..', exact prefix check replacing lstrip)
+- Checkpoint 3: Explicit Nmap trust-mode authorization (manifest allowed_trust_modes; binary_trust functions enforce explicit mode authorization)
 
 Remaining:
-3. Explicit Nmap trust-mode authorization
 4. Documentation correction
 5. Full regression
 6. CI verification
 
 Next action:
-Enforce explicit trust-mode authorization for Nmap in tool manifest and binary trust verification.
+Correct closure documentation in NMAP_INSTALLER_CLOSURE.md (distinguish Windows local vs Linux CI; remove inaccurate 'zero skipped' claim).
 
 

@@ -20,6 +20,7 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v7.95",
         "category": "Network Perimeter",
         "trust_mode": "DIRECT_ARTIFACT_MODE",
+        "allowed_trust_modes": ["DIRECT_ARTIFACT_MODE", "SOURCE_BUILD_MODE"],
         "direct_release_artifact_available": True,
         "source_build": True,
         "download_urls": {

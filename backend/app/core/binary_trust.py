@@ -59,6 +59,17 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_trust_mode_authorized(manifest: dict[str, Any], mode: str) -> bool:
+    """Return True iff the specified trust mode is authorized by the tool manifest."""
+    allowed = manifest.get("allowed_trust_modes")
+    if allowed is not None:
+        return isinstance(allowed, (list, set, tuple)) and mode in allowed
+    raw = manifest.get("trust_mode")
+    if raw is not None:
+        return raw == mode
+    return mode == "DIRECT_ARTIFACT_MODE"
+
+
 def build_resource_manifest(resource_dir: Path) -> dict[str, str]:
     """Produce a deterministic {relative_path: sha256} manifest for a resource tree.
 
@@ -234,14 +245,18 @@ def verify_managed_binary_artifact(
         ):
             return False
 
-        trust_mode = str(manifest.get("trust_mode", "DIRECT_ARTIFACT_MODE"))
-        claims = set(record["claims"])
+        claims = set(record.get("claims", []))
         checksums = manifest.get("sha256_checksums")
         assets = manifest.get("asset_names")
         if not isinstance(checksums, dict) or not isinstance(assets, dict):
             return False
 
-        if "SOURCE_ARCHIVE_INTEGRITY_VERIFIED" in claims or trust_mode == "SOURCE_BUILD_MODE":
+        is_source_build = "SOURCE_ARCHIVE_INTEGRITY_VERIFIED" in claims
+        claimed_mode = "SOURCE_BUILD_MODE" if is_source_build else "DIRECT_ARTIFACT_MODE"
+        if not _is_trust_mode_authorized(manifest, claimed_mode):
+            return False
+
+        if is_source_build:
             source_sha = checksums.get("source_archive")
             source_name = assets.get("source_archive")
             expected_toolchain_sha = (
@@ -311,8 +326,8 @@ def build_direct_artifact_trust_record(
     from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
     manifest = PINNED_TOOL_MANIFEST.get(tool_name)
-    if not isinstance(manifest, dict) or manifest.get("trust_mode") == "SOURCE_BUILD_MODE":
-        raise ValueError("direct-artifact trust requires a direct-release manifest entry")
+    if not isinstance(manifest, dict) or not _is_trust_mode_authorized(manifest, "DIRECT_ARTIFACT_MODE"):
+        raise ValueError("direct-artifact trust is not authorized for this tool")
     path = Path(os.path.abspath(binary))
     managed_dir = get_managed_bin_dir()
     if managed_dir.is_symlink() or not _is_regular_non_symlink(path):
@@ -390,7 +405,9 @@ def build_source_artifact_trust_record(
     from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
     manifest = PINNED_TOOL_MANIFEST.get(tool_name)
-    if not isinstance(manifest, dict) or (manifest.get("trust_mode") != "SOURCE_BUILD_MODE" and "source_revision" not in manifest and "source_commit" not in manifest):
+    if not isinstance(manifest, dict) or not _is_trust_mode_authorized(manifest, "SOURCE_BUILD_MODE"):
+        raise ValueError("source-build trust is not authorized for this tool")
+    if "source_revision" not in manifest and "source_commit" not in manifest:
         raise ValueError("source-build trust requires an approved source-build manifest entry")
     path = Path(os.path.abspath(binary))
     managed_dir = get_managed_bin_dir()
