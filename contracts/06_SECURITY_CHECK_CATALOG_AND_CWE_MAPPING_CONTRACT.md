@@ -132,6 +132,14 @@ and review date; the date MUST be future-dated at approval and periodically
 re-reviewed. An exception is a normalization/registry state and MUST NOT be
 serialized as a normal ASVS control or silently omitted from a finding.
 
+The serialized union discriminator is exactly `kind`. A normal control object
+MUST have only `kind` and `value`, where `value` matches
+`^v5\\.0\\.0-V[0-9]+\\.[0-9]+\\.[0-9]+$`. An exception object MUST have only
+`kind`, `owner`, `rationale`, and `review_date`, where `review_date` is an ISO
+8601 calendar date in UTC (`YYYY-MM-DD`) and `kind` is exactly
+`ASVS_NOT_APPLICABLE`. `ASVS_NOT_APPLICABLE` may appear only as the explicit
+registry/normalization state and never as an ordinary valid ASVS control.
+
 IDs are unique and immutable. Changes require an incremented registry version,
 security-control-owner review, and a migration/replacement entry for
 deprecated IDs. Adapters submit a check ID to the registry validation entry

@@ -156,6 +156,15 @@ maps to `CANCELLED`; and any valid output with incomplete coverage maps to
 `PARTIAL_RESULTS_WITH_WARNING` plus coverage `PARTIAL`. `UNVERIFIED` is never
 an execution result; it is assurance state and blocks assured launch.
 
+Authorization `APPROVED` maps to execution `AUTHORIZED`; `DENIED`,
+`REVOKED`, `EXPIRED`, and `PERMANENTLY_BLOCKED` map to execution
+`EXECUTION_BLOCKED`. Assurance `UNVERIFIED`, `FAILED`, and `EXPIRED` deny
+launch and produce the corresponding blocked reason. A successful execution
+with partial coverage MUST be serialized as `PARTIAL_RESULTS_WITH_WARNING`.
+`ELEVATED_APPROVAL_REQUIRED` is only an operation-policy classification, and
+`PERMANENTLY_BLOCKED` is only a rejection reason, not an additional state
+domain.
+
 ### 1.2 Cross-Cutting Execution Boundary Controls
 
 Every external process launch, including direct callers of `ProcessSupervisor`, MUST pass through one deny-by-default environment builder. Ambient environment merging is prohibited. Each operation declares an explicit environment allowlist; secret-like variables, loader variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`), interpreter injection variables (`PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS`), arbitrary API/auth tokens, and ambient proxy variables are excluded unless a separately authorized, tool-specific policy injects an exact value. `SCANNER_EGRESS_PROXY` may be translated only by the egress policy and must never inherit arbitrary proxy settings.

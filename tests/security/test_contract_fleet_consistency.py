@@ -1,5 +1,6 @@
 """Regression checks for the authoritative 26-tool contract fleet."""
 
+import ast
 from pathlib import Path
 import re
 
@@ -49,6 +50,25 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
         assert match, f"missing document version header: {contract_file.name}"
         contract_headers.append(match.group(1))
     assert contract_headers == [CONTRACT_VERSION] * len(contract_headers)
+
+    traceability = contract_08.split("## 5. Security Invariant Traceability Matrix", 1)[1].split(
+        "## 6. Adversarial Test Vectors", 1
+    )[0]
+    for row in traceability.splitlines():
+        if not row.startswith("|") or row.startswith("|---") or row.startswith("| Requirement"):
+            continue
+        references = re.findall(r"`(tests/[^`]+)`", row)
+        for reference in references:
+            if "::" not in reference:
+                assert "(suite-scoped)" in row, f"unqualified test reference: {reference}"
+                assert (repository_root / reference).is_file(), f"missing test suite: {reference}"
+                continue
+            test_path, test_name = reference.split("::", 1)
+            source_path = repository_root / test_path
+            assert source_path.is_file(), f"missing test file: {test_path}"
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=test_path)
+            symbols = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            assert test_name in symbols, f"missing test symbol: {reference}"
 
     assert "26 specialized security tool adapters" in contract_01
     assert "across seven security domains" in contract_01
