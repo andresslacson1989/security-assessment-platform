@@ -1309,6 +1309,9 @@ class DatabaseManager:
         """Atomically authorize a request or return an idempotent/conflict result."""
         correlation_id = get_correlation_id()
         if not correlation_id:
+            # This is an infrastructure precondition failure, not evidence
+            # that the supplied approver identity was authenticated.  The
+            # fixed system actor deliberately preserves that distinction.
             rejection_correlation_id = f"corr-{uuid.uuid4().hex}"
             with self._connection_scope() as conn:
                 request_row = conn.execute(

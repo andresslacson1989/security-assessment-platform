@@ -342,6 +342,36 @@ def test_authorized_request_without_run_fails_closed_at_api_observation_boundary
     assert exc_info.value.status_code == 409
 
 
+def test_api_approval_maps_missing_correlation_to_sanitized_503(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from app.api import executions
+
+    class CorrelationUnavailableStore:
+        def approve_execution_request(self, *args, **kwargs):
+            return "CORRELATION_REQUIRED", None, None
+
+    original_store = executions.db_manager
+    original_session = executions._session_jti
+    executions.db_manager = CorrelationUnavailableStore()
+    executions._session_jti = lambda authorization, current_user: "session-a"
+    try:
+        user = UserProfile(id="admin-a", username="admin", email="admin@example.test", role=UserRole.ADMIN, organization_id="org-a")
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(executions.approve_execution_request(
+                "req-a",
+                executions.ApprovalPayload(request_fingerprint="f" * 64, confirm_owned_target=True),
+                authorization="Bearer token",
+                idempotency_key="approval-idem",
+                current_user=user,
+            ))
+    finally:
+        executions.db_manager = original_store
+        executions._session_jti = original_session
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Execution observability context is unavailable; approval was not applied."
+
+
 def test_revoke_route_resolves_request_id_to_linked_decision():
     import asyncio
     from app.api import executions

@@ -340,11 +340,13 @@ def test_postgres_approval_requires_correlation_without_authority_mutation():
             request = conn.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = %s", ("req-correlation",)).fetchone()
             decisions = conn.execute("SELECT COUNT(*) AS count FROM execution_decisions WHERE organization_id = %s", ("org-correlation",)).fetchone()
             runs = conn.execute("SELECT COUNT(*) AS count FROM execution_runs WHERE organization_id = %s", ("org-correlation",)).fetchone()
-            event = conn.execute("SELECT action, result, actor, organization_id, object_type, object_id, details_json, correlation_id, previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s", ("req-correlation",)).fetchone()
+            events = conn.execute("SELECT action, result, actor, organization_id, object_type, object_id, details_json, correlation_id, previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s AND organization_id = %s", ("req-correlation", "org-correlation")).fetchall()
         assert request["state"] == "REQUESTED"
         assert request["approved_decision_id"] is None
         assert decisions["count"] == 0
         assert runs["count"] == 0
+        assert len(events) == 1
+        event = events[0]
         assert event["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
         assert event["result"] == "FAILURE"
         assert event["actor"] == "system"
@@ -353,8 +355,10 @@ def test_postgres_approval_requires_correlation_without_authority_mutation():
         assert event["object_id"] == "req-correlation"
         assert event["correlation_id"].startswith("corr-")
         assert event["previous_event_hash"] is None
+        assert event["event_hash"]
         assert event["sequence_number"] == 1
         assert '"reason_code": "CORRELATION_REQUIRED"' in event["details_json"]
+        assert manager.verify_audit_log_integrity() == (True, None)
         _assert_audit_event_hash(event)
 
 
