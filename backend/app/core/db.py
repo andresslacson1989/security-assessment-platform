@@ -846,6 +846,59 @@ class DatabaseManager:
                         raise ValueError("execution_runs remediation failed postcondition: tenant parent key is not unique")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (remediation_version, utc_now().isoformat()))
 
+            # Migration rows prove history, not present-day schema integrity.
+            # Recheck the safety-critical execution invariants on every startup
+            # so post-migration drift fails closed instead of being accepted.
+            if isinstance(self, PostgresDatabaseManager):
+                run_index = conn.execute("""
+                    SELECT 1 FROM pg_class i
+                    JOIN pg_index x ON x.indexrelid = i.oid
+                    JOIN pg_class t ON t.oid = x.indrelid
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    WHERE i.relname = 'uq_execution_runs_request'
+                      AND t.relname = 'execution_runs' AND n.nspname = current_schema()
+                      AND x.indisunique
+                """).fetchone()
+                if not run_index:
+                    raise ValueError("execution schema health check failed: unique execution-run request index is absent")
+                final_constraints = conn.execute("""
+                    SELECT array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                           array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+                    FROM pg_constraint c
+                    JOIN pg_class t ON t.oid = c.conrelid
+                    JOIN pg_class pt ON pt.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                    JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                    JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                      ON parent_cols.ordinality = local_cols.ordinality
+                    JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+                    WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                      AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                      AND c.contype = 'f'
+                    GROUP BY c.conname
+                """).fetchall()
+                exact = [row for row in final_constraints if list(row["local_columns"] or []) == ["request_id", "organization_id"] and list(row["parent_columns"] or []) == ["id", "organization_id"]]
+                if len(exact) != 1:
+                    raise ValueError("execution schema health check failed: expected exactly one composite tenant foreign key")
+            else:
+                run_indexes = conn.execute("PRAGMA index_list(execution_runs)").fetchall()
+                if not any(index["unique"] and index["name"] == "uq_execution_runs_request" for index in run_indexes):
+                    raise ValueError("execution schema health check failed: unique execution-run request index is absent")
+                health_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                health_groups = {}
+                for row in health_rows:
+                    health_groups.setdefault(row["id"], []).append(row)
+                if not any(
+                    len(rows) == 2
+                    and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                    == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                    and all(row["table"] == "execution_requests" for row in rows)
+                    for rows in health_groups.values()
+                ):
+                    raise ValueError("execution schema health check failed: composite tenant foreign key is absent")
+
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
     # ========================================================================

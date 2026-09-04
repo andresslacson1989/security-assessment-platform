@@ -361,3 +361,14 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     with database._connection_scope() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
         assert versions[-2:] == [1, 2]
+
+
+def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "version-two-drift.db"
+    database = DatabaseManager(db_path)
+    with database._connection_scope() as conn:
+        conn.execute("DROP INDEX uq_execution_runs_request")
+    with pytest.raises(ValueError, match="schema health check"):
+        DatabaseManager(db_path)
