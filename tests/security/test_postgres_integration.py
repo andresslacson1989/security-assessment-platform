@@ -90,6 +90,22 @@ def _seed_request_and_run(manager):
         """, ("run-preflight", "request-preflight", "org-preflight", "FAILED", "UNVERIFIED", "UNAVAILABLE", now))
 
 
+def _drop_execution_run_foreign_keys(manager):
+    with manager._connection_scope() as conn:
+        constraints = conn.execute("""
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = 'execution_runs'
+              AND n.nspname = current_schema()
+              AND c.contype = 'f'
+        """).fetchall()
+        for constraint in constraints:
+            name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
+            conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT {name}")
+
+
 def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
     with _isolated_manager() as manager:
         with manager._connection_scope() as conn:
@@ -228,6 +244,7 @@ def test_postgres_migration_rejects_duplicate_runs_before_recording_version():
 
 def test_postgres_migration_rejects_orphaned_run_before_recording_version():
     with _isolated_manager() as manager:
+        _drop_execution_run_foreign_keys(manager)
         with manager._connection_scope() as conn:
             conn.execute("DROP INDEX uq_execution_runs_request")
             conn.execute("""
@@ -240,3 +257,5 @@ def test_postgres_migration_rejects_orphaned_run_before_recording_version():
             conn.execute("DELETE FROM schema_migrations WHERE version = 2")
         with pytest.raises(ValueError, match="orphaned or cross-tenant"):
             PostgresDatabaseManager(manager.database_url)
+        with psycopg.connect(manager.database_url, autocommit=True) as connection:
+            assert connection.execute("SELECT 1 FROM schema_migrations WHERE version IN (1, 2)").fetchone() is None
