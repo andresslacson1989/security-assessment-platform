@@ -196,7 +196,7 @@ class CanonicalFinding(BaseModel):
     contextual_risk_score: float
     cwe_id: Optional[str] = None
     owasp_category: Optional[str] = None
-    asvs_control: Optional[str] = None  # Exact version-qualified ASVS 5.0.0 identifier
+    asvs_control: str  # Exact version-qualified ASVS 5.0.0 identifier, or explicit registry exception state
     nist_control: Optional[str] = None
     status: FindingLifecycleStatus = FindingLifecycleStatus.OPEN
     first_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -214,11 +214,11 @@ class CanonicalFinding(BaseModel):
 
 ### 4.1 Finding taxonomy and persistence invariants
 
-`asvs_control`, when present, MUST match the version-qualified format
-`v5.0.0-V<chapter>.<section>.<requirement>` and MUST resolve to the versioned
-Contract 06 registry. A finding or occurrence with an unknown, deprecated, or
-unversioned control identifier MUST be rejected or represented as an explicit
-normalization failure; it MUST NOT be silently emitted as a valid finding.
+`asvs_control` MUST match the version-qualified format
+`v5.0.0-V<chapter>.<section>.<requirement>` or an explicit Contract 06 registry
+exception state. A finding or occurrence with an unknown, deprecated,
+unversioned, or absent control identifier MUST be rejected or represented as an
+explicit normalization failure; it MUST NOT be silently emitted as valid.
 
 Tenant-owned `CanonicalFinding`, `FindingOccurrence`, `ScanJob`, and `Asset`
 relationships MUST be enforced by database foreign keys and tenant-consistency

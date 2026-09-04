@@ -125,6 +125,23 @@ After promotion, the installer MUST verify the exact executable path, executable
 
 Metasploit and sqlmap MUST install their complete upstream distributions. Hydra MUST install its complete upstream protocol/module capability. GTFOBins/LOLBAS MUST use the reviewed, pinned native catalog and does not require a binary installer. Full capability is preserved; execution policy, target authorization, credentials, resource budgets, and process supervision govern use after installation.
 
+### 2.2.3 Machine-readable supply-chain evidence
+
+Each managed installation MUST produce a machine-readable evidence record before
+promotion. Required fields are `verifier`, `verified_at`, `commit_or_image_digest`,
+`tool_id`, `tool_version`, `platform`, `architecture`, `source_url_or_repository`,
+`archive_sha256`, `executable_sha256`, `resource_tree_sha256`, `version_output`,
+`signature_result`, `provenance_result`, `evidence_location`, and
+`reverification_expires_at`. Source builds additionally record immutable source
+identity, build inputs, toolchain identity, and reproducibility result.
+
+Each field has an explicit state: `VERIFIED`, `UNVERIFIED`, `NOT_APPLICABLE`, or
+`FAILED`. `UNVERIFIED` is not equivalent to success and cannot satisfy assured
+execution where the field is required. Prose, a version string, or a mutable
+sidecar alone is not supply-chain evidence. Records are tenant-independent
+installation evidence, immutable after promotion, auditable, and reverified at
+the declared expiry and at every assured process launch.
+
 ### 2.3 Strict Verification Invariants
 - **No Silent Bypass:** If `expected_sha256` is missing or invalid, installation MUST FAIL CLOSED.
 - **Approved source-build exceptions:** Trivy `v0.50.0` and Nmap `7.95` may use `SOURCE_BUILD_MODE` because

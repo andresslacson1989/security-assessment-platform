@@ -91,14 +91,37 @@ helper behavior MUST NOT redefine them silently.
 ### 5.1 Versioned check registry
 
 The canonical, versioned check registry is the sole authority for `check_id`,
-CWE, OWASP, ASVS, and NIST mappings. Every emitted finding MUST resolve its
-`check_id` in that registry and MUST carry the corresponding exact,
-version-qualified `asvs_control` value when the check has an ASVS mapping.
+CWE, OWASP, ASVS, and NIST mappings. Every catalog entry and canonical finding
+MUST carry an ASVS control matching the version-qualified format
+`v5.0.0-V<chapter>.<section>.<requirement>` and MUST resolve to that registry.
+There are no implicit ASVS omissions. If a check is genuinely inapplicable,
+the registry MUST carry an explicit approved exception with owner, rationale,
+review date, and the `ASVS_NOT_APPLICABLE` normalization state; an ordinary
+finding MUST NOT use a null ASVS value.
 Direct, duplicated mapping literals in adapters are prohibited unless generated
 from the registry. Deprecated IDs MUST fail validation rather than being
 silently aliased. CI MUST produce a deterministic report of registry entries,
 emitted IDs, missing mappings, deprecated IDs, and unmapped findings; acceptance
 requires zero unexplained mappings.
+
+### 5.1.1 Canonical registry artifact
+
+The authoritative registry artifact is
+`backend/app/core/security_check_registry.py`, mirrored in
+`docs/security_check_registry.json` when a generated exchange artifact is
+published. The Python artifact is the source of truth; JSON is generated and
+MUST NOT be edited independently. Each entry contains `check_id`, `title`,
+`cwe_id`, `owasp_category`, `asvs_control` or the explicit exception state,
+`nist_control`, `registry_version`, `status`, `owner`, `deprecated_at`,
+`replacement_check_id`, and `evidence_normalization`.
+
+IDs are unique and immutable. Changes require an incremented registry version,
+security-control-owner review, and a migration/replacement entry for
+deprecated IDs. Adapters submit a check ID to the registry validation entry
+point and receive the canonical mapping; they MUST NOT maintain duplicate
+taxonomy dictionaries. CI MUST report duplicate IDs, missing required fields,
+unknown/deprecated emitted IDs, invalid ASVS values, missing owners, and
+unapproved exceptions, and MUST fail on any unexplained result.
 
 ### 5.2 Evidence digest canonicalization
 

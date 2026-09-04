@@ -91,9 +91,22 @@ To prevent denial of service and server resource exhaustion:
 
 ---
 
-## 6. Safety & Non-Destructive Operations
+## 6. Safety, Authorization & Full-Capability Operations
 
-All assessment engines operate strictly within a non-destructive framework:
-- **No Destructive Payloads:** Prohibits SQL `DROP`/`DELETE`/`UPDATE`, live shell commands, filesystem wiping, memory corruption, or real data exfiltration.
+CyberAssess does not water down the installed tools or remove upstream modules, options, protocols, payloads, dictionaries, or rule coverage. The platform separates capability from authority. A capability may be fully available while an individual execution remains unauthorized.
+
+### 6.1 Operation classes
+
+- **Default unattended:** Read-only and non-destructive assessment operations may run through approved scan profiles with server-derived targets, bounded resources, and normal tenant authorization.
+- **Elevated approved automation:** Legitimate offensive, exploit-verification, sqlmap extraction/takeover, Metasploit payload/session/post-exploitation, and Hydra credential-resilience operations may run only after an explicit administrator decision. The decision MUST identify the tenant, project, asset owner, immutable target seal, exact tool operation/options, policy version, expiry, worker, resource and account-impact budgets, credential envelope, emergency-stop authority, and audit correlation ID.
+- **Isolated/manual-approved:** An operation may require a dedicated isolated worker or human-in-the-loop confirmation when its impact cannot be safely bounded for unattended execution. This is an execution state, not a claim that the tool lacks the capability.
+- **Permanently prohibited:** CyberAssess MUST permanently reject execution that bypasses tenant or target authorization, uses an untrusted executable, escapes the approved destination, evades isolation or budgets, exposes credentials, suppresses audit evidence, continues after expiry/cancellation, or performs uncontrolled activity outside the typed policy request. These are control-plane violations, not removed tool capabilities.
+- **Deferred/unverified:** A capability whose artifact, provenance, host prerequisite, adapter, or policy control is not verified MUST be reported as `UNVERIFIED` or `DEFERRED` and MUST fail closed for assured execution.
+
+The approving authority is an authenticated administrator with the required tenant/tool scope. Asset ownership or delegated authorization MUST be verified before approval. Credentials MUST be tenant-scoped, purpose-bound, time-limited, and excluded from logs and evidence. The worker MUST be isolated and cancellable; exhaustion of time, output, network, or account-impact budget MUST stop the process and produce an auditable rejection or degraded state. Emergency stop MUST be available to the approving authority and platform security operator.
+
+The authorization decision is revalidated immediately before process launch and during long-running execution where supported. Missing, expired, revoked, mismatched, or replayed decisions return `EXECUTION_BLOCKED` or `AUTHORIZATION_REQUIRED`; they MUST NOT be relabeled `NOT_SUPPORTED` or `MANUAL_ONLY`.
+
+Benign defaults remain preferred for ordinary assessments:
 - **Benign Probes Only:** SQL injection uses timing delays (`SLEEP(2)`) and benign boolean reflections (`1=1`). XSS uses inert elements (`<script>/*probe*/</script>`).
 - **Active Parameter Fuzzing:** Rate-bounded, non-destructive parameter probes with full reproduction `curl` generation.

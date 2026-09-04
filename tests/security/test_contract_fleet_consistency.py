@@ -108,7 +108,12 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     )
     assert "Enterprise cross-cutting security and automation vectors" in contract_08
     assert "Full-capability automated-tool vectors" in contract_08
-    assert "asvs_control" in (canonical / "02_DATA_SCHEMA_AND_MODELS_CONTRACT.md").read_text()
+    contract_02 = (canonical / "02_DATA_SCHEMA_AND_MODELS_CONTRACT.md").read_text(encoding="utf-8")
+    assert "asvs_control: str" in contract_02
+    assert "ASVS_NOT_APPLICABLE" in (
+        canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md"
+    ).read_text(encoding="utf-8")
+    assert "14.3.0" in contract_02
     detailed_sections = re.findall(r"^## TOOL (\d{2}):", contract_09, re.MULTILINE)
     assert detailed_sections == [f"{index:02d}" for index in range(1, 27)]
     traceability_rows = [line for line in contract_09.splitlines() if line.startswith("| `TOOL-")]

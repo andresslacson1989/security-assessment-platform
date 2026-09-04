@@ -25,6 +25,17 @@ The platform MUST preserve the complete upstream capability surface while applyi
 
 Full-capability automation requires managed artifact identity, exact version verification, pre-launch integrity verification, typed argument construction, no shell injection, tenant-scoped credentials where applicable, destination/egress governance, process isolation, bounded resources, cancellation, sanitized evidence, durable telemetry, and explicit normalized failure/coverage states. Unsupported host prerequisites or missing authorization MUST produce `AUTHORIZATION_REQUIRED` or `EXECUTION_BLOCKED`, not a false “manual-only” classification.
 
+### 1.2 Current assurance status of the four requested tools
+
+The full-capability promise is normative future behavior, not current acceptance
+evidence. Metasploit, sqlmap, and Hydra are `DEFERRED` for full-capability
+automation until their production adapters, typed execution boundary, policy
+decisions, credential controls, and runtime tests are complete. GTFOBins/LOLBAS
+is `DEFERRED` for complete-catalog assurance until the catalog revision,
+complete-rule coverage, and production evaluation evidence are recorded. Existing
+bounded/manual tests are baseline safety evidence only and MUST NOT be cited as
+proof of full-capability automation.
+
 ### 1.1 The Ten Fundamental Tool Execution Invariants
 
 1. **The Target Validation & Normative Target Binding Invariant (Contract 01 §3, Contract 08 §2):**
@@ -71,7 +82,7 @@ Full-capability automation requires managed artifact identity, exact version ver
    - **Exact Version Enforcement:** The adapter MUST enforce `actual_version == approved_version` during runtime probe. Any version discrepancy triggers `INVALID_VERSION` and blocks tool execution.
 
 4. **The Process Supervision & Non-Destructive Invariant (Contract 03 §3, Contract 05 §2):**
-   All subprocess executions are governed exclusively through `ProcessSupervisor` with isolated process groups, strict execution timeouts (default 60s), 10MB output buffers, and recursive process tree termination on cancellation or timeout. Destructive exploits and data dumps are prohibited in automated modes.
+   All subprocess executions are governed exclusively through `ProcessSupervisor` with isolated process groups, strict execution timeouts (default 60s), 10MB output buffers, and recursive process tree termination on cancellation or timeout. Powerful offensive operations are unavailable to default unattended profiles and require the elevated policy-decision contract; uncontrolled or governance-bypassing execution remains permanently prohibited.
 
 5. **The Deterministic Output & Parser Invariant (Contract 06 §1, Contract 06 §2):**
    Tool output is untrusted input. Every adapter must validate schema integrity and transform raw observations into canonical `Finding` objects mapped to explicit CWE, OWASP Top 10, ASVS 5.0, and NIST SP 800-53 controls with cryptographic SHA-256 evidence digests (`evidence_hash`).
@@ -3589,7 +3600,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3635,7 +3646,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3681,7 +3692,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3727,7 +3738,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3773,7 +3784,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3829,10 +3840,10 @@ Stderr: Diagnostic logs
 | `TOOL-KUBE-BENCH` | Kube-Bench | `PRIVILEGED` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-K8S-002` | `tests/test_adapters.py::TestKubeBenchAdapter` | Aqua Security |
 | `TOOL-DOCKLE` | Dockle | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-DOCKER-001/2` | `tests/test_adapters.py::TestDockleAdapter` | GoodWithTech |
 | `TOOL-AMASS` | Amass | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `AUXILIARY` | `NET-OSINT-001` | `tests/security/test_extended_adapters_assurance.py` | OWASP Amass |
-| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | Rapid7 |
-| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` | sqlmap Project |
-| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE / CREDENTIAL_AWARE` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | THC-Hydra |
-| `TOOL-GTFOBINS` | GTFOBins / LOLBAS | `HOST_ANALYSIS` | `NATIVE_ENGINE_MODE` | `AUXILIARY` | `HOST-PRIV-001`, `HOST-SUDO-001` | `tests/security/test_gtfobins_assurance.py` | GTFOBins / LOLBAS |
+| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE / DEFERRED` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` (baseline only); future production-boundary suite required | Rapid7 |
+| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE / DEFERRED` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` (baseline only); future production-boundary suite required | sqlmap Project |
+| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE / CREDENTIAL_AWARE` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE / DEFERRED` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` (baseline only); future production-boundary suite required | THC-Hydra |
+| `TOOL-GTFOBINS` | GTFOBins / LOLBAS | `HOST_ANALYSIS` | `NATIVE_ENGINE_MODE` | `COMPLETE_REVIEWED_CATALOG / DEFERRED` | `HOST-PRIV-001`, `HOST-SUDO-001` | `tests/security/test_gtfobins_assurance.py` (baseline only); catalog revision and complete-rule suite required | GTFOBins / LOLBAS |
 
 ---
 

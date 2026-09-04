@@ -115,21 +115,21 @@ If an archive checksum does not match, the installer MUST abort immediately, del
 
 | Requirement | Contract Section | Implementation Source | Production Test Suite |
 |---|---|---|---|
-| Identity & RBAC | Contract 01 §3, Contract 04 §2 | `app/core/auth.py`, `app/api/auth.py` | `tests/security/test_authentication_invariants.py` |
-| Multi-Tenancy & IDOR | Contract 04 §2, Contract 08 §1 | `app/core/auth.py`, `app/api/assets.py` | `tests/security/test_tenant_isolation.py` |
-| SSRF & DNS Pinning | Contract 01 §3, Contract 08 §2 | `app/core/ssrf_protector.py` | `tests/security/test_ssrf_gateway.py`, `test_dns_rebinding.py` |
-| Hop-by-Hop Redirects | Contract 04 §1.5, Contract 08 §2 | `app/core/ssrf_protector.py`, `app/api/tools.py` | `tests/security/test_redirect_security.py` |
-| Workspace Jail | Contract 01 §3, Contract 08 §3 | `app/core/path_sandbox.py` | `tests/security/test_workspace_jail.py` |
-| Supply Chain Integrity | Contract 03 §2, Contract 08 §4 | `app/installers/tool_manifest.py` | `tests/security/test_tool_supply_chain.py` |
-| Process Supervisor | Contract 03 §3 | `app/core/process_supervisor.py` | `tests/security/test_process_supervisor.py` |
-| DB Authority & Persistence | Contract 01 §3, Contract 02 §4 | `app/core/db.py`, `app/core/storage.py` | `tests/security/test_database_authority.py` |
-| Tamper-Evident Audit Logs | Contract 02 §6, Contract 04 §1 | `app/core/db.py`, `app/api/auth.py` | `tests/security/test_audit_integrity.py` |
-| Canonical Findings & SLA | Contract 02 §4, Contract 05 §2 | `app/core/correlator.py`, `app/core/db.py` | `tests/security/test_finding_lifecycle.py` |
-| Evidence Masking & Health | Contract 01 §3, Contract 04 §3 | `app/core/sanitizer.py`, `app/api/export.py` | `tests/security/test_evidence_integrity.py` |
+| Identity & RBAC | Contract 01 §3, Contract 04 §2 | `backend/app/core/auth.py`, `backend/app/api/auth.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_000_production_fails_closed_without_jwt_secret`; `tests/security/test_adversarial_sec_matrix.py::test_sec_001_authentication_bypass_rejection`; `tests/security/test_auth_tenant_boundaries.py` |
+| Multi-Tenancy & IDOR | Contract 04 §2, Contract 08 §1 | `backend/app/core/auth.py`, `backend/app/api/assets.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_003_cross_tenant_asset_access_idor`; `test_sec_004_cross_tenant_scan_access_idor`; `test_sec_005_cross_tenant_finding_access_idor` |
+| SSRF & DNS Pinning | Contract 01 §3, Contract 08 §2 | `backend/app/core/ssrf_protector.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_006_ssrf_localhost_blocked`; `test_sec_007_ssrf_private_subnets_blocked`; `test_sec_008_ssrf_cloud_metadata_blocked`; `test_sec_009_ssrf_dns_rebinding_pre_resolution`; `test_sec_009b_ssrf_dns_rebinding_during_validated_target_construction` |
+| Hop-by-Hop Redirects | Contract 04 §1.5, Contract 08 §2 | `backend/app/core/ssrf_protector.py`, `backend/app/api/tools.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_009_ssrf_dns_rebinding_pre_resolution`; `tests/test_e13_repeater_hardening.py` |
+| Workspace Jail | Contract 01 §3, Contract 08 §3 | `backend/app/core/path_sandbox.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_010_filesystem_escape_blocked`; `test_sec_011_symlink_escape_blocked`; `tests/test_e13_platform_hardening.py` |
+| Supply Chain Integrity | Contract 03 §2, Contract 08 §4 | `backend/app/installers/tool_manifest.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_017_tool_hash_mismatch_rejection`; `test_sec_017_caller_digest_cannot_override_authoritative_manifest`; `test_sec_018_unpinned_tool_rejection`; `tests/test_e13_supply_chain_integrity.py` |
+| Process Supervisor | Contract 03 §3 | `backend/app/core/process_supervisor.py` | `tests/security/test_process_launch_boundary.py::test_adapters_and_engines_have_no_direct_process_launches`; `tests/test_e13_process_isolation.py` |
+| DB Authority & Persistence | Contract 01 §3, Contract 02 §4 | `backend/app/core/db.py`, `backend/app/core/storage.py` | `tests/security/test_adversarial_sec_matrix.py::test_database_connections_enable_foreign_keys`; `test_sec_029_database_transaction_integrity`; `tests/security/test_database_backend.py` |
+| Tamper-Evident Audit Logs | Contract 02 §6, Contract 04 §1 | `backend/app/core/db.py`, `backend/app/api/auth.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_023_audit_log_integrity`; `tests/security/test_auth_tenant_boundaries.py::test_bootstrap_audit_event_is_chained_and_correlated` |
+| Canonical Findings & SLA | Contract 02 §4, Contract 05 §2 | `backend/app/core/correlator.py`, `backend/app/core/db.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_025_sla_clock_preservation`; `test_sec_026_correlation_false_merge_prevention`; `test_sec_027_correlation_duplicate_merging` |
+| Evidence Masking & Health | Contract 01 §3, Contract 04 §3 | `backend/app/core/models.py`, `backend/app/api/export.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_022_evidence_secret_masking`; `test_sec_028_report_secret_leakage_sanitization`; `test_sec_022_persistence_and_audit_boundaries_redact_sensitive_values` |
 
 ---
 
-## 6. Adversarial Test Vectors & Tool Mock Fixtures (v14.0.0)
+## 6. Adversarial Test Vectors & Tool Mock Fixtures (v14.3.0)
 
 ### 6.1 Capability Detection Cache Vectors
 The authenticated capability endpoint uses a process-local 60-second cache and must be tested for cache hits, expiry-triggered live detection, `refresh=true` bypass, one shared live refresh under concurrency, adapter-configuration isolation, and invalidation after installation success, reinstall, cancellation, or failure. The authenticated toolbox endpoint follows the same backend-owned cache discipline for its 26 installation/status records and accepts `refresh=true` for deliberate live refresh. Responses must expose live-versus-cached source and age metadata where applicable. A failed refresh must not return stale status as current, and cached capability or toolbox status must never bypass runtime binary trust checks. This behavior requires no database schema or persisted tool-status state.

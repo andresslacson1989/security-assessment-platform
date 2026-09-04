@@ -65,6 +65,83 @@ The complete upstream capability of Metasploit, sqlmap, and Hydra MUST be instal
 
 The API MUST return explicit states for installed capability, authorization required, blocked execution, failed installation, cancelled installation, and degraded coverage. It MUST NOT label a trusted, installed full-capability tool as permanently manual-only merely because the requested operation requires approval.
 
+#### 1.5.1.2 Typed Tool Execution Request and Policy Decision
+
+All automated tool execution MUST enter through this shared contract, whether
+requested directly or selected by a scan profile. Adapters MUST NOT invent
+tool-specific authorization models.
+
+```json
+{
+  "request_id": "req-...",
+  "idempotency_key": "idem-...",
+  "correlation_id": "corr-...",
+  "tenant_id": "org-...",
+  "project_id": "prj-...",
+  "asset_id": "ast-...",
+  "validated_target_seal": "seal-...",
+  "tool_id": "TOOL-METASPLOIT",
+  "operation": {"kind": "typed-operation", "module_or_protocol": "...", "options": {}},
+  "execution_mode": "DEFAULT_UNATTENDED",
+  "policy_version": "14.3.0",
+  "decision_id": "dec-...",
+  "approving_principal": "usr-...",
+  "expires_at": "2026-...Z",
+  "resource_budget": {"deadline_seconds": 60, "output_bytes": 10485760},
+  "account_impact_budget": {"attempts": 0},
+  "credential_envelope_ref": null,
+  "worker_identity": "worker-..."
+}
+```
+
+The server validates tenant/project/asset ownership, the immutable target seal,
+tool identity, operation and typed options, policy version, decision status,
+approving principal, expiry/revocation, budgets, credential-envelope scope,
+idempotency, and correlation. It derives executable paths, workspace/output
+paths, destinations, Host/SNI, and credential locations. Clients MUST NOT
+submit executable paths, shell strings, arbitrary environment variables,
+credential values or paths, output paths, raw provider configuration, or
+unvalidated destinations.
+
+`DEFAULT_UNATTENDED` selects the bounded non-destructive profile. `ELEVATED`
+requires a non-revoked, unexpired administrator decision and permits the
+complete upstream operation surface subject to the operation class, target,
+worker, credential, resource, and account-impact controls in Contract 01 §6.
+Approval is single-purpose, non-transferable, and cannot be replayed after
+completion or cancellation. A launch revalidates the decision and target seal.
+
+The canonical result states are `REQUESTED`, `AUTHORIZED`, `AUTHORIZATION_REQUIRED`,
+`EXECUTION_BLOCKED`, `STARTING`, `RUNNING`, `SUCCEEDED`, `PARTIAL_RESULTS_WITH_WARNING`,
+`FAILED`, `TIMED_OUT`, `CANCELLED`, `DEGRADED_COVERAGE`, and `UNVERIFIED`. Each
+state includes request ID, decision ID where applicable, worker identity,
+policy version, timestamps, coverage information, and a sanitized reason code.
+The API returns `202 Accepted` for an accepted job, `401/403` for authentication
+or authorization failure, `409` for idempotency/replay conflict, and `422` for
+invalid typed options. SSE emits `execution.requested`, `execution.authorized`,
+`execution.started`, `execution.progress`, `execution.completed`, or
+`execution.rejected`; all events are tenant-scoped and sanitized.
+
+Every request, decision, rejection, launch, cancellation, timeout, budget stop,
+credential-envelope use, and terminal result produces a durable tamper-evident
+audit event. Worker identity and correlation are mandatory. The execution
+service is the only component permitted to translate an authorized typed
+request into a ProcessSupervisor invocation.
+
+#### 1.5.1.3 Capability, assurance, and execution state separation
+
+Capability state answers whether a feature is present: `AVAILABLE`, `LIMITED`,
+`DEFERRED`, `HOST_UNAVAILABLE`, or `NOT_SUPPORTED`. Assurance state answers
+whether the artifact and runtime are trusted: `VERIFIED`, `UNVERIFIED`,
+`FAILED`, or `EXPIRED`. Execution state answers whether this request may run:
+`AUTHORIZED`, `AUTHORIZATION_REQUIRED`, `EXECUTION_BLOCKED`, `RUNNING`,
+`SUCCEEDED`, `PARTIAL_RESULTS_WITH_WARNING`, `FAILED`, `TIMED_OUT`, or
+`CANCELLED`. Each state has a reason code such as `MISSING_APPROVAL`,
+`APPROVAL_EXPIRED`, `TARGET_SEAL_MISMATCH`, `UNTRUSTED_EXECUTABLE`,
+`HOST_PREREQUISITE_MISSING`, `BUDGET_EXHAUSTED`, or `CAPABILITY_DEFERRED`.
+`NOT_SUPPORTED` MUST mean a permanently unsupported platform capability only;
+it MUST NOT represent missing approval, a safe default profile, a failed
+installation, or an unverified feature.
+
 ### 1.5.1 Capability Status Snapshot (`/api/system/capabilities`)
 - `GET /api/system/capabilities`: Authenticated (`system:read`) observational capability status for the complete 26-tool fleet.
 - The default response is served from a process-local, 60-second cache keyed by the effective adapter configuration. Responses identify `capabilities_source` (`LIVE` or `CACHE`), `capabilities_checked_at`, `capabilities_cache_age_seconds`, and `capabilities_cache_ttl_seconds`.
