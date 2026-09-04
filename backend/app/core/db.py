@@ -474,8 +474,11 @@ class DatabaseManager:
                     "claimed_at", "completed_at", "last_error", "claimed_by", "claim_token",
                     "lease_expires_at", "correlation_id"}
         if isinstance(self, PostgresDatabaseManager):
-            rows = conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'").fetchall()
-            if {r["column_name"] for r in rows} != required:
+            rows = conn.execute("""SELECT column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'""").fetchall()
+            actual = {r["column_name"]: (str(r["data_type"]).lower(), r["is_nullable"], r["column_default"]) for r in rows}
+            expected = {name: ("text", "NO" if name in {"execution_id", "organization_id", "state", "attempt_count", "created_at"} else "YES", "'PENDING'::text" if name == "state" else "0" if name == "attempt_count" else None) for name in required}
+            if set(actual) != required or any(actual[n] != expected[n] for n in required):
                 raise RuntimeError("execution dispatch schema columns drifted")
             fk = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
                 JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
@@ -486,10 +489,27 @@ class DatabaseManager:
                   AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='organization_id')]""").fetchone()
             if not fk or int(fk["count"]) != 1:
                 raise RuntimeError("execution dispatch schema requires exactly one tenant-bound foreign key")
+            legacy = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
+                  AND c.contype='f' AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='execution_id')]""").fetchone()
+            if legacy and int(legacy["count"]) != 0:
+                raise RuntimeError("execution dispatch schema contains a legacy single-column run foreign key")
+            parent = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON TRUE
+                JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
+                WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid HAVING array_agg(a.attname ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
+            if len(parent) != 1:
+                raise RuntimeError("execution dispatch schema lacks exact parent execution key")
         else:
             rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
             if {r["name"] for r in rows} != required:
                 raise RuntimeError("execution dispatch schema columns drifted")
+            sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"].upper()
+            if "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
+                raise RuntimeError("execution dispatch schema lacks state/attempt constraints")
         grouped = {}
         for row in conn.execute("PRAGMA foreign_key_list(execution_dispatch_intents)").fetchall() if not isinstance(self, PostgresDatabaseManager) else []:
             grouped.setdefault(row["id"], []).append(row)
@@ -1446,8 +1466,10 @@ class DatabaseManager:
                     elif int(fk_count["count"]) > 1:
                         raise RuntimeError("dispatch migration v8 found duplicate tenant-bound foreign keys")
                 else:
-                    # Safe recovery from an interrupted, migration-owned rebuild.
-                    conn.execute("DROP TABLE IF EXISTS execution_dispatch_intents_v8")
+                    # Never delete an ambiguous recovery artifact.  A prior
+                    # interrupted migration must be reconciled explicitly.
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents_v8'").fetchone():
+                        raise RuntimeError("dispatch migration v8 found an existing recovery artifact; manual reconciliation required")
                     conn.execute("""CREATE TABLE execution_dispatch_intents_v8 (
                         execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
                         state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
