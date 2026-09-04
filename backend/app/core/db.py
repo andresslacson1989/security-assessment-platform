@@ -864,10 +864,14 @@ class DatabaseManager:
             # so post-migration drift fails closed instead of being accepted.
             if isinstance(self, PostgresDatabaseManager):
                 run_index = conn.execute("""
-                    SELECT array_agg(a.attname ORDER BY key_cols.ordinality) AS columns
+                    SELECT array_agg(a.attname ORDER BY key_cols.ordinality) AS columns,
+                           am.amname AS access_method,
+                           x.indnkeyatts,
+                           x.indnatts
                     FROM pg_class i
                     JOIN pg_index x ON x.indexrelid = i.oid
                     JOIN pg_class t ON t.oid = x.indrelid
+                    JOIN pg_am am ON am.oid = i.relam
                     JOIN pg_namespace n ON n.oid = t.relnamespace
                     JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
                     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
@@ -876,13 +880,23 @@ class DatabaseManager:
                       AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
                     GROUP BY i.oid
                 """).fetchall()
-                if not any(list(row["columns"] or []) == ["request_id", "organization_id"] for row in run_index):
+                if not any(
+                    list(row["columns"] or []) == ["request_id", "organization_id"]
+                    and row["access_method"] == "btree"
+                    and row["indnkeyatts"] == 2
+                    and row["indnatts"] == 2
+                    for row in run_index
+                ):
                     raise ValueError("execution schema health check failed: unique execution-run request index is absent")
                 parent_index = conn.execute("""
-                    SELECT array_agg(a.attname ORDER BY key_cols.ordinality) AS columns
+                    SELECT array_agg(a.attname ORDER BY key_cols.ordinality) AS columns,
+                           am.amname AS access_method,
+                           x.indnkeyatts,
+                           x.indnatts
                     FROM pg_class i
                     JOIN pg_index x ON x.indexrelid = i.oid
                     JOIN pg_class t ON t.oid = x.indrelid
+                    JOIN pg_am am ON am.oid = i.relam
                     JOIN pg_namespace n ON n.oid = t.relnamespace
                     JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
                     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
@@ -891,11 +905,18 @@ class DatabaseManager:
                       AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
                     GROUP BY i.oid
                 """).fetchall()
-                if not any(list(row["columns"] or []) == ["id", "organization_id"] for row in parent_index):
+                if not any(
+                    list(row["columns"] or []) == ["id", "organization_id"]
+                    and row["access_method"] == "btree"
+                    and row["indnkeyatts"] == 2
+                    and row["indnatts"] == 2
+                    for row in parent_index
+                ):
                     raise ValueError("execution schema health check failed: tenant parent unique key is absent")
                 final_constraints = conn.execute("""
                     SELECT array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
-                           array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+                           array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns,
+                           c.convalidated
                     FROM pg_constraint c
                     JOIN pg_class t ON t.oid = c.conrelid
                     JOIN pg_class pt ON pt.oid = c.confrelid
@@ -911,9 +932,32 @@ class DatabaseManager:
                       AND c.contype = 'f'
                     GROUP BY c.conname
                 """).fetchall()
-                exact = [row for row in final_constraints if list(row["local_columns"] or []) == ["request_id", "organization_id"] and list(row["parent_columns"] or []) == ["id", "organization_id"]]
+                exact = [
+                    row for row in final_constraints
+                    if list(row["local_columns"] or []) == ["request_id", "organization_id"]
+                    and list(row["parent_columns"] or []) == ["id", "organization_id"]
+                    and row["convalidated"]
+                ]
                 if len(exact) != 1:
                     raise ValueError("execution schema health check failed: expected exactly one composite tenant foreign key")
+                legacy_constraints = conn.execute("""
+                    SELECT COUNT(*) AS count
+                    FROM pg_constraint c
+                    JOIN pg_class t ON t.oid = c.conrelid
+                    JOIN pg_class pt ON pt.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                    JOIN unnest(c.conkey) AS local_cols(attnum) ON TRUE
+                    JOIN unnest(c.confkey) AS parent_cols(attnum) ON TRUE
+                    WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                      AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                      AND c.contype = 'f'
+                      AND array_length(c.conkey, 1) = 1 AND array_length(c.confkey, 1) = 1
+                      AND (SELECT attname FROM pg_attribute WHERE attrelid = t.oid AND attnum = local_cols.attnum) = 'request_id'
+                      AND (SELECT attname FROM pg_attribute WHERE attrelid = pt.oid AND attnum = parent_cols.attnum) = 'id'
+                """).fetchone()
+                if legacy_constraints and legacy_constraints["count"]:
+                    raise ValueError("execution schema health check failed: legacy request-only foreign key remains")
             else:
                 run_indexes = conn.execute("PRAGMA index_list(execution_runs)").fetchall()
                 run_index_valid = False

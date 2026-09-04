@@ -38,6 +38,40 @@ jobs:
           JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
         run: python -m pytest -q
 
+  postgres-integration:
+    name: PostgreSQL 16 schema assurance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cyberassess_ci
+          POSTGRES_PASSWORD: cyberassess_ci_only
+          POSTGRES_DB: cyberassess_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cyberassess_ci -d cyberassess_ci"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - name: Install dependencies
+        run: python -m pip install --require-hashes --requirement backend/requirements.lock
+      - name: Run real PostgreSQL schema assurance
+        env:
+          CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
+          OPERATING_MODE: TEST
+          JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+        run: python -m pytest -q tests/security/test_postgres_integration.py
+
   container:
     name: Hardened production image verification
     runs-on: ubuntu-latest
