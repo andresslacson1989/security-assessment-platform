@@ -30,16 +30,15 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     canonical = repository_root / "contracts"
     mirror = repository_root / "docs" / "contracts"
 
-    contract_01 = (canonical / "01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md").read_text()
-    contract_03 = (canonical / "03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md").read_text()
-    contract_04 = (canonical / "04_API_AND_STREAMING_EVENTS_CONTRACT.md").read_text()
-    contract_07 = (canonical / "07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md").read_text()
-    contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text()
-    contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text()
-    contract_04 = (canonical / "04_API_AND_STREAMING_EVENTS_CONTRACT.md").read_text()
-    assurance_matrix = (repository_root / "docs" / "TOOL_ASSURANCE_MATRIX.md").read_text()
-    dockerfile = (repository_root / "Dockerfile").read_text()
-    models = (repository_root / "backend" / "app" / "core" / "models.py").read_text()
+    contract_01 = (canonical / "01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md").read_text(encoding="utf-8")
+    contract_03 = (canonical / "03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md").read_text(encoding="utf-8")
+    contract_04 = (canonical / "04_API_AND_STREAMING_EVENTS_CONTRACT.md").read_text(encoding="utf-8")
+    contract_07 = (canonical / "07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md").read_text(encoding="utf-8")
+    contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text(encoding="utf-8")
+    contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text(encoding="utf-8")
+    assurance_matrix = (repository_root / "docs" / "TOOL_ASSURANCE_MATRIX.md").read_text(encoding="utf-8")
+    dockerfile = (repository_root / "Dockerfile").read_text(encoding="utf-8")
+    models = (repository_root / "backend" / "app" / "core" / "models.py").read_text(encoding="utf-8")
     frontend_index = (repository_root / "frontend" / "index.html").read_text(encoding="utf-8")
 
     assert "26 specialized security tool adapters" in contract_01
@@ -90,7 +89,17 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     expected_matrix_ids.add("TOOL-RETIREJS")
     assert matrix_tool_ids == expected_matrix_ids
     assert "Part II defines all 26 supported tools" in contract_09
-    assert "five auxiliary/manual adapter specifications" in contract_09
+    assert "policy-gated automation specifications" in contract_09
+    assert "Full-Capability Tool Principle" in contract_09
+    assert "complete supported command, module, protocol, and option surface" in contract_03
+    assert "Tool Installation and Full-Capability Execution Requests" in contract_04
+    assert "recursive evidence sanitizer" in contract_04
+    assert "Contract Authority and Registry Reconciliation" in (
+        (canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md").read_text(encoding="utf-8")
+    )
+    assert "Enterprise cross-cutting security and automation vectors" in contract_08
+    assert "Full-capability automated-tool vectors" in contract_08
+    assert "asvs_control" in (canonical / "02_DATA_SCHEMA_AND_MODELS_CONTRACT.md").read_text()
     detailed_sections = re.findall(r"^## TOOL (\d{2}):", contract_09, re.MULTILINE)
     assert detailed_sections == [f"{index:02d}" for index in range(1, 27)]
     traceability_rows = [line for line in contract_09.splitlines() if line.startswith("| `TOOL-")]
@@ -145,4 +154,4 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     }
 
     for contract_file in canonical.glob("*.md"):
-        assert (mirror / contract_file.name).read_text() == contract_file.read_text()
+        assert (mirror / contract_file.name).read_text(encoding="utf-8") == contract_file.read_text(encoding="utf-8")

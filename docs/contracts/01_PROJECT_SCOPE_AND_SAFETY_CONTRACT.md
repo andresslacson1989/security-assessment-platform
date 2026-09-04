@@ -18,9 +18,9 @@ CyberAssess is logically separated into:
 
 The platform orchestrates an authoritative fleet of **26 specialized security tool adapters** backed by native fallback engines across seven security domains:
 - **Network Perimeter & EASM:** `nmap`, `sslyze`, `subfinder`, `httpx`, `amass`
-- **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`, `sqlmap`, `schemathesis`
-- **Exploitation & Auxiliary Verification:** `metasploit` (strictly non-destructive auxiliary scanners)
-- **Authentication & Password Resilience:** `hydra` (bounded, explicitly authorized credential-resilience auditing)
+- **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`, `sqlmap` (full upstream capability surface with policy-gated automation), `schemathesis`
+- **Exploitation & Auxiliary Verification:** `metasploit` (full upstream capability surface with policy-gated automation)
+- **Authentication & Password Resilience:** `hydra` (full upstream capability surface with policy-gated credential-resilience automation)
 - **SAST & Secrets:** `semgrep`, `bandit`, `gitleaks`, `trufflehog`, `retire`
 - **Supply Chain & SCA:** `trivy`, `syft`, `grype`, `osv-scanner`
 - **Cloud, K8s & Host Posture:** `checkov`, `prowler`, `kube-bench`, `dockle`, `gtfobins` (host/privesc rule engine)

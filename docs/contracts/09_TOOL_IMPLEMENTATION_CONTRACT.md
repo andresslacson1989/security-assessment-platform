@@ -4,7 +4,7 @@
 **Document Version:** 14.3.0 (Authoritative 26-Tool Fleet Implementation Specifications, Normative Destination Binding, Strict Provenance Governance & Multi-Tier Execution State Architecture)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Authority:** Platform Core Architecture, Tool Adapter Layer, Process Supervisor & Verification Pipeline  
-**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. Part II defines all 26 supported tools, including the five auxiliary/manual adapter specifications in §4.1–§4.5; no supported tool is outside this authoritative specification.
+**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. Part II defines all 26 supported tools, including the policy-gated automation specifications in §4.1–§4.5; no supported tool is outside this authoritative specification.
 **Dependencies:** Contract 01 (Scope & Safety), Contract 02 (Data Schemas), Contract 03 (Engine & Plugin Interface), Contract 04 (API & Streaming), Contract 05 (Deliverables & Acceptance), Contract 06 (Check Catalog & CWE Mapping), Contract 07 (Frontend UI/UX), Contract 08 (Technical Implementation & Test Vectors).
 
 ---
@@ -16,6 +16,14 @@
 This authoritative contract governs the integration, execution, sandboxing, parsing, normalization, and supply-chain governance of every external security tool in CyberAssess.
 
 No security tool may execute within the CyberAssess ecosystem unless it strictly satisfies the 41-point specification, normative schemas, and foundational invariants defined in this contract.
+
+### 1.1 Full-Capability Tool Principle
+
+Metasploit, sqlmap, Hydra, and the GTFOBins/LOLBAS engine MUST be automated as complete capabilities within their technical domains. “Automated” means that CyberAssess can install, detect, authorize, invoke, supervise, parse, persist, and report the tool through its governed production path. It does not mean that the platform may silently replace the upstream tool with a reduced implementation.
+
+The platform MUST preserve the complete upstream capability surface while applying policy at the execution boundary. A default profile may select a conservative operation, but any supported higher-impact operation MUST have a defined authorization path rather than being mislabeled `NOT_SUPPORTED`. The authorization decision MUST bind tenant, project, asset, immutable target, tool, requested operation/options, policy version, resource budget, and approving principal. An installation record or capability snapshot alone MUST never grant that decision.
+
+Full-capability automation requires managed artifact identity, exact version verification, pre-launch integrity verification, typed argument construction, no shell injection, tenant-scoped credentials where applicable, destination/egress governance, process isolation, bounded resources, cancellation, sanitized evidence, durable telemetry, and explicit normalized failure/coverage states. Unsupported host prerequisites or missing authorization MUST produce `AUTHORIZATION_REQUIRED` or `EXECUTION_BLOCKED`, not a false “manual-only” classification.
 
 ### 1.1 The Ten Fundamental Tool Execution Invariants
 
@@ -3569,14 +3577,14 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: executable msfconsole; upstream Rapid7 Metasploit Framework.
   - 2. Purpose: governed auxiliary TLS verification; role SPECIALIZED; class ACTIVE_READ_ONLY.
-  - 3. Automated capability is restricted to auxiliary/scanner/ssl/openssl_heartbleed.
-  - 4. Exploit modules, payloads, sessions, shells, and arbitrary resource scripts are forbidden.
-  - 5. Execution mode is MANUAL_MODE unless managed trust, ValidatedTarget, and active-probing authorization pass.
+  - 3. Full upstream modules, payloads, sessions, and supported resource capabilities are available through typed policy-gated requests.
+  - 4. The default unattended profile is non-destructive auxiliary verification; exploit delivery, payloads, sessions, shells, persistence, post-exploitation, and arbitrary scripts require explicit elevated authorization and isolated worker policy.
+  - 5. Execution mode is `POLICY_GATED_AUTOMATION`; a request is executable only after managed trust, `ValidatedTarget`, operation authorization, and resource policy pass.
   - 6. Unmanaged PATH/custom binaries are diagnostic-only and fail closed for assured execution.
   - 7. Version probe is msfconsole -v and must match the manifest-approved exact version.
   - 8. Invocation is fixed msfconsole -q -x with server-generated RHOSTS/RPORT, run, and exit.
   - 9. Host is normalized and port is restricted to 1 through 65535.
-  - 10. No user-provided Metasploit script or module is accepted.
+  - 10. User requests may select an upstream module and typed options only through server-side validation and policy authorization; raw shell/resource-script injection is never accepted.
   - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
@@ -3615,9 +3623,9 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: executable sqlmap; upstream sqlmap project.
   - 2. Purpose: bounded SQL injection verification; role SPECIALIZED; class ACTIVE_INTRUSIVE.
-  - 3. Automated capability is limited to batch banner and low-risk injection verification.
-  - 4. Dumping, OS shell, file read/write, takeover, and equivalent escalation flags are forbidden.
-  - 5. Execution mode is MANUAL_MODE until managed trust, ValidatedTarget, and active authorization pass.
+  - 3. Full upstream sqlmap options remain available through typed policy-gated requests.
+  - 4. Dumping, OS shell, file read/write, takeover, and equivalent high-impact options require explicit elevated authorization and are blocked only when that decision is absent or denied.
+  - 5. Execution mode is `POLICY_GATED_AUTOMATION`; a request is executable only after managed trust, `ValidatedTarget`, operation authorization, and resource policy pass.
   - 6. PATH/custom installations are diagnostic-only and fail closed for assured execution.
   - 7. Version probe is sqlmap --version and must match the manifest-approved exact version.
   - 8. Invocation fixes batch, banner, level 1, risk 1, timeout 15, retries 1, threads 2, and output directory.
@@ -3707,9 +3715,9 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: executable hydra; upstream THC-Hydra.
   - 2. Purpose: explicit credential-resilience audit; role SPECIALIZED; class STATE_CHANGING.
-  - 3. Capability is limited to small, explicitly authorized credential-audit checks.
-  - 4. Unrestricted brute force, arbitrary modules, and unrestricted dictionaries are forbidden.
-  - 5. Execution mode is MANUAL_MODE until managed trust, ValidatedTarget, active authorization, and credential-audit authorization pass.
+  - 3. Full upstream protocol, module, and dictionary capabilities remain available through typed policy-gated credential-audit requests.
+  - 4. Unbounded brute force is not an unattended default; broader audits require explicit credential-audit authorization, a tenant-scoped secret envelope, target-owner approval, and a recorded account-impact budget.
+  - 5. Execution mode is `POLICY_GATED_AUTOMATION`; a request is executable only after managed trust, `ValidatedTarget`, active authorization, credential-audit authorization, and resource policy pass.
   - 6. Unmanaged PATH/custom binaries are diagnostic-only and fail closed for assured execution.
   - 7. Version probe is hydra -h and must match the manifest-approved exact version.
   - 8. Invocation fixes approved protocol, -t 2, -W 1, -f, JSON output, and server-derived files.
@@ -3753,7 +3761,7 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: native GTFOBinsAdapter using repository-controlled GTFOBins/LOLBAS rule catalogs.
   - 2. Purpose: host/container privilege-escalation rule evaluation; role SPECIALIZED; class NATIVE_ENGINE_MODE.
-  - 3. Capability is static/native evaluation of supplied observations only.
+  - 3. Capability is complete automated static/native evaluation of all reviewed GTFOBins/LOLBAS rules against supplied observations; it does not execute escalation recipes.
   - 4. It never executes escalation recipes, spawns a subprocess, or performs exploit delivery.
   - 5. Execution mode is native; no external artifact installation or binary trust is required.
   - 6. Catalog and rule data are governed as reviewed application code/data.
@@ -3821,9 +3829,9 @@ Stderr: Diagnostic logs
 | `TOOL-KUBE-BENCH` | Kube-Bench | `PRIVILEGED` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-K8S-002` | `tests/test_adapters.py::TestKubeBenchAdapter` | Aqua Security |
 | `TOOL-DOCKLE` | Dockle | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-DOCKER-001/2` | `tests/test_adapters.py::TestDockleAdapter` | GoodWithTech |
 | `TOOL-AMASS` | Amass | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `AUXILIARY` | `NET-OSINT-001` | `tests/security/test_extended_adapters_assurance.py` | OWASP Amass |
-| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY` | `MANUAL_MODE` | `AUXILIARY` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | Rapid7 |
-| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE` | `MANUAL_MODE` | `AUXILIARY` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` | sqlmap Project |
-| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE` | `MANUAL_MODE` | `AUXILIARY` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | THC-Hydra |
+| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | Rapid7 |
+| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` | sqlmap Project |
+| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE / CREDENTIAL_AWARE` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | THC-Hydra |
 | `TOOL-GTFOBINS` | GTFOBins / LOLBAS | `HOST_ANALYSIS` | `NATIVE_ENGINE_MODE` | `AUXILIARY` | `HOST-PRIV-001`, `HOST-SUDO-001` | `tests/security/test_gtfobins_assurance.py` | GTFOBins / LOLBAS |
 
 ---

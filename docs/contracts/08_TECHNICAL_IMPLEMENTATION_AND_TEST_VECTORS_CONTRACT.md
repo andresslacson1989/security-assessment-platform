@@ -236,3 +236,84 @@ MOCK_HOST_AUDIT_INPUT = {
 # 2. HOST-SUDO-001 (NOPASSWD /usr/bin/vim -> GTFOBins execution match)
 ```
 
+### 6.6 Enterprise cross-cutting security and automation vectors
+
+The following vectors are mandatory acceptance evidence. Each vector MUST
+exercise the production boundary named below, not only an isolated helper. The
+traceability record MUST reference the actual repository test path and test
+name; a planned or nonexistent test file is not evidence.
+
+1. **Environment isolation:** `ProcessSupervisor` and every direct caller use a
+   deny-by-default environment builder. Secret-like variables, dynamic loader
+   variables, interpreter/module path variables, arbitrary tokens, and ambient
+   proxy variables are excluded. Allowed variables are operation-specific and
+   explicitly reviewed. Direct `os.environ` expansion fails the vector.
+2. **Recursive output sanitization:** findings, tool output, telemetry,
+   comments, exceptions, API responses, SSE, history replay, and exports all
+   pass the same recursive sanitizer after authorization and before emission or
+   persistence. Nested mappings, sequences, models, and exception text are
+   covered.
+3. **IPv6 target binding:** compressed and expanded IPv6 literals, bracketed
+   URL forms, Host/SNI, native HTTP, and CLI target paths resolve to one
+   canonical identity. No colon-delimited string split may discard IPv6 data.
+4. **Internal-target authorization:** the internal-target decision is persisted
+   narrowly and bound to tenant, actor, asset, immutable target seal,
+   destination, purpose, policy version, and expiry. Downstream engines
+   revalidate the decision; a detached boolean is insufficient.
+5. **Taxonomy registry:** every emitted `check_id` and ASVS control resolves to
+   the versioned Contract 06 registry, and CI reports zero unexplained direct
+   literals, missing IDs, deprecated IDs, or unmapped findings.
+6. **Evidence vectors:** digest inputs and masking use the exact Contract 06
+   canonicalization, including no implicit trim/delimiter and six-prefix,
+   four-suffix, literal-six-asterisk masking. Short values are non-reversible.
+7. **Toolbox single-flight:** concurrent refreshes for one effective
+   configuration share one live operation; each tool has explicit success,
+   failure, timeout, and degraded-coverage state and the aggregate snapshot
+   includes checked and failure timestamps. Different configurations do not
+   share results.
+8. **Version authority:** API, UI, exporters, rulesets, migrations, and
+   contracts derive metadata from `backend/app/core/version.py`; CI rejects
+   stale hardcoded release/schema/contract versions.
+9. **Supply-chain manifest:** each managed tool has an evidence-backed,
+   platform/architecture-specific acquisition record with approved source,
+   digest/signature/provenance/build inputs where applicable. Unknown values
+   remain unverified; no digest or provenance claim may be invented.
+10. **JWT key normalization:** configured key IDs are normalized consistently
+    before lookup and rotation; whitespace variants cannot select a different
+    key or bypass rotation policy.
+11. **Degraded history coverage:** git-history and other scanners distinguish
+    execution failure, unavailable history, and zero findings. Failure MUST NOT
+    be converted to an empty successful result.
+12. **Deep target immutability:** nested target collections and authorization
+    metadata cannot be mutated after sealing, including through retained input
+    references.
+13. **Relational integrity:** tenant-owned scan, finding, occurrence, and asset
+    relationships have database-enforced foreign keys/constraints and
+    transactional tests for invalid cross-tenant and orphan writes.
+14. **Traceability integrity:** every Contract 08 requirement maps to an actual
+    implementation and test path. Stale references are acceptance failures.
+
+### 6.7 Full-capability automated-tool vectors
+
+Metasploit, sqlmap, and Hydra MUST be tested as complete upstream-capability
+adapters, not reduced "manual-only" substitutes. GTFOBins/LOLBAS MUST be tested
+as the complete reviewed native rule catalog. Vectors MUST prove:
+
+- managed installation is an authenticated, idempotent, serialized,
+  deadline-bounded job with quarantine, extraction safety, atomic promotion,
+  artifact/executable/provenance claim separation, and fail-closed trust;
+- capability availability never authorizes execution, and each request carries
+  tenant/project/asset/target-seal/tool/operation/options/policy/budget/principal;
+- raw shell strings, executable paths, credential locations, provider selection,
+  and unvalidated destinations cannot cross the adapter boundary;
+- the complete upstream module/payload/option/protocol/dictionary surface
+  remains available to an authorized policy, while default profiles select
+  bounded operations without deleting capability;
+- exploit, payload, session, shell, persistence, post-exploitation, high-risk
+  SQLi options, and credential-resilience operations require explicit elevated
+  authorization, isolated worker permissions, resource/account-impact budgets,
+  and auditable decisions;
+- installation, cancellation, failure, cache invalidation, and post-install
+  live detection produce normalized durable telemetry and never trigger from
+  login, page refresh, or anonymous requests.
+

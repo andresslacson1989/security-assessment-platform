@@ -81,3 +81,56 @@ Sensitive credentials MUST be masked BEFORE storage, logging, SSE transmission, 
 - **API Keys / JWTs / Bearer Tokens:** Retain first 6 and last 4 characters; mask middle with `******` (e.g., `eyJhbG******9abc`).
 - **Passwords / Connection Strings:** Completely replace credential components (e.g., `postgres://user:********@db:5432/app`).
 - **Private Keys:** Mask internal key material, preserving header and footer markers only.
+
+## 5. Contract Authority and Registry Reconciliation
+
+Contract 06 is authoritative for finding taxonomy, evidence identity, and secret
+masking. Implementations MUST conform to these exact rules; tests or existing
+helper behavior MUST NOT redefine them silently.
+
+### 5.1 Versioned check registry
+
+The canonical, versioned check registry is the sole authority for `check_id`,
+CWE, OWASP, ASVS, and NIST mappings. Every emitted finding MUST resolve its
+`check_id` in that registry and MUST carry the corresponding exact,
+version-qualified `asvs_control` value when the check has an ASVS mapping.
+Direct, duplicated mapping literals in adapters are prohibited unless generated
+from the registry. Deprecated IDs MUST fail validation rather than being
+silently aliased. CI MUST produce a deterministic report of registry entries,
+emitted IDs, missing mappings, deprecated IDs, and unmapped findings; acceptance
+requires zero unexplained mappings.
+
+### 5.2 Evidence digest canonicalization
+
+The normative digest is exactly:
+
+```text
+evidence_hash = SHA-256(UTF-8(observed_value + location))
+```
+
+The concatenation has no delimiter, implicit trimming, case conversion, or
+serialization transformation unless a future contract revision explicitly
+defines one. The exact observed value and location used as inputs MUST be
+captured in the evidence-normalization record without retaining prohibited
+secrets. Any implementation that uses a delimiter or trims inputs is
+non-conforming until reconciled and covered by contract vectors.
+
+### 5.3 Exact masking vectors
+
+For API keys, JWTs, and bearer tokens, the canonical representation retains the
+first six and last four characters and replaces the entire middle with the
+literal `******`. Values shorter than eleven characters MUST use a defined
+non-reversible short-value policy and MUST never expose the original secret;
+the short-value policy must be tested and documented before production use.
+Passwords and connection-string credentials MUST be replaced as credential
+components, preserving only non-sensitive structural context. Private-key
+material MUST preserve only the header/footer markers. Sanitization MUST occur
+before persistence, logs, SSE, API responses, history replay, exports, and
+errors, and the same recursive sanitizer MUST be used at each boundary.
+
+### 5.4 Acceptance status
+
+The current repository requires implementation reconciliation for the digest and
+masking vectors above before Contract 06 can be marked fully accepted. This is
+an explicit evidence gap, not permission to weaken the contract to match an
+unverified helper implementation.

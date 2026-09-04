@@ -57,12 +57,22 @@ The normal refresh, authentication, capability-refresh, toolbox-refresh, install
 - `GET /api/system/tools/events`: SSE stream for tool installation progress.
 - `GET /api/system/tools`: Authenticated (`tool:read`) list of all 26 toolbox installation/status records. The response is produced by a process-local backend snapshot with a 60-second TTL; `GET /api/system/tools?refresh=true` forces a live backend refresh. Installation success, reinstall, cancellation, and failure invalidate the snapshot before terminal telemetry is emitted.
 
+#### 1.5.1.1 Tool Installation and Full-Capability Execution Requests
+
+`POST /api/system/tools/{tool_name}/install` creates an authenticated, administrator-authorized backend installation job. It MUST be idempotent, serialized per tool, bounded by a job deadline, and observable through sanitized SSE and durable audit events. The endpoint MUST never accept arbitrary download URLs, digests, executable paths, shell commands, provider credentials, or unvalidated arguments from the client.
+
+The complete upstream capability of Metasploit, sqlmap, and Hydra MUST be installable and available after the managed artifact is verified. GTFOBins/LOLBAS MUST be maintained as a complete reviewed native rule catalog rather than represented as an absent external binary. Installation and capability status are observational; an execution request requires a separate authorization decision bound to tenant, project, asset, target seal, tool, requested operation/options, policy version, resource budget, and approving principal.
+
+The API MUST return explicit states for installed capability, authorization required, blocked execution, failed installation, cancelled installation, and degraded coverage. It MUST NOT label a trusted, installed full-capability tool as permanently manual-only merely because the requested operation requires approval.
+
 ### 1.5.1 Capability Status Snapshot (`/api/system/capabilities`)
 - `GET /api/system/capabilities`: Authenticated (`system:read`) observational capability status for the complete 26-tool fleet.
 - The default response is served from a process-local, 60-second cache keyed by the effective adapter configuration. Responses identify `capabilities_source` (`LIVE` or `CACHE`), `capabilities_checked_at`, `capabilities_cache_age_seconds`, and `capabilities_cache_ttl_seconds`.
 - `GET /api/system/capabilities?refresh=true` deliberately bypasses the cache and performs one live detection for that configuration. Concurrent requests share one live refresh; expired entries are refreshed and are never silently presented as current.
 - Detection failures are returned as failures; stale status is not returned as a current or trusted result. Capability registration is observational only and never authorizes tool execution. Scan orchestration performs its own live checks and pre-launch trust/version verification.
 - Toolbox installation status is also observational and does not authorize execution; runtime trust and exact-version checks remain live at the process-launch boundary.
+
+All API, SSE, historical replay, and error responses containing tool output, findings, telemetry, comments, or exception text MUST pass through the canonical recursive evidence sanitizer before serialization. Tenant authorization is applied before sanitization and response emission so that sanitization cannot turn an unauthorized object into an observable object.
 
 #### 1.5.2 Backend-Owned Observation Service
 

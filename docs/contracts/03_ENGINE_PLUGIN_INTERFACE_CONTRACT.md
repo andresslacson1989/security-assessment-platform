@@ -90,10 +90,40 @@ Binary installation must follow this strict 8-step lifecycle:
 8. REGISTRATION: Register active tool status with the platform adapter registry. Capability registration and backend-owned toolbox/system capability snapshots are observational only; cached status MUST NOT replace live pre-launch executable integrity and exact-version verification.
 ```
 
+### 1.1 Full-Capability Automation and Authorization Boundary
+
+Automation MUST orchestrate the upstream tool; it MUST NOT silently replace, cripple, or permanently remove upstream capabilities. The complete supported command, module, protocol, and option surface remains available to an authorized execution policy. Safety is enforced at the CyberAssess control plane and process-launch boundary through authorization, target binding, resource governance, and auditability—not by misrepresenting a reduced tool as the full tool.
+
+Each automated request MUST be represented as a typed, server-validated execution request containing the tenant, project, asset, immutable `ValidatedTarget`, tool identity, exact requested operation, policy version, authorization decision, and resource budget. The adapter MUST construct the final argument vector without shell interpolation. Client input MUST NOT directly provide an executable path, shell string, output path, credential location, or unvalidated destination.
+
+The platform MUST distinguish `CAPABILITY_AVAILABLE`, `EXECUTION_AUTHORIZED`, `AUTHORIZATION_REQUIRED`, `EXECUTION_BLOCKED`, and `NATIVE_ENGINE_READY`. A default assessment profile MAY select conservative operations, but that default MUST NOT be represented as a permanent capability restriction. Higher-impact operations require an explicit policy decision, appropriate tenant authorization, isolated worker permissions, bounded resources, and an auditable decision record. Installation or capability detection alone MUST never authorize execution.
+
+### 1.2 Cross-Cutting Execution Boundary Controls
+
+Every external process launch, including direct callers of `ProcessSupervisor`, MUST pass through one deny-by-default environment builder. Ambient environment merging is prohibited. Each operation declares an explicit environment allowlist; secret-like variables, loader variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`), interpreter injection variables (`PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS`), arbitrary API/auth tokens, and ambient proxy variables are excluded unless a separately authorized, tool-specific policy injects an exact value. `SCANNER_EGRESS_PROXY` may be translated only by the egress policy and must never inherit arbitrary proxy settings.
+
+All output boundaries MUST use one mandatory sanitizer before persistence, logging, API response, SSE publication, historical replay, export, or exception rendering. The sanitizer must recursively process strings, mappings, sequences, Pydantic models, exception text, finding evidence, comments, and telemetry. It must mask API keys, JWTs, bearer tokens, passwords, connection strings, and private-key material while preserving a deterministic evidence digest of the sanitized representation. No adapter, orchestrator, API route, or exporter may bypass this boundary.
+
+Target binding MUST preserve the complete canonical IP value, including IPv6, without colon-based string splitting. Bracketed IPv6 URL syntax, selected destinations, Host/SNI values, target identity, integrity seals, native HTTP transports, and CLI adapters must all derive from the same validated target decision. Internal targets require a persisted, narrowly scoped authorization decision bound to tenant, actor, asset, target seal, allowed destination, purpose, and expiry; downstream engines must revalidate that decision and may not infer it from a boolean request flag.
+
+`ValidatedTarget` operational immutability includes nested addresses, scope, authorization context, and any mutable metadata. Nested structures MUST be immutable or defensively copied and mutation attempts MUST fail or be detected before execution. Database relationships for tenant-owned findings, occurrences, scans, and assets MUST enforce referential and tenant integrity transactionally, subject to an explicitly governed retention/purge policy.
+
 ### 2.2.1 Managed Package-Adapter Resolution
 For every adapter backed by `PACKAGE_MANAGER_MODE`, the shared adapter resolver MUST search the installer-owned per-tool virtual environment before the active application environment, system `PATH`, or platform auto-discovery paths. Capability discovery and runtime execution MUST resolve the same canonical managed executable path. An explicit custom path may be used for diagnostics, but it MUST remain subject to the managed trust gate and MUST NOT be treated as enterprise-assured merely because it reports the approved version. A missing, inaccessible, or unverified managed environment MUST remain fail-closed and MUST expose the native fallback/degraded state.
 
 Version probes that require a tool configuration file MUST use a server-selected, non-writing configuration path and MUST NOT depend on permissions or files in the service working directory.
+
+### 2.2.2 Automated Installation Job Contract
+
+Tool installation is a backend job, never a frontend side effect. It MUST require authenticated administrative authorization, a unique idempotency key, a per-tool installation lock, a bounded job deadline, and a durable audit trail. Login, page refresh, capability observation, scan creation, and anonymous requests MUST NOT start installation.
+
+The installer MUST select an acquisition strategy from the approved manifest: verified direct artifact, approved verified source build, verified package-manager installation, or verified isolated language-package environment. The manifest MUST identify the exact tool, version, platform, architecture, acquisition URL or repository identity, archive/executable digests, signature or provenance evidence where available, build inputs, toolchain identity, installer version, and policy approval. Missing, conflicting, unverified, or platform-incompatible metadata MUST fail closed; no digest, URL, version, or provenance claim may be invented at implementation time.
+
+The job lifecycle is: `REQUESTED` → `AUTHORIZED` → `ACQUIRING` → `QUARANTINED` → `ARCHIVE_VERIFIED` → `EXTRACTED` → `EXECUTABLE_VERIFIED` → `PROMOTED` → `REGISTERED`, with terminal states `FAILED`, `CANCELLED`, or `ROLLED_BACK`. Quarantine extraction MUST reject absolute paths, traversal, symlinks, hardlinks, duplicate entries, unexpected files, and architecture mismatches. Promotion MUST be atomic into the installer-owned managed path. Partial or failed jobs MUST leave no executable that can satisfy assured resolution.
+
+After promotion, the installer MUST verify the exact executable path, executable SHA-256, version, supporting resource tree, and installation-record binding. The record MUST separately state `ARCHIVE_INTEGRITY_VERIFIED`, `EXECUTABLE_INTEGRITY_VERIFIED`, and `UPSTREAM_PROVENANCE_VERIFIED`; one claim MUST NOT be substituted for another. A successful installation invalidates observational caches and triggers one post-install live capability refresh, but does not authorize a scan or high-impact operation.
+
+Metasploit and sqlmap MUST install their complete upstream distributions. Hydra MUST install its complete upstream protocol/module capability. GTFOBins/LOLBAS MUST use the reviewed, pinned native catalog and does not require a binary installer. Full capability is preserved; execution policy, target authorization, credentials, resource budgets, and process supervision govern use after installation.
 
 ### 2.3 Strict Verification Invariants
 - **No Silent Bypass:** If `expected_sha256` is missing or invalid, installation MUST FAIL CLOSED.
@@ -140,8 +170,8 @@ External tool subprocesses must be executed and governed exclusively through the
   msfconsole -q -x "use auxiliary/scanner/ssl/openssl_heartbleed; set RHOSTS <target_host>; set RPORT <port>; run; exit"
   ```
 - **Strict Non-Destructive Invariant:**
-  - Automated scanning is STRICTLY restricted to modules matching `auxiliary/scanner/*` and `auxiliary/admin/*` banner/verification checks.
-  - Weaponized payload delivery (`exploit/*` with meterpreter/shell payloads) is prohibited during automated pipeline scans.
+  - The complete upstream module and payload surface remains available through typed policy-gated requests.
+  - The default unattended profile is limited to non-destructive auxiliary verification. Exploit modules, payload delivery, sessions, shells, persistence, and post-exploitation require explicit elevated authorization and an isolated execution context; they are not silently removed from the installed tool.
 - **Output Parsing:** Regex capture on `[+]`, `[*]`, and `[-]` standard Metasploit logger tokens; extracts vulnerability confirmation and maps to `NET-TLS-001`, `NET-PORT-001`, or specific CVEs with `source_tool="metasploit"`.
 - **Native Fallback:** Native Python TLS auditor, SSL socket probing, and HTTP header verification.
 
@@ -154,9 +184,9 @@ External tool subprocesses must be executed and governed exclusively through the
   sqlmap -u "<target_url>" --batch --banner --level=1 --risk=1 --timeout=15 --retries=1 --threads=2 --output-dir="<sandbox_tmp>"
   ```
 - **Safety Invariant:**
-  - Mandatory `--batch` (non-interactive mode).
-  - Bounded `--risk=1 --level=1` during automated sweeps to eliminate data loss or server disruption.
-  - Data dumping (`--dump`, `--dump-all`, `--os-shell`) is disabled in automated scans.
+  - The complete upstream sqlmap option surface remains available through typed policy-gated requests.
+  - The default unattended profile uses `--batch`, `--risk=1`, `--level=1`, bounded timeout/retries/threads, and a server-derived output directory.
+  - Data extraction, file read/write, OS shell, takeover, and equivalent high-impact options require explicit elevated authorization, a separately recorded policy decision, and a resource/target budget; they are not deleted from the tool installation.
 - **Output Parsing:** Inspects `<sandbox_tmp>/log` and console stdout for identified DBMS technologies, backend web servers, parameter injection points, and confirms `DAST-INJ-001` with CVSS 9.8 and `source_tool="sqlmap"`.
 - **Native Fallback:** Native AST/differential parameter fuzzer (`fuzz_sqli` boolean and time-based canaries).
 
@@ -184,8 +214,8 @@ External tool subprocesses must be executed and governed exclusively through the
   hydra -L <top10_users_file> -P <top10_pass_file> <protocol>://<target_host>:<port> -t 2 -W 1 -f -b json -o <output_file>
   ```
 - **Rate-Limiting & Safety Invariant:**
-  - Thread concurrency is hard-capped at `-t 2` or `-t 4` with inter-request delays (`-W 1`) to prevent account lockout or denial of service.
-  - Restricted to small, standard credential audit dictionaries (maximum 10 entries) to verify default credential hardening.
+  - The complete upstream protocol, module, and dictionary capability remains available through explicitly authorized policy-gated requests.
+  - The default unattended profile uses bounded concurrency and inter-request delays to reduce lockout and denial-of-service risk. Broader credential audits require explicit credential-audit authorization, tenant-scoped secret handoff, target-owner approval, and an auditable account-impact budget.
 - **Output Parsing:** Parses JSON output records for successful credential pairs; emits `AUTH-STUFF-001` or `NET-PORT-001` with `source_tool="hydra"`.
 - **Native Fallback:** Native Python HTTP/Auth form session validator and brute-force rate-limit header checker.
 

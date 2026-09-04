@@ -1,7 +1,7 @@
 # Contract 02: Enterprise Data Schemas, Entity Models & Multi-Tenant State Specifications
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (Enterprise ASPM Schema, 26-Tool Fleet, Per-Link Assessment Intelligence Dossier, Active Subdomain DNS IP Resolution & Audit Models)  
+**Document Version:** 14.3.0 (Enterprise ASPM Schema, 26-Tool Fleet, Per-Link Assessment Intelligence Dossier, Discovery Evidence & Audit Models)
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Core Data Schemas, Relational Persistence Tables, Identity, Assets, Per-Link Dossiers, Findings Lifecycle & Audit Records  
 
@@ -13,15 +13,18 @@ All platform components, API responses, exporters, UI banners, and database migr
 
 ```python
 # backend/app/core/version.py
-APP_VERSION = "14.0.0"
+APP_VERSION = "14.3.0"
 API_VERSION = "v1"
-SCHEMA_VERSION = "14.0.0"
-CONTRACT_VERSION = "14.0.0"
-RULESET_VERSION = "2026.08.31"
-RISK_MODEL_VERSION = "contextual_risk_model_v2"
+SCHEMA_VERSION = "4.1.0"
+CONTRACT_VERSION = "14.3.0"
+RULESET_VERSION = "14.3.0"
+RISK_MODEL_VERSION = "14.3.0"
 ```
 
 Hardcoded independent version strings in READMEs, endpoints, or UI templates are strictly prohibited.
+`backend/app/core/version.py` is the runtime source of truth. Contract, API, UI, export,
+ruleset, and migration metadata MUST import or receive these values from that authority;
+the values above are normative and MUST remain synchronized with it in CI.
 
 ---
 
@@ -193,6 +196,7 @@ class CanonicalFinding(BaseModel):
     contextual_risk_score: float
     cwe_id: Optional[str] = None
     owasp_category: Optional[str] = None
+    asvs_control: Optional[str] = None  # Exact version-qualified ASVS 5.0.0 identifier
     nist_control: Optional[str] = None
     status: FindingLifecycleStatus = FindingLifecycleStatus.OPEN
     first_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -207,6 +211,25 @@ class CanonicalFinding(BaseModel):
     remediation: str
     evidence_hash: str
 ```
+
+### 4.1 Finding taxonomy and persistence invariants
+
+`asvs_control`, when present, MUST match the version-qualified format
+`v5.0.0-V<chapter>.<section>.<requirement>` and MUST resolve to the versioned
+Contract 06 registry. A finding or occurrence with an unknown, deprecated, or
+unversioned control identifier MUST be rejected or represented as an explicit
+normalization failure; it MUST NOT be silently emitted as a valid finding.
+
+Tenant-owned `CanonicalFinding`, `FindingOccurrence`, `ScanJob`, and `Asset`
+relationships MUST be enforced by database foreign keys and tenant-consistency
+constraints in the same transaction as the write. Application-level checks are
+defense in depth, not a substitute for relational integrity. Any retention or
+purge operation MUST preserve the stated legal-hold and audit invariants.
+
+`ValidatedTarget` is operationally immutable: nested addresses, scope entries,
+authorization context, and metadata MUST be immutable or defensively copied at
+construction. A caller MUST NOT be able to mutate a previously sealed target by
+retaining a reference to a nested list or mapping.
 
 ---
 
