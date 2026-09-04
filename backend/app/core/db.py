@@ -477,6 +477,15 @@ class DatabaseManager:
             rows = conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'").fetchall()
             if {r["column_name"] for r in rows} != required:
                 raise RuntimeError("execution dispatch schema columns drifted")
+            fk = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
+                  AND c.contype='f' AND c.convalidated
+                  AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='organization_id')]
+                  AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='organization_id')]""").fetchone()
+            if not fk or int(fk["count"]) != 1:
+                raise RuntimeError("execution dispatch schema requires exactly one tenant-bound foreign key")
         else:
             rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
             if {r["name"] for r in rows} != required:
@@ -1423,12 +1432,19 @@ class DatabaseManager:
                 if bad:
                     raise RuntimeError("dispatch migration v8 refused orphan or cross-tenant intent")
                 if isinstance(self, PostgresDatabaseManager):
-                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claimed_by TEXT")
-                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claim_token TEXT")
-                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN lease_expires_at TEXT")
-                    conn.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN correlation_id TEXT")
-                    conn.execute("ALTER TABLE execution_dispatch_intents DROP CONSTRAINT IF EXISTS execution_dispatch_intents_execution_id_fkey")
-                    conn.execute("ALTER TABLE execution_dispatch_intents ADD CONSTRAINT execution_dispatch_intents_run_org_fkey FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id)")
+                    for column in ("claimed_by", "claim_token", "lease_expires_at", "correlation_id"):
+                        if not conn.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents' AND column_name=?", (column,)).fetchone():
+                            conn.execute(f"ALTER TABLE execution_dispatch_intents ADD COLUMN {column} TEXT")
+                    fk_count = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                        JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                        JOIN pg_namespace n ON n.oid=t.relnamespace
+                        WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
+                        AND c.contype='f' AND c.convalidated AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='organization_id')]
+                        AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='organization_id')]""").fetchone()
+                    if int(fk_count["count"]) == 0:
+                        conn.execute("ALTER TABLE execution_dispatch_intents ADD CONSTRAINT execution_dispatch_intents_run_org_fkey FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id)")
+                    elif int(fk_count["count"]) > 1:
+                        raise RuntimeError("dispatch migration v8 found duplicate tenant-bound foreign keys")
                 else:
                     # Safe recovery from an interrupted, migration-owned rebuild.
                     conn.execute("DROP TABLE IF EXISTS execution_dispatch_intents_v8")
