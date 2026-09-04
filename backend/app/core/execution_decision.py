@@ -40,6 +40,7 @@ class ExecutionDecisionCapability:
     worker_identity: str
     _issuer_token: object
     database: Any
+    claim_token: Optional[str] = None
 
     def assert_valid_for_launch(
         self,
@@ -96,21 +97,27 @@ class ExecutionDecisionCapability:
             raise ExecutionDecisionError("execution resource budget is incomplete")
         if timeout > float(timeout_limit) or max_output_bytes > int(output_limit):
             raise ExecutionDecisionError("launch request exceeds approved resource budget")
-        if not self.database.claim_execution_decision(
+        claim = self.database.claim_execution_decision(
             decision.id, decision.organization_id, decision.session_jti,
             decision.worker_identity, decision.operation_policy_revision, now=now,
-        ):
+        )
+        if not claim:
             raise ExecutionDecisionError("execution decision could not be atomically claimed")
+        object.__setattr__(self, "claim_token", claim if isinstance(claim, str) else None)
 
     def mark_started(self) -> None:
         marker = getattr(self.database, "mark_execution_decision_started", None)
-        if marker is not None and not marker(self.decision.id, self.decision.organization_id, self.worker_identity):
+        if marker is not None and not self.claim_token:
+            raise ExecutionDecisionError("execution decision has no launch fence")
+        if marker is not None and not marker(self.decision.id, self.decision.organization_id, self.worker_identity, self.claim_token):
             raise ExecutionDecisionError("execution decision launch lease could not be committed")
 
     def release_claim(self) -> None:
         releaser = getattr(self.database, "release_execution_decision_claim", None)
         if releaser is not None:
-            releaser(self.decision.id, self.decision.organization_id, self.worker_identity)
+            if not self.claim_token:
+                return
+            releaser(self.decision.id, self.decision.organization_id, self.worker_identity, self.claim_token)
 
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:

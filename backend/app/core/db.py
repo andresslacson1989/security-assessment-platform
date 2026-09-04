@@ -355,6 +355,7 @@ class DatabaseManager:
                 claim_owner TEXT,
                 claim_expires_at TEXT,
                 started_at TEXT,
+                claim_token TEXT,
                 FOREIGN KEY (organization_id) REFERENCES organizations(id),
                 FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
                 FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
@@ -546,6 +547,7 @@ class DatabaseManager:
                 "ALTER TABLE execution_decisions ADD COLUMN claim_owner TEXT;",
                 "ALTER TABLE execution_decisions ADD COLUMN claim_expires_at TEXT;",
                 "ALTER TABLE execution_decisions ADD COLUMN started_at TEXT;",
+                "ALTER TABLE execution_decisions ADD COLUMN claim_token TEXT;",
                 "ALTER TABLE execution_requests ADD COLUMN approval_idempotency_key TEXT;",
             ]
             for migration_index, mig in enumerate(migrations):
@@ -1031,6 +1033,7 @@ class DatabaseManager:
                 claim_owner=row["claim_owner"] if "claim_owner" in row.keys() else None,
                 claim_expires_at=datetime.fromisoformat(row["claim_expires_at"]) if "claim_expires_at" in row.keys() and row["claim_expires_at"] else None,
                 started_at=datetime.fromisoformat(row["started_at"]) if "started_at" in row.keys() and row["started_at"] else None,
+                claim_token=row["claim_token"] if "claim_token" in row.keys() else None,
             )
 
     def claim_execution_decision(
@@ -1048,7 +1051,7 @@ class DatabaseManager:
             cur = conn.execute(
                 """
                 UPDATE execution_decisions
-                SET claim_owner = ?, claim_expires_at = ?
+                SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
                 WHERE id = ? AND organization_id = ? AND session_jti = ?
                   AND worker_identity = ? AND operation_policy_revision = ?
                   AND approval_state = 'APPROVED'
@@ -1056,7 +1059,7 @@ class DatabaseManager:
                   AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
                   AND expires_at > ?
                 """,
-                (worker_identity, (now + timedelta(seconds=30)).isoformat(), decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat()),
+                (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat()),
             )
             if cur.rowcount != 1:
                 return False
@@ -1065,28 +1068,32 @@ class DatabaseManager:
                 AuditEvent(
                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity,
                     organization_id=organization_id,
-                    action=AuditAction.EXECUTION_DECISION_CONSUMED,
+                    action=AuditAction.EXECUTION_DECISION_CLAIMED,
                     object_type="execution_decision", object_id=decision_id,
                     result="SUCCESS", details={"worker_identity": worker_identity},
                 ),
             )
-            return True
+            return cur.connection.execute("SELECT claim_token FROM execution_decisions WHERE id = ? AND organization_id = ?", (decision_id, organization_id)).fetchone()[0]
 
-    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, now: Optional[datetime] = None) -> bool:
+    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, now: Optional[datetime] = None) -> bool:
         now = now or utc_now()
         with self._connection_scope() as conn:
             cur = conn.execute(
-                "UPDATE execution_decisions SET started_at = ?, consumed_at = ?, claim_expires_at = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND consumed_at IS NULL AND revoked_at IS NULL",
-                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity),
+                "UPDATE execution_decisions SET started_at = ?, consumed_at = ?, claim_expires_at = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND claim_expires_at > ?",
+                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat()),
             )
+            if cur.rowcount == 1:
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
             return cur.rowcount == 1
 
-    def release_execution_decision_claim(self, decision_id: str, organization_id: str, worker_identity: str) -> bool:
+    def release_execution_decision_claim(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str) -> bool:
         with self._connection_scope() as conn:
             cur = conn.execute(
-                "UPDATE execution_decisions SET claim_owner = NULL, claim_expires_at = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND consumed_at IS NULL",
-                (decision_id, organization_id, worker_identity),
+                "UPDATE execution_decisions SET claim_owner = NULL, claim_expires_at = NULL, claim_token = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL",
+                (decision_id, organization_id, worker_identity, claim_token),
             )
+            if cur.rowcount == 1:
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_LEASE_RELEASED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
             return cur.rowcount == 1
 
     def revoke_execution_decision(self, decision_id: str, organization_id: str, actor: str) -> bool:

@@ -178,10 +178,13 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     stored = database.get_execution_decision(decision.id, organization_id="org-a")
     assert stored.consumed_at is None
     assert stored.claim_owner == "worker-1"
-    assert database.mark_execution_decision_started(decision.id, "org-a", "worker-1")
+    assert stored.claim_token
+    assert database.mark_execution_decision_started(decision.id, "org-a", "worker-1", stored.claim_token)
     assert database.get_execution_decision(decision.id, organization_id="org-a").consumed_at is not None
     events, _ = database.list_audit_events(organization_id="org-a", limit=20)
-    assert {event.action.value for event in events} >= {"EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CONSUMED"}
+    assert {event.action.value for event in events} >= {
+        "EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CLAIMED", "EXECUTION_DECISION_STARTED",
+    }
 
 
 def test_revoke_route_resolves_request_id_to_linked_decision():
