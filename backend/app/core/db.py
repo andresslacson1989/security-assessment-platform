@@ -416,6 +416,7 @@ class DatabaseManager:
                 FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id);
 
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
@@ -1436,9 +1437,19 @@ class DatabaseManager:
             request_row = conn.execute("SELECT state, approved_decision_id, expires_at FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()
             if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"] or datetime.fromisoformat(request_row["expires_at"]) <= utc_now():
                 raise ValueError("execution run request is not tenant-bound")
-            decision_row = conn.execute("SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL AND expires_at > ?", (request_row["approved_decision_id"], run.organization_id, utc_now().isoformat())).fetchone()
+            decision_row = conn.execute("SELECT * FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL AND expires_at > ?", (request_row["approved_decision_id"], run.organization_id, utc_now().isoformat())).fetchone()
             if not decision_row:
                 raise ValueError("execution run has no current approved decision")
+            request_full = conn.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()
+            if any([
+                request_full["project_id"] != decision_row["project_id"], request_full["asset_id"] != decision_row["asset_id"],
+                request_full["target_id"] != decision_row["target_id"], request_full["authorization_decision_id"] != decision_row["authorization_decision_id"],
+                request_full["target_policy_version"] != decision_row["target_policy_version"], request_full["tool_id"] != decision_row["tool_id"],
+                request_full["operation_family"] != decision_row["operation_family"], request_full["operation_options_json"] != decision_row["operation_options_json"],
+                request_full["operation_policy_revision"] != decision_row["operation_policy_revision"], request_full["resource_budget_json"] != decision_row["resource_budget_json"],
+                request_full["account_impact_budget_json"] != decision_row["account_impact_budget_json"], request_full["credential_scope_json"] != decision_row["credential_scope_json"],
+            ]):
+                raise ValueError("execution request and approved decision authority binding does not match")
             conn.execute(
                 """INSERT INTO execution_runs (execution_id, request_id, organization_id, state, worker_identity, process_id, process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, correlation_id, created_at, started_at, finished_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",

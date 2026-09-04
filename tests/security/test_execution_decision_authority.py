@@ -257,3 +257,40 @@ def test_execution_run_transition_matrix_and_terminal_immutability(tmp_path):
     assert database.transition_execution_run("run-a", "org-a", "STARTING", "RUNNING")
     assert database.transition_execution_run("run-a", "org-a", "RUNNING", "SUCCEEDED")
     assert not database.transition_execution_run("run-a", "org-a", "SUCCEEDED", "RUNNING")
+
+
+def test_execution_run_rejects_request_decision_authority_mismatch(tmp_path):
+    from app.core.db import DatabaseManager
+    from app.core.models import ExecutionRunRecord
+
+    database = DatabaseManager(tmp_path / "authority-binding.db")
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES ('org-a', 'Org A', 'org-a', ?, 1)", (now,))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES ('asset-a', 'org-a', 'account', 'CLOUD_ACCOUNT', 'aws://123456789012', ?, ?)", (now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('user-a', 'user-a', 'a@example.test', 'hash', 'ADMIN', 'org-a', 1, ?)", (now,))
+        conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, state, created_at, expires_at, approved_decision_id) VALUES ('req-a', 'idem-a', ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'user-a', 'AUTHORIZED', ?, ?, 'decision-a')", ("f" * 64, OPERATION_POLICY_REVISION, now, expires))
+        conn.execute("INSERT INTO execution_decisions (id, organization_id, project_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, approval_state, approver_user_id, session_jti, worker_identity, created_at, expires_at) VALUES ('decision-a', 'org-a', NULL, 'asset-a', 'target-other', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'APPROVED', 'user-a', 'session-a', 'worker-a', ?, ?)", (OPERATION_POLICY_REVISION, now, expires))
+
+    with pytest.raises(ValueError, match="authority binding"):
+        database.create_execution_run(ExecutionRunRecord(execution_id="run-a", request_id="req-a", organization_id="org-a"))
+
+
+def test_execution_run_is_unique_per_authorized_request(tmp_path):
+    from app.core.db import DatabaseManager
+    from app.core.models import ExecutionRunRecord
+
+    database = DatabaseManager(tmp_path / "run-uniqueness.db")
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES ('org-a', 'Org A', 'org-a', ?, 1)", (now,))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES ('asset-a', 'org-a', 'account', 'CLOUD_ACCOUNT', 'aws://123456789012', ?, ?)", (now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('user-a', 'user-a', 'a@example.test', 'hash', 'ADMIN', 'org-a', 1, ?)", (now,))
+        conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, state, created_at, expires_at, approved_decision_id) VALUES ('req-a', 'idem-a', ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'user-a', 'AUTHORIZED', ?, ?, 'decision-a')", ("f" * 64, OPERATION_POLICY_REVISION, now, expires))
+        conn.execute("INSERT INTO execution_decisions (id, organization_id, project_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, approval_state, approver_user_id, session_jti, worker_identity, created_at, expires_at) VALUES ('decision-a', 'org-a', NULL, 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'APPROVED', 'user-a', 'session-a', 'worker-a', ?, ?)", (OPERATION_POLICY_REVISION, now, expires))
+    database.create_execution_run(ExecutionRunRecord(execution_id="run-a", request_id="req-a", organization_id="org-a"))
+
+    with pytest.raises(Exception):
+        database.create_execution_run(ExecutionRunRecord(execution_id="run-b", request_id="req-a", organization_id="org-a"))
