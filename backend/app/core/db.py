@@ -1837,11 +1837,16 @@ class DatabaseManager:
                 cur.execute(f"SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ?{authority_lock}", (row["approved_decision_id"], organization_id))
                 decision_row = cur.fetchone()
                 if not decision_row:
+                    # Roll back the state transaction before recording the
+                    # invariant failure.  The connection scope will commit
+                    # this sanitized event while leaving request state intact.
+                    conn.rollback()
                     self._insert_audit_event_conn(conn, AuditEvent(
                         id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
-                        action=AuditAction.EXECUTION_DECISION_REVOKED, object_type="execution_request", object_id=request_id,
+                        action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED, object_type="execution_request", object_id=request_id,
                         result="FAILURE", details={"reason_code": "APPROVED_DECISION_REFERENCE_MISSING"},
                     ))
+                    conn.commit()
                     raise ValueError("execution request has an invalid approved decision reference")
             now = utc_now().isoformat()
             self._insert_audit_event_conn(conn, AuditEvent(

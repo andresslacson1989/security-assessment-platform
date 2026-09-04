@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
-from app.core.models import ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
+from app.core.models import AuditAction, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -245,6 +245,16 @@ def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
         database.revoke_execution_request("req-a", "org-a", "admin")
     request = database.get_execution_request("req-a", organization_id="org-a")
     assert request is not None and request.state == "AUTHORIZED"
+    with database._connection_scope() as conn:
+        events = conn.execute(
+            "SELECT action, object_type, result, details_json FROM audit_events WHERE object_id = ? ORDER BY timestamp",
+            ("req-a",),
+        ).fetchall()
+    assert len(events) == 1
+    assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
+    assert events[0]["object_type"] == "execution_request"
+    assert events[0]["result"] == "FAILURE"
+    assert "APPROVED_DECISION_REFERENCE_MISSING" in events[0]["details_json"]
 
 
 def test_execution_run_rejects_cross_tenant_request_and_invalid_transitions(tmp_path):
