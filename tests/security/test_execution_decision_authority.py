@@ -284,7 +284,12 @@ def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
         request = conn.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = ?", ("req-a",)).fetchone()
         decisions = conn.execute("SELECT COUNT(*) AS count FROM execution_decisions WHERE organization_id = ?", ("org-a",)).fetchone()
         runs = conn.execute("SELECT COUNT(*) AS count FROM execution_runs WHERE organization_id = ?", ("org-a",)).fetchone()
-        events = conn.execute("SELECT action, result, details_json, correlation_id FROM audit_events WHERE object_id = ?", ("req-a",)).fetchall()
+        events = conn.execute(
+            "SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, "
+            "details_json, correlation_id, previous_event_hash, event_hash, sequence_number "
+            "FROM audit_events WHERE object_id = ?",
+            ("req-a",),
+        ).fetchall()
     assert request["state"] == "REQUESTED"
     assert request["approved_decision_id"] is None
     assert decisions["count"] == 0
@@ -292,6 +297,14 @@ def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
     assert len(events) == 1
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
     assert events[0]["result"] == "FAILURE"
+    assert events[0]["actor"] == "system"
+    assert events[0]["organization_id"] == "org-a"
+    assert events[0]["object_type"] == "execution_request"
+    assert events[0]["object_id"] == "req-a"
+    assert events[0]["sequence_number"] == 1
+    assert events[0]["previous_event_hash"] is None
+    assert events[0]["event_hash"]
+    _assert_audit_event_hash(events[0])
     assert json.loads(events[0]["details_json"]) == {"reason_code": "CORRELATION_REQUIRED"}
     assert events[0]["correlation_id"].startswith("corr-")
 

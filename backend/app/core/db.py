@@ -1317,7 +1317,7 @@ class DatabaseManager:
                 ).fetchone()
                 if request_row:
                     self._insert_audit_event_conn(conn, AuditEvent(
-                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id or "system",
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
                         organization_id=organization_id,
                         action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED,
                         object_type="execution_request", object_id=request_id, result="FAILURE",

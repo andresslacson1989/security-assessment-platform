@@ -308,6 +308,56 @@ def test_postgres_missing_linked_decision_failure_is_durable_and_state_preservin
         assert decision is None
 
 
+def test_postgres_approval_requires_correlation_without_authority_mutation():
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+
+    with _isolated_manager() as manager:
+        now = "2026-01-01T00:00:00+00:00"
+        expires = "2099-01-01T00:00:00+00:00"
+        options = '{"output_format":"json-asff","provider":"aws","quiet":true}'
+        budget = '{"max_output_bytes":10485760,"timeout_seconds":120}'
+        account_budget = '{"read_only":1}'
+        credentials = '{"provider":"aws"}'
+        with manager._connection_scope() as conn:
+            conn.execute("INSERT INTO organizations (id, name, slug, created_at) VALUES (%s, %s, %s, %s)", ("org-correlation", "Correlation Org", "correlation-org", now))
+            conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, active_probing_granted, created_at, updated_at) VALUES (%s, %s, 'asset', 'CLOUD_ACCOUNT', %s, 1, %s, %s)", ("asset-correlation", "org-correlation", "aws://123456789012", now, now))
+            conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, created_at) VALUES (%s, 'admin', 'admin@example.invalid', 'hash', 'ADMIN', %s, %s)", ("user-correlation", "org-correlation", now))
+            conn.execute(
+                "INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_options_json, operation_policy_revision, resource_budget_json, account_impact_budget_json, credential_scope_json, requested_by_user_id, state, created_at, expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s, 'v1', 'prowler', 'cloud_audit', %s, %s, %s, %s, %s, %s, 'REQUESTED', %s, %s)",
+                ("req-correlation", "idem-correlation", "f" * 64, "org-correlation", "asset-correlation", "target-correlation", "auth-correlation", options, OPERATION_POLICY_REVISION, budget, account_budget, credentials, "user-correlation", now, expires),
+            )
+
+        token = set_correlation_id("")
+        try:
+            result = manager.approve_execution_request(
+                "req-correlation", "org-correlation", "f" * 64, "approval-correlation",
+                "user-correlation", "session-correlation", "worker-correlation",
+            )
+        finally:
+            reset_correlation_id(token)
+        assert result == ("CORRELATION_REQUIRED", None, None)
+        with manager._connection_scope() as conn:
+            request = conn.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = %s", ("req-correlation",)).fetchone()
+            decisions = conn.execute("SELECT COUNT(*) AS count FROM execution_decisions WHERE organization_id = %s", ("org-correlation",)).fetchone()
+            runs = conn.execute("SELECT COUNT(*) AS count FROM execution_runs WHERE organization_id = %s", ("org-correlation",)).fetchone()
+            event = conn.execute("SELECT action, result, actor, organization_id, object_type, object_id, details_json, correlation_id, previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s", ("req-correlation",)).fetchone()
+        assert request["state"] == "REQUESTED"
+        assert request["approved_decision_id"] is None
+        assert decisions["count"] == 0
+        assert runs["count"] == 0
+        assert event["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+        assert event["result"] == "FAILURE"
+        assert event["actor"] == "system"
+        assert event["organization_id"] == "org-correlation"
+        assert event["object_type"] == "execution_request"
+        assert event["object_id"] == "req-correlation"
+        assert event["correlation_id"].startswith("corr-")
+        assert event["previous_event_hash"] is None
+        assert event["sequence_number"] == 1
+        assert '"reason_code": "CORRELATION_REQUIRED"' in event["details_json"]
+        _assert_audit_event_hash(event)
+
+
 def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant():
     with _isolated_manager() as manager:
         now = "2026-01-01T00:00:00+00:00"
