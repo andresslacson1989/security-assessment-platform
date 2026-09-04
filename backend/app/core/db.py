@@ -384,7 +384,7 @@ class DatabaseManager:
                 JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
                 JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
                 WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
-                  AND i.indisunique AND i.indisvalid AND i.indisready
+                  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
                 GROUP BY i.indexrelid
                 HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
             """).fetchall()
@@ -410,7 +410,7 @@ class DatabaseManager:
         else:
             parent_count = 0
             for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
-                if index["unique"]:
+                if index["unique"] and not index["partial"]:
                     columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                     if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
                         parent_count += 1
@@ -1142,7 +1142,7 @@ class DatabaseManager:
                         JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
                         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
                         WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
-                          AND i.indisunique AND i.indisvalid AND i.indisready
+                          AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
                         GROUP BY i.indexrelid
                         HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
                     """).fetchall()
@@ -1250,6 +1250,38 @@ class DatabaseManager:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (authority_binding_version, utc_now().isoformat()),
                 )
+
+            # Version 5 removes only migration-owned objects from the
+            # superseded duplicate-producing v4 implementation.
+            cleanup_version = 5
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (cleanup_version,)).fetchone():
+                if isinstance(self, PostgresDatabaseManager):
+                    duplicate_parent = conn.execute("""
+                        SELECT COUNT(*) AS count FROM pg_index i
+                        JOIN pg_class t ON t.oid = i.indrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
+                          AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                        GROUP BY i.indexrelid
+                        HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
+                    """).fetchall()
+                    if len(duplicate_parent) > 1:
+                        conn.execute("DROP INDEX IF EXISTS uq_execution_decisions_id_org")
+                    duplicate_fk = conn.execute("SELECT COUNT(*) AS count FROM pg_constraint WHERE conrelid = 'execution_runs'::regclass AND confrelid = 'execution_decisions'::regclass AND conname = 'execution_runs_decision_tenant_fk'").fetchone()
+                    if duplicate_fk and duplicate_fk["count"] and len(duplicate_parent) > 1:
+                        conn.execute("ALTER TABLE execution_runs DROP CONSTRAINT execution_runs_decision_tenant_fk")
+                else:
+                    parent_keys = []
+                    for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
+                        if index["unique"] and not index["partial"]:
+                            columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                            if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                                parent_keys.append(index["name"])
+                    if not parent_keys:
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (cleanup_version, utc_now().isoformat()))
 
             self._verify_execution_snapshot_schema(conn)
             self._verify_execution_authority_binding_schema(conn)
