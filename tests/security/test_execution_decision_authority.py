@@ -221,6 +221,32 @@ def test_approval_session_must_match_authenticated_principal(monkeypatch):
         executions._session_jti("Bearer token", user)
 
 
+def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
+    from app.core.db import DatabaseManager
+
+    database = DatabaseManager(tmp_path / "missing-decision.db")
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at) VALUES ('org-a', 'Org A', 'missing-decision-org', ?)", (now,))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES ('asset-a', 'org-a', 'asset', 'CLOUD_ACCOUNT', 'aws://123456789012', ?, ?)", (now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, created_at) VALUES ('user-a', 'user-a', 'missing@example.test', 'hash', 'ADMIN', 'org-a', ?)", (now,))
+        conn.execute("""
+            INSERT INTO execution_requests (
+                id, idempotency_key, request_fingerprint, organization_id,
+                asset_id, target_id, authorization_decision_id, target_policy_version,
+                tool_id, operation_family, operation_policy_revision,
+                requested_by_user_id, state, created_at, expires_at, approved_decision_id
+            ) VALUES ('req-a', 'idem-a', ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1',
+                      'prowler', 'cloud_audit', ?, 'user-a', 'AUTHORIZED', ?, ?, 'missing-decision')
+        """, ("f" * 64, OPERATION_POLICY_REVISION, now, expires))
+
+    with pytest.raises(ValueError, match="invalid approved decision"):
+        database.revoke_execution_request("req-a", "org-a", "admin")
+    request = database.get_execution_request("req-a", organization_id="org-a")
+    assert request is not None and request.state == "AUTHORIZED"
+
+
 def test_execution_run_rejects_cross_tenant_request_and_invalid_transitions(tmp_path):
     from app.core.db import DatabaseManager
     from app.core.models import ExecutionRunRecord
