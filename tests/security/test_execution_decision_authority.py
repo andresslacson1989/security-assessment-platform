@@ -164,6 +164,7 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     now = datetime.now(timezone.utc).isoformat()
     with database._connection_scope() as conn:
         conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-a", "Org A", "org-a", now))
+        conn.execute("INSERT INTO projects (id, organization_id, name, created_at) VALUES (?, ?, ?, ?)", ("project-a", "org-a", "Project A", now))
         conn.execute("INSERT INTO assets (id, organization_id, project_id, name, type, target_value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("asset-a", "org-a", "project-a", "AWS account", "CLOUD_ACCOUNT", "aws://123456789012", now, now))
         conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, ?, 'ADMIN', ?, 1, ?)", ("admin-1", "admin", "admin@example.test", "hash", "org-a", now))
 

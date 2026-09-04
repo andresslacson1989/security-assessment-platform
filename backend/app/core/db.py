@@ -350,7 +350,11 @@ class DatabaseManager:
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 revoked_at TEXT,
-                consumed_at TEXT
+                consumed_at TEXT,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
+                FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
+                FOREIGN KEY (approver_user_id, organization_id) REFERENCES users(id, organization_id)
             );
 
             -- Attack Surface Assets Inventory Table
@@ -487,6 +491,9 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit_events(organization_id, timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_execution_decisions_scope ON execution_decisions(organization_id, asset_id, tool_id, operation_family);
             CREATE INDEX IF NOT EXISTS idx_execution_decisions_session ON execution_decisions(session_jti, revoked_at, expires_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_id_org ON assets(id, organization_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -742,6 +749,12 @@ class DatabaseManager:
                 for key, value in policy.get("required_options", {}).items()
             ):
                 raise ValueError("execution decision does not conform to the canonical policy row")
+            if any(not isinstance(value, int) or value <= 0 for value in decision.resource_budget.values()):
+                raise ValueError("execution decision resource budget is invalid")
+            if any(not isinstance(value, int) or value < 0 for value in decision.account_impact_budget.values()):
+                raise ValueError("execution decision account-impact budget is invalid")
+            if decision.credential_scope.get("provider") != decision.operation_options.get("provider"):
+                raise ValueError("execution decision credential scope is not policy-bound")
             cur = conn.cursor()
             cur.execute("SELECT id FROM organizations WHERE id = ? AND is_active = 1", (decision.organization_id,))
             if not cur.fetchone():
@@ -873,22 +886,21 @@ class DatabaseManager:
             )
             return True
 
-    def revoke_execution_decision(self, decision_id: str, organization_id: Optional[str] = None) -> bool:
+    def revoke_execution_decision(self, decision_id: str, organization_id: str, actor: str) -> bool:
         """Revoke a decision without deleting its audit-relevant record."""
         with self._connection_scope() as conn:
-            query = "UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL"
-            params: List[Any] = [utc_now().isoformat(), decision_id]
-            if organization_id is not None:
-                query += " AND organization_id = ?"
-                params.append(organization_id)
+            if not organization_id or not actor:
+                raise ValueError("tenant scope and revoking actor are required")
+            query = "UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL"
+            params: List[Any] = [utc_now().isoformat(), decision_id, organization_id]
             cur = conn.execute(query, params)
             changed = cur.rowcount > 0
             if changed:
                 self._insert_audit_event_conn(
                     conn,
                     AuditEvent(
-                        id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
-                        organization_id=organization_id or "org-default",
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                        organization_id=organization_id,
                         action=AuditAction.EXECUTION_DECISION_REVOKED,
                         object_type="execution_decision", object_id=decision_id,
                         result="SUCCESS", details={"decision_id": decision_id},
