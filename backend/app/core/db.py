@@ -21,6 +21,11 @@ import uuid
 
 logger = logging.getLogger("cyberassess.persistence")
 
+
+def _quote_postgres_identifier(identifier: str) -> str:
+    """Quote a catalog-derived PostgreSQL identifier without interpolation risk."""
+    return '"' + str(identifier).replace('"', '""') + '"'
+
 from app.core.models import (
     Asset,
     AssetType,
@@ -187,7 +192,7 @@ class _PostgresConnection:
 class PostgresDatabaseManager:
     """PostgreSQL enterprise backend using a bounded connection pool."""
 
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, allow_unresolved_reconciliation: bool = False):
         try:
             from psycopg_pool import ConnectionPool
         except ImportError as exc:
@@ -195,6 +200,7 @@ class PostgresDatabaseManager:
                 "Enterprise mode requires psycopg[binary,pool] to be installed."
             ) from exc
         self.database_url = database_url
+        self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
         self._pool = None
         try:
             self._pool = ConnectionPool(
@@ -256,8 +262,9 @@ class DatabaseManager:
     _instance: Optional[Any] = None
     _lock = threading.Lock()
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, allow_unresolved_reconciliation: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
+        self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_migration_ledger()
         self._begin_migration_attempt()
@@ -289,7 +296,7 @@ class DatabaseManager:
             conn.execute("""CREATE TABLE IF NOT EXISTS schema_migration_events (
                 event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
                 migration_id TEXT NOT NULL, migration_name TEXT NOT NULL, registry_revision TEXT NOT NULL,
-                event_sequence INTEGER NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED')),
+                event_sequence INTEGER NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED','RECONCILIATION_RESOLVED')),
                 event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
                 schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
                 migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
@@ -378,9 +385,9 @@ class DatabaseManager:
                 WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events'
                   AND c.contype = 'c' AND pg_get_constraintdef(c.oid) ILIKE '%EVENT_TYPE%'""").fetchall()
             for row in event_check:
-                conn.execute(f"ALTER TABLE schema_migration_events DROP CONSTRAINT {row['conname']}")
+                conn.execute(f"ALTER TABLE schema_migration_events DROP CONSTRAINT {_quote_postgres_identifier(row['conname'])}")
             conn.execute("""ALTER TABLE schema_migration_events ADD CONSTRAINT ck_schema_migration_event_type
-                CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED'))""")
+                CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED','RECONCILIATION_RESOLVED'))""")
             for event_id, (migration_id, registry_revision) in identities.items():
                 conn.execute("UPDATE schema_migration_events SET migration_id = ?, registry_revision = ?, event_sequence = ? WHERE event_id = ?", (migration_id, registry_revision, sequence_by_event_id[event_id], event_id))
             conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN migration_id SET NOT NULL")
@@ -400,7 +407,7 @@ class DatabaseManager:
         conn.execute("""CREATE TABLE schema_migration_events (
             event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
             migration_id TEXT NOT NULL, migration_name TEXT NOT NULL, registry_revision TEXT NOT NULL,
-            event_sequence INTEGER NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED')),
+            event_sequence INTEGER NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED','RECONCILIATION_RESOLVED')),
             event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
             schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
             migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
@@ -442,10 +449,11 @@ class DatabaseManager:
                 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
                 JOIN pg_namespace n ON n.oid = t.relnamespace
                 WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events' AND c.contype = 'c'""").fetchall()
-            event_check = "RECONCILIATION_REQUIRED" in " ".join(str(row["definition"]) for row in checks)
+            event_sql = " ".join(str(row["definition"]) for row in checks)
+            event_check = "RECONCILIATION_REQUIRED" in event_sql and "RECONCILIATION_RESOLVED" in event_sql
             return not event_check or not self._migration_ledger_has_sequence_unique(conn)
         sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"]).upper()
-        return "RECONCILIATION_REQUIRED" not in sql or not self._migration_ledger_has_sequence_unique(conn)
+        return "RECONCILIATION_REQUIRED" not in sql or "RECONCILIATION_RESOLVED" not in sql or not self._migration_ledger_has_sequence_unique(conn)
 
     def _reconcile_orphaned_attempts(self, conn) -> None:
         """Persist an explicit terminal state for attempts left open by a crash."""
@@ -474,8 +482,14 @@ class DatabaseManager:
 
     def _begin_migration_attempt(self) -> None:
         with self._connection_scope() as conn:
-            unresolved = conn.execute("SELECT 1 FROM schema_migration_events WHERE event_type = 'RECONCILIATION_REQUIRED' AND rollback_status = 'UNKNOWN' LIMIT 1").fetchone()
-            if unresolved:
+            unresolved = conn.execute("""SELECT 1 FROM schema_migration_events required
+                WHERE required.event_type = 'RECONCILIATION_REQUIRED' AND required.rollback_status = 'UNKNOWN'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM schema_migration_events resolved
+                    WHERE resolved.attempt_id = required.attempt_id
+                      AND resolved.event_type = 'RECONCILIATION_RESOLVED'
+                  ) LIMIT 1""").fetchone()
+            if unresolved and not getattr(self, "_allow_unresolved_reconciliation", False):
                 raise RuntimeError("migration reconciliation required: unresolved migration attempt is blocking startup")
             version_row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone() if (conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'").fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()) else None
             if version_row and version_row["version"] is not None and int(version_row["version"]) >= 8:
@@ -501,6 +515,53 @@ class DatabaseManager:
                 1, "STARTED", now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, self._migration_spec.previous_version, self._migration_spec.target_version,
                 self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "PENDING"))
+
+    def resolve_migration_reconciliation(
+        self,
+        attempt_id: str,
+        operator_id: str,
+        operator_role: str,
+        resolution: str,
+        evidence: Dict[str, Any],
+    ) -> None:
+        """Append an authorized operator resolution for one blocked attempt.
+
+        This method is available only on an explicitly opened reconciliation
+        manager.  Normal application startup cannot bypass unresolved markers.
+        The operator must record whether the migration was verified or aborted,
+        together with non-secret evidence suitable for later review.
+        """
+        if not getattr(self, "_allow_unresolved_reconciliation", False):
+            raise PermissionError("migration reconciliation requires explicit maintenance mode")
+        if operator_role != "ADMIN" or not operator_id.strip():
+            raise PermissionError("migration reconciliation requires an administrator identity")
+        if resolution not in {"VERIFIED", "ABORTED"}:
+            raise ValueError("migration reconciliation resolution must be VERIFIED or ABORTED")
+        if not isinstance(evidence, dict) or not evidence:
+            raise ValueError("migration reconciliation requires structured evidence")
+        with self._connection_scope() as conn:
+            required = conn.execute("""SELECT * FROM schema_migration_events
+                WHERE attempt_id = ? AND event_type = 'RECONCILIATION_REQUIRED'
+                  AND rollback_status = 'UNKNOWN'""", (attempt_id,)).fetchone()
+            if required is None:
+                raise ValueError("unresolved migration attempt was not found")
+            resolved = conn.execute("""SELECT 1 FROM schema_migration_events
+                WHERE attempt_id = ? AND event_type = 'RECONCILIATION_RESOLVED'""", (attempt_id,)).fetchone()
+            if resolved is not None:
+                raise ValueError("migration attempt has already been resolved")
+            next_sequence = conn.execute("SELECT MAX(event_sequence) AS sequence FROM schema_migration_events WHERE attempt_id = ?", (attempt_id,)).fetchone()["sequence"] + 1
+            context = json.dumps({"resolution": resolution, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 error_code,error_class,error_message,context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", attempt_id, required["migration_version"], required["migration_id"],
+                required["migration_name"], required["registry_revision"], next_sequence, "RECONCILIATION_RESOLVED",
+                utc_now().isoformat(), required["backend"], required["schema_name"], required["previous_schema_version"],
+                required["target_schema_version"], required["migration_checksum"], operator_id, required["transaction_context_id"],
+                f"MIGRATION_RECONCILIATION_{resolution}", "MigrationReconciliationResolved", "operator reconciliation recorded",
+                context, "NOT_APPLICABLE"))
 
     def _record_migration_failure(self, exc: Exception) -> None:
         if not getattr(self, "_migration_attempt_id", None):
@@ -545,7 +606,7 @@ class DatabaseManager:
             uq = [r for r in identity if r["contype"] == "u"]
             checks = {str(r["definition"]).upper().replace(" ", "") for r in identity if r["contype"] == "c"}
             expected_checks = {
-                "CHECK((EVENT_TYPE=ANY(ARRAY['STARTED'::TEXT,'SUCCEEDED'::TEXT,'FAILED'::TEXT,'ROLLED_BACK'::TEXT,'ROLLBACK_FAILED'::TEXT,'RECONCILIATION_REQUIRED'::TEXT])))",
+                "CHECK((EVENT_TYPE=ANY(ARRAY['STARTED'::TEXT,'SUCCEEDED'::TEXT,'FAILED'::TEXT,'ROLLED_BACK'::TEXT,'ROLLBACK_FAILED'::TEXT,'RECONCILIATION_REQUIRED'::TEXT,'RECONCILIATION_RESOLVED'::TEXT])))",
                 "CHECK((BACKEND=ANY(ARRAY['SQLITE'::TEXT,'POSTGRESQL'::TEXT])))",
                 "CHECK((ROLLBACK_STATUS=ANY(ARRAY['NOT_APPLICABLE'::TEXT,'PENDING'::TEXT,'CONFIRMED'::TEXT,'FAILED'::TEXT,'UNKNOWN'::TEXT])))",
             }
@@ -581,7 +642,7 @@ class DatabaseManager:
             if unique.count(["attempt_id", "event_type"]) != 1 or unique.count(["attempt_id", "event_sequence"]) != 1 or unique.count(["event_id"]) != 1 or len(unique) != 3:
                 raise RuntimeError("migration ledger attempt/event uniqueness drifted")
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"].upper()
-            allowed_values = ("'STARTED'", "'SUCCEEDED'", "'FAILED'", "'ROLLED_BACK'", "'ROLLBACK_FAILED'", "'RECONCILIATION_REQUIRED'", "'SQLITE'", "'POSTGRESQL'", "'NOT_APPLICABLE'", "'PENDING'", "'CONFIRMED'", "'UNKNOWN'")
+            allowed_values = ("'STARTED'", "'SUCCEEDED'", "'FAILED'", "'ROLLED_BACK'", "'ROLLBACK_FAILED'", "'RECONCILIATION_REQUIRED'", "'RECONCILIATION_RESOLVED'", "'SQLITE'", "'POSTGRESQL'", "'NOT_APPLICABLE'", "'PENDING'", "'CONFIRMED'", "'UNKNOWN'")
             if sql.count("CHECK (") != 3 or any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")) or any(token not in sql for token in allowed_values):
                 raise RuntimeError("migration ledger CHECK constraints drifted")
             triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
@@ -647,13 +708,13 @@ class DatabaseManager:
             terminal_types = [event_type for event_type in event_types if event_type != "STARTED"]
             if not terminal_types:
                 continue
-            if terminal_types not in (["SUCCEEDED"], ["FAILED"], ["FAILED", "ROLLED_BACK"], ["FAILED", "ROLLBACK_FAILED"], ["RECONCILIATION_REQUIRED"]):
+            if terminal_types not in (["SUCCEEDED"], ["FAILED"], ["FAILED", "ROLLED_BACK"], ["FAILED", "ROLLBACK_FAILED"], ["RECONCILIATION_REQUIRED"], ["RECONCILIATION_REQUIRED", "RECONCILIATION_RESOLVED"]):
                 raise RuntimeError(f"migration attempt {attempt_id} has an invalid terminal event sequence")
             started = next(row for row in ordered_rows if row["event_type"] == "STARTED")
             terminal = next(row for row in reversed(ordered_rows) if row["event_type"] != "STARTED")
             if started["rollback_status"] != "PENDING":
                 raise RuntimeError(f"migration attempt {attempt_id} has an invalid STARTED rollback state")
-            expected_rollback = "NOT_APPLICABLE" if terminal["event_type"] == "SUCCEEDED" else "UNKNOWN" if terminal["event_type"] == "RECONCILIATION_REQUIRED" else "CONFIRMED" if terminal["event_type"] == "ROLLED_BACK" else "FAILED" if terminal["event_type"] == "ROLLBACK_FAILED" else "CONFIRMED"
+            expected_rollback = "NOT_APPLICABLE" if terminal["event_type"] in {"SUCCEEDED", "RECONCILIATION_RESOLVED"} else "UNKNOWN" if terminal["event_type"] == "RECONCILIATION_REQUIRED" else "CONFIRMED" if terminal["event_type"] == "ROLLED_BACK" else "FAILED" if terminal["event_type"] == "ROLLBACK_FAILED" else "CONFIRMED"
             if terminal["rollback_status"] != expected_rollback:
                 raise RuntimeError(f"migration attempt {attempt_id} has an invalid terminal rollback state")
 
