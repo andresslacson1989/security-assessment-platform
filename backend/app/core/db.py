@@ -514,6 +514,49 @@ class DatabaseManager:
             for name, operation in (("schema_migration_events_no_update", "UPDATE"), ("schema_migration_events_no_delete", "DELETE")):
                 if trigger_sql.get(name) != f"CREATETRIGGER{name.upper()}BEFORE{operation}ONSCHEMA_MIGRATION_EVENTSBEGINSELECTRAISE(ABORT,'SCHEMA_MIGRATION_EVENTSISAPPEND-ONLY');END":
                     raise RuntimeError("migration ledger append-only trigger definition drifted")
+        self._verify_migration_ledger_rows(conn)
+
+    def _verify_migration_ledger_rows(self, conn) -> None:
+        """Verify stored event identity and the allowable attempt state shape."""
+        specs_by_version = {spec.version: spec for spec in MIGRATION_REGISTRY}
+        expected_backend = "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE"
+        rows = conn.execute("SELECT * FROM schema_migration_events ORDER BY event_at, event_id").fetchall()
+        attempts = {}
+        for row in rows:
+            spec = specs_by_version.get(int(row["migration_version"]))
+            if spec is None:
+                raise RuntimeError("migration ledger contains an unknown migration version")
+            if (
+                row["migration_id"] != spec.migration_id
+                or row["registry_revision"] != spec.registry_revision
+                or row["migration_name"] != spec.name
+                or row["migration_checksum"] != spec.checksum
+                or row["previous_schema_version"] != spec.previous_version
+                or row["target_schema_version"] != spec.target_version
+                or row["backend"] != expected_backend
+                or not row["attempt_id"]
+                or not row["event_type"]
+                or not row["event_at"]
+                or not row["runner_identity"]
+                or not row["transaction_context_id"]
+            ):
+                raise RuntimeError("migration ledger row identity or provenance drifted")
+            attempts.setdefault(row["attempt_id"], []).append(row)
+
+        for attempt_id, attempt_rows in attempts.items():
+            event_types = [row["event_type"] for row in attempt_rows]
+            if event_types.count("STARTED") != 1:
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid STARTED event count")
+            terminal_types = [event_type for event_type in event_types if event_type != "STARTED"]
+            if terminal_types not in (["SUCCEEDED"], ["FAILED"], ["FAILED", "ROLLED_BACK"], ["FAILED", "ROLLBACK_FAILED"]):
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid terminal event sequence")
+            started = next(row for row in attempt_rows if row["event_type"] == "STARTED")
+            terminal = next(row for row in reversed(attempt_rows) if row["event_type"] != "STARTED")
+            if started["rollback_status"] != "PENDING":
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid STARTED rollback state")
+            expected_rollback = "NOT_APPLICABLE" if terminal["event_type"] == "SUCCEEDED" else "CONFIRMED" if terminal["event_type"] == "ROLLED_BACK" else "FAILED" if terminal["event_type"] == "ROLLBACK_FAILED" else "CONFIRMED"
+            if terminal["rollback_status"] != expected_rollback:
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid terminal rollback state")
 
     def _get_connection(self) -> sqlite3.Connection:
         try:

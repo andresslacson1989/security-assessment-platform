@@ -113,7 +113,11 @@ def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
     """)
     conn.execute(
         "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("event-1", "attempt-1", 8, spec.name, "SUCCEEDED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", "tx-1", None, None, None, "{}", "NOT_APPLICABLE"),
+        ("event-1", "attempt-1", 8, spec.name, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", "tx-1", None, None, None, "{}", "PENDING"),
+    )
+    conn.execute(
+        "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("event-2", "attempt-1", 8, spec.name, "SUCCEEDED", "2026-01-01T00:00:01+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", "tx-1", None, None, None, "{}", "NOT_APPLICABLE"),
     )
     conn.commit()
     conn.close()
@@ -158,6 +162,23 @@ def test_legacy_migration_ledger_fails_closed_on_forged_identity(tmp_path):
             "SELECT migration_name, migration_checksum FROM schema_migration_events WHERE event_id = 'event-1'"
         ).fetchone()
     assert row == ("FORGED-NAME", "sha256:forged")
+
+
+def test_current_migration_ledger_fails_closed_on_row_tampering(tmp_path):
+    path = tmp_path / "current-ledger.sqlite3"
+    DatabaseManager(path)
+    conn = sqlite3.connect(path)
+    conn.executescript("DROP TRIGGER schema_migration_events_no_update; DROP TRIGGER schema_migration_events_no_delete;")
+    conn.execute("UPDATE schema_migration_events SET migration_checksum = 'sha256:forged' WHERE event_type = 'SUCCEEDED'")
+    conn.execute("""CREATE TRIGGER schema_migration_events_no_update
+        BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
+    conn.execute("""CREATE TRIGGER schema_migration_events_no_delete
+        BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="row identity"):
+        DatabaseManager(path)
 
 
 def _issue(store, target, **kwargs):
