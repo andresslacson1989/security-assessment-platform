@@ -1232,6 +1232,7 @@ class ExecutionRunRecord(BaseModel):
     resource_budget: Dict[str, int] = Field(default_factory=dict)
     account_impact_budget: Dict[str, int] = Field(default_factory=dict)
     credential_scope: Dict[str, str] = Field(default_factory=dict)
+    snapshot_completeness: str = "LEGACY_SNAPSHOT_UNAVAILABLE"
     state: str = "REQUESTED"
     worker_identity: Optional[str] = None
     process_id: Optional[int] = None

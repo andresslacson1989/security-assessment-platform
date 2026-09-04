@@ -454,6 +454,7 @@ class DatabaseManager:
                 resource_budget_json TEXT NOT NULL DEFAULT '{}',
                 account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
                 credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE',
                 state TEXT NOT NULL,
                 worker_identity TEXT,
                 process_id INTEGER,
@@ -628,14 +629,6 @@ class DatabaseManager:
                 "ALTER TABLE execution_decisions ADD COLUMN started_at TEXT;",
                 "ALTER TABLE execution_decisions ADD COLUMN claim_token TEXT;",
                 "ALTER TABLE execution_requests ADD COLUMN approval_idempotency_key TEXT;",
-                "ALTER TABLE execution_runs ADD COLUMN approved_decision_id TEXT;",
-                "ALTER TABLE execution_runs ADD COLUMN target_policy_version TEXT;",
-                "ALTER TABLE execution_runs ADD COLUMN operation_policy_revision TEXT;",
-                "ALTER TABLE execution_runs ADD COLUMN request_fingerprint TEXT;",
-                "ALTER TABLE execution_runs ADD COLUMN operation_options_json TEXT NOT NULL DEFAULT '{}';",
-                "ALTER TABLE execution_runs ADD COLUMN resource_budget_json TEXT NOT NULL DEFAULT '{}';",
-                "ALTER TABLE execution_runs ADD COLUMN account_impact_budget_json TEXT NOT NULL DEFAULT '{}';",
-                "ALTER TABLE execution_runs ADD COLUMN credential_scope_json TEXT NOT NULL DEFAULT '{}';",
             ]
             for migration_index, mig in enumerate(migrations):
                 savepoint = f"schema_migration_{migration_index}"
@@ -767,6 +760,7 @@ class DatabaseManager:
                             resource_budget_json TEXT NOT NULL DEFAULT '{}',
                             account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
                             credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                            snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE',
                             state TEXT NOT NULL,
                             worker_identity TEXT,
                             process_id INTEGER,
@@ -788,16 +782,14 @@ class DatabaseManager:
                             execution_id, request_id, organization_id, approved_decision_id,
                             target_policy_version, operation_policy_revision, request_fingerprint,
                             operation_options_json, resource_budget_json, account_impact_budget_json,
-                            credential_scope_json, state,
+                            credential_scope_json, snapshot_completeness, state,
                             worker_identity, process_id, process_group_id,
                             assurance_state, coverage_state, reason_code,
                             evidence_ref, correlation_id, created_at, started_at,
                             finished_at
                         )
-                        SELECT execution_id, request_id, organization_id, approved_decision_id,
-                               target_policy_version, operation_policy_revision, request_fingerprint,
-                               operation_options_json, resource_budget_json, account_impact_budget_json,
-                               credential_scope_json, state,
+                        SELECT execution_id, request_id, organization_id, NULL, NULL, NULL, NULL,
+                               '{}', '{}', '{}', '{}', 'LEGACY_SNAPSHOT_UNAVAILABLE', state,
                                worker_identity, process_id, process_group_id,
                                assurance_state, coverage_state, reason_code,
                                evidence_ref, correlation_id, created_at, started_at,
@@ -909,6 +901,56 @@ class DatabaseManager:
                     if not has_parent_unique:
                         raise ValueError("execution_runs remediation failed postcondition: tenant parent key is not unique")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (remediation_version, utc_now().isoformat()))
+
+            # Version 3 binds each execution run to an immutable authority
+            # snapshot.  These fields are deliberately versioned with the
+            # execution schema; they are not part of the generic compatibility
+            # column loop above.
+            snapshot_migration_version = 3
+            snapshot_applied = conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (snapshot_migration_version,),
+            ).fetchone()
+            if not snapshot_applied:
+                snapshot_columns = [
+                    ("approved_decision_id", "TEXT"),
+                    ("target_policy_version", "TEXT"),
+                    ("operation_policy_revision", "TEXT"),
+                    ("request_fingerprint", "TEXT"),
+                    ("operation_options_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("resource_budget_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("account_impact_budget_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("credential_scope_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("snapshot_completeness", "TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE'"),
+                ]
+                for column, definition in snapshot_columns:
+                    savepoint = f"execution_snapshot_{column}"
+                    try:
+                        conn.execute(f"SAVEPOINT {savepoint}")
+                        conn.execute(f"ALTER TABLE execution_runs ADD COLUMN {column} {definition}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    except Exception as exc:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                        if "duplicate column name" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                            raise ValueError(f"execution snapshot migration failed for {column}") from exc
+                if isinstance(self, PostgresDatabaseManager):
+                    snapshot_count = conn.execute(
+                        "SELECT COUNT(*) AS count FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND table_name = 'execution_runs' "
+                        "AND column_name IN ('approved_decision_id', 'target_policy_version', 'operation_policy_revision', 'request_fingerprint', 'operation_options_json', 'resource_budget_json', 'account_impact_budget_json', 'credential_scope_json', 'snapshot_completeness')"
+                    ).fetchone()
+                else:
+                    snapshot_count = conn.execute(
+                        "SELECT COUNT(*) AS count FROM pragma_table_info('execution_runs') "
+                        "WHERE name IN ('approved_decision_id', 'target_policy_version', 'operation_policy_revision', 'request_fingerprint', 'operation_options_json', 'resource_budget_json', 'account_impact_budget_json', 'credential_scope_json', 'snapshot_completeness')"
+                    ).fetchone()
+                if not snapshot_count or snapshot_count["count"] != len(snapshot_columns):
+                    raise ValueError("execution snapshot migration failed postcondition: required columns are absent")
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (snapshot_migration_version, utc_now().isoformat()),
+                )
 
             # Migration rows prove history, not present-day schema integrity.
             # Recheck the safety-critical execution invariants on every startup
@@ -1420,12 +1462,12 @@ class DatabaseManager:
                     execution_id, request_id, organization_id, approved_decision_id,
                     target_policy_version, operation_policy_revision, request_fingerprint,
                     operation_options_json, resource_budget_json, account_impact_budget_json,
-                    credential_scope_json, state, worker_identity, assurance_state,
+                    credential_scope_json, snapshot_completeness, state, worker_identity, assurance_state,
                     coverage_state, correlation_id, created_at
                 ) SELECT ?, id, organization_id, ?, target_policy_version,
                     operation_policy_revision, request_fingerprint, operation_options_json,
                     resource_budget_json, account_impact_budget_json, credential_scope_json,
-                    'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
+                    'COMPLETE', 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
                     FROM execution_requests WHERE id = ? AND organization_id = ?""",
                     (execution_id, decision_id, worker_identity, correlation_id, now.isoformat(), request_id, organization_id),
             )
@@ -1452,7 +1494,7 @@ class DatabaseManager:
                 "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
                 "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, "
                 "operation_options_json, resource_budget_json, account_impact_budget_json, credential_scope_json, "
-                "correlation_id, created_at, started_at, finished_at FROM execution_runs "
+                "snapshot_completeness, correlation_id, created_at, started_at, finished_at FROM execution_runs "
                 "WHERE request_id = ? AND organization_id = ?",
                 (request_id, organization_id),
             ).fetchone()
@@ -1999,15 +2041,15 @@ class DatabaseManager:
                     execution_id, request_id, organization_id, approved_decision_id,
                     target_policy_version, operation_policy_revision, request_fingerprint,
                     operation_options_json, resource_budget_json, account_impact_budget_json,
-                    credential_scope_json, state, worker_identity, process_id, process_group_id,
+                    credential_scope_json, snapshot_completeness, state, worker_identity, process_id, process_group_id,
                     assurance_state, coverage_state, reason_code, evidence_ref, correlation_id,
                     created_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (run.execution_id, run.request_id, run.organization_id, decision_row["id"],
                  decision_row["target_policy_version"], decision_row["operation_policy_revision"],
                  request_full["request_fingerprint"], decision_row["operation_options_json"],
                  decision_row["resource_budget_json"], decision_row["account_impact_budget_json"],
-                 decision_row["credential_scope_json"], run.state, run.worker_identity,
+                 decision_row["credential_scope_json"], "COMPLETE", run.state, run.worker_identity,
                  run.process_id, run.process_group_id, run.assurance_state, run.coverage_state,
                  run.reason_code, run.evidence_ref, run.correlation_id,
                  run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None,

@@ -825,7 +825,7 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     DatabaseManager(db_path)
     with database._connection_scope() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions[-2:] == [1, 2]
+        assert versions[-3:] == [1, 2, 3]
 
 
 def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
