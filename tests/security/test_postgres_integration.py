@@ -56,6 +56,40 @@ def _isolated_manager():
             connection.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def _seed_request_and_run(manager):
+    now = "2026-01-01T00:00:00+00:00"
+    with manager._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at) VALUES (%s, %s, %s, %s)",
+            ("org-preflight", "Preflight Org", "preflight-org", now),
+        )
+        conn.execute("""
+            INSERT INTO users (id, username, email, hashed_password, organization_id, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, ("user-preflight", "preflight-user", "preflight@example.invalid", "not-a-password", "org-preflight", now))
+        conn.execute("""
+            INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, ("asset-preflight", "org-preflight", "Preflight Asset", "DOMAIN", "example.invalid", now, now))
+        conn.execute("""
+            INSERT INTO execution_requests (
+                id, idempotency_key, request_fingerprint, organization_id,
+                asset_id, target_id, authorization_decision_id,
+                target_policy_version, tool_id, operation_family,
+                operation_policy_revision, requested_by_user_id,
+                state, created_at, expires_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, ("request-preflight", "idem-preflight", "fingerprint-preflight", "org-preflight",
+              "asset-preflight", "target-preflight", "decision-preflight", "policy-1",
+              "nmap", "SAFE", "revision-1", "user-preflight", "REQUESTED", now, now))
+        conn.execute("""
+            INSERT INTO execution_runs (
+                execution_id, request_id, organization_id, state,
+                assurance_state, coverage_state, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, ("run-preflight", "request-preflight", "org-preflight", "FAILED", "UNVERIFIED", "UNAVAILABLE", now))
+
+
 def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
     with _isolated_manager() as manager:
         with manager._connection_scope() as conn:
@@ -172,4 +206,37 @@ def test_postgres_health_rejects_same_name_wrong_column_parent_index():
             conn.execute("DROP INDEX uq_execution_requests_id_org")
             conn.execute("CREATE UNIQUE INDEX uq_execution_requests_id_org ON execution_requests(id, created_at)")
         with pytest.raises(ValueError, match="schema health check"):
+            PostgresDatabaseManager(manager.database_url)
+
+
+def test_postgres_migration_rejects_duplicate_runs_before_recording_version():
+    with _isolated_manager() as manager:
+        _seed_request_and_run(manager)
+        with manager._connection_scope() as conn:
+            conn.execute("DROP INDEX uq_execution_runs_request")
+            conn.execute("""
+                INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, state,
+                    assurance_state, coverage_state, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, ("run-preflight-duplicate", "request-preflight", "org-preflight", "FAILED", "UNVERIFIED", "UNAVAILABLE", "2026-01-01T00:00:01+00:00"))
+            conn.execute("DELETE FROM schema_migrations WHERE version = 1")
+            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+        with pytest.raises(ValueError, match="duplicate runs"):
+            PostgresDatabaseManager(manager.database_url)
+
+
+def test_postgres_migration_rejects_orphaned_run_before_recording_version():
+    with _isolated_manager() as manager:
+        with manager._connection_scope() as conn:
+            conn.execute("DROP INDEX uq_execution_runs_request")
+            conn.execute("""
+                INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, state,
+                    assurance_state, coverage_state, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, ("run-preflight-orphan", "missing-request", "missing-org", "FAILED", "UNVERIFIED", "UNAVAILABLE", "2026-01-01T00:00:00+00:00"))
+            conn.execute("DELETE FROM schema_migrations WHERE version = 1")
+            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+        with pytest.raises(ValueError, match="orphaned or cross-tenant"):
             PostgresDatabaseManager(manager.database_url)
