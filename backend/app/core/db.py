@@ -51,6 +51,7 @@ from app.core.models import (
     utc_now,
 )
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
+from app.core.correlation import get_correlation_id
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
 
@@ -1356,11 +1357,26 @@ class DatabaseManager:
                     FROM execution_requests WHERE id = ? AND organization_id = ?""",
                 (decision_id, approver_user_id, session_jti, worker_identity, now.isoformat(), request_id, organization_id),
             )
+            execution_id = f"run-{uuid.uuid4().hex[:16]}"
+            conn.execute(
+                """INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, state, worker_identity,
+                    assurance_state, coverage_state, correlation_id, created_at
+                ) VALUES (?, ?, ?, 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?)""",
+                (execution_id, request_id, organization_id, worker_identity, get_correlation_id(), now.isoformat()),
+            )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
                 organization_id=organization_id, action=AuditAction.EXECUTION_AUTHORIZED,
                 object_type="execution_request", object_id=request_id, result="SUCCESS",
                 details={"decision_id": decision_id, "request_fingerprint": request_fingerprint},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
+                organization_id=organization_id, action=AuditAction.EXECUTION_RUN_CREATED,
+                object_type="execution_run", object_id=execution_id, result="SUCCESS",
+                correlation_id=get_correlation_id(),
+                details={"request_id": request_id, "state": "REQUESTED"},
             ))
             return "AUTHORIZED", decision_id
 

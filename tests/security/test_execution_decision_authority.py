@@ -200,6 +200,64 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     }
 
 
+def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
+    from app.core.db import DatabaseManager
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+
+    database = DatabaseManager(tmp_path / "approval-run.db")
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    options = json.dumps({"provider": "aws", "output_format": "json-asff", "quiet": True}, separators=(",", ":"), sort_keys=True)
+    budget = json.dumps({"timeout_seconds": 120, "max_output_bytes": 10485760}, separators=(",", ":"), sort_keys=True)
+    account_budget = json.dumps({"read_only": 1}, separators=(",", ":"), sort_keys=True)
+    credentials = json.dumps({"provider": "aws"}, separators=(",", ":"), sort_keys=True)
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-a", "Org A", "org-a", now))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, active_probing_granted, created_at, updated_at) VALUES (?, ?, ?, 'CLOUD_ACCOUNT', ?, 1, ?, ?)", ("asset-a", "org-a", "asset", "aws://123456789012", now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, 'hash', 'ADMIN', ?, 1, ?)", ("admin-a", "admin", "admin@example.test", "org-a", now))
+        conn.execute(
+            "INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_options_json, operation_policy_revision, resource_budget_json, account_impact_budget_json, credential_scope_json, requested_by_user_id, state, created_at, expires_at) "
+            "VALUES (?, ?, ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, ?, ?, ?, ?, 'admin-a', 'REQUESTED', ?, ?)",
+            ("req-a", "idem-a", "f" * 64, options, OPERATION_POLICY_REVISION, budget, account_budget, credentials, now, expires),
+        )
+
+    token = set_correlation_id("corr-approval-run")
+    try:
+        result, decision_id = database.approve_execution_request(
+            "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+        )
+    finally:
+        reset_correlation_id(token)
+    assert result == "AUTHORIZED"
+    assert decision_id
+    replay = database.approve_execution_request(
+        "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+    )
+    assert replay == ("REPLAY", decision_id)
+    with database._connection_scope() as conn:
+        runs = conn.execute(
+            "SELECT execution_id, request_id, organization_id, state, worker_identity, assurance_state, "
+            "coverage_state, correlation_id FROM execution_runs WHERE request_id = ? AND organization_id = ?",
+            ("req-a", "org-a"),
+        ).fetchall()
+        run_events = conn.execute(
+            "SELECT action, object_type, organization_id, correlation_id, details_json FROM audit_events "
+            "WHERE object_type = 'execution_run' AND organization_id = ?",
+            ("org-a",),
+        ).fetchall()
+    assert len(runs) == 1
+    assert runs[0]["request_id"] == "req-a"
+    assert runs[0]["state"] == "REQUESTED"
+    assert runs[0]["worker_identity"] == "worker-a"
+    assert runs[0]["assurance_state"] == "UNVERIFIED"
+    assert runs[0]["coverage_state"] == "UNAVAILABLE"
+    assert runs[0]["correlation_id"] == "corr-approval-run"
+    assert len(run_events) == 1
+    assert run_events[0]["action"] == AuditAction.EXECUTION_RUN_CREATED.value
+    assert run_events[0]["object_type"] == "execution_run"
+    assert run_events[0]["correlation_id"] == "corr-approval-run"
+
+
 def test_revoke_route_resolves_request_id_to_linked_decision():
     import asyncio
     from app.api import executions
