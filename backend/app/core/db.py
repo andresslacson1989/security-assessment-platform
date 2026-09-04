@@ -340,6 +340,18 @@ class DatabaseManager:
             }
             if len(pk) != 1 or len(uq) != 1 or not any("PRIMARYKEY(EVENT_ID)" == str(r["definition"]).upper().replace(" ", "") for r in pk) or not any("UNIQUE(ATTEMPT_ID,EVENT_TYPE)" == str(r["definition"]).upper().replace(" ", "") for r in uq) or checks != expected_checks:
                 raise RuntimeError("migration ledger constraint identities drifted")
+            trigger = conn.execute("""SELECT tg.tgenabled, pg_get_triggerdef(tg.oid) AS trigger_def,
+                    pg_get_functiondef(p.oid) AS function_def
+                FROM pg_trigger tg JOIN pg_class t ON t.oid=tg.tgrelid
+                JOIN pg_proc p ON p.oid=tg.tgfoid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'
+                  AND NOT tg.tgisinternal AND tg.tgname='schema_migration_events_no_update_delete'""").fetchall()
+            if len(trigger) != 1 or trigger[0]["tgenabled"] != "O":
+                raise RuntimeError("migration ledger append-only trigger is absent or disabled")
+            trigger_def = "".join(str(trigger[0]["trigger_def"]).upper().split())
+            function_def = "".join(str(trigger[0]["function_def"]).upper().split())
+            if "BEFOREDELETEORUPDATEON" not in trigger_def or "SCHEMA_MIGRATION_EVENTS" not in trigger_def or "FOREACHROW" not in trigger_def or "EXECUTEFUNCTION" not in trigger_def or "SCHEMA_MIGRATION_EVENTS_IMMUTABLE" not in trigger_def or "RAISEEXCEPTION" not in function_def or "APPEND-ONLY" not in function_def:
+                raise RuntimeError("migration ledger append-only trigger definition drifted")
         else:
             rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
             if {r["name"] for r in rows} != required:
