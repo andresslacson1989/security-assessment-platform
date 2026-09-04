@@ -87,7 +87,7 @@ Binary installation must follow this strict 8-step lifecycle:
 5. VALIDATION: Execute binary `--version` check in a sandbox to ensure binary integrity and functionality.
 6. ATOMIC PROMOTION: Atomically move verified executable to production `backend/bin/` destination.
 7. AUDIT LOGGING: Emit privileged `TOOL_INSTALL_COMPLETED` audit event.
-8. REGISTRATION: Register active tool status with the platform adapter registry.
+8. REGISTRATION: Register active tool status with the platform adapter registry. Capability registration and the system capability snapshot are observational only; cached status MUST NOT replace live pre-launch executable integrity and exact-version verification.
 ```
 
 ### 2.3 Strict Verification Invariants

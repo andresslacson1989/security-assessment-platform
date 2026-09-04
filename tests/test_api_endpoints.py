@@ -4,7 +4,7 @@ Integration test suite for FastAPI REST endpoints and SSE streaming (v10.0.0).
 
 import asyncio
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient, ASGITransport
 
@@ -29,6 +29,7 @@ from app.core.models import (
     Finding,
     Evidence,
     RejectedDiscovery,
+    SystemCapabilities,
     calculate_fingerprint,
 )
 from app.core.auth import create_access_token
@@ -76,6 +77,17 @@ async def test_system_endpoints(auth_headers):
         assert resp_eng.status_code == 200
         data_eng = resp_eng.json()
         assert data_eng["count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_capabilities_endpoint_requires_auth_and_supports_forced_refresh(auth_headers):
+    live_snapshot = SystemCapabilities(tools=[])
+    with patch("app.adapters.get_cached_system_capabilities", new_callable=AsyncMock, return_value=live_snapshot) as detector:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            assert (await ac.get("/api/system/capabilities")).status_code == 401
+            response = await ac.get("/api/system/capabilities?refresh=true", headers=auth_headers)
+        assert response.status_code == 200
+        detector.assert_awaited_once_with(force_refresh=True)
 
 
 @pytest.mark.asyncio

@@ -131,6 +131,9 @@ If an archive checksum does not match, the installer MUST abort immediately, del
 
 ## 6. Adversarial Test Vectors & Tool Mock Fixtures (v14.0.0)
 
+### 6.1 Capability Detection Cache Vectors
+The authenticated capability endpoint uses a process-local 60-second cache and must be tested for cache hits, expiry-triggered live detection, `refresh=true` bypass, one shared live refresh under concurrency, adapter-configuration isolation, and invalidation after installation success, reinstall, cancellation, or failure. Responses must expose live-versus-cached source and age metadata. A failed refresh must not return stale status as current, and cached capability status must never bypass runtime binary trust checks. This behavior requires no database schema or persisted tool-status state.
+
 To achieve deterministic CI verification across environments without requiring external binary dependencies, test suites must use the following authoritative mock outputs:
 
 ### 6.1 Metasploit Framework (`MetasploitAdapter`) Mock Fixtures

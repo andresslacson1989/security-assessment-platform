@@ -106,6 +106,9 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
     - `NOT_SUPPORTED`: Excluded by design or safety policy.
     - `UNVERIFIED`: Upstream feature claim pending empirical verification.
 
+11. **Capability Observation Cache Invariant:**
+    The authenticated system capability endpoint may return a process-local, 60-second snapshot keyed by adapter configuration. `refresh=true` forces live detection; cache expiry and detection failure MUST NOT be hidden by serving stale status as current. Capability snapshots are observational telemetry only and MUST NOT authorize execution or replace live pre-launch integrity/version verification.
+
 ---
 
 ## 2. Rate Limiting, Timing & Concurrency Architecture

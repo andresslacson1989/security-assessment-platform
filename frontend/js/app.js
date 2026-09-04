@@ -1334,9 +1334,10 @@ class ScanStreamManager {
     }
   }
 
-  async loadSystemCapabilities() {
+  async loadSystemCapabilities(forceRefresh = false) {
     try {
-      const res = await this.authFetch("/api/system/capabilities");
+      const url = forceRefresh ? "/api/system/capabilities?refresh=true" : "/api/system/capabilities";
+      const res = await this.authFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       const tools = data.tools || [];
@@ -1708,7 +1709,7 @@ class ScanStreamManager {
         this.appendToolboxLog(`[SUCCESS] ${d.message || d.tool_name + ' installed.'}`);
         this.updateToolboxStage(`${d.tool_name} installed successfully!`, 100);
         this.refreshToolboxData();
-        this.loadSystemCapabilities();
+        this.loadSystemCapabilities(true);
       });
 
       this.toolEventsSource.addEventListener("install_failed", (e) => {
@@ -2443,8 +2444,6 @@ window.filterFindingsBySeverity = function (sev) {
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new ScanStreamManager();
-  // Load tool capabilities immediately on page load (Contract 04 v4.1.0)
-  window.app.loadSystemCapabilities();
 
   // Unified delegated click dispatcher for CSP compliant zero-inline-handler architecture
   document.addEventListener("click", (e) => {

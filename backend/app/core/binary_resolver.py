@@ -160,6 +160,9 @@ def resolve_tool_binary(
     Tier 4: System PATH discovery via shutil.which(tool_name)
     Tier 5: Platform-Specific Auto-Discovery (Windows Registry, drive scan, package managers, Unix dirs)
     """
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+
     # Tier 1: Explicit custom configured path
     if custom_path:
         if os.path.isfile(custom_path):

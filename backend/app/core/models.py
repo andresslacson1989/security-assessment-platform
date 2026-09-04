@@ -580,6 +580,10 @@ class SystemCapabilities(BaseModel):
     tools: List[ToolStatus] = Field(default_factory=list, description="Tool availability and capability status")
     native_engines_ready: bool = True
     os_platform: str = Field(default="Unknown", description="Operating system platform details")
+    capabilities_source: str = Field(default="LIVE", description="Whether this snapshot was produced LIVE or served from CACHE")
+    capabilities_checked_at: Optional[datetime] = Field(default=None, description="UTC time of the live capability check")
+    capabilities_cache_age_seconds: float = Field(default=0.0, ge=0, description="Age of the capability snapshot when returned")
+    capabilities_cache_ttl_seconds: int = Field(default=60, ge=1, description="Maximum cache age for API capability snapshots")
 
 
 # ============================================================================

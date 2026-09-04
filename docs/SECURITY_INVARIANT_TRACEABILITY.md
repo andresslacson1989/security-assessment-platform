@@ -31,6 +31,11 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 
 ## 2. Invariant Implementation Details
 
+### Capability Status Observation (non-authorization)
+- The authenticated system capability endpoint reports the 26-tool fleet using a process-local 60-second snapshot keyed by adapter configuration; `refresh=true` forces live detection.
+- Cache metadata distinguishes live and cached observations, expiry triggers a new live check, and failures do not present stale status as current.
+- This UI/status cache is not persisted and cannot authorize execution; scan execution retains live discovery plus pre-launch integrity and exact-version verification.
+
 ### INV-001 & INV-002: Zero-Trust Multi-Tenancy & Identity
 - **Contract Specification:** Contracts 01 Section 3, 02 Section 2, 08 Section 1.
 - **Implementation:** 

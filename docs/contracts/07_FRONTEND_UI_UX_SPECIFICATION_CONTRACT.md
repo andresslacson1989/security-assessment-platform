@@ -27,7 +27,7 @@
 4. **Pentester Workbench (HTTP Repeater):**
    - Safe interactive HTTP repeater enforcing SSRF controls, size limits, and formatted request/response inspection.
 5. **Toolbox Manager (`#toolbox-modal`):**
-   - Real-time tool capabilities fleet status (26 tools) with 1-click installation telemetry stream.
+   - Tool capabilities fleet status (26 tools) with 1-click installation telemetry stream. The toolbox displays the authenticated capability snapshot from the backend cache by default, including live-versus-cached metadata, and supports deliberate live refresh after installation or user request. This observational status never authorizes execution and is not persisted in the browser or database.
    - **Viewport Ergonomics & Geometry:**
      - Modal Card (`.modal-card--toolbox`): Responsive viewport bounds capped at `width: 95vw` (max `1280px`) and `height: 92vh` (max `94vh`) in a flex-column layout to fit modern desktop and widescreen SOC displays without overflow clipping.
      - Actions Bar (`.toolbox-actions-bar`): Fixed header region (`flex-shrink: 0`) hosting summary telemetry chips and batch action controls.

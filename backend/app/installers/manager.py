@@ -153,6 +153,8 @@ class ToolInstallationManager:
         if task_id and task_id in self._active_tasks:
             task = self._active_tasks[task_id]
             task.cancel()
+            from app.adapters import invalidate_system_capabilities_cache
+            invalidate_system_capabilities_cache()
             return True
         return False
 
@@ -252,6 +254,8 @@ class ToolInstallationManager:
                     },
                 )
             finally:
+                from app.adapters import invalidate_system_capabilities_cache
+                invalidate_system_capabilities_cache()
                 self._active_tasks.pop(task_id, None)
                 if self._tool_to_task.get(tool_name.lower()) == task_id:
                     self._tool_to_task.pop(tool_name.lower(), None)
