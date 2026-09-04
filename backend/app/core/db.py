@@ -505,11 +505,30 @@ class DatabaseManager:
                 raise RuntimeError("execution dispatch schema lacks exact parent execution key")
         else:
             rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
-            if {r["name"] for r in rows} != required:
+            expected = {
+                "execution_id": ("text", False, None), "organization_id": ("text", True, None),
+                "state": ("text", True, "'PENDING'"), "attempt_count": ("integer", True, "0"),
+                "created_at": ("text", True, None), "claimed_at": ("text", False, None),
+                "completed_at": ("text", False, None), "last_error": ("text", False, None),
+                "claimed_by": ("text", False, None), "claim_token": ("text", False, None),
+                "lease_expires_at": ("text", False, None), "correlation_id": ("text", False, None),
+            }
+            actual = {r["name"]: (str(r["type"]).strip().lower(), bool(r["notnull"]), r["dflt_value"]) for r in rows}
+            if set(actual) != required or any(actual[name] != expected[name] for name in required):
                 raise RuntimeError("execution dispatch schema columns drifted")
+            if sum(1 for r in rows if r["pk"] == 1) != 1 or next((r["name"] for r in rows if r["pk"] == 1), None) != "execution_id":
+                raise RuntimeError("execution dispatch schema primary key drifted")
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"].upper()
             if "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
                 raise RuntimeError("execution dispatch schema lacks state/attempt constraints")
+            parent_keys = []
+            for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
+                if index["unique"] and not index["partial"]:
+                    cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                    if [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["execution_id", "organization_id"]:
+                        parent_keys.append(index)
+            if len(parent_keys) != 1:
+                raise RuntimeError("execution dispatch schema lacks exact parent execution key")
         grouped = {}
         for row in conn.execute("PRAGMA foreign_key_list(execution_dispatch_intents)").fetchall() if not isinstance(self, PostgresDatabaseManager) else []:
             grouped.setdefault(row["id"], []).append(row)
