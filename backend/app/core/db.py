@@ -319,7 +319,12 @@ class DatabaseManager:
             pk = [r for r in identity if r["contype"] == "p"]
             uq = [r for r in identity if r["contype"] == "u"]
             checks = {str(r["definition"]).upper().replace(" ", "") for r in identity if r["contype"] == "c"}
-            if len(pk) != 1 or len(uq) != 1 or not any("PRIMARYKEY(EVENT_ID)" == str(r["definition"]).upper().replace(" ", "") for r in pk) or not any("UNIQUE(ATTEMPT_ID,EVENT_TYPE)" == str(r["definition"]).upper().replace(" ", "") for r in uq) or len(checks) != 3 or any("CHECK((1=1))" in c for c in checks):
+            expected_checks = {
+                "CHECK((EVENT_TYPE=ANY(ARRAY['STARTED'::TEXT,'SUCCEEDED'::TEXT,'FAILED'::TEXT,'ROLLED_BACK'::TEXT,'ROLLBACK_FAILED'::TEXT])))",
+                "CHECK((BACKEND=ANY(ARRAY['SQLITE'::TEXT,'POSTGRESQL'::TEXT])))",
+                "CHECK((ROLLBACK_STATUS=ANY(ARRAY['NOT_APPLICABLE'::TEXT,'PENDING'::TEXT,'CONFIRMED'::TEXT,'FAILED'::TEXT,'UNKNOWN'::TEXT])))",
+            }
+            if len(pk) != 1 or len(uq) != 1 or not any("PRIMARYKEY(EVENT_ID)" == str(r["definition"]).upper().replace(" ", "") for r in pk) or not any("UNIQUE(ATTEMPT_ID,EVENT_TYPE)" == str(r["definition"]).upper().replace(" ", "") for r in uq) or checks != expected_checks:
                 raise RuntimeError("migration ledger constraint identities drifted")
         else:
             rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
@@ -339,7 +344,8 @@ class DatabaseManager:
             if ["attempt_id", "event_type"] not in unique:
                 raise RuntimeError("migration ledger attempt/event uniqueness drifted")
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"].upper()
-            if sql.count("CHECK (") != 3 or any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")):
+            allowed_values = ("'STARTED'", "'SUCCEEDED'", "'FAILED'", "'ROLLED_BACK'", "'ROLLBACK_FAILED'", "'SQLITE'", "'POSTGRESQL'", "'NOT_APPLICABLE'", "'PENDING'", "'CONFIRMED'", "'UNKNOWN'")
+            if sql.count("CHECK (") != 3 or any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")) or any(token not in sql for token in allowed_values):
                 raise RuntimeError("migration ledger CHECK constraints drifted")
             triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
             if not {"schema_migration_events_no_update", "schema_migration_events_no_delete"}.issubset(triggers):
