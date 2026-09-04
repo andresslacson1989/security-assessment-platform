@@ -27,6 +27,7 @@ from app.core.version import (
     RULESET_VERSION,
 )
 from app.core.orchestrator import orchestrator
+from app.core.observation_service import BackendObservationService
 from app.core.correlation import set_correlation_id, reset_correlation_id
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.engines.web_dast.engine import WebDastAssessmentEngine
@@ -59,7 +60,13 @@ async def lifespan(app: FastAPI):
         from app.core.credential_handoff import require_credential_handoff_key
 
         require_credential_handoff_key()
-    yield
+    observation_service = BackendObservationService()
+    app.state.observation_service = observation_service
+    observation_service.start()
+    try:
+        yield
+    finally:
+        await observation_service.stop()
 
 
 def _load_allowed_origins(raw: str | None) -> list[str]:

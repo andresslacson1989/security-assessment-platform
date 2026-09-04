@@ -58,6 +58,8 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "Backend-Owned Observation Service" in contract_04
     assert "canonical response envelope" in contract_04
     assert "Current Implementation-Gap Register" in contract_04
+    assert "No ordinary scan-history delete endpoint is exposed" in contract_04
+    assert "lifecycle-managed backend observation service" in contract_04
     assert "observational only" in contract_03
     assert "Capability Detection Cache Vectors" in contract_08
     assert "Authentication Isolation and Backend Observation Vectors" in contract_08

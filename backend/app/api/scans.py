@@ -34,7 +34,7 @@ from app.core.models import (
     EndpointTestStatus,
     PrincipalType,
 )
-from app.core.storage import get_scan, list_scans, delete_scan
+from app.core.storage import get_scan, list_scans
 from app.core.orchestrator import orchestrator
 from app.core.ssrf_protector import assert_safe_url, SSRFProtectionError
 from app.core.path_sandbox import assert_safe_path, PathSandboxViolation, get_default_workspace_dir
@@ -471,23 +471,6 @@ async def cancel_running_scan(
         "cancelled": cancelled,
         "message": "Scan job cancellation processed.",
     }
-
-
-@router.delete("/{scan_id}", summary="Delete Scan Job Record")
-async def delete_scan_job(
-    scan_id: str,
-    current_user: UserProfile = Depends(require_permission(required_scope="scan:delete")),
-) -> Dict[str, Any]:
-    """Deletes a scan job from storage. Enforces tenant ownership."""
-    job = orchestrator.get_active_job(scan_id, organization_id=_organization_scope(current_user))
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Scan job '{scan_id}' not found.")
-
-    if not authorize_scan_access(current_user, job, action="delete"):
-        raise HTTPException(status_code=403, detail=f"Unauthorized to delete scan job '{scan_id}'.")
-
-    deleted = delete_scan(scan_id, organization_id=_organization_scope(current_user))
-    return {"scan_id": scan_id, "deleted": deleted, "message": "Scan record deleted."}
 
 
 @router.get("/{scan_id}/events", summary="Stream Real-Time Scan Telemetry via Server-Sent Events (SSE)")

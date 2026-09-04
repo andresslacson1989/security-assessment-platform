@@ -262,10 +262,11 @@ async def test_scan_lifecycle_api(auth_headers):
         assert cancel_resp.status_code == 200
         assert cancel_resp.json()["status"] == "CANCELLED"
 
-        # 6. Delete scan
+        # 6. Historical scan records are retained; no ordinary delete endpoint exists.
         del_resp = await ac.delete(f"/api/scans/{scan_id}", headers=auth_headers)
-        assert del_resp.status_code == 200
-        assert del_resp.json()["deleted"] is True
+        assert del_resp.status_code == 405
+        retained_resp = await ac.get(f"/api/scans/{scan_id}", headers=auth_headers)
+        assert retained_resp.status_code == 200
 
 
 @pytest.mark.asyncio

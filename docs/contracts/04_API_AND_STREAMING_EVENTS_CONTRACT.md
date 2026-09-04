@@ -37,7 +37,7 @@ The frontend authentication flow MUST treat the login response as complete once 
 - `GET /api/scans/{scan_id}/telemetry`: Retrieves organized assessment intelligence, per-tool execution logs, per-link grouped security dossiers (`tests_performed`, `tools_executed`, `findings`), and actively resolved subdomain attack surface (`scan:read`, tenant-scoped).
 - `POST /api/scans/{scan_id}/cancel`: Cancels an active scan (`scan:cancel`), halts async workers, broadcasts `event: cancelled` SSE, and resets UI state.
 - `GET /api/scans` / `GET /api/scans/history`: Lists historical scan summaries for caller's organization.
-- `DELETE /api/scans/{scan_id}`: Deletes a scan record (`scan:delete`, tenant-scoped).
+- No ordinary scan-history delete endpoint is exposed. Historical records are retained in the authoritative database; any future purge operation MUST be separately governed as specified in §1.3.1.
 
 #### 1.3.1 Historical Scan Persistence and Retention
 
@@ -72,7 +72,7 @@ The observation service populates process-local snapshots; it does not persist t
 
 #### 1.5.3 Current Implementation-Gap Register
 
-The current repository evidence establishes the cache, forced-refresh API, installation invalidation, and runtime separation, but does not yet establish an autonomous startup scheduler. The current frontend login handler still awaits toolbox and capability refresh calls after token receipt. The current scan API exposes a hard-delete operation, and the current history UI requests the database-backed endpoint but reads `scans` instead of the endpoint's `items` envelope. These are recorded as required follow-up implementation items; this contract MUST NOT be interpreted as evidence that those controls are already complete.
+The current repository evidence establishes the cache, forced-refresh API, installation invalidation, runtime separation, login isolation, history `items` consumption, removal of the ordinary hard-delete path, and lifecycle-managed backend observation service. Runtime deployment evidence MUST still verify scheduler behavior in the target environment; repository tests alone do not constitute production-runtime proof.
 
 ### 1.6 Exporters & Reporting Endpoints (`/api/scans/{scan_id}/export`)
 - `GET /api/scans/{scan_id}/export/html`: Standalone offline interactive HTML report with secret masking (`report:read`, tenant-scoped).

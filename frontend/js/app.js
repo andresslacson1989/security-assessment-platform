@@ -1244,7 +1244,7 @@ class ScanStreamManager {
       const res = await this.authFetch("/api/scans/history?limit=30");
       if (!res.ok) return;
       const data = await res.json();
-      this.renderHistoryTable(data.scans || []);
+      this.renderHistoryTable(Array.isArray(data.items) ? data.items : []);
     } catch (e) {
       console.error(e);
     }
@@ -1278,7 +1278,6 @@ class ScanStreamManager {
           <td>
             <button class="btn btn-xs btn-outline" data-action="load-past-scan" data-scan-id="${this.escapeHtml(s.id)}">View</button>
             <button class="btn btn-xs btn-outline" data-action="open-telemetry-modal" data-scan-id="${this.escapeHtml(s.id)}">📊 Telemetry</button>
-            <button class="btn btn-xs btn-ghost" style="color: var(--color-critical);" data-action="delete-past-scan" data-scan-id="${this.escapeHtml(s.id)}">Delete</button>
           </td>
         </tr>
       `;
@@ -1319,16 +1318,6 @@ class ScanStreamManager {
       (job.logs || []).forEach((l) => {
         this.appendLog(l.engine, l.level, l.message, l.timestamp);
       });
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  async deletePastScan(scanId) {
-    if (!confirm("Are you sure you want to delete this scan record?")) return;
-    try {
-      await this.authFetch(`/api/scans/${scanId}`, { method: "DELETE" });
-      this.openHistoryModal();
     } catch (e) {
       console.error(e);
     }
@@ -1906,8 +1895,6 @@ class ScanStreamManager {
           this.authStatusBadge.innerText = `USER: ${data.user.username} (${data.user.role})`;
           this.authStatusBadge.className = "auth-status-badge badge-admin";
         }
-        await this.refreshToolboxData(true);
-        await this.loadSystemCapabilities(true);
         this.closeAuthModal();
       } else {
         const err = await res.json();
@@ -2489,11 +2476,6 @@ document.addEventListener("DOMContentLoaded", () => {
       case "open-telemetry-modal": {
         const scanId = actionEl.getAttribute("data-scan-id");
         if (window.app && scanId) window.app.openTelemetryModal(scanId);
-        break;
-      }
-      case "delete-past-scan": {
-        const scanId = actionEl.getAttribute("data-scan-id");
-        if (window.app && scanId) window.app.deletePastScan(scanId);
         break;
       }
       case "open-tool-instructions": {

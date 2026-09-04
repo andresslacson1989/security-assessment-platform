@@ -15,5 +15,7 @@ def test_capability_ui_uses_execution_mode_not_binary_availability():
     assert 'tool.execution_mode === "NATIVE_ENGINE_READY"' in source
     assert 'const url = forceRefresh ? "/api/system/capabilities?refresh=true"' in source
     assert 'const url = forceRefresh ? "/api/system/tools?refresh=true"' in source
-    assert "await this.refreshToolboxData(true);" in source
+    assert "await this.refreshToolboxData(true);" not in source
+    assert "await this.loadSystemCapabilities(true);" not in source
+    assert "this.renderHistoryTable(Array.isArray(data.items) ? data.items : []);" in source
     assert source.count("this.loadSystemCapabilities();") == 1
