@@ -1133,6 +1133,40 @@ class DatabaseManager:
                         conn.execute("DROP INDEX IF EXISTS uq_execution_runs_request")
                         conn.execute("DROP INDEX IF EXISTS idx_execution_runs_scope")
                         conn.execute("DROP TABLE execution_runs_legacy_binding")
+                if isinstance(self, PostgresDatabaseManager):
+                    parent_keys = conn.execute("""
+                        SELECT i.indexrelid
+                        FROM pg_index i
+                        JOIN pg_class t ON t.oid = i.indrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
+                          AND i.indisunique AND i.indisvalid AND i.indisready
+                        GROUP BY i.indexrelid
+                        HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
+                    """).fetchall()
+                    if not parent_keys:
+                        duplicate = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_decisions GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                        if duplicate:
+                            raise ValueError("execution authority migration blocked: duplicate decision parent tuples require audited reconciliation")
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                    elif len(parent_keys) > 1:
+                        raise ValueError("execution authority migration blocked: duplicate decision parent keys require audited reconciliation")
+                else:
+                    parent_keys = []
+                    for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
+                        if index["unique"]:
+                            columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                            if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                                parent_keys.append(index["name"])
+                    if not parent_keys:
+                        duplicate = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_decisions GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                        if duplicate:
+                            raise ValueError("execution authority migration blocked: duplicate decision parent tuples require audited reconciliation")
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                    elif len(parent_keys) > 1:
+                        raise ValueError("execution authority migration blocked: duplicate decision parent keys require audited reconciliation")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                 if isinstance(self, PostgresDatabaseManager):
                     existing = conn.execute("""
@@ -1194,9 +1228,18 @@ class DatabaseManager:
                                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
                             )
                         """)
-                        conn.execute("""
-                            INSERT INTO execution_runs SELECT * FROM execution_runs_legacy_binding
-                        """)
+                        recovery_columns = (
+                            "execution_id", "request_id", "organization_id", "approved_decision_id",
+                            "target_policy_version", "operation_policy_revision", "request_fingerprint",
+                            "operation_options_json", "resource_budget_json", "account_impact_budget_json",
+                            "credential_scope_json", "snapshot_completeness", "state", "worker_identity",
+                            "process_id", "process_group_id", "assurance_state", "coverage_state", "reason_code",
+                            "evidence_ref", "correlation_id", "created_at", "started_at", "finished_at",
+                        )
+                        copy_columns = ", ".join(recovery_columns)
+                        conn.execute(
+                            f"INSERT INTO execution_runs ({copy_columns}) SELECT {copy_columns} FROM execution_runs_legacy_binding"
+                        )
                         conn.execute("DROP TABLE execution_runs_legacy_binding")
                         conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                         conn.execute("CREATE INDEX idx_execution_runs_scope ON execution_runs(organization_id, state, created_at)")
