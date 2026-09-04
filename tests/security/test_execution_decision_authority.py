@@ -768,6 +768,7 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
         conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('user-a', 'user-a', 'a@example.test', 'hash', 'ADMIN', 'org-a', 1, ?)", (now,))
         conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, state, created_at, expires_at) VALUES ('req-a', 'idem-a', ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'user-a', 'REQUESTED', ?, ?)", ("f" * 64, OPERATION_POLICY_REVISION, now, now))
         conn.execute("DELETE FROM schema_migrations WHERE version = 1")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 4")
         conn.execute("DROP INDEX uq_execution_runs_request")
         conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
         conn.execute("""CREATE TABLE execution_runs (execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, organization_id TEXT NOT NULL, state TEXT NOT NULL, worker_identity TEXT, process_id INTEGER, process_group_id TEXT, assurance_state TEXT NOT NULL, coverage_state TEXT NOT NULL, reason_code TEXT, evidence_ref TEXT, correlation_id TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id), FOREIGN KEY (organization_id) REFERENCES organizations(id))""")
@@ -788,6 +789,11 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
             (0, "request_id", "id"), (1, "organization_id", "organization_id")
         }
         assert len({row[0] for row in composite}) == 1
+        decision_composite = [row for row in foreign_keys if row[2] == "execution_decisions"]
+        assert {(row[1], row[3], row[4]) for row in decision_composite} == {
+            (0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")
+        }
+        assert len({row[0] for row in decision_composite}) == 1
         parent_unique = []
         for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
             if index[2]:
@@ -826,7 +832,7 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     DatabaseManager(db_path)
     with database._connection_scope() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions[-3:] == [1, 2, 3]
+        assert versions[-3:] == [2, 3, 4]
 
 
 def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):

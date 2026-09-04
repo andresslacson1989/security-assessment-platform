@@ -477,7 +477,8 @@ class DatabaseManager:
                 FOREIGN KEY (organization_id) REFERENCES organizations(id),
                 FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
                 FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
-                FOREIGN KEY (approver_user_id, organization_id) REFERENCES users(id, organization_id)
+                FOREIGN KEY (approver_user_id, organization_id) REFERENCES users(id, organization_id),
+                UNIQUE (id, organization_id)
             );
 
             -- Immutable request recorded before administrator approval.
@@ -538,6 +539,7 @@ class DatabaseManager:
                 started_at TEXT,
                 finished_at TEXT,
                 FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
+                FOREIGN KEY (approved_decision_id, organization_id) REFERENCES execution_decisions(id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
 
@@ -681,6 +683,7 @@ class DatabaseManager:
             CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_decisions_id_org ON execution_decisions(id, organization_id);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -1020,6 +1023,103 @@ class DatabaseManager:
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (snapshot_migration_version, utc_now().isoformat()),
+                )
+
+            # Version 4 binds an execution run's approved decision to the
+            # same tenant.  A nullable decision reference is retained for
+            # historical runs, but any populated reference must be valid.
+            authority_binding_version = 4
+            if not conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (authority_binding_version,),
+            ).fetchone():
+                orphan = conn.execute(
+                    """
+                    SELECT r.execution_id
+                    FROM execution_runs r
+                    LEFT JOIN execution_decisions d
+                      ON d.id = r.approved_decision_id
+                     AND d.organization_id = r.organization_id
+                    WHERE r.approved_decision_id IS NOT NULL AND d.id IS NULL
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if orphan:
+                    raise ValueError("execution authority migration blocked: orphaned or cross-tenant approved decision reference")
+                if not isinstance(self, PostgresDatabaseManager):
+                    interrupted = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs_legacy_binding'"
+                    ).fetchone()
+                    if interrupted:
+                        replacement = conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs'"
+                        ).fetchone()
+                        if not replacement:
+                            raise ValueError("execution authority migration recovery blocked: replacement execution_runs table is absent")
+                        conn.execute("DROP INDEX IF EXISTS uq_execution_runs_request")
+                        conn.execute("DROP INDEX IF EXISTS idx_execution_runs_scope")
+                        conn.execute("DROP TABLE execution_runs_legacy_binding")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                if isinstance(self, PostgresDatabaseManager):
+                    existing = conn.execute(
+                        """
+                        SELECT 1 FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        WHERE t.relname = 'execution_runs' AND n.nspname = current_schema()
+                          AND c.conname = 'execution_runs_decision_tenant_fk'
+                        """
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_decision_tenant_fk "
+                            "FOREIGN KEY (approved_decision_id, organization_id) "
+                            "REFERENCES execution_decisions(id, organization_id)"
+                        )
+                else:
+                    foreign_keys = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    grouped = {}
+                    for row in foreign_keys:
+                        grouped.setdefault(row["id"], []).append(row)
+                    has_binding = any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_decisions" for row in rows)
+                        for rows in grouped.values()
+                    )
+                    if not has_binding:
+                        conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy_binding")
+                        conn.execute("""
+                            CREATE TABLE execution_runs (
+                                execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL,
+                                organization_id TEXT NOT NULL, approved_decision_id TEXT,
+                                target_policy_version TEXT, operation_policy_revision TEXT,
+                                request_fingerprint TEXT, operation_options_json TEXT NOT NULL DEFAULT '{}',
+                                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                                snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE',
+                                state TEXT NOT NULL, worker_identity TEXT, process_id INTEGER,
+                                process_group_id TEXT, assurance_state TEXT NOT NULL,
+                                coverage_state TEXT NOT NULL, reason_code TEXT, evidence_ref TEXT,
+                                correlation_id TEXT, created_at TEXT NOT NULL, started_at TEXT,
+                                finished_at TEXT,
+                                FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
+                                FOREIGN KEY (approved_decision_id, organization_id) REFERENCES execution_decisions(id, organization_id),
+                                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                            )
+                        """)
+                        conn.execute("""
+                            INSERT INTO execution_runs SELECT * FROM execution_runs_legacy_binding
+                        """)
+                        conn.execute("DROP TABLE execution_runs_legacy_binding")
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                        conn.execute("CREATE INDEX idx_execution_runs_scope ON execution_runs(organization_id, state, created_at)")
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (authority_binding_version, utc_now().isoformat()),
                 )
 
             self._verify_execution_snapshot_schema(conn)
