@@ -237,7 +237,9 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert replay == ("REPLAY", decision_id, execution_id)
     with database._connection_scope() as conn:
         runs = conn.execute(
-            "SELECT execution_id, request_id, organization_id, state, worker_identity, assurance_state, "
+            "SELECT execution_id, request_id, organization_id, approved_decision_id, target_policy_version, "
+            "operation_policy_revision, request_fingerprint, operation_options_json, resource_budget_json, "
+            "account_impact_budget_json, credential_scope_json, state, worker_identity, assurance_state, "
             "coverage_state, correlation_id FROM execution_runs WHERE request_id = ? AND organization_id = ?",
             ("req-a", "org-a"),
         ).fetchall()
@@ -248,6 +250,14 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
         ).fetchall()
     assert len(runs) == 1
     assert runs[0]["request_id"] == "req-a"
+    assert runs[0]["approved_decision_id"] == decision_id
+    assert runs[0]["target_policy_version"] == "v1"
+    assert runs[0]["operation_policy_revision"] == OPERATION_POLICY_REVISION
+    assert runs[0]["request_fingerprint"] == "f" * 64
+    assert json.loads(runs[0]["operation_options_json"]) == {"output_format": "json-asff", "provider": "aws", "quiet": True}
+    assert json.loads(runs[0]["resource_budget_json"]) == {"max_output_bytes": 10485760, "timeout_seconds": 120}
+    assert json.loads(runs[0]["account_impact_budget_json"]) == {"read_only": 1}
+    assert json.loads(runs[0]["credential_scope_json"]) == {"provider": "aws"}
     assert runs[0]["state"] == "REQUESTED"
     assert runs[0]["worker_identity"] == "worker-a"
     assert runs[0]["assurance_state"] == "UNVERIFIED"
@@ -760,7 +770,14 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
         conn.execute("DROP INDEX uq_execution_runs_request")
         conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
         conn.execute("""CREATE TABLE execution_runs (execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, organization_id TEXT NOT NULL, state TEXT NOT NULL, worker_identity TEXT, process_id INTEGER, process_group_id TEXT, assurance_state TEXT NOT NULL, coverage_state TEXT NOT NULL, reason_code TEXT, evidence_ref TEXT, correlation_id TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id), FOREIGN KEY (organization_id) REFERENCES organizations(id))""")
-        conn.execute("INSERT INTO execution_runs SELECT * FROM execution_runs_legacy WHERE 0")
+        conn.execute(
+            "INSERT INTO execution_runs (execution_id, request_id, organization_id, state, worker_identity, "
+            "process_id, process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
+            "correlation_id, created_at, started_at, finished_at) "
+            "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
+            "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, correlation_id, "
+            "created_at, started_at, finished_at FROM execution_runs_legacy WHERE 0"
+        )
         conn.execute("DROP TABLE execution_runs_legacy")
     DatabaseManager(db_path)
     with sqlite3.connect(db_path) as conn:

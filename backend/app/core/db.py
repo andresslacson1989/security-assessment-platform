@@ -446,6 +446,14 @@ class DatabaseManager:
                 execution_id TEXT PRIMARY KEY,
                 request_id TEXT NOT NULL,
                 organization_id TEXT NOT NULL,
+                approved_decision_id TEXT,
+                target_policy_version TEXT,
+                operation_policy_revision TEXT,
+                request_fingerprint TEXT,
+                operation_options_json TEXT NOT NULL DEFAULT '{}',
+                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                credential_scope_json TEXT NOT NULL DEFAULT '{}',
                 state TEXT NOT NULL,
                 worker_identity TEXT,
                 process_id INTEGER,
@@ -620,6 +628,14 @@ class DatabaseManager:
                 "ALTER TABLE execution_decisions ADD COLUMN started_at TEXT;",
                 "ALTER TABLE execution_decisions ADD COLUMN claim_token TEXT;",
                 "ALTER TABLE execution_requests ADD COLUMN approval_idempotency_key TEXT;",
+                "ALTER TABLE execution_runs ADD COLUMN approved_decision_id TEXT;",
+                "ALTER TABLE execution_runs ADD COLUMN target_policy_version TEXT;",
+                "ALTER TABLE execution_runs ADD COLUMN operation_policy_revision TEXT;",
+                "ALTER TABLE execution_runs ADD COLUMN request_fingerprint TEXT;",
+                "ALTER TABLE execution_runs ADD COLUMN operation_options_json TEXT NOT NULL DEFAULT '{}';",
+                "ALTER TABLE execution_runs ADD COLUMN resource_budget_json TEXT NOT NULL DEFAULT '{}';",
+                "ALTER TABLE execution_runs ADD COLUMN account_impact_budget_json TEXT NOT NULL DEFAULT '{}';",
+                "ALTER TABLE execution_runs ADD COLUMN credential_scope_json TEXT NOT NULL DEFAULT '{}';",
             ]
             for migration_index, mig in enumerate(migrations):
                 savepoint = f"schema_migration_{migration_index}"
@@ -743,6 +759,14 @@ class DatabaseManager:
                             execution_id TEXT PRIMARY KEY,
                             request_id TEXT NOT NULL,
                             organization_id TEXT NOT NULL,
+                            approved_decision_id TEXT,
+                            target_policy_version TEXT,
+                            operation_policy_revision TEXT,
+                            request_fingerprint TEXT,
+                            operation_options_json TEXT NOT NULL DEFAULT '{}',
+                            resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                            account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                            credential_scope_json TEXT NOT NULL DEFAULT '{}',
                             state TEXT NOT NULL,
                             worker_identity TEXT,
                             process_id INTEGER,
@@ -761,13 +785,19 @@ class DatabaseManager:
                     """)
                     conn.execute("""
                         INSERT INTO execution_runs (
-                            execution_id, request_id, organization_id, state,
+                            execution_id, request_id, organization_id, approved_decision_id,
+                            target_policy_version, operation_policy_revision, request_fingerprint,
+                            operation_options_json, resource_budget_json, account_impact_budget_json,
+                            credential_scope_json, state,
                             worker_identity, process_id, process_group_id,
                             assurance_state, coverage_state, reason_code,
                             evidence_ref, correlation_id, created_at, started_at,
                             finished_at
                         )
-                        SELECT execution_id, request_id, organization_id, state,
+                        SELECT execution_id, request_id, organization_id, approved_decision_id,
+                               target_policy_version, operation_policy_revision, request_fingerprint,
+                               operation_options_json, resource_budget_json, account_impact_budget_json,
+                               credential_scope_json, state,
                                worker_identity, process_id, process_group_id,
                                assurance_state, coverage_state, reason_code,
                                evidence_ref, correlation_id, created_at, started_at,
@@ -1387,10 +1417,17 @@ class DatabaseManager:
             execution_id = f"run-{uuid.uuid4().hex[:16]}"
             conn.execute(
                 """INSERT INTO execution_runs (
-                    execution_id, request_id, organization_id, state, worker_identity,
-                    assurance_state, coverage_state, correlation_id, created_at
-                ) VALUES (?, ?, ?, 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?)""",
-                    (execution_id, request_id, organization_id, worker_identity, correlation_id, now.isoformat()),
+                    execution_id, request_id, organization_id, approved_decision_id,
+                    target_policy_version, operation_policy_revision, request_fingerprint,
+                    operation_options_json, resource_budget_json, account_impact_budget_json,
+                    credential_scope_json, state, worker_identity, assurance_state,
+                    coverage_state, correlation_id, created_at
+                ) SELECT ?, id, organization_id, ?, target_policy_version,
+                    operation_policy_revision, request_fingerprint, operation_options_json,
+                    resource_budget_json, account_impact_budget_json, credential_scope_json,
+                    'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
+                    FROM execution_requests WHERE id = ? AND organization_id = ?""",
+                    (execution_id, decision_id, worker_identity, correlation_id, now.isoformat(), request_id, organization_id),
             )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
@@ -1413,13 +1450,18 @@ class DatabaseManager:
             row = conn.execute(
                 "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
                 "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
+                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, "
+                "operation_options_json, resource_budget_json, account_impact_budget_json, credential_scope_json, "
                 "correlation_id, created_at, started_at, finished_at FROM execution_runs "
                 "WHERE request_id = ? AND organization_id = ?",
                 (request_id, organization_id),
             ).fetchone()
             if not row:
                 return None
-            return dict(row)
+            result = dict(row)
+            for field in ("operation_options_json", "resource_budget_json", "account_impact_budget_json", "credential_scope_json"):
+                result[field.removesuffix("_json")] = json.loads(result.pop(field) or "{}")
+            return result
 
     def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
         """Persist one immutable authorization decision transactionally."""
@@ -1953,9 +1995,23 @@ class DatabaseManager:
             ]):
                 raise ValueError("execution request and approved decision authority binding does not match")
             conn.execute(
-                """INSERT INTO execution_runs (execution_id, request_id, organization_id, state, worker_identity, process_id, process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, correlation_id, created_at, started_at, finished_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (run.execution_id, run.request_id, run.organization_id, run.state, run.worker_identity, run.process_id, run.process_group_id, run.assurance_state, run.coverage_state, run.reason_code, run.evidence_ref, run.correlation_id, run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None, run.finished_at.isoformat() if run.finished_at else None),
+                """INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, approved_decision_id,
+                    target_policy_version, operation_policy_revision, request_fingerprint,
+                    operation_options_json, resource_budget_json, account_impact_budget_json,
+                    credential_scope_json, state, worker_identity, process_id, process_group_id,
+                    assurance_state, coverage_state, reason_code, evidence_ref, correlation_id,
+                    created_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run.execution_id, run.request_id, run.organization_id, decision_row["id"],
+                 decision_row["target_policy_version"], decision_row["operation_policy_revision"],
+                 request_full["request_fingerprint"], decision_row["operation_options_json"],
+                 decision_row["resource_budget_json"], decision_row["account_impact_budget_json"],
+                 decision_row["credential_scope_json"], run.state, run.worker_identity,
+                 run.process_id, run.process_group_id, run.assurance_state, run.coverage_state,
+                 run.reason_code, run.evidence_ref, run.correlation_id,
+                 run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None,
+                 run.finished_at.isoformat() if run.finished_at else None),
             )
             self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=run.worker_identity or "system", organization_id=run.organization_id, action=AuditAction.EXECUTION_RUN_CREATED, object_type="execution_run", object_id=run.execution_id, result="SUCCESS", details={"request_id": run.request_id, "state": run.state}))
             return run

@@ -1224,6 +1224,14 @@ class ExecutionRunRecord(BaseModel):
     execution_id: str
     request_id: str
     organization_id: str
+    approved_decision_id: Optional[str] = None
+    target_policy_version: Optional[str] = None
+    operation_policy_revision: Optional[str] = None
+    request_fingerprint: Optional[str] = None
+    operation_options: Dict[str, Any] = Field(default_factory=dict)
+    resource_budget: Dict[str, int] = Field(default_factory=dict)
+    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
+    credential_scope: Dict[str, str] = Field(default_factory=dict)
     state: str = "REQUESTED"
     worker_identity: Optional[str] = None
     process_id: Optional[int] = None
