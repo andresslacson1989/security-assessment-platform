@@ -115,6 +115,23 @@ MUST NOT be edited independently. Each entry contains `check_id`, `title`,
 `nist_control`, `registry_version`, `status`, `owner`, `deprecated_at`,
 `replacement_check_id`, and `evidence_normalization`.
 
+`asvs_control` is a typed union, not an unstructured nullable string:
+
+```json
+{"kind":"ASVS_CONTROL","value":"v5.0.0-V5.3.4"}
+```
+
+or, only for a registry-approved exception:
+
+```json
+{"kind":"ASVS_NOT_APPLICABLE","owner":"team-id","rationale":"...","review_date":"2026-12-31"}
+```
+
+The exception object MUST contain exactly the stated kind, owner, rationale,
+and review date; the date MUST be future-dated at approval and periodically
+re-reviewed. An exception is a normalization/registry state and MUST NOT be
+serialized as a normal ASVS control or silently omitted from a finding.
+
 IDs are unique and immutable. Changes require an incremented registry version,
 security-control-owner review, and a migration/replacement entry for
 deprecated IDs. Adapters submit a check ID to the registry validation entry

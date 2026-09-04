@@ -36,6 +36,25 @@ complete-rule coverage, and production evaluation evidence are recorded. Existin
 bounded/manual tests are baseline safety evidence only and MUST NOT be cited as
 proof of full-capability automation.
 
+### 1.3 Full-capability measurement and re-verification
+
+“Full upstream capability” is measured against the pinned upstream version and
+an evidence-backed capability snapshot. For Metasploit the snapshot enumerates
+available module families and payload/session/resource classes; for sqlmap it
+enumerates supported option families; for Hydra it enumerates supported
+protocol/module and dictionary interfaces; for GTFOBins/LOLBAS it enumerates
+the reviewed catalog revision and rule count. Each feature class is recorded
+as `AVAILABLE`, `LIMITED`, `DEFERRED`, `HOST_UNAVAILABLE`, or `UNVERIFIED`
+with a reason and evidence location. A default profile selecting fewer options
+does not change the snapshot.
+
+The snapshot records upstream version/tag, acquisition identity, platform and
+architecture, enumeration method, observed feature inventory, verifier,
+verification timestamp, and reverification expiry. Any upstream update,
+adapter change, catalog change, host-platform change, or policy-version change
+invalidates the prior assurance and requires re-verification. No full-capability
+acceptance claim may rely solely on a command-builder unit test.
+
 ### 1.1 The Ten Fundamental Tool Execution Invariants
 
 1. **The Target Validation & Normative Target Binding Invariant (Contract 01 §3, Contract 08 §2):**
@@ -122,7 +141,7 @@ proof of full-capability automation.
     - `SUPPORTED`: Implemented, tested, and verified in CyberAssess adapter.
     - `LIMITED`: Partially implemented with explicit boundary constraints.
     - `DEFERRED`: Planned for future roadmap milestones (e.g. E12).
-    - `NOT_SUPPORTED`: Excluded by design or safety policy.
+    - `NOT_SUPPORTED`: Permanently unsupported by the platform; never use for missing approval, host prerequisites, installation failure, deferral, or unverified capability.
     - `UNVERIFIED`: Upstream feature claim pending empirical verification.
 
 11. **Capability Observation Cache Invariant:**
@@ -392,8 +411,8 @@ Stderr: Captures runtime diagnostics and errors
   - Port Scanning: `SUPPORTED`
   - Banner Grabbing: `SUPPORTED`
   - Approved NSE Scripts: `SUPPORTED`
-  - OS Fingerprinting (Raw Sockets): `NOT_SUPPORTED` (Requires root privileges)
-  - Intrusive Exploit Scripts: `NOT_SUPPORTED` (Safety policy violation)
+  - OS Fingerprinting (Raw Sockets): `HOST_UNAVAILABLE` when the approved worker lacks the required privilege.
+  - Intrusive Exploit Scripts: `ELEVATED_APPROVAL_REQUIRED` under Contract 01 §6 and Contract 04 §1.5.1.2.
 - **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/nmap_adapter.py`, `backend/app/core/binary_trust.py`); approved managed `7.95` source-built runtime is verified in the production image, while unmanaged host versions remain non-assured.
 
 ---
@@ -746,8 +765,8 @@ Stderr: Diagnostic logs
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSubfinderAdapter` passing.
 - **Capability Taxonomy:**
   - Passive CT Log Enumeration: `SUPPORTED`
-  - Multi-Source Aggregator API Queries: `NOT_SUPPORTED` (Current governed baseline is public `crtsh` only; credentialed providers require a future tenant-scoped egress and secret-injection control)
-  - Active DNS Brute-Forcing: `NOT_SUPPORTED` (Passive scope constraint)
+  - Multi-Source Aggregator API Queries: `DEFERRED` until tenant-scoped egress and secret-injection controls are verified.
+  - Active DNS Brute-Forcing: `PERMANENTLY_BLOCKED` by the passive Subfinder contract; passive discovery remains fully available.
 - **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/subfinder_adapter.py`, `tests/security/test_subfinder_assurance.py`); the approved managed `v2.6.5` executable was verified and executed against `example.com` on 2026-09-01. A later run timed out at the provider boundary and was correctly recorded as `EXECUTION_TIMED_OUT`; runtime success is not inferred from that degraded run.
 
 ---
@@ -1223,7 +1242,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - Route / Directory Fuzzing: `SUPPORTED`
   - Query Parameter Fuzzing: `SUPPORTED`
-  - Destructive Method Fuzzing (DELETE/PUT): `NOT_SUPPORTED`
+  - Destructive Method Fuzzing (DELETE/PUT): `ELEVATED_APPROVAL_REQUIRED` under the typed execution policy.
 - **Verification Status:** Repository controls and managed runtime verified (`backend/app/adapters/ffuf_adapter.py`, `backend/app/core/binary_trust.py`); the production image executed the managed `v2.1.0` version probe and verified its trust record under uid 999.
 
 ---
@@ -1851,7 +1870,7 @@ Stderr: Diagnostic logs
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestBanditAdapter` passing.
 - **Capability Taxonomy:**
   - Python AST Security Linting: `SUPPORTED`
-  - Cross-File Taint Tracking: `NOT_SUPPORTED`
+  - Cross-File Taint Tracking: `DEFERRED` pending verified engine capability.
 - **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/bandit_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
@@ -2008,7 +2027,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - Filesystem Secret Detection: `SUPPORTED`
   - Git Commit History Traversal: `SUPPORTED`
-  - Secret Live Verification: `NOT_SUPPORTED` (Delegated to TruffleHog)
+  - Secret Live Verification: `DEFERRED` for this adapter because the capability is delegated to TruffleHog.
 - **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/gitleaks_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---

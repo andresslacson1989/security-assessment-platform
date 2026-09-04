@@ -98,6 +98,36 @@ Each automated request MUST be represented as a typed, server-validated executio
 
 The platform MUST distinguish `CAPABILITY_AVAILABLE`, `EXECUTION_AUTHORIZED`, `AUTHORIZATION_REQUIRED`, `EXECUTION_BLOCKED`, and `NATIVE_ENGINE_READY`. A default assessment profile MAY select conservative operations, but that default MUST NOT be represented as a permanent capability restriction. Higher-impact operations require an explicit policy decision, appropriate tenant authorization, isolated worker permissions, bounded resources, and an auditable decision record. Installation or capability detection alone MUST never authorize execution.
 
+### 1.1.1 Normative state crosswalk and operation policy
+
+The canonical state domains are: capability (`AVAILABLE`, `LIMITED`, `DEFERRED`,
+`HOST_UNAVAILABLE`, `NOT_SUPPORTED`), assurance (`VERIFIED`, `UNVERIFIED`,
+`FAILED`, `EXPIRED`), authorization (`PENDING`, `APPROVED`, `REVOKED`,
+`EXPIRED`, `DENIED`), execution (`REQUESTED`, `STARTING`, `RUNNING`,
+`SUCCEEDED`, `PARTIAL_RESULTS_WITH_WARNING`, `FAILED`, `TIMED_OUT`,
+`CANCELLED`, `EXECUTION_BLOCKED`), and coverage (`COMPLETE`, `PARTIAL`,
+`UNAVAILABLE`). `NATIVE_ENGINE_READY` is a capability/engine readiness value;
+`CAPABILITY_AVAILABLE` and `EXECUTION_AUTHORIZED` are compatibility aliases
+that MUST map to `AVAILABLE` and `APPROVED` respectively. `NOT_SUPPORTED`
+means permanently unsupported by the platform only; it MUST NOT mean unapproved,
+uninstalled, deferred, unverified, or unavailable on the current host.
+
+The authoritative operation matrix is versioned with the policy. Metasploit
+module/payload/session/persistence/post-exploitation operations, sqlmap
+extraction/takeover/file/OS-shell options, and Hydra protocol/dictionary and
+credential-resilience operations are `ELEVATED_APPROVAL_REQUIRED` and may run
+after one authenticated administrator confirms the explicit warning that the
+target is owned or authorized. The session-bound approval remains valid only
+while that administrator session is authenticated and not idle-expired, and is
+revoked by logout, session expiry, reauthentication failure, explicit revoke,
+target-seal change, operation change, or budget exhaustion. The worker must be
+isolated, cancellable, auditable, and bound to the approved tenant/project/
+asset. No upstream feature is removed; the policy controls authority to invoke.
+
+Operations that bypass target/tenant authorization, execute a tampered binary,
+escape the approved destination, evade isolation or budgets, expose credentials,
+suppress audit, or continue after revocation are `PERMANENTLY_BLOCKED`.
+
 ### 1.2 Cross-Cutting Execution Boundary Controls
 
 Every external process launch, including direct callers of `ProcessSupervisor`, MUST pass through one deny-by-default environment builder. Ambient environment merging is prohibited. Each operation declares an explicit environment allowlist; secret-like variables, loader variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`), interpreter injection variables (`PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS`), arbitrary API/auth tokens, and ambient proxy variables are excluded unless a separately authorized, tool-specific policy injects an exact value. `SCANNER_EGRESS_PROXY` may be translated only by the egress policy and must never inherit arbitrary proxy settings.

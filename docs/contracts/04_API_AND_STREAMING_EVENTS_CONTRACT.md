@@ -127,6 +127,20 @@ audit event. Worker identity and correlation are mandatory. The execution
 service is the only component permitted to translate an authorized typed
 request into a ProcessSupervisor invocation.
 
+The authoritative lifecycle is: `POST /api/system/executions` creates an
+idempotent request in `REQUESTED`; the execution service validates the request
+and presents the complete target-ownership warning; the authenticated
+administrator explicitly confirms it, producing a session-bound decision in
+`APPROVED`; the service revalidates the decision, target seal, trust record,
+and budgets immediately before launch; ProcessSupervisor owns `STARTING` and
+`RUNNING`; terminal execution and coverage states are persisted with the
+sanitized result. Scan profiles MUST call this same internal service with a
+profile-generated typed request and may not bypass the approval or launch
+checks. `GET /api/system/executions/{request_id}` and the execution SSE stream
+are the read/observation interfaces. A decision is stored with the request and
+audit record, is single-use for the exact operation, and is invalidated by
+logout, session expiry, idle timeout, explicit revocation, or request mutation.
+
 #### 1.5.1.3 Capability, assurance, and execution state separation
 
 Capability state answers whether a feature is present: `AVAILABLE`, `LIMITED`,
