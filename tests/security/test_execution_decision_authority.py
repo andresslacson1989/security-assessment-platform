@@ -223,6 +223,7 @@ def test_approval_session_must_match_authenticated_principal(monkeypatch):
 
 def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
     from app.core.db import DatabaseManager
+    from app.core.correlation import reset_correlation_id, set_correlation_id
 
     database = DatabaseManager(tmp_path / "missing-decision.db")
     now = datetime.now(timezone.utc).isoformat()
@@ -241,20 +242,101 @@ def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
                       'prowler', 'cloud_audit', ?, 'user-a', 'AUTHORIZED', ?, ?, 'missing-decision')
         """, ("f" * 64, OPERATION_POLICY_REVISION, now, expires))
 
-    with pytest.raises(ValueError, match="invalid approved decision"):
-        database.revoke_execution_request("req-a", "org-a", "admin")
+    correlation_token = set_correlation_id("corr-missing-decision")
+    try:
+        with pytest.raises(ValueError, match="invalid approved decision"):
+            database.revoke_execution_request("req-a", "org-a", "admin")
+    finally:
+        reset_correlation_id(correlation_token)
     request = database.get_execution_request("req-a", organization_id="org-a")
     assert request is not None and request.state == "AUTHORIZED"
     with database._connection_scope() as conn:
         events = conn.execute(
-            "SELECT action, object_type, result, details_json FROM audit_events WHERE object_id = ? ORDER BY timestamp",
+            "SELECT action, object_type, result, actor, organization_id, correlation_id, "
+            "details_json, previous_event_hash, event_hash "
+            "FROM audit_events WHERE object_id = ? ORDER BY timestamp",
             ("req-a",),
         ).fetchall()
     assert len(events) == 1
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
     assert events[0]["object_type"] == "execution_request"
     assert events[0]["result"] == "FAILURE"
+    assert events[0]["actor"] == "admin"
+    assert events[0]["organization_id"] == "org-a"
+    assert events[0]["correlation_id"] == "corr-missing-decision"
+    assert events[0]["event_hash"]
+    assert events[0]["previous_event_hash"] is None
     assert "APPROVED_DECISION_REFERENCE_MISSING" in events[0]["details_json"]
+    with database._connection_scope() as conn:
+        reference = conn.execute(
+            "SELECT approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?",
+            ("req-a", "org-a"),
+        ).fetchone()
+        decision = conn.execute(
+            "SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ?",
+            ("missing-decision", "org-a"),
+        ).fetchone()
+    assert reference["approved_decision_id"] == "missing-decision"
+    assert decision is None
+
+
+def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_path):
+    from app.core.db import DatabaseManager
+
+    database = DatabaseManager(tmp_path / "cross-tenant-decision.db")
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    with database._connection_scope() as conn:
+        for org, suffix in (("org-a", "a"), ("org-b", "b")):
+            conn.execute(
+                "INSERT INTO organizations (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
+                (org, f"Org {suffix.upper()}", f"org-{suffix}", now),
+            )
+            conn.execute(
+                "INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'DOMAIN', ?, ?, ?)",
+                (f"asset-{suffix}", org, "asset", "example.invalid", now, now),
+            )
+            conn.execute(
+                "INSERT INTO users (id, username, email, hashed_password, role, organization_id, created_at) "
+                "VALUES (?, ?, ?, 'hash', 'ADMIN', ?, ?)",
+                (f"user-{suffix}", f"user-{suffix}", f"{suffix}@example.invalid", org, now),
+            )
+        conn.execute(
+            "INSERT INTO execution_decisions (id, organization_id, project_id, asset_id, target_id, "
+            "authorization_decision_id, target_policy_version, tool_id, operation_family, "
+            "operation_policy_revision, approval_state, approver_user_id, session_jti, worker_identity, "
+            "created_at, expires_at) VALUES (?, ?, NULL, ?, ?, ?, 'v1', 'nmap', 'safe', ?, 'APPROVED', "
+            "'user-b', 'session-b', 'worker-b', ?, ?)",
+            ("shared-id", "org-b", "asset-b", "target-b", "auth-b", OPERATION_POLICY_REVISION, now, expires),
+        )
+        conn.execute(
+            "INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, "
+            "asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, "
+            "operation_policy_revision, requested_by_user_id, state, created_at, expires_at, approved_decision_id) "
+            "VALUES (?, ?, ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'nmap', 'safe', ?, 'user-a', "
+            "'AUTHORIZED', ?, ?, ?)",
+            ("req-a", "idem-a", "f" * 64, OPERATION_POLICY_REVISION, now, expires, "shared-id"),
+        )
+
+    with pytest.raises(ValueError, match="invalid approved decision"):
+        database.revoke_execution_request("req-a", "org-a", "admin")
+    with database._connection_scope() as conn:
+        request = conn.execute(
+            "SELECT state, approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?",
+            ("req-a", "org-a"),
+        ).fetchone()
+        events = conn.execute(
+            "SELECT organization_id, actor, action, details_json FROM audit_events WHERE object_id = ?",
+            ("req-a",),
+        ).fetchall()
+    assert request["state"] == "AUTHORIZED"
+    assert request["approved_decision_id"] == "shared-id"
+    assert len(events) == 1
+    assert events[0]["organization_id"] == "org-a"
+    assert events[0]["actor"] == "admin"
+    assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
+    assert "shared-id" not in events[0]["details_json"]
 
 
 def test_execution_run_rejects_cross_tenant_request_and_invalid_transitions(tmp_path):

@@ -227,6 +227,8 @@ def test_postgres_health_rejects_same_name_wrong_column_parent_index():
 
 
 def test_postgres_missing_linked_decision_failure_is_durable_and_state_preserving():
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+
     with _isolated_manager() as manager:
         now = "2026-01-01T00:00:00+00:00"
         with manager._connection_scope() as conn:
@@ -253,13 +255,18 @@ def test_postgres_missing_linked_decision_failure_is_durable_and_state_preservin
                   "target-invariant", "auth-invariant", "v1", "nmap", "safe", OPERATION_POLICY_REVISION,
                   "user-invariant", "AUTHORIZED", now, "2099-01-01T00:00:00+00:00", "missing-decision"))
 
-        with pytest.raises(ValueError, match="invalid approved decision"):
-            manager.revoke_execution_request("req-invariant", "org-invariant", "admin")
+        correlation_token = set_correlation_id("corr-pg-missing-decision")
+        try:
+            with pytest.raises(ValueError, match="invalid approved decision"):
+                manager.revoke_execution_request("req-invariant", "org-invariant", "admin")
+        finally:
+            reset_correlation_id(correlation_token)
 
         with manager._connection_scope() as conn:
             request = conn.execute("SELECT state FROM execution_requests WHERE id = %s", ("req-invariant",)).fetchone()
             events = conn.execute("""
-                SELECT action, object_type, result, details_json
+                SELECT action, object_type, result, actor, organization_id, correlation_id,
+                       details_json, previous_event_hash, event_hash
                 FROM audit_events WHERE object_id = %s
             """, ("req-invariant",)).fetchall()
         assert request["state"] == "AUTHORIZED"
@@ -267,7 +274,75 @@ def test_postgres_missing_linked_decision_failure_is_durable_and_state_preservin
         assert events[0]["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
         assert events[0]["object_type"] == "execution_request"
         assert events[0]["result"] == "FAILURE"
+        assert events[0]["actor"] == "admin"
+        assert events[0]["organization_id"] == "org-invariant"
+        assert events[0]["correlation_id"] == "corr-pg-missing-decision"
+        assert events[0]["event_hash"]
+        assert events[0]["previous_event_hash"] is None
         assert "APPROVED_DECISION_REFERENCE_MISSING" in events[0]["details_json"]
+
+        request = conn.execute(
+            "SELECT approved_decision_id FROM execution_requests WHERE id = %s AND organization_id = %s",
+            ("req-invariant", "org-invariant"),
+        ).fetchone()
+        decision = conn.execute(
+            "SELECT id FROM execution_decisions WHERE id = %s AND organization_id = %s",
+            ("missing-decision", "org-invariant"),
+        ).fetchone()
+        assert request["approved_decision_id"] == "missing-decision"
+        assert decision is None
+
+
+def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant():
+    with _isolated_manager() as manager:
+        now = "2026-01-01T00:00:00+00:00"
+        expires = "2099-01-01T00:00:00+00:00"
+        with manager._connection_scope() as conn:
+            for org, suffix in (("org-a", "a"), ("org-b", "b")):
+                conn.execute(
+                    "INSERT INTO organizations (id, name, slug, created_at) VALUES (%s, %s, %s, %s)",
+                    (org, f"Org {suffix.upper()}", f"org-{suffix}", now),
+                )
+                conn.execute(
+                    "INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, 'DOMAIN', %s, %s, %s)",
+                    (f"asset-{suffix}", org, "asset", "example.invalid", now, now),
+                )
+            conn.execute(
+                "INSERT INTO execution_decisions (id, organization_id, project_id, asset_id, target_id, "
+                "authorization_decision_id, target_policy_version, tool_id, operation_family, "
+                "operation_policy_revision, approval_state, approver_user_id, session_jti, worker_identity, "
+                "created_at, expires_at) VALUES (%s, %s, NULL, %s, %s, %s, 'v1', 'nmap', 'safe', %s, "
+                "'APPROVED', 'user-b', 'session-b', 'worker-b', %s, %s)",
+                ("shared-id", "org-b", "asset-b", "target-b", "auth-b", OPERATION_POLICY_REVISION, now, expires),
+            )
+            conn.execute(
+                "INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, "
+                "asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, "
+                "operation_policy_revision, requested_by_user_id, state, created_at, expires_at, approved_decision_id) "
+                "VALUES (%s, %s, %s, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'nmap', 'safe', %s, "
+                "'user-a', 'AUTHORIZED', %s, %s, %s)",
+                ("req-a", "idem-a", "f" * 64, OPERATION_POLICY_REVISION, now, expires, "shared-id"),
+            )
+
+        with pytest.raises(ValueError, match="invalid approved decision"):
+            manager.revoke_execution_request("req-a", "org-a", "admin")
+        with manager._connection_scope() as conn:
+            request = conn.execute(
+                "SELECT state, approved_decision_id FROM execution_requests WHERE id = %s AND organization_id = %s",
+                ("req-a", "org-a"),
+            ).fetchone()
+            events = conn.execute(
+                "SELECT organization_id, actor, action, details_json FROM audit_events WHERE object_id = %s",
+                ("req-a",),
+            ).fetchall()
+        assert request["state"] == "AUTHORIZED"
+        assert request["approved_decision_id"] == "shared-id"
+        assert len(events) == 1
+        assert events[0]["organization_id"] == "org-a"
+        assert events[0]["actor"] == "admin"
+        assert events[0]["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+        assert "shared-id" not in events[0]["details_json"]
 
 
 def test_postgres_migration_rejects_duplicate_runs_before_recording_version():
