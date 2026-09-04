@@ -119,7 +119,12 @@ completion or cancellation. A launch revalidates the decision and target seal.
 
 The canonical result states are `REQUESTED`, `AUTHORIZED`, `AUTHORIZATION_REQUIRED`,
 `EXECUTION_BLOCKED`, `STARTING`, `RUNNING`, `SUCCEEDED`, `PARTIAL_RESULTS_WITH_WARNING`,
-`FAILED`, `TIMED_OUT`, `CANCELLED`, `DEGRADED_COVERAGE`, and `UNVERIFIED`. Each
+`FAILED`, `TIMED_OUT`, `CANCELLED`, and `DEGRADED_COVERAGE`. `UNVERIFIED` is an
+assurance state only and MUST be carried in the separate assurance field; it is
+never an execution or result state. `DEGRADED_COVERAGE` is the coverage-facing
+alias for execution state `PARTIAL_RESULTS_WITH_WARNING`; serializers MUST
+emit both fields consistently and MUST NOT represent them as conflicting states.
+Each
 state includes request ID, decision ID where applicable, worker identity,
 `target_policy_version`, `operation_policy_revision`, timestamps, coverage
 information, and a sanitized reason code.
