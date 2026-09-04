@@ -1825,7 +1825,9 @@ class DatabaseManager:
             return False
         with self._connection_scope() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?", (request_id, organization_id))
+            authority_lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            # Keep request -> decision lock order identical to run creation.
+            cur.execute(f"SELECT state, approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?{authority_lock}", (request_id, organization_id))
             row = cur.fetchone()
             if not row:
                 return False
@@ -1836,6 +1838,8 @@ class DatabaseManager:
                 result="SUCCESS", details={"decision_id": row["approved_decision_id"]},
             ))
             if row["approved_decision_id"]:
+                cur.execute(f"SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ?{authority_lock}", (row["approved_decision_id"], organization_id))
+                cur.fetchone()
                 cur.execute("UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL", (now, row["approved_decision_id"], organization_id))
             cur.execute("UPDATE execution_requests SET state = 'REVOKED' WHERE id = ? AND organization_id = ? AND state != 'REVOKED'", (request_id, organization_id))
             changed = cur.rowcount > 0
@@ -1855,13 +1859,17 @@ class DatabaseManager:
             # Lock authority rows for the entire request-to-run transaction on
             # PostgreSQL so revoke/expiry cannot race validation and insertion.
             authority_lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
-            now = utc_now()
             request_row = conn.execute(f"SELECT state, approved_decision_id, expires_at FROM execution_requests WHERE id = ? AND organization_id = ?{authority_lock}", (run.request_id, run.organization_id)).fetchone()
-            if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"] or datetime.fromisoformat(request_row["expires_at"]) <= now:
+            if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"]:
                 raise ValueError("execution run request is not tenant-bound")
-            decision_row = conn.execute(f"SELECT * FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL AND expires_at > ?{authority_lock}", (request_row["approved_decision_id"], run.organization_id, now.isoformat())).fetchone()
+            decision_row = conn.execute(f"SELECT * FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL{authority_lock}", (request_row["approved_decision_id"], run.organization_id)).fetchone()
             if not decision_row:
                 raise ValueError("execution run has no current approved decision")
+            # Capture time only after both row locks have been acquired; a
+            # blocked lock wait must not make expired authority appear valid.
+            now = utc_now()
+            if datetime.fromisoformat(request_row["expires_at"]) <= now or datetime.fromisoformat(decision_row["expires_at"]) <= now:
+                raise ValueError("execution run request is expired")
             request_full = conn.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()
             if any([
                 request_full["project_id"] != decision_row["project_id"], request_full["asset_id"] != decision_row["asset_id"],
