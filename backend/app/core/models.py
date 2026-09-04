@@ -1218,6 +1218,26 @@ class ExecutionRequestRecord(BaseModel):
     approval_idempotency_key: Optional[str] = None
 
 
+class ExecutionRunRecord(BaseModel):
+    """Durable execution observation linked to one authorized request."""
+    model_config = {"frozen": True, "extra": "forbid"}
+    execution_id: str
+    request_id: str
+    organization_id: str
+    state: str = "REQUESTED"
+    worker_identity: Optional[str] = None
+    process_id: Optional[int] = None
+    process_group_id: Optional[str] = None
+    assurance_state: str = "UNVERIFIED"
+    coverage_state: str = "UNAVAILABLE"
+    reason_code: Optional[str] = None
+    evidence_ref: Optional[str] = None
+    correlation_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
 class APIKeyRecord(BaseModel):
     key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")
     key_hash: str
@@ -1410,6 +1430,7 @@ class AuditAction(str, Enum):
     EXECUTION_DECISION_CLAIMED = "EXECUTION_DECISION_CLAIMED"
     EXECUTION_DECISION_LEASE_RELEASED = "EXECUTION_DECISION_LEASE_RELEASED"
     EXECUTION_DECISION_STARTED = "EXECUTION_DECISION_STARTED"
+    EXECUTION_CANCEL_REQUESTED = "EXECUTION_CANCEL_REQUESTED"
     EXECUTION_REQUESTED = "EXECUTION_REQUESTED"
     EXECUTION_AUTHORIZED = "EXECUTION_AUTHORIZED"
     FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"

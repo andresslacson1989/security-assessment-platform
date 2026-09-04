@@ -40,6 +40,7 @@ from app.core.models import (
     Evidence,
     ExecutionDecisionRecord,
     ExecutionLeaseClaim,
+    ExecutionRunRecord,
     ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
@@ -394,6 +395,26 @@ class DatabaseManager:
                 FOREIGN KEY (requested_by_user_id, organization_id) REFERENCES users(id, organization_id)
             );
 
+            CREATE TABLE IF NOT EXISTS execution_runs (
+                execution_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                worker_identity TEXT,
+                process_id INTEGER,
+                process_group_id TEXT,
+                assurance_state TEXT NOT NULL,
+                coverage_state TEXT NOT NULL,
+                reason_code TEXT,
+                evidence_ref TEXT,
+                correlation_id TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                FOREIGN KEY (request_id) REFERENCES execution_requests(id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            );
+
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
@@ -529,6 +550,7 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_execution_decisions_scope ON execution_decisions(organization_id, asset_id, tool_id, operation_family);
             CREATE INDEX IF NOT EXISTS idx_execution_decisions_session ON execution_decisions(session_jti, revoked_at, expires_at);
             CREATE INDEX IF NOT EXISTS idx_execution_requests_scope ON execution_requests(organization_id, state, created_at);
+            CREATE INDEX IF NOT EXISTS idx_execution_runs_scope ON execution_runs(organization_id, state, created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_id_org ON assets(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
@@ -1386,6 +1408,11 @@ class DatabaseManager:
             if not row:
                 return False
             now = utc_now().isoformat()
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                action=AuditAction.EXECUTION_CANCEL_REQUESTED, object_type="execution_request", object_id=request_id,
+                result="SUCCESS", details={"decision_id": row["approved_decision_id"]},
+            ))
             if row["approved_decision_id"]:
                 cur.execute("UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL", (now, row["approved_decision_id"], organization_id))
             cur.execute("UPDATE execution_requests SET state = 'REVOKED' WHERE id = ? AND organization_id = ? AND state != 'REVOKED'", (request_id, organization_id))
@@ -1396,6 +1423,24 @@ class DatabaseManager:
                 result="SUCCESS" if changed else "REPLAY", details={"decision_id": row["approved_decision_id"]},
             ))
             return changed or row["state"] == "REVOKED"
+
+    def create_execution_run(self, run: ExecutionRunRecord) -> ExecutionRunRecord:
+        with self._connection_scope() as conn:
+            conn.execute(
+                """INSERT INTO execution_runs (execution_id, request_id, organization_id, state, worker_identity, process_id, process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, correlation_id, created_at, started_at, finished_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run.execution_id, run.request_id, run.organization_id, run.state, run.worker_identity, run.process_id, run.process_group_id, run.assurance_state, run.coverage_state, run.reason_code, run.evidence_ref, run.correlation_id, run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None, run.finished_at.isoformat() if run.finished_at else None),
+            )
+            return run
+
+    def transition_execution_run(self, execution_id: str, organization_id: str, expected_state: str, new_state: str, *, reason_code: Optional[str] = None, process_id: Optional[int] = None, worker_identity: Optional[str] = None) -> bool:
+        with self._connection_scope() as conn:
+            now = utc_now().isoformat()
+            cur = conn.execute(
+                "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','FAILED','TIMED_OUT','CANCELLED','PARTIAL_RESULTS_WITH_WARNING') THEN ? ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ?",
+                (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state),
+            )
+            return cur.rowcount == 1
 
     def _row_to_asset(self, row: sqlite3.Row) -> Asset:
         return Asset(
