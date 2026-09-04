@@ -372,3 +372,15 @@ def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
         conn.execute("DROP INDEX uq_execution_runs_request")
     with pytest.raises(ValueError, match="schema health check"):
         DatabaseManager(db_path)
+
+
+def test_execution_schema_wrong_column_index_fails_closed(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "wrong-run-index.db"
+    database = DatabaseManager(db_path)
+    with database._connection_scope() as conn:
+        conn.execute("DROP INDEX uq_execution_runs_request")
+        conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(execution_id)")
+    with pytest.raises(ValueError, match="schema health check"):
+        DatabaseManager(db_path)
