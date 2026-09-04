@@ -500,7 +500,7 @@ class DatabaseManager:
                 JOIN pg_namespace n ON n.oid=t.relnamespace JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON TRUE
                 JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
                 WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
-                GROUP BY i.indexrelid HAVING array_agg(a.attname ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
+                GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
             if len(parent) != 1:
                 raise RuntimeError("execution dispatch schema lacks exact parent execution key")
         else:
