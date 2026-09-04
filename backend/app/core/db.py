@@ -1831,6 +1831,11 @@ class DatabaseManager:
             row = cur.fetchone()
             if not row:
                 return False
+            if row["approved_decision_id"]:
+                # Acquire the decision lock before any audit-chain lock or
+                # mutation, preserving the global request -> decision order.
+                cur.execute(f"SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ?{authority_lock}", (row["approved_decision_id"], organization_id))
+                cur.fetchone()
             now = utc_now().isoformat()
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
@@ -1838,8 +1843,6 @@ class DatabaseManager:
                 result="SUCCESS", details={"decision_id": row["approved_decision_id"]},
             ))
             if row["approved_decision_id"]:
-                cur.execute(f"SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ?{authority_lock}", (row["approved_decision_id"], organization_id))
-                cur.fetchone()
                 cur.execute("UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL", (now, row["approved_decision_id"], organization_id))
             cur.execute("UPDATE execution_requests SET state = 'REVOKED' WHERE id = ? AND organization_id = ? AND state != 'REVOKED'", (request_id, organization_id))
             changed = cur.rowcount > 0
