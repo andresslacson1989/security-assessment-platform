@@ -41,6 +41,7 @@ from app.core.models import (
     ExecutionDecisionRecord,
     ExecutionLeaseClaim,
     ExecutionRunRecord,
+    EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
     ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
@@ -389,6 +390,7 @@ class DatabaseManager:
                 approved_decision_id TEXT,
                 approval_idempotency_key TEXT,
                 UNIQUE (organization_id, idempotency_key),
+                UNIQUE (id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id),
                 FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
                 FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
@@ -411,7 +413,7 @@ class DatabaseManager:
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 finished_at TEXT,
-                FOREIGN KEY (request_id) REFERENCES execution_requests(id),
+                FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
 
@@ -554,6 +556,7 @@ class DatabaseManager:
             CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_id_org ON assets(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -1426,21 +1429,31 @@ class DatabaseManager:
 
     def create_execution_run(self, run: ExecutionRunRecord) -> ExecutionRunRecord:
         with self._connection_scope() as conn:
+            if run.state not in EXECUTION_RUN_STATES or not run.request_id or not run.organization_id:
+                raise ValueError("execution run state or identity is invalid")
+            if not conn.execute("SELECT 1 FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone():
+                raise ValueError("execution run request is not tenant-bound")
             conn.execute(
                 """INSERT INTO execution_runs (execution_id, request_id, organization_id, state, worker_identity, process_id, process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, correlation_id, created_at, started_at, finished_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (run.execution_id, run.request_id, run.organization_id, run.state, run.worker_identity, run.process_id, run.process_group_id, run.assurance_state, run.coverage_state, run.reason_code, run.evidence_ref, run.correlation_id, run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None, run.finished_at.isoformat() if run.finished_at else None),
             )
+            self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=run.worker_identity or "system", organization_id=run.organization_id, action=AuditAction.EXECUTION_RUN_CREATED, object_type="execution_run", object_id=run.execution_id, result="SUCCESS", details={"request_id": run.request_id, "state": run.state}))
             return run
 
     def transition_execution_run(self, execution_id: str, organization_id: str, expected_state: str, new_state: str, *, reason_code: Optional[str] = None, process_id: Optional[int] = None, worker_identity: Optional[str] = None) -> bool:
         with self._connection_scope() as conn:
+            if expected_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_TRANSITIONS.get(expected_state, frozenset()):
+                return False
             now = utc_now().isoformat()
             cur = conn.execute(
                 "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','FAILED','TIMED_OUT','CANCELLED','PARTIAL_RESULTS_WITH_WARNING') THEN ? ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ?",
                 (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state),
             )
-            return cur.rowcount == 1
+            if cur.rowcount == 1:
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system", organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id, result="SUCCESS", details={"from": expected_state, "to": new_state, "reason_code": reason_code}))
+                return True
+            return False
 
     def _row_to_asset(self, row: sqlite3.Row) -> Asset:
         return Asset(

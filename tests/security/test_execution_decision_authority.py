@@ -219,3 +219,40 @@ def test_approval_session_must_match_authenticated_principal(monkeypatch):
     user = UserProfile(id="admin-1", username="admin", email="admin@example.test", role=UserRole.ADMIN, organization_id="org-a")
     with pytest.raises(Exception, match="does not match"):
         executions._session_jti("Bearer token", user)
+
+
+def test_execution_run_rejects_cross_tenant_request_and_invalid_transitions(tmp_path):
+    from app.core.db import DatabaseManager
+    from app.core.models import ExecutionRunRecord
+
+    database = DatabaseManager(tmp_path / "runs.db")
+    now = datetime.now(timezone.utc).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-a", "Org A", "org-a", now))
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-b", "Org B", "org-b", now))
+        for org in ("org-a", "org-b"):
+            conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES (?, ?, ?, 'CLOUD_ACCOUNT', ?, ?, ?)", (f"asset-{org[-1]}", org, "account", "aws://123456789012", now, now))
+            conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, 'hash', 'ADMIN', ?, 1, ?)", (f"user-{org[-1]}", f"user-{org[-1]}", f"{org}@example.test", org, now))
+        conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("req-b", "idem-b", "f" * 64, "org-b", "asset-b", "target-b", "auth-b", "v1", "prowler", "cloud_audit", OPERATION_POLICY_REVISION, "user-b", now, now))
+    run = ExecutionRunRecord(execution_id="run-a", request_id="req-b", organization_id="org-a")
+    with pytest.raises(ValueError, match="tenant-bound"):
+        database.create_execution_run(run)
+
+
+def test_execution_run_transition_matrix_and_terminal_immutability(tmp_path):
+    from app.core.db import DatabaseManager
+    from app.core.models import ExecutionRunRecord
+
+    database = DatabaseManager(tmp_path / "run-state.db")
+    now = datetime.now(timezone.utc).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-a", "Org A", "org-a", now))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES ('asset-a', 'org-a', 'account', 'CLOUD_ACCOUNT', 'aws://123456789012', ?, ?)", (now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('user-a', 'user-a', 'a@example.test', 'hash', 'ADMIN', 'org-a', 1, ?)", (now,))
+        conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("req-a", "idem-a", "f" * 64, "org-a", "asset-a", "target-a", "auth-a", "v1", "prowler", "cloud_audit", OPERATION_POLICY_REVISION, "user-a", now, now))
+    database.create_execution_run(ExecutionRunRecord(execution_id="run-a", request_id="req-a", organization_id="org-a"))
+    assert not database.transition_execution_run("run-a", "org-a", "REQUESTED", "SUCCEEDED")
+    assert database.transition_execution_run("run-a", "org-a", "REQUESTED", "STARTING")
+    assert database.transition_execution_run("run-a", "org-a", "STARTING", "RUNNING")
+    assert database.transition_execution_run("run-a", "org-a", "RUNNING", "SUCCEEDED")
+    assert not database.transition_execution_run("run-a", "org-a", "SUCCEEDED", "RUNNING")
