@@ -303,6 +303,76 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def _verify_execution_snapshot_schema(self, conn) -> None:
+        """Verify the immutable execution snapshot schema on every startup.
+
+        Migration history is evidence of an attempted change, not proof that
+        the live database still has the required definitions.  This check is
+        intentionally strict and fails closed when a column is missing or has
+        drifted in type, nullability, or default value.
+        """
+        expected = {
+            "approved_decision_id": ("text", False, None),
+            "target_policy_version": ("text", False, None),
+            "operation_policy_revision": ("text", False, None),
+            "request_fingerprint": ("text", False, None),
+            "operation_options_json": ("text", True, "'{}'"),
+            "resource_budget_json": ("text", True, "'{}'"),
+            "account_impact_budget_json": ("text", True, "'{}'"),
+            "credential_scope_json": ("text", True, "'{}'"),
+            "snapshot_completeness": ("text", True, "'LEGACY_SNAPSHOT_UNAVAILABLE'"),
+        }
+
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute(
+                """
+                SELECT column_name, format_type(a.atttypid, a.atttypmod) AS data_type,
+                       a.attnotnull AS not_null,
+                       pg_get_expr(d.adbin, d.adrelid) AS default_value
+                FROM pg_attribute a
+                JOIN pg_class t ON t.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                WHERE n.nspname = current_schema() AND t.relname = 'execution_runs'
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                """
+            ).fetchall()
+            actual = {
+                row["column_name"]: (
+                    str(row["data_type"]).lower(),
+                    bool(row["not_null"]),
+                    str(row["default_value"]).strip() if row["default_value"] is not None else None,
+                )
+                for row in rows
+            }
+            normalized_expected = {
+                name: (data_type, not_null, (f"{default}::text" if default else None))
+                for name, (data_type, not_null, default) in expected.items()
+            }
+        else:
+            rows = conn.execute("PRAGMA table_info('execution_runs')").fetchall()
+            actual = {
+                row["name"]: (
+                    str(row["type"]).strip().lower(),
+                    bool(row["notnull"]),
+                    str(row["dflt_value"]).strip() if row["dflt_value"] is not None else None,
+                )
+                for row in rows
+            }
+            normalized_expected = expected
+
+        missing = sorted(set(expected) - set(actual))
+        mismatched = {
+            name: {"expected": normalized_expected[name], "actual": actual.get(name)}
+            for name in expected
+            if name in actual and actual[name] != normalized_expected[name]
+        }
+        if missing or mismatched:
+            raise RuntimeError(
+                "execution_runs snapshot schema verification failed: "
+                f"missing={missing!r}, mismatched={mismatched!r}"
+            )
+
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
         with self._connection_scope() as conn:
@@ -951,6 +1021,8 @@ class DatabaseManager:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (snapshot_migration_version, utc_now().isoformat()),
                 )
+
+            self._verify_execution_snapshot_schema(conn)
 
             # Migration rows prove history, not present-day schema integrity.
             # Recheck the safety-critical execution invariants on every startup

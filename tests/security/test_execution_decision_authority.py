@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import sqlite3
 
 import pytest
 
@@ -848,6 +849,32 @@ def test_execution_schema_wrong_column_index_fails_closed(tmp_path):
         conn.execute("DROP INDEX uq_execution_runs_request")
         conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(execution_id)")
     with pytest.raises(ValueError, match="schema health check"):
+        DatabaseManager(db_path)
+
+
+def test_execution_snapshot_schema_drift_fails_closed_even_when_version_three_is_recorded(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "snapshot-schema-drift.db"
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_backup")
+        conn.execute("CREATE TABLE execution_runs (execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, organization_id TEXT NOT NULL, approved_decision_id TEXT, target_policy_version TEXT, operation_policy_revision TEXT, request_fingerprint TEXT, operation_options_json TEXT NOT NULL DEFAULT '{}', resource_budget_json TEXT NOT NULL DEFAULT '{}', account_impact_budget_json TEXT NOT NULL DEFAULT '{}', credential_scope_json TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL, assurance_state TEXT NOT NULL, coverage_state TEXT NOT NULL, created_at TEXT NOT NULL)")
+        conn.commit()
+    with pytest.raises(RuntimeError, match="snapshot schema verification failed"):
+        DatabaseManager(db_path)
+
+
+def test_execution_snapshot_schema_wrong_definition_fails_closed(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "snapshot-schema-definition.db"
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_backup")
+        conn.execute("CREATE TABLE execution_runs (execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, organization_id TEXT NOT NULL, approved_decision_id TEXT, target_policy_version TEXT, operation_policy_revision TEXT, request_fingerprint TEXT, operation_options_json TEXT NOT NULL DEFAULT '[]', resource_budget TEXT, account_impact_budget_json TEXT NOT NULL DEFAULT '{}', credential_scope_json TEXT NOT NULL DEFAULT '{}', snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE', state TEXT NOT NULL, assurance_state TEXT NOT NULL, coverage_state TEXT NOT NULL, created_at TEXT NOT NULL)")
+        conn.commit()
+    with pytest.raises(RuntimeError, match="snapshot schema verification failed"):
         DatabaseManager(db_path)
 
 
