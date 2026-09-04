@@ -1309,6 +1309,21 @@ class DatabaseManager:
         """Atomically authorize a request or return an idempotent/conflict result."""
         correlation_id = get_correlation_id()
         if not correlation_id:
+            rejection_correlation_id = f"corr-{uuid.uuid4().hex}"
+            with self._connection_scope() as conn:
+                request_row = conn.execute(
+                    "SELECT id FROM execution_requests WHERE id = ? AND organization_id = ?",
+                    (request_id, organization_id),
+                ).fetchone()
+                if request_row:
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id or "system",
+                        organization_id=organization_id,
+                        action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED,
+                        object_type="execution_request", object_id=request_id, result="FAILURE",
+                        correlation_id=rejection_correlation_id,
+                        details={"reason_code": "CORRELATION_REQUIRED"},
+                    ))
             return "CORRELATION_REQUIRED", None, None
         with self._connection_scope() as conn:
             cur = conn.cursor()

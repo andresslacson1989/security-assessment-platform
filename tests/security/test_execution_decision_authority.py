@@ -263,9 +263,37 @@ def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
     from app.core.db import DatabaseManager
 
     database = DatabaseManager(tmp_path / "missing-correlation.db")
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    options = json.dumps({"provider": "aws", "output_format": "json-asff", "quiet": True}, separators=(",", ":"), sort_keys=True)
+    budget = json.dumps({"timeout_seconds": 120, "max_output_bytes": 10485760}, separators=(",", ":"), sort_keys=True)
+    account_budget = json.dumps({"read_only": 1}, separators=(",", ":"), sort_keys=True)
+    credentials = json.dumps({"provider": "aws"}, separators=(",", ":"), sort_keys=True)
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)", ("org-a", "Org A", "org-a", now))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, active_probing_granted, created_at, updated_at) VALUES (?, ?, ?, 'CLOUD_ACCOUNT', ?, 1, ?, ?)", ("asset-a", "org-a", "asset", "aws://123456789012", now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES (?, ?, ?, 'hash', 'ADMIN', ?, 1, ?)", ("admin-a", "admin", "admin@example.test", "org-a", now))
+        conn.execute(
+            "INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_options_json, operation_policy_revision, resource_budget_json, account_impact_budget_json, credential_scope_json, requested_by_user_id, state, created_at, expires_at) VALUES (?, ?, ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, ?, ?, ?, ?, 'admin-a', 'REQUESTED', ?, ?)",
+            ("req-a", "idem-a", "f" * 64, options, OPERATION_POLICY_REVISION, budget, account_budget, credentials, now, expires),
+        )
     assert database.approve_execution_request(
-        "missing-request", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+        "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
     ) == ("CORRELATION_REQUIRED", None, None)
+    with database._connection_scope() as conn:
+        request = conn.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = ?", ("req-a",)).fetchone()
+        decisions = conn.execute("SELECT COUNT(*) AS count FROM execution_decisions WHERE organization_id = ?", ("org-a",)).fetchone()
+        runs = conn.execute("SELECT COUNT(*) AS count FROM execution_runs WHERE organization_id = ?", ("org-a",)).fetchone()
+        events = conn.execute("SELECT action, result, details_json, correlation_id FROM audit_events WHERE object_id = ?", ("req-a",)).fetchall()
+    assert request["state"] == "REQUESTED"
+    assert request["approved_decision_id"] is None
+    assert decisions["count"] == 0
+    assert runs["count"] == 0
+    assert len(events) == 1
+    assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
+    assert events[0]["result"] == "FAILURE"
+    assert json.loads(events[0]["details_json"]) == {"reason_code": "CORRELATION_REQUIRED"}
+    assert events[0]["correlation_id"].startswith("corr-")
 
 
 def test_authorized_request_without_run_fails_closed_at_api_observation_boundary(monkeypatch):
