@@ -326,7 +326,7 @@ class DatabaseManager:
         if isinstance(self, PostgresDatabaseManager):
             rows = conn.execute(
                 """
-                SELECT column_name, format_type(a.atttypid, a.atttypmod) AS data_type,
+                SELECT a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS data_type,
                        a.attnotnull AS not_null,
                        pg_get_expr(d.adbin, d.adrelid) AS default_value
                 FROM pg_attribute a
@@ -1043,7 +1043,7 @@ class DatabaseManager:
                     WHERE i.relname = 'uq_execution_runs_request'
                       AND t.relname = 'execution_runs' AND n.nspname = current_schema()
                       AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
-                    GROUP BY i.oid
+                    GROUP BY i.oid, am.amname, x.indnkeyatts, x.indnatts
                 """).fetchall()
                 if not any(
                     list(row["columns"] or []) == ["request_id", "organization_id"]
@@ -1068,7 +1068,7 @@ class DatabaseManager:
                     WHERE i.relname = 'uq_execution_requests_id_org'
                       AND t.relname = 'execution_requests' AND n.nspname = current_schema()
                       AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
-                    GROUP BY i.oid
+                    GROUP BY i.oid, am.amname, x.indnkeyatts, x.indnatts
                 """).fetchall()
                 if not any(
                     list(row["columns"] or []) == ["id", "organization_id"]
@@ -1095,7 +1095,7 @@ class DatabaseManager:
                     WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
                       AND n.nspname = current_schema() AND pn.nspname = current_schema()
                       AND c.contype = 'f'
-                    GROUP BY c.conname
+                    GROUP BY c.conname, c.convalidated
                 """).fetchall()
                 exact = [
                     row for row in final_constraints

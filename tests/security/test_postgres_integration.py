@@ -278,7 +278,7 @@ def test_postgres_missing_linked_decision_failure_is_durable_and_state_preservin
         with manager._connection_scope() as conn:
             request = conn.execute("SELECT state FROM execution_requests WHERE id = %s", ("req-invariant",)).fetchone()
             events = conn.execute("""
-                SELECT id, timestamp, action, object_type, result, actor, organization_id, correlation_id,
+                SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, correlation_id,
                        details_json, previous_event_hash, event_hash, sequence_number
                 FROM audit_events WHERE object_id = %s
             """, ("req-invariant",)).fetchall()
@@ -340,7 +340,7 @@ def test_postgres_approval_requires_correlation_without_authority_mutation():
             request = conn.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = %s", ("req-correlation",)).fetchone()
             decisions = conn.execute("SELECT COUNT(*) AS count FROM execution_decisions WHERE organization_id = %s", ("org-correlation",)).fetchone()
             runs = conn.execute("SELECT COUNT(*) AS count FROM execution_runs WHERE organization_id = %s", ("org-correlation",)).fetchone()
-            events = conn.execute("SELECT action, result, actor, organization_id, object_type, object_id, details_json, correlation_id, previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s AND organization_id = %s", ("req-correlation", "org-correlation")).fetchall()
+            events = conn.execute("SELECT id, timestamp, action, result, actor, organization_id, object_type, object_id, details_json, correlation_id, previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s AND organization_id = %s", ("req-correlation", "org-correlation")).fetchall()
         assert request["state"] == "REQUESTED"
         assert request["approved_decision_id"] is None
         assert decisions["count"] == 0
@@ -363,6 +363,8 @@ def test_postgres_approval_requires_correlation_without_authority_mutation():
 
 
 def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant():
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+
     with _isolated_manager() as manager:
         now = "2026-01-01T00:00:00+00:00"
         expires = "2099-01-01T00:00:00+00:00"
@@ -399,15 +401,19 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
                 ("req-a", "idem-a", "f" * 64, OPERATION_POLICY_REVISION, now, expires, "shared-id"),
             )
 
-        with pytest.raises(ValueError, match="invalid approved decision"):
-            manager.revoke_execution_request("req-a", "org-a", "admin")
+        correlation_token = set_correlation_id("corr-pg-cross-tenant")
+        try:
+            with pytest.raises(ValueError, match="invalid approved decision"):
+                manager.revoke_execution_request("req-a", "org-a", "admin")
+        finally:
+            reset_correlation_id(correlation_token)
         with manager._connection_scope() as conn:
             request = conn.execute(
                 "SELECT state, approved_decision_id FROM execution_requests WHERE id = %s AND organization_id = %s",
                 ("req-a", "org-a"),
             ).fetchone()
             events = conn.execute(
-                "SELECT id, timestamp, organization_id, actor, action, object_type, result, correlation_id, details_json, "
+                "SELECT id, timestamp, organization_id, actor, action, object_type, object_id, result, correlation_id, details_json, "
                 "previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s",
                 ("req-a",),
             ).fetchall()
@@ -445,7 +451,7 @@ def test_postgres_audit_chain_continuity_is_verified_for_multiple_events():
         with manager._connection_scope() as conn:
             events = conn.execute(
                 "SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, "
-                "details_json, previous_event_hash, event_hash, sequence_number "
+                "details_json, correlation_id, previous_event_hash, event_hash, sequence_number "
                 "FROM audit_events ORDER BY sequence_number",
             ).fetchall()
         assert len(events) == 2
