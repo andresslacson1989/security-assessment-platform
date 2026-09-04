@@ -18,6 +18,12 @@
 - `GET /api/auth/api-keys`: Lists active API keys for caller's organization.
 - `DELETE /api/auth/api-keys/{key_id}`: Revokes an API Key in authoritative database.
 
+#### 1.1.1 Authentication Side-Effect Boundary
+
+`POST /api/auth/login` is an identity operation, not a platform-maintenance operation. A successful or failed login request MUST be limited to credential verification, session/token issuance or rejection, rate-limit accounting, required identity timestamps, and the authenticated audit event. It MUST NOT synchronously invoke tool detection, capability discovery, toolbox refresh, installer work, scan creation, scan-history loading, external-tool processes, or external provider/network activity. Login completion and token issuance MUST NOT depend on the availability, latency, or failure of any tool, capability, cache, scheduler, database-backed scan-history query, or execution-plane worker beyond the identity transaction itself.
+
+The frontend authentication flow MUST treat the login response as complete once the authentication response has been accepted and the authenticated session state is established. Any subsequent observational UI loading MUST be independently initiated, non-blocking, and failure-isolated; it is not part of authentication and MUST never delay, invalidate, or roll back a successful login.
+
 ### 1.2 Attack Surface & Asset Inventory Endpoints (`/api/assets`)
 - `GET /api/assets`: Lists monitored assets belonging to the caller's organization (`asset:read`).
 - `POST /api/assets`: Registers a new asset (`asset:write`). Enforces target security gateway validation for all `AssetType` variants.
@@ -32,6 +38,12 @@
 - `POST /api/scans/{scan_id}/cancel`: Cancels an active scan (`scan:cancel`), halts async workers, broadcasts `event: cancelled` SSE, and resets UI state.
 - `GET /api/scans` / `GET /api/scans/history`: Lists historical scan summaries for caller's organization.
 - `DELETE /api/scans/{scan_id}`: Deletes a scan record (`scan:delete`, tenant-scoped).
+
+#### 1.3.1 Historical Scan Persistence and Retention
+
+Scan jobs, test results, findings, telemetry, cancellation state, and failure state MUST be persisted to the authoritative relational database throughout their lifecycle and MUST remain retrievable after browser refresh, logout/login, process restart, cache eviction, and ordinary service redeployment. JSON files are export, backup, or evidence-artifact representations only; they MUST NOT resurrect records absent from the database or replace database reads.
+
+The normal refresh, authentication, capability-refresh, toolbox-refresh, installation, cancellation, and deployment workflows MUST NOT delete historical scan or test records. Historical retrieval MUST use one canonical response envelope: `GET /api/scans` and `GET /api/scans/history` return `{ total, limit, offset, items }`, where `items` is the authoritative list of tenant-scoped summaries. A UI consumer MUST NOT silently substitute a different field name. Any future destructive purge endpoint MUST be separate from ordinary history browsing, explicitly privileged, audited, tenant-constrained, confirmation-protected, and documented with retention/legal-hold behavior; it is not implied by logout or refresh.
 
 ### 1.4 Vulnerability Lifecycle & Finding Triage Endpoints (`/api/findings`)
 - `GET /api/findings`: Queries canonical findings with filters (`finding:read`, tenant-scoped).
@@ -51,6 +63,16 @@
 - `GET /api/system/capabilities?refresh=true` deliberately bypasses the cache and performs one live detection for that configuration. Concurrent requests share one live refresh; expired entries are refreshed and are never silently presented as current.
 - Detection failures are returned as failures; stale status is not returned as a current or trusted result. Capability registration is observational only and never authorizes tool execution. Scan orchestration performs its own live checks and pre-launch trust/version verification.
 - Toolbox installation status is also observational and does not authorize execution; runtime trust and exact-version checks remain live at the process-launch boundary.
+
+#### 1.5.2 Backend-Owned Observation Service
+
+Capability and toolbox status are backend-owned observations. The service MUST provide an autonomous lifecycle-managed observation service that can refresh the complete 26-tool fleet without an authenticated browser session. It MUST begin only after application readiness, MUST NOT block authentication or readiness, and MUST stop and await cancellation during graceful shutdown. The service MUST use an explicit bounded interval, per-tool and aggregate timeouts, bounded output/resource consumption, structured failure telemetry, and a single-flight/concurrency control so overlapping refreshes for the same effective configuration cannot occur.
+
+The observation service populates process-local snapshots; it does not persist tool status as application data and does not grant execution authority. Endpoint authentication and tenant authorization remain mandatory for readers. A failed refresh MUST be represented as failed/unknown with its timestamp and reason, not as a falsely current successful status. Runtime execution MUST repeat live managed-path, integrity, and exact-version checks at the process-launch boundary.
+
+#### 1.5.3 Current Implementation-Gap Register
+
+The current repository evidence establishes the cache, forced-refresh API, installation invalidation, and runtime separation, but does not yet establish an autonomous startup scheduler. The current frontend login handler still awaits toolbox and capability refresh calls after token receipt. The current scan API exposes a hard-delete operation, and the current history UI requests the database-backed endpoint but reads `scans` instead of the endpoint's `items` envelope. These are recorded as required follow-up implementation items; this contract MUST NOT be interpreted as evidence that those controls are already complete.
 
 ### 1.6 Exporters & Reporting Endpoints (`/api/scans/{scan_id}/export`)
 - `GET /api/scans/{scan_id}/export/html`: Standalone offline interactive HTML report with secret masking (`report:read`, tenant-scoped).

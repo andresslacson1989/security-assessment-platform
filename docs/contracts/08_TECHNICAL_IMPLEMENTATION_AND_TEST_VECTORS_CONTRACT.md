@@ -142,6 +142,22 @@ To achieve deterministic CI verification across environments without requiring e
 - A Trivy `v0.50.0` version probe MUST pass a server-selected non-writing config path and MUST not depend on a writable or readable `trivy.yaml` in the service working directory.
 - Capability discovery MUST report `ADAPTER_ACTIVE` only after managed resolution, trust verification, and exact runtime version verification all succeed.
 
+### 6.1.2 Authentication Isolation and Backend Observation Vectors
+
+- A login request MUST complete without invoking `/api/system/tools`, `/api/system/capabilities`, scan-history endpoints, installer operations, SSE subscriptions, or external-tool processes. The test MUST observe the actual frontend/backend boundary rather than only mocking helper functions.
+- A successful login MUST establish the token/session even when capability detection is slow, unavailable, or fails. A login failure MUST not trigger a capability or toolbox refresh.
+- Application startup MUST create an autonomous observation task after readiness, with a bounded interval, per-tool/aggregate timeout, single-flight refresh, structured failure state, and graceful cancellation/await during shutdown. The task MUST operate without a browser session or user token.
+- Readiness and authentication latency tests MUST prove that the observation task cannot block either endpoint. Concurrent scheduler ticks MUST not overlap for the same configuration.
+
+### 6.1.3 Historical Persistence and Retention Vectors
+
+- Start, progress, success, cancellation, timeout, and failure transitions MUST be persisted to the relational database and remain retrievable after a new application process is initialized.
+- `GET /api/scans` and `GET /api/scans/history` MUST return the canonical `{total, limit, offset, items}` envelope. An integration test MUST render a non-empty `items` response in the history UI.
+- Browser refresh, logout/login, capability-cache invalidation, toolbox installation lifecycle, and service restart MUST NOT delete scan or test history. Tests MUST verify the database row and associated serialized evidence remain available.
+- JSON artifacts MUST be treated as export/backup artifacts only. Removing or corrupting an artifact MUST not make a database record disappear; an artifact MUST not recreate a record deleted from the database.
+- Any hard-delete path MUST be explicitly privileged, tenant-constrained, audited, confirmation-protected, and covered by retention/legal-hold policy tests. If the product requirement is retention, the default workflow MUST not expose hard deletion.
+- Cross-tenant history reads and destructive operations MUST be denied even when a valid foreign scan identifier is supplied.
+
 ### 6.1 Metasploit Framework (`MetasploitAdapter`) Mock Fixtures
 ```python
 # Version check mock

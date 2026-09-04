@@ -54,11 +54,19 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "refresh=true" in contract_04
     assert "capabilities_source" in contract_04
     assert "process-local, 60-second cache" in contract_04
+    assert "Authentication Side-Effect Boundary" in contract_04
+    assert "Backend-Owned Observation Service" in contract_04
+    assert "canonical response envelope" in contract_04
+    assert "Current Implementation-Gap Register" in contract_04
     assert "observational only" in contract_03
     assert "Capability Detection Cache Vectors" in contract_08
+    assert "Authentication Isolation and Backend Observation Vectors" in contract_08
+    assert "Historical Persistence and Retention Vectors" in contract_08
     assert "Managed Resolution and Probe Vectors" in contract_08
     assert "Managed Package-Adapter Resolution" in contract_03
     assert "NATIVE_ENGINE_READY" in models
+    assert "authentication-only interaction" in contract_07
+    assert "canonical `items` collection" in contract_07
     assert 'id="tool-pill-gtfobins"' in frontend_index
     assert 'tool-pill--active" id="tool-pill-gtfobins"' in frontend_index
     assert "observational telemetry only" in contract_09
