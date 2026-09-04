@@ -111,7 +111,7 @@ def test_postgres_manager_closes_pool_when_initialization_fails(monkeypatch):
     assert pool.closed is True
 
 
-def test_postgres_manager_preserves_initialization_failure_when_pool_close_fails(monkeypatch):
+def test_postgres_manager_preserves_initialization_failure_when_pool_close_fails(monkeypatch, caplog):
     class Pool:
         def close(self):
             raise OSError("pool close failure")
@@ -119,8 +119,12 @@ def test_postgres_manager_preserves_initialization_failure_when_pool_close_fails
     monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(ConnectionPool=lambda **kwargs: Pool()))
     monkeypatch.setattr(PostgresDatabaseManager, "_init_db", lambda self: (_ for _ in ()).throw(RuntimeError("authoritative schema failure")))
 
-    with pytest.raises(RuntimeError, match="authoritative schema failure"):
-        PostgresDatabaseManager("postgresql://user:pass@127.0.0.1/cyberassess_test")
+    with caplog.at_level("ERROR", logger="cyberassess.persistence"):
+        with pytest.raises(RuntimeError, match="authoritative schema failure"):
+            PostgresDatabaseManager("postgresql://user:pass@127.0.0.1/cyberassess_test")
+
+    assert "pool cleanup failed during initialization" in caplog.text
+    assert "pool close failure" not in caplog.text
 
 
 @pytest.mark.asyncio

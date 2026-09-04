@@ -8,6 +8,7 @@ API Keys, Assets, Scans, Canonical Findings, Occurrences, and Append-Only Audit 
 from __future__ import annotations
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -17,6 +18,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import uuid
+
+logger = logging.getLogger("cyberassess.persistence")
 
 from app.core.models import (
     Asset,
@@ -206,10 +209,13 @@ class PostgresDatabaseManager:
             if self._pool is not None:
                 try:
                     self._pool.close()
-                except Exception:
+                except Exception as cleanup_exc:
                     # Cleanup is best-effort here; preserve the authoritative
                     # initialization failure for the caller and audit trail.
-                    pass
+                    logger.error(
+                        "PostgreSQL pool cleanup failed during initialization: error_type=%s",
+                        type(cleanup_exc).__name__,
+                    )
             raise
 
     @contextmanager
