@@ -1156,7 +1156,7 @@ class DatabaseManager:
                 else:
                     parent_keys = []
                     for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
-                        if index["unique"]:
+                        if index["unique"] and not index["partial"]:
                             columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                             if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
                                 parent_keys.append(index["name"])
