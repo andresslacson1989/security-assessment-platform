@@ -386,7 +386,7 @@ class DatabaseManager:
                 WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
                   AND i.indisunique AND i.indisvalid AND i.indisready
                 GROUP BY i.indexrelid
-                HAVING array_agg(a.attname ORDER BY k.ordinality) = ARRAY['id', 'organization_id']
+                HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
             """).fetchall()
             binding = conn.execute("""
                 SELECT COUNT(*) AS count
@@ -424,7 +424,7 @@ class DatabaseManager:
                 == [(0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")]
                 and all(row["table"] == "execution_decisions" for row in rows)
             )
-        if parent_count < 1 or binding_count != 1:
+        if parent_count != 1 or binding_count != 1:
             raise RuntimeError(
                 "execution authority schema verification failed: "
                 f"expected one parent key and one decision binding, got {parent_count} and {binding_count}"
@@ -1113,10 +1113,23 @@ class DatabaseManager:
                         if not replacement:
                             raise ValueError("execution authority migration recovery blocked: replacement execution_runs table is absent")
                         self._verify_execution_snapshot_schema(conn)
-                        replacement_count = conn.execute("SELECT COUNT(*) AS count FROM execution_runs").fetchone()["count"]
-                        backup_count = conn.execute("SELECT COUNT(*) AS count FROM execution_runs_legacy_binding").fetchone()["count"]
-                        if replacement_count != backup_count:
-                            raise ValueError("execution authority migration recovery blocked: replacement row count differs from backup")
+                        recovery_columns = (
+                            "execution_id", "request_id", "organization_id", "approved_decision_id",
+                            "target_policy_version", "operation_policy_revision", "request_fingerprint",
+                            "operation_options_json", "resource_budget_json", "account_impact_budget_json",
+                            "credential_scope_json", "snapshot_completeness", "state", "worker_identity",
+                            "process_id", "process_group_id", "assurance_state", "coverage_state", "reason_code",
+                            "evidence_ref", "correlation_id", "created_at", "started_at", "finished_at",
+                        )
+                        column_sql = ", ".join(recovery_columns)
+                        replacement_rows = conn.execute(
+                            f"SELECT {column_sql} FROM execution_runs ORDER BY execution_id"
+                        ).fetchall()
+                        backup_rows = conn.execute(
+                            f"SELECT {column_sql} FROM execution_runs_legacy_binding ORDER BY execution_id"
+                        ).fetchall()
+                        if [tuple(row) for row in replacement_rows] != [tuple(row) for row in backup_rows]:
+                            raise ValueError("execution authority migration recovery blocked: replacement rows differ from backup")
                         conn.execute("DROP INDEX IF EXISTS uq_execution_runs_request")
                         conn.execute("DROP INDEX IF EXISTS idx_execution_runs_scope")
                         conn.execute("DROP TABLE execution_runs_legacy_binding")
