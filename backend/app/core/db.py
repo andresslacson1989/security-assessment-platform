@@ -1445,7 +1445,23 @@ class DatabaseManager:
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_binding_version,)).fetchone():
                 # The composite parent key is required before SQLite will validate
                 # the tenant-bound foreign key during the compatibility rebuild.
-                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
+                if isinstance(self, PostgresDatabaseManager):
+                    parent_key = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+                        JOIN pg_namespace n ON n.oid=t.relnamespace JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
+                        WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indpred IS NULL
+                        GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
+                    if not parent_key:
+                        conn.execute("CREATE UNIQUE INDEX execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
+                else:
+                    parent_key = []
+                    for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
+                        if index["unique"] and not index["partial"]:
+                            columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                            if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["execution_id", "organization_id"]:
+                                parent_key.append(index)
+                    if not parent_key:
+                        conn.execute("CREATE UNIQUE INDEX execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
                 bad = conn.execute("""SELECT i.execution_id FROM execution_dispatch_intents i
                     LEFT JOIN execution_runs r ON r.execution_id=i.execution_id AND r.organization_id=i.organization_id
                     WHERE r.execution_id IS NULL LIMIT 1""").fetchone()
