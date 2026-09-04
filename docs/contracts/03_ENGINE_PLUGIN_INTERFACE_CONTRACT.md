@@ -128,6 +128,34 @@ Operations that bypass target/tenant authorization, execute a tampered binary,
 escape the approved destination, evade isolation or budgets, expose credentials,
 suppress audit, or continue after revocation are `PERMANENTLY_BLOCKED`.
 
+The machine-readable operation-policy artifact is
+`backend/app/core/tool_operation_policy.py`. It is versioned independently from
+the contract as `policy_revision` and each row contains `tool_id`,
+`operation_family`, `option_or_module_class`, `capability_state`,
+`default_profile_behavior`, `approval_level`, `worker_class`, `target_rules`,
+`credential_requirements`, `resource_budget`, `account_impact_budget`,
+`stop_conditions`, `evidence_requirements`, and `audit_requirements`. A policy
+revision change invalidates prior approvals. No adapter may define a private
+operation policy.
+
+### 1.1.2 Canonical state crosswalk
+
+`CAPABILITY_AVAILABLE` maps to capability `AVAILABLE`; `NATIVE_ENGINE_READY`
+maps to capability `AVAILABLE` plus assurance `VERIFIED`; `SUPPORTED` is a
+legacy capability alias for `AVAILABLE`; `LIMITED`, `DEFERRED`,
+`HOST_UNAVAILABLE`, and `UNVERIFIED` retain their capability or assurance
+domain. `ELEVATED_APPROVAL_REQUIRED` is an operation-policy classification,
+not an execution state. `PERMANENTLY_BLOCKED` is a policy rejection reason and
+maps to authorization `DENIED` plus execution `EXECUTION_BLOCKED`.
+
+Contract 09 outcomes map as follows: `COMPLETED_WITH_FINDINGS` becomes
+execution `SUCCEEDED` with coverage `COMPLETE`; `COMPLETED_NO_FINDINGS` becomes
+the same execution state with zero findings; `TOOL_EXECUTION_FAILED` maps to
+`FAILED`; `EXECUTION_TIMED_OUT` maps to `TIMED_OUT`; `EXECUTION_CANCELLED`
+maps to `CANCELLED`; and any valid output with incomplete coverage maps to
+`PARTIAL_RESULTS_WITH_WARNING` plus coverage `PARTIAL`. `UNVERIFIED` is never
+an execution result; it is assurance state and blocks assured launch.
+
 ### 1.2 Cross-Cutting Execution Boundary Controls
 
 Every external process launch, including direct callers of `ProcessSupervisor`, MUST pass through one deny-by-default environment builder. Ambient environment merging is prohibited. Each operation declares an explicit environment allowlist; secret-like variables, loader variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`), interpreter injection variables (`PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS`), arbitrary API/auth tokens, and ambient proxy variables are excluded unless a separately authorized, tool-specific policy injects an exact value. `SCANNER_EGRESS_PROXY` may be translated only by the egress policy and must never inherit arbitrary proxy settings.

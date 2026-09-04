@@ -55,6 +55,11 @@ The normal refresh, authentication, capability-refresh, toolbox-refresh, install
 - `POST /api/tools/repeater`: Executes an authorized HTTP test request (`scan:repeater`) with strict connection-level DNS pinning, safe destination binding, hop-by-hop redirect verification, and size bounds. Internal requests require explicit `scan:internal` permission.
 - `POST /api/system/tools/{tool_name}/install`: Initiates privileged tool binary installation (`tool:install` + `ADMIN` + audit event).
 - `GET /api/system/tools/events`: SSE stream for tool installation progress.
+- `POST /api/system/executions`: Creates a typed tool execution request; authenticated tenant/tool authorization is required.
+- `POST /api/system/executions/{request_id}/approve`: Records the prompted, session-bound administrator approval for the exact request.
+- `POST /api/system/executions/{request_id}/revoke`: Revokes approval or stops the associated execution.
+- `GET /api/system/executions/{request_id}`: Returns the tenant-scoped execution state and sanitized evidence.
+- `GET /api/system/executions/events`: Tenant-scoped SSE stream for execution lifecycle events.
 - `GET /api/system/tools`: Authenticated (`tool:read`) list of all 26 toolbox installation/status records. The response is produced by a process-local backend snapshot with a 60-second TTL; `GET /api/system/tools?refresh=true` forces a live backend refresh. Installation success, reinstall, cancellation, and failure invalidate the snapshot before terminal telemetry is emitted.
 
 #### 1.5.1.1 Tool Installation and Full-Capability Execution Requests
@@ -140,6 +145,19 @@ checks. `GET /api/system/executions/{request_id}` and the execution SSE stream
 are the read/observation interfaces. A decision is stored with the request and
 audit record, is single-use for the exact operation, and is invalidated by
 logout, session expiry, idle timeout, explicit revocation, or request mutation.
+
+Approval is an explicit action: `POST /api/system/executions/{request_id}/approve`
+requires the authenticated `ADMIN` principal with the tenant/tool permission,
+an idempotency key, and a confirmation payload containing the exact target
+ownership warning acknowledgement and `request_fingerprint`. The server
+performs an atomic compare-and-transition from `REQUESTED` to `AUTHORIZED`,
+binding the decision to the current session, principal, request fingerprint,
+tenant, target seal, tool operation, policy revision, and expiry at session
+expiry/idle timeout. Repeating the same idempotency key returns the original
+decision; a different payload, completed request, revoked session, or race
+returns a conflict and cannot create a second approval. `POST
+/api/system/executions/{request_id}/revoke` is available to the approver or
+security operator and atomically prevents launch or stops a running job.
 
 #### 1.5.1.3 Capability, assurance, and execution state separation
 

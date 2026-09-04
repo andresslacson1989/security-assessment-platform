@@ -109,7 +109,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "Enterprise cross-cutting security and automation vectors" in contract_08
     assert "Full-capability automated-tool vectors" in contract_08
     contract_02 = (canonical / "02_DATA_SCHEMA_AND_MODELS_CONTRACT.md").read_text(encoding="utf-8")
-    assert "asvs_control: str" in contract_02
+    assert "asvs_control: ASVSControl | ASVSNotApplicable" in contract_02
     assert "ASVS_NOT_APPLICABLE" in (
         canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md"
     ).read_text(encoding="utf-8")

@@ -127,6 +127,11 @@ If an archive checksum does not match, the installer MUST abort immediately, del
 | Canonical Findings & SLA | Contract 02 §4, Contract 05 §2 | `backend/app/core/correlator.py`, `backend/app/core/db.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_025_sla_clock_preservation`; `test_sec_026_correlation_false_merge_prevention`; `test_sec_027_correlation_duplicate_merging` |
 | Evidence Masking & Health | Contract 01 §3, Contract 04 §3 | `backend/app/core/models.py`, `backend/app/api/export.py` | `tests/security/test_adversarial_sec_matrix.py::test_sec_022_evidence_secret_masking`; `test_sec_028_report_secret_leakage_sanitization`; `test_sec_022_persistence_and_audit_boundaries_redact_sensitive_values` |
 
+Every production test reference in this matrix MUST use the fully qualified
+`tests/path/test_file.py::test_function_name` form. CI MUST parse each reference,
+verify that the file exists, and verify that the named test symbol exists in that
+file. Bare test names are non-conforming and are not acceptance evidence.
+
 ---
 
 ## 6. Adversarial Test Vectors & Tool Mock Fixtures (v14.3.0)
