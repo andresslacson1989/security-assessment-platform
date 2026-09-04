@@ -94,7 +94,7 @@ Binary installation must follow this strict 8-step lifecycle:
 
 Automation MUST orchestrate the upstream tool; it MUST NOT silently replace, cripple, or permanently remove upstream capabilities. The complete supported command, module, protocol, and option surface remains available to an authorized execution policy. Safety is enforced at the CyberAssess control plane and process-launch boundary through authorization, target binding, resource governance, and auditability—not by misrepresenting a reduced tool as the full tool.
 
-Each automated request MUST be represented as a typed, server-validated execution request containing the tenant, project, asset, immutable `ValidatedTarget`, tool identity, exact requested operation, policy version, authorization decision, and resource budget. The adapter MUST construct the final argument vector without shell interpolation. Client input MUST NOT directly provide an executable path, shell string, output path, credential location, or unvalidated destination.
+Each automated request MUST be represented as a typed, server-validated execution request containing the tenant, project, asset, immutable `ValidatedTarget`, tool identity, exact requested operation, `target_policy_version`, `operation_policy_revision`, authorization decision, and resource budget. `target_policy_version` identifies the Target Security Gateway policy used to seal and authorize the target; `operation_policy_revision` identifies the exact revision of the CyberAssess operation-policy artifact used to classify and authorize the requested tool operation. These are distinct authorities and MUST NOT be represented by one generic field. The adapter MUST construct the final argument vector without shell interpolation. Client input MUST NOT directly provide an executable path, shell string, output path, credential location, or unvalidated destination.
 
 The platform MUST distinguish `CAPABILITY_AVAILABLE`, `EXECUTION_AUTHORIZED`, `AUTHORIZATION_REQUIRED`, `EXECUTION_BLOCKED`, and `NATIVE_ENGINE_READY`. A default assessment profile MAY select conservative operations, but that default MUST NOT be represented as a permanent capability restriction. Higher-impact operations require an explicit policy decision, appropriate tenant authorization, isolated worker permissions, bounded resources, and an auditable decision record. Installation or capability detection alone MUST never authorize execution.
 
@@ -130,13 +130,19 @@ suppress audit, or continue after revocation are `PERMANENTLY_BLOCKED`.
 
 The machine-readable operation-policy artifact is
 `backend/app/core/tool_operation_policy.py`. It is versioned independently from
-the contract as `policy_revision` and each row contains `tool_id`,
+the contract as `operation_policy_revision` and each row contains `tool_id`,
 `operation_family`, `option_or_module_class`, `capability_state`,
 `default_profile_behavior`, `approval_level`, `worker_class`, `target_rules`,
 `credential_requirements`, `resource_budget`, `account_impact_budget`,
 `stop_conditions`, `evidence_requirements`, and `audit_requirements`. A policy
 revision change invalidates prior approvals. No adapter may define a private
 operation policy.
+
+`target_policy_version` and `operation_policy_revision` MUST be carried
+separately through request creation, authorization decisions, request
+fingerprints, audit events, approval records, target-seal validation, and
+pre-launch revalidation. A change to either value invalidates the affected
+decision; neither value may be inferred from the other.
 
 ### 1.1.2 Canonical state crosswalk
 

@@ -228,9 +228,13 @@ defense in depth, not a substitute for relational integrity. Any retention or
 purge operation MUST preserve the stated legal-hold and audit invariants.
 
 `ValidatedTarget` is operationally immutable: nested addresses, scope entries,
-authorization context, and metadata MUST be immutable or defensively copied at
-construction. A caller MUST NOT be able to mutate a previously sealed target by
-retaining a reference to a nested list or mapping.
+authorization context, and metadata MUST use immutable representations or a
+documented defensive-copy boundary at construction. Top-level model freezing is
+not sufficient for nested containers. A caller MUST NOT be able to mutate a
+previously sealed target by retaining a reference to a nested list or mapping;
+mutation attempts MUST fail or be detected before execution. The canonical
+serialized form MUST be specified separately from the in-memory immutable
+representation.
 
 ---
 

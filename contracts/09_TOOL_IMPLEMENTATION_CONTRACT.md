@@ -21,7 +21,7 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
 
 Metasploit, sqlmap, Hydra, and the GTFOBins/LOLBAS engine MUST be automated as complete capabilities within their technical domains. “Automated” means that CyberAssess can install, detect, authorize, invoke, supervise, parse, persist, and report the tool through its governed production path. It does not mean that the platform may silently replace the upstream tool with a reduced implementation.
 
-The platform MUST preserve the complete upstream capability surface while applying policy at the execution boundary. A default profile may select a conservative operation, but any supported higher-impact operation MUST have a defined authorization path rather than being mislabeled `NOT_SUPPORTED`. The authorization decision MUST bind tenant, project, asset, immutable target, tool, requested operation/options, policy version, resource budget, and approving principal. An installation record or capability snapshot alone MUST never grant that decision.
+The platform MUST preserve the complete upstream capability surface while applying policy at the execution boundary. A default profile may select a conservative operation, but any supported higher-impact operation MUST have a defined authorization path rather than being mislabeled `NOT_SUPPORTED`. The authorization decision MUST bind tenant, project, asset, immutable target, tool, requested operation/options, `target_policy_version`, `operation_policy_revision`, resource budget, and approving principal. An installation record or capability snapshot alone MUST never grant that decision.
 
 Full-capability automation requires managed artifact identity, exact version verification, pre-launch integrity verification, typed argument construction, no shell injection, tenant-scoped credentials where applicable, destination/egress governance, process isolation, bounded resources, cancellation, sanitized evidence, durable telemetry, and explicit normalized failure/coverage states. Unsupported host prerequisites or missing authorization MUST produce `AUTHORIZATION_REQUIRED` or `EXECUTION_BLOCKED`, not a false “manual-only” classification.
 
@@ -44,14 +44,21 @@ available module families and payload/session/resource classes; for sqlmap it
 enumerates supported option families; for Hydra it enumerates supported
 protocol/module and dictionary interfaces; for GTFOBins/LOLBAS it enumerates
 the reviewed catalog revision and rule count. Each feature class is recorded
-as `AVAILABLE`, `LIMITED`, `DEFERRED`, `HOST_UNAVAILABLE`, or `UNVERIFIED`
+as `AVAILABLE`, `LIMITED`, `DEFERRED`, `HOST_UNAVAILABLE`, `NOT_SUPPORTED`, or
+`UNVERIFIED`
 with a reason and evidence location. A default profile selecting fewer options
 does not change the snapshot.
+
+`NOT_SUPPORTED` is measured only for a permanent platform exclusion. Adapter
+delegation, profile selection, missing approval, host prerequisites, failed
+installation, deferral, and unverified capability MUST use their applicable
+state or reason and MUST NOT be reported as a platform exclusion.
 
 The snapshot records upstream version/tag, acquisition identity, platform and
 architecture, enumeration method, observed feature inventory, verifier,
 verification timestamp, and reverification expiry. Any upstream update,
-adapter change, catalog change, host-platform change, or policy-version change
+adapter change, catalog change, host-platform change, `target_policy_version`
+change, or `operation_policy_revision` change
 invalidates the prior assurance and requires re-verification. No full-capability
 acceptance claim may rely solely on a command-builder unit test.
 
@@ -64,7 +71,7 @@ acceptance claim may rely solely on a command-builder unit test.
      class ValidatedTarget(BaseModel):
          model_config = ConfigDict(frozen=True, extra="forbid")
          target_id: str                 # Cryptographic resource identity: sha256(canonical_value + ":" + selected_destination)
-         authorization_decision_id: str # Cryptographic authorization token: sha256(org_id + ":" + project_id + ":" + asset_id + ":" + target_id + ":" + policy_version)
+         authorization_decision_id: str # Cryptographic authorization token: sha256(org_id + ":" + project_id + ":" + asset_id + ":" + target_id + ":" + target_policy_version + ":" + operation_policy_revision)
          integrity_seal: str            # Cryptographic signature/HMAC from Target Security Gateway
          organization_id: str           # Tenant isolation boundary (UUID)
          project_id: str                # Project isolation boundary (UUID)
@@ -72,15 +79,15 @@ acceptance claim may rely solely on a command-builder unit test.
          target_type: TargetType        # URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST
          raw_value: str                 # Original user-supplied input string
          canonical_value: str           # Normalized string (e.g. lowercase FQDN, normalized URL)
-         authorized_scope: List[str]    # Authorized CIDRs / root domain wildcards
-         resolved_addresses: List[str]  # All resolved IPv4/IPv6 addresses from pre-resolution
+         authorized_scope: tuple[str, ...]    # Immutable authorized CIDRs / root domain wildcards
+         resolved_addresses: tuple[str, ...]  # Immutable IPv4/IPv6 addresses from pre-resolution
          selected_destination: str      # Specific pinned IP address selected for connection
          port: Optional[int] = None     # Target port (e.g. 443, 80, 22)
          scheme: Optional[str] = None   # Protocol scheme (http, https, tcp, udp)
          validation_timestamp: datetime # ISO-8601 UTC validation timestamp
-         policy_version: str            # Target Security Gateway policy version (e.g. "14.3.0")
+         target_policy_version: str     # Target Security Gateway policy version (e.g. "14.3.0")
      ```
-   - **Operational Immutability Definition:** `ValidatedTarget` is a frozen data structure (`frozen=True`). Once constructed and cryptographically sealed by the Target Security Gateway (`assert_safe_target()`), no attribute may be modified. Any target mutation, hostname change, or redirect resolution strictly requires instantiating a NEW `ValidatedTarget` instance through the gateway.
+   - **Operational Immutability Definition:** `ValidatedTarget` MUST use immutable nested representations (for example `tuple[str, ...]` and immutable mappings) or a documented defensive-copy boundary that prevents retained caller references from mutating the sealed value. `frozen=True` is necessary for top-level assignment but is not, by itself, sufficient for nested containers. Once constructed and cryptographically sealed by the Target Security Gateway (`assert_safe_target()`), no attribute or nested value may be modified; any mutation attempt MUST fail or be detected before execution. Any target mutation, hostname change, or redirect resolution strictly requires instantiating a NEW `ValidatedTarget` instance through the gateway. The canonical serialized form MUST be defined separately from the in-memory immutable representation.
    - **Tool-Specific Destination Binding Invariant:** Pre-resolving DNS is necessary but insufficient to defeat Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Adapters MUST enforce connection-level destination binding using tool-native mechanisms:
      - **Nmap:** Targets `ValidatedTarget.selected_destination` (IP) with `--script-args http.host=<canonical_value>`.
      - **httpx:** Invoked with `httpx -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value>`.
@@ -923,7 +930,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - HTTP Probe & Status: `SUPPORTED`
   - Technology Fingerprinting: `SUPPORTED`
-  - Raw Request Fuzzing: `NOT_SUPPORTED` (Handled by FFuF)
+  - Raw Request Fuzzing: `SUPPORTED` at fleet level; `DELEGATED` to FFuF and not exposed by the Httpx adapter
 - **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/httpx_adapter.py`, `backend/app/core/binary_trust.py`); the production image verified the managed `v1.6.0` runtime and trust record under uid 999.
 
 ---

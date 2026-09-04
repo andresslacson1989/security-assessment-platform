@@ -88,7 +88,8 @@ tool-specific authorization models.
   "tool_id": "TOOL-METASPLOIT",
   "operation": {"kind": "typed-operation", "module_or_protocol": "...", "options": {}},
   "execution_mode": "DEFAULT_UNATTENDED",
-  "policy_version": "14.3.0",
+  "target_policy_version": "14.3.0",
+  "operation_policy_revision": "opr-2026-09-04-001",
   "decision_id": "dec-...",
   "approving_principal": "usr-...",
   "expires_at": "2026-...Z",
@@ -100,7 +101,8 @@ tool-specific authorization models.
 ```
 
 The server validates tenant/project/asset ownership, the immutable target seal,
-tool identity, operation and typed options, policy version, decision status,
+tool identity, operation and typed options, `target_policy_version`,
+`operation_policy_revision`, decision status,
 approving principal, expiry/revocation, budgets, credential-envelope scope,
 idempotency, and correlation. It derives executable paths, workspace/output
 paths, destinations, Host/SNI, and credential locations. Clients MUST NOT
@@ -119,7 +121,8 @@ The canonical result states are `REQUESTED`, `AUTHORIZED`, `AUTHORIZATION_REQUIR
 `EXECUTION_BLOCKED`, `STARTING`, `RUNNING`, `SUCCEEDED`, `PARTIAL_RESULTS_WITH_WARNING`,
 `FAILED`, `TIMED_OUT`, `CANCELLED`, `DEGRADED_COVERAGE`, and `UNVERIFIED`. Each
 state includes request ID, decision ID where applicable, worker identity,
-policy version, timestamps, coverage information, and a sanitized reason code.
+`target_policy_version`, `operation_policy_revision`, timestamps, coverage
+information, and a sanitized reason code.
 The API returns `202 Accepted` for an accepted job, `401/403` for authentication
 or authorization failure, `409` for idempotency/replay conflict, and `422` for
 invalid typed options. SSE emits `execution.requested`, `execution.authorized`,
@@ -152,7 +155,8 @@ an idempotency key, and a confirmation payload containing the exact target
 ownership warning acknowledgement and `request_fingerprint`. The server
 performs an atomic compare-and-transition from `REQUESTED` to `AUTHORIZED`,
 binding the decision to the current session, principal, request fingerprint,
-tenant, target seal, tool operation, policy revision, and expiry at session
+tenant, target seal, tool operation, `target_policy_version`,
+`operation_policy_revision`, and expiry at session
 expiry/idle timeout. Repeating the same idempotency key returns the original
 decision; a different payload, completed request, revoked session, or race
 returns a conflict and cannot create a second approval. `POST

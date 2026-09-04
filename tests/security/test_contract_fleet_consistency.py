@@ -79,6 +79,13 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "NATIVE_ENGINE_READY" in contract_07
     assert "GET /api/system/tools?refresh=true" in contract_04
     assert "backend snapshot" in contract_04
+    assert "target_policy_version" in contract_04
+    assert "operation_policy_revision" in contract_04
+    assert "immutable nested representations" in contract_09
+    assert "NOT_SUPPORTED`" in contract_09
+    assert "permanent" in contract_09
+    assert "platform exclusion" in contract_09
+    assert "DELEGATED` to FFuF" in contract_09
     assert "refresh=true" in contract_04
     assert "capabilities_source" in contract_04
     assert "process-local, 60-second cache" in contract_04
