@@ -373,6 +373,63 @@ class DatabaseManager:
                 f"missing={missing!r}, mismatched={mismatched!r}"
             )
 
+    def _verify_execution_authority_binding_schema(self, conn) -> None:
+        """Require exactly one validated tenant-scoped decision relationship."""
+        if isinstance(self, PostgresDatabaseManager):
+            parent = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
+                  AND i.indisunique AND i.indisvalid AND i.indisready
+                GROUP BY i.indexrelid
+                HAVING array_agg(a.attname ORDER BY k.ordinality) = ARRAY['id', 'organization_id']
+            """).fetchall()
+            binding = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_class pt ON pt.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_decisions'
+                  AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND c.contype = 'f' AND c.convalidated
+                  AND c.conkey = ARRAY[
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'approved_decision_id'),
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'organization_id')]
+                  AND c.confkey = ARRAY[
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'id'),
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'organization_id')]
+            """).fetchall()
+            parent_count = len(parent)
+            binding_count = int(binding[0]["count"]) if binding else 0
+        else:
+            parent_count = 0
+            for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
+                if index["unique"]:
+                    columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                    if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                        parent_count += 1
+            grouped = {}
+            for row in conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall():
+                grouped.setdefault(row["id"], []).append(row)
+            binding_count = sum(
+                1 for rows in grouped.values()
+                if len(rows) == 2
+                and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                == [(0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")]
+                and all(row["table"] == "execution_decisions" for row in rows)
+            )
+        if parent_count < 1 or binding_count != 1:
+            raise RuntimeError(
+                "execution authority schema verification failed: "
+                f"expected one parent key and one decision binding, got {parent_count} and {binding_count}"
+            )
+
     def _init_db(self) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
         with self._connection_scope() as conn:
@@ -683,7 +740,6 @@ class DatabaseManager:
             CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id);
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_decisions_id_org ON execution_decisions(id, organization_id);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -1056,27 +1112,41 @@ class DatabaseManager:
                         ).fetchone()
                         if not replacement:
                             raise ValueError("execution authority migration recovery blocked: replacement execution_runs table is absent")
+                        self._verify_execution_snapshot_schema(conn)
+                        replacement_count = conn.execute("SELECT COUNT(*) AS count FROM execution_runs").fetchone()["count"]
+                        backup_count = conn.execute("SELECT COUNT(*) AS count FROM execution_runs_legacy_binding").fetchone()["count"]
+                        if replacement_count != backup_count:
+                            raise ValueError("execution authority migration recovery blocked: replacement row count differs from backup")
                         conn.execute("DROP INDEX IF EXISTS uq_execution_runs_request")
                         conn.execute("DROP INDEX IF EXISTS idx_execution_runs_scope")
                         conn.execute("DROP TABLE execution_runs_legacy_binding")
-                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                 if isinstance(self, PostgresDatabaseManager):
-                    existing = conn.execute(
-                        """
-                        SELECT 1 FROM pg_constraint c
+                    existing = conn.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM pg_constraint c
                         JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
                         JOIN pg_namespace n ON n.oid = t.relnamespace
-                        WHERE t.relname = 'execution_runs' AND n.nspname = current_schema()
-                          AND c.conname = 'execution_runs_decision_tenant_fk'
-                        """
-                    ).fetchone()
-                    if not existing:
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_decisions'
+                          AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                          AND c.contype = 'f' AND c.convalidated
+                          AND c.conkey = ARRAY[
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'approved_decision_id'),
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'organization_id')]
+                          AND c.confkey = ARRAY[
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'id'),
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'organization_id')]
+                    """).fetchone()
+                    if not existing or existing["count"] == 0:
                         conn.execute(
                             "ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_decision_tenant_fk "
                             "FOREIGN KEY (approved_decision_id, organization_id) "
                             "REFERENCES execution_decisions(id, organization_id)"
                         )
+                    elif existing["count"] != 1:
+                        raise ValueError("execution authority migration blocked: duplicate decision tenant foreign keys")
                 else:
                     foreign_keys = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
                     grouped = {}
@@ -1118,11 +1188,15 @@ class DatabaseManager:
                         conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                         conn.execute("CREATE INDEX idx_execution_runs_scope ON execution_runs(organization_id, state, created_at)")
                 conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_execution_runs_scope ON execution_runs(organization_id, state, created_at)"
+                )
+                conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (authority_binding_version, utc_now().isoformat()),
                 )
 
             self._verify_execution_snapshot_schema(conn)
+            self._verify_execution_authority_binding_schema(conn)
 
             # Migration rows prove history, not present-day schema integrity.
             # Recheck the safety-critical execution invariants on every startup
