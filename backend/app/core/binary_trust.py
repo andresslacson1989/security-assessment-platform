@@ -218,7 +218,7 @@ def verify_managed_binary_artifact(
         if not isinstance(checksums, dict) or not isinstance(assets, dict):
             return False
 
-        if trust_mode == "SOURCE_BUILD_MODE":
+        if "SOURCE_ARCHIVE_INTEGRITY_VERIFIED" in claims or trust_mode == "SOURCE_BUILD_MODE":
             source_sha = checksums.get("source_archive")
             source_name = assets.get("source_archive")
             expected_toolchain_sha = (
@@ -367,7 +367,7 @@ def build_source_artifact_trust_record(
     from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 
     manifest = PINNED_TOOL_MANIFEST.get(tool_name)
-    if not isinstance(manifest, dict) or manifest.get("trust_mode") != "SOURCE_BUILD_MODE":
+    if not isinstance(manifest, dict) or (manifest.get("trust_mode") != "SOURCE_BUILD_MODE" and "source_revision" not in manifest and "source_commit" not in manifest):
         raise ValueError("source-build trust requires an approved source-build manifest entry")
     path = Path(os.path.abspath(binary))
     managed_dir = get_managed_bin_dir()

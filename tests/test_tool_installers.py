@@ -392,6 +392,7 @@ async def test_subfinder_version_probe_initializes_fresh_windows_config_dir(monk
     installer = GithubReleaseInstaller("subfinder")
     appdata = tmp_path / "AppData" / "Roaming"
     monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setattr(os, "name", "nt")
 
     with patch("app.installers.github_release_installer.process_supervisor.execute", new=AsyncMock(return_value=(
         0, "subfinder v2.6.5\n", ""
