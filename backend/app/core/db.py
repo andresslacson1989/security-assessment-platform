@@ -752,12 +752,6 @@ class DatabaseManager:
                 "ALTER TABLE audit_events ADD COLUMN sequence_number INTEGER;",
                 "ALTER TABLE assets ADD COLUMN active_probing_granted INTEGER NOT NULL DEFAULT 0;",
                 "ALTER TABLE assets ADD COLUMN live_secret_verification_granted INTEGER NOT NULL DEFAULT 0;",
-                "ALTER TABLE execution_decisions ADD COLUMN consumed_at TEXT;",
-                "ALTER TABLE execution_decisions ADD COLUMN claim_owner TEXT;",
-                "ALTER TABLE execution_decisions ADD COLUMN claim_expires_at TEXT;",
-                "ALTER TABLE execution_decisions ADD COLUMN started_at TEXT;",
-                "ALTER TABLE execution_decisions ADD COLUMN claim_token TEXT;",
-                "ALTER TABLE execution_requests ADD COLUMN approval_idempotency_key TEXT;",
             ]
             for migration_index, mig in enumerate(migrations):
                 savepoint = f"schema_migration_{migration_index}"
@@ -1290,6 +1284,46 @@ class DatabaseManager:
                     elif len(parent_keys) > 1:
                         raise ValueError("execution authority cleanup blocked: unknown duplicate decision parent keys require audited reconciliation")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (cleanup_version, utc_now().isoformat()))
+
+            # Version 6 records the formerly generic execution-plane column
+            # upgrades as one auditable, idempotent migration.
+            execution_columns_version = 6
+            execution_columns = {
+                "execution_decisions": {
+                    "consumed_at": "TEXT",
+                    "claim_owner": "TEXT",
+                    "claim_expires_at": "TEXT",
+                    "started_at": "TEXT",
+                    "claim_token": "TEXT",
+                },
+                "execution_requests": {"approval_idempotency_key": "TEXT"},
+            }
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (execution_columns_version,)).fetchone():
+                for table, columns in execution_columns.items():
+                    for column, definition in columns.items():
+                        if isinstance(self, PostgresDatabaseManager):
+                            exists = conn.execute(
+                                "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+                                (table, column),
+                            ).fetchone()
+                        else:
+                            exists = conn.execute(
+                                f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?", (column,)
+                            ).fetchone()
+                        if not exists:
+                            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                        if isinstance(self, PostgresDatabaseManager):
+                            verified = conn.execute(
+                                "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+                                (table, column),
+                            ).fetchone()
+                        else:
+                            verified = conn.execute(
+                                f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?", (column,)
+                            ).fetchone()
+                        if not verified:
+                            raise RuntimeError(f"execution schema migration v6 failed postcondition for {table}.{column}")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (execution_columns_version, utc_now().isoformat()))
 
             self._verify_execution_snapshot_schema(conn)
             self._verify_execution_authority_binding_schema(conn)

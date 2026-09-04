@@ -126,7 +126,7 @@ def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
             versions = [row["version"] for row in conn.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()]
-            assert versions == [1, 2, 3, 4, 5]
+            assert versions == [1, 2, 3, 4, 5, 6]
 
             run_index = conn.execute("""
             SELECT i.relname, am.amname, x.indisunique, x.indpred,
