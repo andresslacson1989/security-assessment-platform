@@ -15,6 +15,7 @@ import pytest
 import psycopg
 
 from app.core.db import PostgresDatabaseManager
+from app.core.models import AuditAction, AuditEvent
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 
@@ -23,7 +24,7 @@ POSTGRES_TEST_ACK = os.getenv("CYBERASSESS_POSTGRES_TEST_ACK", "").strip()
 
 
 def _assert_audit_event_hash(event):
-    details = json.dumps(json.loads(event["details_json"]), sort_keys=True)
+    details = event["details_json"]
     canonical = "|".join(str(value) for value in (
         event["id"], event["timestamp"], event["actor"], event["organization_id"],
         event["action"], event["object_type"], event["object_id"], event["result"],
@@ -371,6 +372,36 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
         _assert_audit_event_hash(events[0])
         assert '"reason_code": "APPROVED_DECISION_REFERENCE_MISSING"' in events[0]["details_json"]
         assert "shared-id" not in events[0]["details_json"]
+
+
+def test_postgres_audit_chain_continuity_is_verified_for_multiple_events():
+    with _isolated_manager() as manager:
+        manager.record_audit_event(AuditEvent(
+            id="pg-audit-chain-one", actor="admin", organization_id="org-chain",
+            action=AuditAction.EXECUTION_REQUESTED, object_type="execution_request",
+            object_id="request-chain", result="SUCCESS", details={"step": 1},
+            correlation_id="corr-chain",
+        ))
+        manager.record_audit_event(AuditEvent(
+            id="pg-audit-chain-two", actor="admin", organization_id="org-chain",
+            action=AuditAction.EXECUTION_CANCEL_REQUESTED, object_type="execution_request",
+            object_id="request-chain", result="SUCCESS", details={"step": 2},
+            correlation_id="corr-chain",
+        ))
+        with manager._connection_scope() as conn:
+            events = conn.execute(
+                "SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, "
+                "details_json, previous_event_hash, event_hash, sequence_number "
+                "FROM audit_events ORDER BY sequence_number",
+            ).fetchall()
+        assert len(events) == 2
+        for event in events:
+            _assert_audit_event_hash(event)
+        assert events[0]["sequence_number"] == 1
+        assert events[0]["previous_event_hash"] is None
+        assert events[1]["sequence_number"] == 2
+        assert events[1]["previous_event_hash"] == events[0]["event_hash"]
+        assert manager.verify_audit_log_integrity() == (True, None)
 
 
 def test_postgres_migration_rejects_duplicate_runs_before_recording_version():

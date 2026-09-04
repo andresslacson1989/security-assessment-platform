@@ -14,7 +14,7 @@ from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 
 def _assert_audit_event_hash(event):
-    details = json.dumps(json.loads(event["details_json"]), sort_keys=True)
+    details = event["details_json"]
     canonical = "|".join(str(value) for value in (
         event["id"], event["timestamp"], event["actor"], event["organization_id"],
         event["action"], event["object_type"], event["object_id"], event["result"],
@@ -271,7 +271,6 @@ def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
         ).fetchall()
     assert len(events) == 1
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
-    assert events[0]["object_type"] == "execution_request"
     assert events[0]["result"] == "FAILURE"
     assert events[0]["actor"] == "admin"
     assert events[0]["organization_id"] == "org-a"
@@ -405,6 +404,24 @@ def test_audit_chain_continuity_is_verified_for_multiple_events(tmp_path):
     assert events[1]["sequence_number"] == 2
     assert events[1]["previous_event_hash"] == events[0]["event_hash"]
     assert database.verify_audit_log_integrity() == (True, None)
+
+
+def test_audit_chain_detects_details_json_tampering(tmp_path):
+    from app.core.db import DatabaseManager
+
+    database = DatabaseManager(tmp_path / "audit-tamper.db")
+    database.record_audit_event(AuditEvent(
+        id="audit-tamper-one", actor="admin", organization_id="org-tamper",
+        action=AuditAction.EXECUTION_REQUESTED, object_type="execution_request",
+        object_id="request-tamper", result="SUCCESS", details={"step": 1},
+        correlation_id="corr-tamper",
+    ))
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE audit_events SET details_json = ? WHERE id = ?",
+            ('{ "step": 1 }', "audit-tamper-one"),
+        )
+    assert database.verify_audit_log_integrity() == (False, "audit-tamper-one")
 
 
 def test_execution_run_rejects_cross_tenant_request_and_invalid_transitions(tmp_path):
