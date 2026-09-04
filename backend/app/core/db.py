@@ -307,11 +307,20 @@ class DatabaseManager:
             required_not_null = {"event_id", "attempt_id", "migration_version", "migration_name", "event_type", "event_at", "backend", "schema_name", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "context_json", "rollback_status"}
             for name in required:
                 expected_type = "integer" if name in {"migration_version", "previous_schema_version", "target_schema_version"} else "text"
-                if definitions[name][0] != expected_type or ("NO" if name in required_not_null else "YES") != definitions[name][1]:
+                expected_default = "'{}'::text" if name == "context_json" else None
+                if definitions[name][0] != expected_type or ("NO" if name in required_not_null else "YES") != definitions[name][1] or definitions[name][2] != expected_default:
                     raise RuntimeError("migration ledger column definitions drifted")
             constraints = conn.execute("SELECT contype, convalidated FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'").fetchall()
             if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "u") != 1 or sum(1 for r in constraints if r["contype"] == "c") != 3 or any(not r["convalidated"] for r in constraints):
                 raise RuntimeError("migration ledger constraints are not exact or validated")
+            identity = conn.execute("""SELECT c.contype, c.conkey, c.confkey, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'""").fetchall()
+            pk = [r for r in identity if r["contype"] == "p"]
+            uq = [r for r in identity if r["contype"] == "u"]
+            checks = {str(r["definition"]).upper().replace(" ", "") for r in identity if r["contype"] == "c"}
+            if len(pk) != 1 or len(uq) != 1 or not any("PRIMARYKEY(EVENT_ID)" == str(r["definition"]).upper().replace(" ", "") for r in pk) or not any("UNIQUE(ATTEMPT_ID,EVENT_TYPE)" == str(r["definition"]).upper().replace(" ", "") for r in uq) or len(checks) != 3 or any("CHECK((1=1))" in c for c in checks):
+                raise RuntimeError("migration ledger constraint identities drifted")
         else:
             rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
             if {r["name"] for r in rows} != required:
@@ -330,7 +339,7 @@ class DatabaseManager:
             if ["attempt_id", "event_type"] not in unique:
                 raise RuntimeError("migration ledger attempt/event uniqueness drifted")
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"].upper()
-            if any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")):
+            if sql.count("CHECK (") != 3 or any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")):
                 raise RuntimeError("migration ledger CHECK constraints drifted")
             triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
             if not {"schema_migration_events_no_update", "schema_migration_events_no_delete"}.issubset(triggers):
