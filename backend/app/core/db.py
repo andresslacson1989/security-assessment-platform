@@ -320,6 +320,12 @@ class DatabaseManager:
             self._verify_migration_ledger(conn)
 
     def _begin_migration_attempt(self) -> None:
+        with self._connection_scope() as conn:
+            version_row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone() if (conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'").fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()) else None
+            if version_row and version_row["version"] is not None and int(version_row["version"]) >= 8:
+                self._migration_attempt_id = None
+                self._migration_transaction_id = None
+                return
         self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
         self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
         self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
@@ -336,6 +342,8 @@ class DatabaseManager:
                 "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "PENDING"))
 
     def _record_migration_failure(self, exc: Exception) -> None:
+        if not getattr(self, "_migration_attempt_id", None):
+            return
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
             for event_type, rollback_status in (("FAILED", "CONFIRMED"), ("ROLLED_BACK", "CONFIRMED")):
@@ -1848,7 +1856,8 @@ class DatabaseManager:
                 ):
                     raise ValueError("execution schema health check failed: composite tenant foreign key is absent")
 
-            conn.execute("""INSERT INTO schema_migration_events
+            if getattr(self, "_migration_attempt_id", None):
+                conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_name,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                  context_json,rollback_status)
@@ -1856,7 +1865,7 @@ class DatabaseManager:
                 f"event-{uuid.uuid4().hex}", self._migration_attempt_id, 8, "application-schema-bootstrap",
                 "SUCCEEDED", utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, 7, 8,
-                "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
+                    "bootstrap-v8", "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
