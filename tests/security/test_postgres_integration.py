@@ -259,3 +259,27 @@ def test_postgres_migration_rejects_orphaned_run_before_recording_version():
             PostgresDatabaseManager(manager.database_url)
         with psycopg.connect(manager.database_url, autocommit=True) as connection:
             assert connection.execute("SELECT 1 FROM schema_migrations WHERE version IN (1, 2)").fetchone() is None
+
+
+def test_postgres_migration_rejects_cross_tenant_run_reference():
+    with _isolated_manager() as manager:
+        _seed_request_and_run(manager)
+        _drop_execution_run_foreign_keys(manager)
+        with manager._connection_scope() as conn:
+            conn.execute(
+                "INSERT INTO organizations (id, name, slug, created_at) VALUES (%s, %s, %s, %s)",
+                ("org-other", "Other Org", "other-org", "2026-01-01T00:00:00+00:00"),
+            )
+            conn.execute("DROP INDEX uq_execution_runs_request")
+            conn.execute("""
+                INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, state,
+                    assurance_state, coverage_state, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, ("run-cross-tenant", "request-preflight", "org-other", "FAILED", "UNVERIFIED", "UNAVAILABLE", "2026-01-01T00:00:00+00:00"))
+            conn.execute("DELETE FROM schema_migrations WHERE version = 1")
+            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+        with pytest.raises(ValueError, match="orphaned or cross-tenant"):
+            PostgresDatabaseManager(manager.database_url)
+        with psycopg.connect(manager.database_url, autocommit=True) as connection:
+            assert connection.execute("SELECT 1 FROM schema_migrations WHERE version IN (1, 2)").fetchone() is None
