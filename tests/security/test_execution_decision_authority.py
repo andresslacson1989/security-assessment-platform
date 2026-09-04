@@ -372,6 +372,49 @@ def test_api_approval_maps_missing_correlation_to_sanitized_503(monkeypatch):
     assert exc_info.value.detail == "Execution observability context is unavailable; approval was not applied."
 
 
+@pytest.mark.asyncio
+async def test_http_api_approval_returns_503_and_correlation_header(monkeypatch):
+    import httpx
+    from app.main import app
+    from app.core.models import PrincipalType
+    from app.core.auth import create_access_token
+
+    class CorrelationUnavailableStore:
+        def approve_execution_request(self, *args, **kwargs):
+            return "CORRELATION_REQUIRED", None, None
+
+    user = UserProfile(
+        id="admin-a", username="admin", email="admin@example.test", role=UserRole.ADMIN,
+        organization_id="org-a", principal_type=PrincipalType.SYSTEM_PRINCIPAL, scopes=["*"],
+    )
+    from app.api import executions
+    original_store = executions.db_manager
+    original_session = executions._session_jti
+    original_overrides = dict(app.dependency_overrides)
+    executions.db_manager = CorrelationUnavailableStore()
+    executions._session_jti = lambda authorization, current_user: "session-a"
+    for route in app.routes:
+        if getattr(route, "path", "") == "/api/system/executions/{request_id}/approve":
+            for dependency in route.dependant.dependencies:
+                app.dependency_overrides[dependency.call] = lambda: user
+    try:
+        token = create_access_token(user)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/system/executions/req-a/approve",
+                headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "approval-idem"},
+                json={"request_fingerprint": "f" * 64, "confirm_owned_target": True},
+            )
+    finally:
+        executions.db_manager = original_store
+        executions._session_jti = original_session
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original_overrides)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Execution observability context is unavailable; approval was not applied."
+    assert response.headers["x-correlation-id"].startswith("corr-")
+
+
 def test_revoke_route_resolves_request_id_to_linked_decision():
     import asyncio
     from app.api import executions
