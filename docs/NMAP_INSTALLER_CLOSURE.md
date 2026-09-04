@@ -161,19 +161,19 @@ Starting SHA:
 40673577c355fa78bfaee92b9bb896156d638ecd
 
 Current checkpoint:
-5
+6
 
 Completed:
 - Checkpoint 1: Resource symlink rejection (fail-closed on any symlink anywhere in resource tree, max entry count limit 4096 enforced)
 - Checkpoint 2: CPIO leading traversal rejection (raw path components inspected before prefix stripping, backslash normalization, reject component == '..', exact prefix check replacing lstrip)
 - Checkpoint 3: Explicit Nmap trust-mode authorization (manifest allowed_trust_modes; binary_trust functions enforce explicit mode authorization)
 - Checkpoint 4: Documentation correction (distinguish Windows local vs Linux CI numbers, accurate platform skip accounting)
+- Checkpoint 5: Full regression (663 passed, 0 failed, 9 platform skips on Windows NT; static security audit verified 0 verify=False, 0 shell=True, 0 trust_env=True, 0 chmod 777)
 
 Remaining:
-5. Full regression
 6. CI verification
 
 Next action:
-Run static security grep audit and execute full regression test suite.
+Push security/nmap-installer-closure to PR #3 and monitor authoritative GitHub Actions CI workflows to completion.
 
 
