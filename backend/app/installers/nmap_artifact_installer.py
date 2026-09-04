@@ -125,11 +125,27 @@ class NmapArtifactInstaller(BaseToolInstaller):
         match = re.search(r"Nmap version\s+([0-9\.]+[a-zA-Z0-9]*)", output or "", re.IGNORECASE)
         return f"Nmap {match.group(1)}" if code == 0 and match else None
 
+    # Maximum permitted CPIO entry name length (prevents excessive memory allocation)
+    _CPIO_MAX_NAMESIZE = 4096
+    # Maximum permitted single extracted file size (100 MiB)
+    _CPIO_MAX_FILESIZE = 100 * 1024 * 1024
+    # Maximum number of CPIO entries to process (prevents infinite-loop bombs)
+    _CPIO_MAX_ENTRIES = 8192
+
     @staticmethod
     def _extract_rpm_payload(rpm_path: str, target_bin: str, target_resources: str) -> None:
         """
         Parses RPM package header, decompresses the zstd-compressed cpio payload,
         and extracts ./usr/bin/nmap and ./usr/share/nmap/* into target destinations.
+
+        Hardened against adversarial packages:
+        - Rejects absolute paths and path-traversal sequences
+        - Rejects symlink and hardlink CPIO entries
+        - Rejects non-regular, non-directory file types
+        - Rejects over-size namesize/filesize values
+        - Rejects duplicate destination paths (first-write wins; second raises)
+        - Caps total decompressed size at 150 MiB
+        - Caps total entry count at _CPIO_MAX_ENTRIES
         """
         with open(rpm_path, "rb") as f:
             lead = f.read(96)
@@ -139,7 +155,7 @@ class NmapArtifactInstaller(BaseToolInstaller):
             sig_magic = f.read(4)
             if sig_magic != b"\x8e\xad\xe8\x01":
                 raise SecurityError("Invalid RPM signature header magic")
-            f.seek(4, 1) # skip version + reserved
+            f.seek(4, 1)  # skip version + reserved
             il, dl = struct.unpack("!2I", f.read(8))
             f.seek(il * 16 + dl, 1)
             # 8-byte align
@@ -164,50 +180,127 @@ class NmapArtifactInstaller(BaseToolInstaller):
         os.makedirs(os.path.dirname(target_bin), exist_ok=True)
         os.makedirs(target_resources, exist_ok=True)
 
+        abs_target_bin = os.path.abspath(target_bin)
+        abs_target_res = os.path.abspath(target_resources)
+
         pos = 0
         bin_found = False
+        written_paths: set = set()
+        entry_count = 0
+
         while pos < len(decompressed) - 110:
-            magic = decompressed[pos:pos+6]
+            magic = decompressed[pos:pos + 6]
             if magic not in (b"070701", b"070702"):
                 break
-            mode = int(decompressed[pos+14:pos+22], 16)
-            filesize = int(decompressed[pos+54:pos+62], 16)
-            namesize = int(decompressed[pos+94:pos+102], 16)
-            name = decompressed[pos+110:pos+110+namesize-1].decode("utf-8", "replace")
-            if "TRAILER!!!" in name:
+
+            # Parse CPIO newc header (110-byte fixed header)
+            try:
+                mode     = int(decompressed[pos + 14:pos + 22], 16)
+                nlink    = int(decompressed[pos + 22:pos + 30], 16)
+                filesize = int(decompressed[pos + 54:pos + 62], 16)
+                namesize = int(decompressed[pos + 94:pos + 102], 16)
+            except ValueError:
+                raise SecurityError("CPIO header field is not valid hex — malformed package")
+
+            # --- Bounds checks ---
+            if namesize < 1 or namesize > NmapArtifactInstaller._CPIO_MAX_NAMESIZE:
+                raise SecurityError(f"CPIO namesize out of bounds: {namesize}")
+            if filesize < 0 or filesize > NmapArtifactInstaller._CPIO_MAX_FILESIZE:
+                raise SecurityError(f"CPIO filesize out of bounds: {filesize}")
+            if pos + 110 + namesize > len(decompressed):
+                raise SecurityError("CPIO entry name extends beyond payload boundary")
+
+            raw_name = decompressed[pos + 110:pos + 110 + namesize - 1].decode("utf-8", "replace")
+            if "TRAILER!!!" in raw_name:
                 break
+
             pos += 110 + namesize
             rem = pos % 4
             if rem:
                 pos += (4 - rem)
 
-            file_bytes = decompressed[pos:pos+filesize]
+            if pos + filesize > len(decompressed):
+                raise SecurityError("CPIO entry data extends beyond payload boundary")
+
+            file_bytes = decompressed[pos:pos + filesize]
             pos += filesize
             rem = pos % 4
             if rem:
                 pos += (4 - rem)
 
-            clean_name = name.lstrip("./")
-            if clean_name == "usr/bin/nmap":
+            entry_count += 1
+            if entry_count > NmapArtifactInstaller._CPIO_MAX_ENTRIES:
+                raise SecurityError("CPIO entry count exceeds maximum permitted limit")
+
+            # --- File type checks ---
+            ftype = mode & 0o170000
+            IS_DIR     = 0o040000
+            IS_REG     = 0o100000
+            IS_SYMLINK = 0o120000
+
+            # Reject symlinks unconditionally
+            if ftype == IS_SYMLINK:
+                raise SecurityError(f"CPIO entry is a symlink — rejected: {raw_name}")
+
+            # Reject hardlinks (nlink > 1 on a non-directory with filesize > 0)
+            if ftype == IS_REG and nlink > 1 and filesize > 0:
+                raise SecurityError(f"CPIO entry is a hardlink — rejected: {raw_name}")
+
+            # Only process directories and regular files
+            if ftype not in (IS_DIR, IS_REG):
+                # Skip device files, FIFOs, sockets etc. silently
+                continue
+
+            # --- Path sanitisation ---
+            # Strip leading ./ and / characters; reject anything that still contains ..
+            clean_name = raw_name.lstrip("./")
+            # Reject absolute paths not caught by lstrip (shouldn't happen but be explicit)
+            if raw_name.startswith("/"):
+                raise SecurityError(f"CPIO absolute path rejected: {raw_name}")
+            # Reject traversal sequences anywhere in the path
+            parts = clean_name.replace("\\", "/").split("/")
+            if ".." in parts:
+                raise SecurityError(f"CPIO path traversal sequence rejected: {raw_name}")
+
+            # --- Extract relevant entries ---
+            if clean_name == "usr/bin/nmap" and ftype == IS_REG:
+                # Guard duplicate write
+                if abs_target_bin in written_paths:
+                    raise SecurityError("CPIO duplicate entry for nmap binary — rejected")
+                written_paths.add(abs_target_bin)
                 with open(target_bin, "wb") as out:
                     out.write(file_bytes)
-                os.chmod(target_bin, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                os.chmod(
+                    target_bin,
+                    stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+                    | stat.S_IRGRP | stat.S_IXGRP
+                    | stat.S_IROTH | stat.S_IXOTH,
+                )
                 bin_found = True
+
             elif clean_name.startswith("usr/share/nmap/"):
                 rel_path = clean_name[len("usr/share/nmap/"):]
-                if rel_path:
-                    dest = os.path.join(target_resources, rel_path)
-                    # Verify path traversal boundary
-                    if os.path.commonpath((os.path.abspath(target_resources), os.path.abspath(dest))) != os.path.abspath(target_resources):
-                        raise SecurityError(f"CPIO path traversal detected: {name}")
-                    if (mode & 0o170000) == 0o040000:
-                        os.makedirs(dest, exist_ok=True)
-                    elif filesize > 0:
-                        os.makedirs(os.path.dirname(dest), exist_ok=True)
-                        with open(dest, "wb") as out:
-                            out.write(file_bytes)
-                        if mode & 0o111:
-                            os.chmod(dest, 0o755)
+                if not rel_path:
+                    continue
+                dest = os.path.normpath(os.path.join(target_resources, rel_path))
+                abs_dest = os.path.abspath(dest)
+
+                # Path-traversal boundary — must remain inside target_resources
+                if os.path.commonpath((abs_target_res, abs_dest)) != abs_target_res:
+                    raise SecurityError(f"CPIO path traversal detected: {raw_name}")
+
+                if ftype == IS_DIR:
+                    os.makedirs(dest, exist_ok=True)
+                elif ftype == IS_REG and filesize > 0:
+                    # Guard duplicate write
+                    if abs_dest in written_paths:
+                        raise SecurityError(f"CPIO duplicate path rejected: {rel_path}")
+                    written_paths.add(abs_dest)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest, "wb") as out:
+                        out.write(file_bytes)
+                    if mode & 0o111:
+                        os.chmod(dest, 0o755)
 
         if not bin_found or not os.path.isfile(target_bin):
             raise SecurityError("RPM extraction failed: 'usr/bin/nmap' not found in package payload")

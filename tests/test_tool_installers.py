@@ -1051,3 +1051,172 @@ def test_build_direct_artifact_trust_record_embeds_resource_manifest():
     assert record["resource_manifest"] == dict(sorted(res_manifest.items()))
 
 
+# ---- RPM/CPIO extraction hardening tests (Checkpoint 4) ----
+
+def test_nmap_rpm_extraction_rejects_path_traversal():
+    """_extract_rpm_payload raises SecurityError on CPIO entries with path traversal sequences."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    traversal_entry = _make_cpio_newc_header(b"usr/share/nmap/../../etc/passwd", 4, IS_REG | 0o644)
+    cpio = traversal_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_absolute_path():
+    """_extract_rpm_payload raises SecurityError on CPIO entries with absolute paths."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    abs_entry = _make_cpio_newc_header(b"/etc/passwd", 4, IS_REG | 0o644)
+    cpio = abs_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_symlink_entry():
+    """_extract_rpm_payload raises SecurityError when a CPIO entry is a symlink."""
+    extract = _nmap_extractor()
+    IS_SYMLINK = 0o120000
+
+    sym_entry = _make_cpio_newc_header(b"usr/share/nmap/evil-link", 0, IS_SYMLINK | 0o777)
+    cpio = sym_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_hardlink_entry():
+    """_extract_rpm_payload raises SecurityError when a CPIO entry is a hardlink (nlink > 1 with data)."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    hardlink_entry = _make_cpio_newc_header(b"usr/share/nmap/hl-file", 4, IS_REG | 0o644, nlink=2)
+    cpio = hardlink_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_skips_unexpected_file_types():
+    """_extract_rpm_payload silently skips device/fifo/socket entries — does NOT raise."""
+    extract = _nmap_extractor()
+    IS_FIFO = 0o010000
+    IS_REG = 0o100000
+
+    nmap_entry = _make_cpio_newc_header(b"usr/bin/nmap", 4, IS_REG | 0o755)
+    fifo_entry = _make_cpio_newc_header(b"usr/share/nmap/fifo", 0, IS_FIFO | 0o600)
+    cpio = nmap_entry + fifo_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        bin_out = os.path.join(base, "nmap_bin")
+        extract(rpm_file, bin_out, os.path.join(base, "resources"))
+        assert os.path.isfile(bin_out)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_duplicate_binary_entry():
+    """_extract_rpm_payload raises SecurityError when the nmap binary entry appears twice."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    nmap1 = _make_cpio_newc_header(b"usr/bin/nmap", 4, IS_REG | 0o755)
+    nmap2 = _make_cpio_newc_header(b"usr/bin/nmap", 4, IS_REG | 0o755)
+    cpio = nmap1 + nmap2 + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_malformed_hex_in_header():
+    """_extract_rpm_payload raises SecurityError when a CPIO header field contains invalid hex."""
+    extract = _nmap_extractor()
+
+    bad_header = (
+        b"070701"        # magic
+        + b"00000001"    # ino
+        + b"00100755"    # mode (regular + 0755)
+        + b"00000000"    # uid
+        + b"00000000"    # gid
+        + b"00000001"    # nlink
+        + b"00000000"    # mtime
+        + b"ZZZZZZZZ"    # filesize — INVALID HEX
+        + b"00000000"    # devmajor
+        + b"00000000"    # devminor
+        + b"00000000"    # rdevmajor
+        + b"00000000"    # rdevminor
+        + b"0000000C"    # namesize = 12
+        + b"00000000"    # check
+    )
+    assert len(bad_header) == 110
+    entry = bad_header + b"usr/bin/nmap\x00" + b"\x00\x00\x00"
+
+    import zstandard
+    cctx = zstandard.ZstdCompressor()
+    compressed = cctx.compress(entry + _make_trailer())
+
+    lead = b"\xed\xab\xee\xdb" + b"\x00" * 92
+    sig = b"\x8e\xad\xe8\x01" + b"\x00" * 4 + _struct.pack("!2I", 0, 0)
+    rem = (len(lead) + len(sig)) % 8
+    pad = (8 - rem) % 8
+    gen = b"\x8e\xad\xe8\x01" + b"\x00" * 4 + _struct.pack("!2I", 0, 0)
+    rpm_bytes = lead + sig + b"\x00" * pad + gen + compressed
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "bad.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm_bytes)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
