@@ -25,6 +25,12 @@ def test_qmark_translation_preserves_quoted_literals():
     )
 
 
+def test_qmark_translation_escapes_literal_percent_signs_for_psycopg():
+    assert _qmark_to_postgres("SELECT * FROM items WHERE name LIKE '%run%' AND id = ?") == (
+        "SELECT * FROM items WHERE name LIKE '%%run%%' AND id = %s"
+    )
+
+
 def test_postgres_row_supports_mapping_and_positional_access():
     row = _PostgresRow(["id", "status"], ("row-1", "READY"))
 

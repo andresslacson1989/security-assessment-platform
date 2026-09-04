@@ -73,7 +73,10 @@ def _qmark_to_postgres(sql: str) -> str:
     while index < len(sql):
         char = sql[index]
         if quote:
-            output.append(char)
+            if char == "%":
+                output.append("%%")
+            else:
+                output.append(char)
             if char == quote:
                 if index + 1 < len(sql) and sql[index + 1] == quote:
                     output.append(sql[index + 1])
@@ -85,6 +88,15 @@ def _qmark_to_postgres(sql: str) -> str:
             output.append(char)
         elif char == "?":
             output.append("%s")
+        elif char == "%":
+            # psycopg treats percent signs as placeholder syntax even inside
+            # SQL string literals; preserve existing escape/format sequences
+            # and escape literal percent signs for DB-API execution.
+            next_char = sql[index + 1] if index + 1 < len(sql) else ""
+            if next_char in ("%", "s", "b", "t"):
+                output.append(char)
+            else:
+                output.append("%%")
         else:
             output.append(char)
         index += 1
@@ -143,7 +155,8 @@ class _PostgresConnection:
         # Execution tables are deliberately deferred until their referenced
         # inventory/principal tables exist.  This is explicit dependency
         # ordering for PostgreSQL, where forward references are not accepted.
-        statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
+        sql_without_line_comments = re.sub(r"(?m)^\s*--[^\r\n]*", "", sql)
+        statements = [statement.strip() for statement in sql_without_line_comments.split(";") if statement.strip()]
         deferred = []
         for statement in statements:
             if re.search(r"CREATE\s+(?:TABLE|(?:UNIQUE\s+)?INDEX)\s+IF\s+NOT\s+EXISTS\s+(?:execution_|idx_execution_|uq_execution_)", statement, re.IGNORECASE):
