@@ -1,6 +1,8 @@
 """Adversarial tests for the durable worker execution-decision boundary."""
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 
 import pytest
 
@@ -9,6 +11,16 @@ from app.core.models import AuditAction, ExecutionDecisionRecord, ExecutionLease
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
+
+
+def _assert_audit_event_hash(event):
+    details = json.dumps(json.loads(event["details_json"]), sort_keys=True)
+    canonical = "|".join(str(value) for value in (
+        event["id"], event["timestamp"], event["actor"], event["organization_id"],
+        event["action"], event["object_type"], event["object_id"], event["result"],
+        details, event["previous_event_hash"] or "",
+    ))
+    assert event["event_hash"] == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class FakeDecisionStore:
@@ -252,8 +264,8 @@ def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
     assert request is not None and request.state == "AUTHORIZED"
     with database._connection_scope() as conn:
         events = conn.execute(
-            "SELECT action, object_type, result, actor, organization_id, correlation_id, "
-            "details_json, previous_event_hash, event_hash "
+            "SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, correlation_id, "
+            "details_json, previous_event_hash, event_hash, sequence_number "
             "FROM audit_events WHERE object_id = ? ORDER BY timestamp",
             ("req-a",),
         ).fetchall()
@@ -266,6 +278,8 @@ def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
     assert events[0]["correlation_id"] == "corr-missing-decision"
     assert events[0]["event_hash"]
     assert events[0]["previous_event_hash"] is None
+    assert events[0]["sequence_number"] == 1
+    _assert_audit_event_hash(events[0])
     assert "APPROVED_DECISION_REFERENCE_MISSING" in events[0]["details_json"]
     with database._connection_scope() as conn:
         reference = conn.execute(
@@ -319,15 +333,21 @@ def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_pat
             ("req-a", "idem-a", "f" * 64, OPERATION_POLICY_REVISION, now, expires, "shared-id"),
         )
 
-    with pytest.raises(ValueError, match="invalid approved decision"):
-        database.revoke_execution_request("req-a", "org-a", "admin")
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+    correlation_token = set_correlation_id("corr-cross-tenant")
+    try:
+        with pytest.raises(ValueError, match="invalid approved decision"):
+            database.revoke_execution_request("req-a", "org-a", "admin")
+    finally:
+        reset_correlation_id(correlation_token)
     with database._connection_scope() as conn:
         request = conn.execute(
             "SELECT state, approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?",
             ("req-a", "org-a"),
         ).fetchone()
         events = conn.execute(
-            "SELECT organization_id, actor, action, details_json FROM audit_events WHERE object_id = ?",
+            "SELECT organization_id, actor, action, result, correlation_id, details_json, "
+            "previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = ?",
             ("req-a",),
         ).fetchall()
     assert request["state"] == "AUTHORIZED"
@@ -336,6 +356,18 @@ def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_pat
     assert events[0]["organization_id"] == "org-a"
     assert events[0]["actor"] == "admin"
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
+    assert events[0]["result"] == "FAILURE"
+    assert events[0]["correlation_id"] == "corr-cross-tenant"
+    assert events[0]["event_hash"]
+    assert events[0]["previous_event_hash"] is None
+    assert events[0]["sequence_number"] == 1
+    with database._connection_scope() as conn:
+        event = conn.execute(
+            "SELECT id, timestamp, action, object_type, object_id, result, actor, organization_id, "
+            "details_json, previous_event_hash, event_hash FROM audit_events WHERE object_id = ?",
+            ("req-a",),
+        ).fetchone()
+    _assert_audit_event_hash(event)
     assert "shared-id" not in events[0]["details_json"]
 
 

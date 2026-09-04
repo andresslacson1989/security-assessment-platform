@@ -5,6 +5,8 @@ They never discover or mutate an ambient application database.
 """
 
 import os
+import hashlib
+import json
 import uuid
 from contextlib import contextmanager
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -18,6 +20,16 @@ from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 POSTGRES_TEST_URL = os.getenv("CYBERASSESS_POSTGRES_TEST_URL", "").strip()
 POSTGRES_TEST_ACK = os.getenv("CYBERASSESS_POSTGRES_TEST_ACK", "").strip()
+
+
+def _assert_audit_event_hash(event):
+    details = json.dumps(json.loads(event["details_json"]), sort_keys=True)
+    canonical = "|".join(str(value) for value in (
+        event["id"], event["timestamp"], event["actor"], event["organization_id"],
+        event["action"], event["object_type"], event["object_id"], event["result"],
+        details, event["previous_event_hash"] or "",
+    ))
+    assert event["event_hash"] == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 pytestmark = pytest.mark.skipif(
@@ -265,8 +277,8 @@ def test_postgres_missing_linked_decision_failure_is_durable_and_state_preservin
         with manager._connection_scope() as conn:
             request = conn.execute("SELECT state FROM execution_requests WHERE id = %s", ("req-invariant",)).fetchone()
             events = conn.execute("""
-                SELECT action, object_type, result, actor, organization_id, correlation_id,
-                       details_json, previous_event_hash, event_hash
+                SELECT id, timestamp, action, object_type, result, actor, organization_id, correlation_id,
+                       details_json, previous_event_hash, event_hash, sequence_number
                 FROM audit_events WHERE object_id = %s
             """, ("req-invariant",)).fetchall()
         assert request["state"] == "AUTHORIZED"
@@ -279,6 +291,8 @@ def test_postgres_missing_linked_decision_failure_is_durable_and_state_preservin
         assert events[0]["correlation_id"] == "corr-pg-missing-decision"
         assert events[0]["event_hash"]
         assert events[0]["previous_event_hash"] is None
+        assert events[0]["sequence_number"] == 1
+        _assert_audit_event_hash(events[0])
         assert "APPROVED_DECISION_REFERENCE_MISSING" in events[0]["details_json"]
 
         request = conn.execute(
@@ -308,6 +322,11 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
                     "VALUES (%s, %s, %s, 'DOMAIN', %s, %s, %s)",
                     (f"asset-{suffix}", org, "asset", "example.invalid", now, now),
                 )
+                conn.execute(
+                    "INSERT INTO users (id, username, email, hashed_password, role, organization_id, created_at) "
+                    "VALUES (%s, %s, %s, 'hash', 'ADMIN', %s, %s)",
+                    (f"user-{suffix}", f"user-{suffix}", f"{suffix}@example.invalid", org, now),
+                )
             conn.execute(
                 "INSERT INTO execution_decisions (id, organization_id, project_id, asset_id, target_id, "
                 "authorization_decision_id, target_policy_version, tool_id, operation_family, "
@@ -333,7 +352,8 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
                 ("req-a", "org-a"),
             ).fetchone()
             events = conn.execute(
-                "SELECT organization_id, actor, action, details_json FROM audit_events WHERE object_id = %s",
+                "SELECT id, timestamp, organization_id, actor, action, result, correlation_id, details_json, "
+                "previous_event_hash, event_hash, sequence_number FROM audit_events WHERE object_id = %s",
                 ("req-a",),
             ).fetchall()
         assert request["state"] == "AUTHORIZED"
@@ -342,6 +362,12 @@ def test_postgres_revoke_does_not_disclose_same_decision_id_owned_by_other_tenan
         assert events[0]["organization_id"] == "org-a"
         assert events[0]["actor"] == "admin"
         assert events[0]["action"] == "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+        assert events[0]["result"] == "FAILURE"
+        assert events[0]["correlation_id"] is not None
+        assert events[0]["event_hash"]
+        assert events[0]["previous_event_hash"] is None
+        assert events[0]["sequence_number"] == 1
+        _assert_audit_event_hash(events[0])
         assert "shared-id" not in events[0]["details_json"]
 
 
