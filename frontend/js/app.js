@@ -777,10 +777,10 @@ class ScanStreamManager {
     // Remove all state classes
     pill.classList.remove("tool-pill--active", "tool-pill--fallback", "tool-pill--disabled");
 
-    if (mode === "ADAPTER_ACTIVE") {
+    if (mode === "ADAPTER_ACTIVE" || mode === "NATIVE_ENGINE_READY") {
       pill.classList.add("tool-pill--active");
       if (iconEl) iconEl.textContent = "🟢";
-      if (modeEl) modeEl.textContent = version ? `v${version}` : "ACTIVE";
+      if (modeEl) modeEl.textContent = mode === "NATIVE_ENGINE_READY" ? "NATIVE ENGINE" : (version ? `v${version}` : "ACTIVE");
     } else if (mode === "DISABLED") {
       pill.classList.add("tool-pill--disabled");
       if (iconEl) iconEl.textContent = "⚫";
@@ -1352,9 +1352,9 @@ class ScanStreamManager {
 
           // Availability only means that a binary was detected.  It is not
           // evidence that the binary passed managed trust and version gates.
-          if (tool.execution_mode === "ADAPTER_ACTIVE") {
+          if (tool.execution_mode === "ADAPTER_ACTIVE" || tool.execution_mode === "NATIVE_ENGINE_READY") {
             pill.classList.add("tool-pill--active");
-            if (modeSpan) modeSpan.innerText = tool.version || "ACTIVE";
+            if (modeSpan) modeSpan.innerText = tool.execution_mode === "NATIVE_ENGINE_READY" ? "NATIVE ENGINE" : (tool.version || "ACTIVE");
             if (iconSpan) iconSpan.innerText = "🟢";
             activeCount++;
           } else if (tool.execution_mode === "DISABLED") {

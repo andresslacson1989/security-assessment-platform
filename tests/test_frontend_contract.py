@@ -12,6 +12,7 @@ def test_capability_ui_uses_execution_mode_not_binary_availability():
     assert source.count("async loadSystemCapabilities(") == 1
     assert 'tool.execution_mode === "ADAPTER_ACTIVE" || tool.available' not in source
     assert 'tool.execution_mode === "ADAPTER_ACTIVE"' in source
+    assert 'tool.execution_mode === "NATIVE_ENGINE_READY"' in source
     assert 'const url = forceRefresh ? "/api/system/capabilities?refresh=true"' in source
     assert 'const url = forceRefresh ? "/api/system/tools?refresh=true"' in source
     assert "await this.refreshToolboxData(true);" in source

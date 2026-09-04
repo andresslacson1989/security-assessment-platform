@@ -1123,6 +1123,10 @@ class TestCapabilitiesAndRegistry:
                 assert caps.native_engines_ready is True
                 manual_only = {"metasploit", "sqlmap", "hydra"}
                 for t in caps.tools:
+                    if t.name == "gtfobins":
+                        assert t.available is True
+                        assert t.execution_mode == ToolExecutionMode.NATIVE_ENGINE_READY
+                        continue
                     assert t.available is False
                     expected_mode = ToolExecutionMode.MANUAL_ONLY if t.name in manual_only else ToolExecutionMode.NATIVE_FALLBACK
                     assert t.execution_mode == expected_mode

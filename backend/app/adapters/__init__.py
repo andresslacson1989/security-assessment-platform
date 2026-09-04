@@ -250,6 +250,7 @@ async def discover_system_capabilities(
         "hydra": ToolInstallMethod.MANUAL,
     }
     manual_only_tools = {"metasploit", "sqlmap", "hydra"}
+    native_engine_tools = {"gtfobins"}
 
     for name, adapter in registry.items():
         is_enabled, custom_path = adapter_configs.get(name, (True, None))
@@ -267,6 +268,24 @@ async def discover_system_capabilities(
                     is_installed=False,
                     installable=True,
                     assurance_status="DISABLED",
+                )
+            )
+            continue
+
+        if name in native_engine_tools:
+            native_available = await adapter.is_available(custom_path)
+            native_version = await adapter.get_version(custom_path) if native_available else None
+            tool_statuses.append(
+                ToolStatus(
+                    name=name,
+                    available=bool(native_available),
+                    version=native_version,
+                    path=None,
+                    execution_mode=ToolExecutionMode.NATIVE_ENGINE_READY if native_available else ToolExecutionMode.NATIVE_FALLBACK,
+                    install_method=inst_method,
+                    is_installed=False,
+                    installable=False,
+                    assurance_status="NOT_APPLICABLE" if native_available else "UNASSURED",
                 )
             )
             continue

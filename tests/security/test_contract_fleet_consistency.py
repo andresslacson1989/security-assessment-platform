@@ -48,6 +48,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "john" not in contract_01
     assert "Supported 26 Tools" in contract_03
     assert "26 tools" in contract_07
+    assert "NATIVE_ENGINE_READY" in contract_07
     assert "GET /api/system/tools?refresh=true" in contract_04
     assert "backend snapshot" in contract_04
     assert "refresh=true" in contract_04
@@ -57,6 +58,9 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "Capability Detection Cache Vectors" in contract_08
     assert "Managed Resolution and Probe Vectors" in contract_08
     assert "Managed Package-Adapter Resolution" in contract_03
+    assert "NATIVE_ENGINE_READY" in models
+    assert 'id="tool-pill-gtfobins"' in frontend_index
+    assert 'tool-pill--active" id="tool-pill-gtfobins"' in frontend_index
     assert "observational telemetry only" in contract_09
     assert "`grype`: `v0.74.0`" in contract_08
     assert "`nmap`: `7.95` -> verified official source archive" in contract_08
