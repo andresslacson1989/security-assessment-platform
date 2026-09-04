@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -139,7 +140,17 @@ class _PostgresConnection:
     def executescript(self, sql: str):
         # The schema contains independent DDL statements and no procedural
         # blocks; execute each statement so PostgreSQL can plan them normally.
-        for statement in sql.split(";"):
+        # Execution tables are deliberately deferred until their referenced
+        # inventory/principal tables exist.  This is explicit dependency
+        # ordering for PostgreSQL, where forward references are not accepted.
+        statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
+        deferred = []
+        for statement in statements:
+            if re.search(r"CREATE\s+(?:TABLE|(?:UNIQUE\s+)?INDEX)\s+IF\s+NOT\s+EXISTS\s+(?:execution_|idx_execution_|uq_execution_)", statement, re.IGNORECASE):
+                deferred.append(statement)
+                continue
+            self.execute(statement)
+        for statement in deferred:
             statement = statement.strip()
             if statement:
                 self.execute(statement)
@@ -615,8 +626,38 @@ class DatabaseManager:
                 """).fetchone()
                 if inconsistent:
                     raise ValueError("execution_runs migration blocked: orphaned or cross-tenant request reference requires audited reconciliation before upgrade")
-                table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs'").fetchone()["sql"] or ""
-                if "FOREIGN KEY (request_id, organization_id)" not in table_sql:
+                if isinstance(self, PostgresDatabaseManager):
+                    duplicate = conn.execute("SELECT request_id, organization_id, COUNT(*) AS count FROM execution_runs GROUP BY request_id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                    if duplicate:
+                        raise ValueError("execution_runs PostgreSQL migration blocked: duplicate runs require audited reconciliation before upgrade")
+                    inconsistent = conn.execute("""
+                        SELECT r.execution_id
+                        FROM execution_runs r
+                        LEFT JOIN execution_requests q
+                          ON q.id = r.request_id AND q.organization_id = r.organization_id
+                        LEFT JOIN organizations o ON o.id = r.organization_id
+                        WHERE q.id IS NULL OR o.id IS NULL
+                        LIMIT 1
+                    """).fetchone()
+                    if inconsistent:
+                        raise ValueError("execution_runs PostgreSQL migration blocked: orphaned or cross-tenant reference requires audited reconciliation before upgrade")
+                    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                    constraint = conn.execute("""
+                        SELECT c.conname
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        WHERE t.relname = 'execution_runs'
+                          AND c.contype = 'f'
+                          AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id) %'
+                        LIMIT 1
+                    """).fetchone()
+                    if constraint:
+                        safe_name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
+                        conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
+                else:
+                    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs'").fetchone()["sql"] or ""
+                if not isinstance(self, PostgresDatabaseManager) and "FOREIGN KEY (request_id, organization_id)" not in table_sql:
                     conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
                     conn.execute("""
                         CREATE TABLE execution_runs (

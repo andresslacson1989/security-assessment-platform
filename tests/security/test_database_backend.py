@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.core.db import _PostgresRow, _qmark_to_postgres, DatabaseManager
+from app.core.db import _PostgresConnection, _PostgresRow, _qmark_to_postgres, DatabaseManager
 
 
 def test_worker_does_not_reexecute_terminal_authoritative_scan_states():
@@ -31,6 +31,38 @@ def test_postgres_row_supports_mapping_and_positional_access():
     assert row["id"] == "row-1"
     assert row[0] == "row-1"
     assert row["status"] == row[1] == "READY"
+
+
+def test_postgres_schema_execution_tables_are_deferred_until_dependencies_exist():
+    class Cursor:
+        description = None
+
+        def __init__(self, statements):
+            self.statements = statements
+
+        def execute(self, sql, params=()):
+            self.statements.append(sql)
+
+    class Connection:
+        def __init__(self):
+            self.statements = []
+
+        def cursor(self):
+            return Cursor(self.statements)
+
+    raw = Connection()
+    _PostgresConnection(raw).executescript("""
+        CREATE TABLE IF NOT EXISTS execution_requests (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS execution_runs (id TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id));
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(id);
+    """)
+    assert raw.statements[:1] == ["CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY)"]
+    assert raw.statements[-3:] == [
+        "CREATE TABLE IF NOT EXISTS execution_requests (id TEXT PRIMARY KEY)",
+        "CREATE TABLE IF NOT EXISTS execution_runs (id TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(id)",
+    ]
 
 
 def test_database_manager_selects_postgres_for_enterprise_url(monkeypatch):
