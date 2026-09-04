@@ -271,6 +271,7 @@ def test_revoke_fails_closed_on_missing_linked_decision(tmp_path):
         ).fetchall()
     assert len(events) == 1
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
+    assert events[0]["object_type"] == "execution_request"
     assert events[0]["result"] == "FAILURE"
     assert events[0]["actor"] == "admin"
     assert events[0]["organization_id"] == "org-a"
@@ -355,7 +356,6 @@ def test_revoke_does_not_disclose_same_decision_id_owned_by_other_tenant(tmp_pat
     assert events[0]["organization_id"] == "org-a"
     assert events[0]["actor"] == "admin"
     assert events[0]["action"] == AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED.value
-    assert events[0]["object_type"] == "execution_request"
     assert events[0]["object_type"] == "execution_request"
     assert events[0]["result"] == "FAILURE"
     assert events[0]["correlation_id"] == "corr-cross-tenant"

@@ -395,6 +395,15 @@ def test_postgres_audit_chain_continuity_is_verified_for_multiple_events():
                 "FROM audit_events ORDER BY sequence_number",
             ).fetchall()
         assert len(events) == 2
+        assert [event["id"] for event in events] == ["pg-audit-chain-one", "pg-audit-chain-two"]
+        assert all(event["organization_id"] == "org-chain" for event in events)
+        assert all(event["object_type"] == "execution_request" for event in events)
+        assert all(event["object_id"] == "request-chain" for event in events)
+        assert all(event["actor"] == "admin" and event["result"] == "SUCCESS" for event in events)
+        assert all(event["correlation_id"] == "corr-chain" for event in events)
+        assert [event["action"] for event in events] == [
+            "EXECUTION_REQUESTED", "EXECUTION_CANCEL_REQUESTED",
+        ]
         for event in events:
             _assert_audit_event_hash(event)
         assert events[0]["sequence_number"] == 1
@@ -402,6 +411,22 @@ def test_postgres_audit_chain_continuity_is_verified_for_multiple_events():
         assert events[1]["sequence_number"] == 2
         assert events[1]["previous_event_hash"] == events[0]["event_hash"]
         assert manager.verify_audit_log_integrity() == (True, None)
+
+
+def test_postgres_audit_chain_detects_details_json_tampering():
+    with _isolated_manager() as manager:
+        manager.record_audit_event(AuditEvent(
+            id="pg-audit-tamper-one", actor="admin", organization_id="org-tamper",
+            action=AuditAction.EXECUTION_REQUESTED, object_type="execution_request",
+            object_id="request-tamper", result="SUCCESS", details={"step": 1},
+            correlation_id="corr-tamper",
+        ))
+        with manager._connection_scope() as conn:
+            conn.execute(
+                "UPDATE audit_events SET details_json = %s WHERE id = %s",
+                ('{ "step": 1 }', "pg-audit-tamper-one"),
+            )
+        assert manager.verify_audit_log_integrity() == (False, "pg-audit-tamper-one")
 
 
 def test_postgres_migration_rejects_duplicate_runs_before_recording_version():
