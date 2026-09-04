@@ -1032,6 +1032,97 @@ def test_nmap_resource_manifest_rejects_symlinked_resource_dir():
         shutil.rmtree(base, ignore_errors=True)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_manifest_rejects_injected_symlink_file():
+    """build_resource_manifest raises ValueError if any entry is a symlinked file."""
+    from app.core.binary_trust import build_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        target_file = base / "outside.txt"
+        target_file.write_bytes(b"target")
+        os.symlink(str(target_file), str(res_dir / "bad_link"))
+
+        with pytest.raises(ValueError, match="symlink"):
+            build_resource_manifest(res_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_manifest_rejects_symlinked_subdirectory():
+    """build_resource_manifest raises ValueError if any entry is a symlinked directory."""
+    from app.core.binary_trust import build_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        outside_dir = base / "outside_dir"
+        outside_dir.mkdir()
+        (outside_dir / "evil.nse").write_bytes(b"evil")
+        os.symlink(str(outside_dir), str(res_dir / "scripts"))
+
+        with pytest.raises(ValueError, match="symlink"):
+            build_resource_manifest(res_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_verifier_rejects_injected_symlink():
+    """verify_resource_manifest returns False if a symlink exists in the resource tree."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        manifest = build_resource_manifest(res_dir)
+        assert verify_resource_manifest(res_dir, manifest) is True
+
+        target_file = base / "outside.txt"
+        target_file.write_bytes(b"target")
+        os.symlink(str(target_file), str(res_dir / "injected_link"))
+
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_resource_verifier_rejects_excessive_entry_count(monkeypatch):
+    """verify_resource_manifest returns False if manifest or tree exceeds _MAX_RESOURCE_MANIFEST_ENTRIES."""
+    import app.core.binary_trust as bt
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "file1").write_bytes(b"1")
+        (res_dir / "file2").write_bytes(b"2")
+        manifest = bt.build_resource_manifest(res_dir)
+        assert bt.verify_resource_manifest(res_dir, manifest) is True
+
+        monkeypatch.setattr(bt, "_MAX_RESOURCE_MANIFEST_ENTRIES", 1)
+        # Tree has 2 entries, max is 1 -> verify must return False
+        assert bt.verify_resource_manifest(res_dir, manifest) is False
+        # build_resource_manifest should also raise ValueError
+        with pytest.raises(ValueError, match="maximum permitted entry count"):
+            bt.build_resource_manifest(res_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+
 def test_build_direct_artifact_trust_record_embeds_resource_manifest():
     """build_direct_artifact_trust_record embeds resource_manifest and RESOURCE_TREE_INTEGRITY_VERIFIED claim."""
     from app.core.binary_trust import build_direct_artifact_trust_record, get_managed_bin_dir

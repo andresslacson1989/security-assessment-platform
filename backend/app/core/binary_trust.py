@@ -62,21 +62,32 @@ def _sha256_file(path: Path) -> str:
 def build_resource_manifest(resource_dir: Path) -> dict[str, str]:
     """Produce a deterministic {relative_path: sha256} manifest for a resource tree.
 
-    Only regular, non-symlink files are included.  Paths are normalised to forward
+    Only regular, non-symlink files are included. Paths are normalised to forward
     slashes and sorted so the result is byte-for-byte reproducible across platforms.
 
     Raises ValueError if:
-    - resource_dir is a symlink
+    - resource_dir is a symlink or does not exist
+    - any entry is a symlink (file, directory, internal, or dangling)
     - any entry resolves outside resource_dir (path traversal)
     - the tree exceeds _MAX_RESOURCE_MANIFEST_ENTRIES entries
     """
     root = Path(os.path.abspath(str(resource_dir)))
-    if resource_dir.is_symlink():
+    if resource_dir.is_symlink() or root.is_symlink():
         raise ValueError("resource directory must not be a symlink")
+    if not root.is_dir():
+        raise ValueError("resource directory does not exist or is not a directory")
     manifest: dict[str, str] = {}
+    entry_count = 0
     for entry in sorted(root.rglob("*")):
-        if entry.is_symlink() or not entry.is_file():
+        entry_count += 1
+        if entry_count > _MAX_RESOURCE_MANIFEST_ENTRIES:
+            raise ValueError("resource tree exceeds maximum permitted entry count")
+        if entry.is_symlink():
+            raise ValueError(f"symlinks are forbidden in resource tree: {entry}")
+        if entry.is_dir():
             continue
+        if not entry.is_file():
+            raise ValueError(f"non-regular file forbidden in resource tree: {entry}")
         abs_entry = Path(os.path.abspath(str(entry)))
         # Reject traversal
         try:
@@ -94,25 +105,37 @@ def verify_resource_manifest(resource_dir: Path, manifest: dict[str, str]) -> bo
     """Return True iff the on-disk resource tree exactly matches the stored manifest.
 
     Fails closed on: modified file, deleted file, extra unexpected file, symlink,
-    path outside the directory, and any I/O error.
+    path outside the directory, entry count exceeding maximum limit, and any I/O error.
     """
     try:
         if not isinstance(manifest, dict) or resource_dir.is_symlink():
             return False
         root = Path(os.path.abspath(str(resource_dir)))
-        if not root.is_dir():
+        if not root.is_dir() or root.is_symlink():
+            return False
+        if len(manifest) > _MAX_RESOURCE_MANIFEST_ENTRIES:
             return False
         # Build actual snapshot
         actual: dict[str, str] = {}
+        entry_count = 0
         for entry in root.rglob("*"):
-            if entry.is_symlink() or not entry.is_file():
+            entry_count += 1
+            if entry_count > _MAX_RESOURCE_MANIFEST_ENTRIES:
+                return False
+            if entry.is_symlink():
+                return False
+            if entry.is_dir():
                 continue
+            if not entry.is_file():
+                return False
             abs_entry = Path(os.path.abspath(str(entry)))
             try:
                 rel = abs_entry.relative_to(root).as_posix()
             except ValueError:
                 return False
             actual[rel] = _sha256_file(abs_entry)
+            if len(actual) > _MAX_RESOURCE_MANIFEST_ENTRIES:
+                return False
         # Compare deterministically
         return dict(sorted(actual.items())) == dict(sorted(manifest.items()))
     except (OSError, UnicodeError, ValueError, TypeError):
