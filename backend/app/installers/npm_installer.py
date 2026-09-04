@@ -118,6 +118,14 @@ class NpmToolInstaller(BaseToolInstaller):
         return env
 
     async def install(self, emit_log: LogCallback, emit_progress: ProgressCallback, force: bool = False) -> bool:
+        existing_path = self.resolve_binary_path()
+        if not force and existing_path and self.is_assured_installation(existing_path):
+            ver = await self.get_version()
+            msg = f"{self.display_name} is already installed and verified."
+            await emit_progress(100, msg)
+            await emit_log(f"{self.display_name} is already installed and cryptographically assured ({ver or 'verified'}).")
+            return True
+
         manifest = PINNED_TOOL_MANIFEST[self.tool_name]
         expected_version = self._cfg["pinned_version"]
         prefix = get_npm_prefix_dir(self.tool_name)

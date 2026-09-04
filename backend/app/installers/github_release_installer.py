@@ -318,18 +318,27 @@ class GithubReleaseInstaller(BaseToolInstaller):
         """Probe a specific executable through the central process supervisor."""
         # Subfinder initializes its provider configuration during a version
         # probe. Create the managed user-config directory first so a fresh
-        # Windows installation is not rejected as an apparent version failure.
+        # Windows or Linux installation is not rejected as an apparent version failure.
         if self.tool_name == "subfinder":
-            appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-            Path(appdata, "subfinder").mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+                os.makedirs(os.path.join(appdata, "subfinder"), exist_ok=True)
+            else:
+                cfg_dir = os.path.join(os.path.expanduser("~"), ".config", "subfinder")
+                os.makedirs(cfg_dir, exist_ok=True)
         code, stdout, stderr = await process_supervisor.execute(
             [path] + self._cfg["version_cmd"],
             timeout=5.0,
             max_output_bytes=1024 * 1024,
         )
         output = stdout + (f"\n{stderr}" if stderr else "")
-        lines = output.strip().splitlines()
-        return lines[0] if code == 0 and lines else None
+        lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
+        if code != 0 or not lines:
+            return None
+        for line in lines:
+            if re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", line):
+                return line
+        return lines[0]
 
     def _safe_extract_zip(self, zip_path: str, target_dir: str) -> None:
         """Extracts zip archive with ZipSlip path traversal protection."""
@@ -365,6 +374,14 @@ class GithubReleaseInstaller(BaseToolInstaller):
         emit_progress: ProgressCallback,
         force: bool = False,
     ) -> bool:
+        existing_path = self.resolve_binary_path()
+        if not force and existing_path and self.is_assured_installation(existing_path):
+            ver = await self.get_version()
+            msg = f"{self.display_name} is already installed and verified."
+            await emit_progress(100, msg)
+            await emit_log(f"{self.display_name} is already installed and cryptographically assured ({ver or 'verified'}).")
+            return True
+
         repo = self._cfg["repo"]
         bin_name = self._cfg["binary_name"]
         local_bin_dir = self.get_bin_dir()

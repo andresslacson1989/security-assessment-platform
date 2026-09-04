@@ -783,3 +783,95 @@ def test_python_scripts_binary_resolution():
             assert resolved is not None
             assert "bandit" in resolved.lower()
 
+
+@pytest.mark.asyncio
+async def test_katana_version_probe_parses_multiline_ascii_banner():
+    """Katana multi-line ASCII banner output must extract the correct semver line."""
+    installer = GithubReleaseInstaller("katana")
+    ascii_banner = (
+        "   __        __                \n"
+        "  / /_____ _/ /_____ ____  ___ \n"
+        " /  '_/ _ `/ __/ _ `/ _ \\/ _ `\n"
+        "/_/\\_\\_,_/\\__/\\_,_/_//_/\\_,_/ 1.0.5\n"
+    )
+    with patch("app.installers.github_release_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+        0, ascii_banner, ""
+    ))):
+        version = await installer._probe_version("/managed/katana")
+
+    assert version is not None
+    assert "1.0.5" in version
+
+
+@pytest.mark.asyncio
+async def test_subfinder_version_probe_initializes_posix_config_dir(tmp_path):
+    """Subfinder must initialize ~/.config/subfinder on POSIX."""
+    installer = GithubReleaseInstaller("subfinder")
+    fake_home = tmp_path / "home" / "user"
+    fake_home.mkdir(parents=True)
+    with patch("os.path.expanduser", return_value=str(fake_home)), \
+         patch("os.name", "posix"), \
+         patch("app.installers.github_release_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+             0, "subfinder v2.6.5\n", ""
+         ))):
+        version = await installer._probe_version("/managed/subfinder")
+
+    assert version == "subfinder v2.6.5"
+    assert (fake_home / ".config" / "subfinder").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_pip_installer_accepts_schemathesis_version_output(tmp_path, monkeypatch):
+    """Schemathesis 'schemathesis, version 3.20.0' output must be recognized and accepted."""
+    installer = PipToolInstaller("schemathesis")
+    venv_bin = tmp_path / "schemathesis" / ("Scripts" if os.name == "nt" else "bin")
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / ("python.exe" if os.name == "nt" else "python")
+    venv_python.write_bytes(b"test interpreter")
+    binary = venv_bin / ("schemathesis.exe" if os.name == "nt" else "schemathesis")
+    binary.write_bytes(b"test schemathesis executable")
+    monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(tmp_path))
+
+    with patch("app.installers.pip_installer.process_supervisor.execute", new=AsyncMock(return_value=(
+        0, "Successfully installed schemathesis-3.20.0\n", ""
+    ))), \
+         patch.object(installer, "get_version", new=AsyncMock(return_value="schemathesis, version 3.20.0")), \
+         patch("app.installers.pip_installer.build_package_trust_record", return_value={}), \
+         patch("app.installers.pip_installer.write_package_trust_record"):
+        res = await installer.install(AsyncMock(), AsyncMock(), force=False)
+        assert res is True
+
+
+@pytest.mark.asyncio
+async def test_installers_idempotent_when_already_assured():
+    """When a tool is already installed and assured, install(force=False) must succeed immediately without re-installing."""
+    # 1. GithubReleaseInstaller
+    gh_installer = GithubReleaseInstaller("katana")
+    with patch.object(gh_installer, "resolve_binary_path", return_value="/managed/katana"), \
+         patch.object(gh_installer, "is_assured_installation", return_value=True), \
+         patch.object(gh_installer, "get_version", new=AsyncMock(return_value="katana 1.0.5")), \
+         patch("app.installers.github_release_installer.process_supervisor.execute") as gh_exec:
+        assert await gh_installer.install(AsyncMock(), AsyncMock(), force=False) is True
+        gh_exec.assert_not_awaited()
+
+    # 2. PipToolInstaller
+    pip_installer = PipToolInstaller("bandit")
+    with patch.object(pip_installer, "resolve_binary_path", return_value="/managed/bandit"), \
+         patch.object(pip_installer, "is_assured_installation", return_value=True), \
+         patch.object(pip_installer, "get_version", new=AsyncMock(return_value="bandit 1.7.8")), \
+         patch("app.installers.pip_installer.invalidate_package_trust_record") as inv_mock, \
+         patch("app.installers.pip_installer.process_supervisor.execute") as pip_exec:
+        assert await pip_installer.install(AsyncMock(), AsyncMock(), force=False) is True
+        inv_mock.assert_not_called()
+        pip_exec.assert_not_awaited()
+
+    # 3. SourceBuildInstaller
+    sb_installer = SourceBuildInstaller("trivy")
+    with patch.object(sb_installer, "resolve_binary_path", return_value="/managed/trivy"), \
+         patch.object(sb_installer, "is_assured_installation", return_value=True), \
+         patch.object(sb_installer, "get_version", new=AsyncMock(return_value="trivy 0.50.0")), \
+         patch("app.installers.source_build_installer.process_supervisor.execute") as sb_exec:
+        assert await sb_installer.install(AsyncMock(), AsyncMock(), force=False) is True
+        sb_exec.assert_not_awaited()
+
+

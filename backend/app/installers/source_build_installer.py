@@ -224,6 +224,13 @@ class SourceBuildInstaller(BaseToolInstaller):
         return f"{self.tool_name} {match.group(1)}" if code == 0 and match else None
 
     async def install(self, emit_log: LogCallback, emit_progress: ProgressCallback, force: bool = False) -> bool:
+        existing_path = self.resolve_binary_path()
+        if not force and existing_path and self.is_assured_installation(existing_path):
+            ver = await self.get_version()
+            await emit_progress(100, f"{self.display_name} is already installed and verified.")
+            await emit_log(f"{self.display_name} is already installed and cryptographically assured ({ver or 'verified'}).")
+            return True
+
         manifest = PINNED_TOOL_MANIFEST.get(self.tool_name, {})
         if manifest.get("trust_mode") != "SOURCE_BUILD_MODE" or not manifest.get("source_build"):
             await emit_log("Installation refused: source-build mode is not authorized by the manifest.")
@@ -260,84 +267,86 @@ class SourceBuildInstaller(BaseToolInstaller):
         staged_trust = bin_dir / f".{self.tool_name}.trust.{uuid.uuid4().hex}.staged"
         try:
             await emit_progress(10, f"Downloading verified {self.tool_name} source-build inputs...")
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False, trust_env=False) as client, tempfile.TemporaryDirectory() as temp:
-                await self._verify_source_identity(client, manifest)
-                source_archive = os.path.join(temp, manifest["asset_names"]["source_archive"])
-                go_archive = os.path.join(temp, go_name) if go_name else None
-                source_actual = await self._download(client, source_url, source_archive)
-                go_actual = None
-                if self.tool_name == "trivy":
-                    go_url = f"https://go.dev/dl/{go_name}"
-                    go_actual = await self._download(client, go_url, go_archive)
-                if source_actual != source_sha:
-                    raise SecurityError(f"{self.tool_name} source archive SHA-256 mismatch: {source_actual}")
-                if self.tool_name == "trivy" and go_actual != go_sha:
-                    raise SecurityError(f"Go toolchain SHA-256 mismatch: {go_actual}")
-                await emit_progress(35, "Extracting verified source and toolchain...")
-                source_dir = os.path.join(temp, "source")
-                os.makedirs(source_dir)
-                self._safe_extract_tar(source_archive, source_dir)
-                source_root = os.path.join(source_dir, self._cfg["source_root"])
-                if not os.path.isdir(source_root):
-                    raise SecurityError("Verified source-build inputs are incomplete")
-                if self.tool_name == "trivy":
-                    go_dir = os.path.join(temp, "go")
-                    os.makedirs(go_dir)
-                    self._safe_extract_tar(go_archive, go_dir)
-                    go_root = os.path.join(go_dir, "go")
-                    if not os.path.isfile(os.path.join(go_root, "bin", "go")):
-                        raise SecurityError("Verified Go toolchain is incomplete")
-                    build_cache = os.path.join(temp, "go-cache")
-                    module_cache = os.path.join(temp, "go-mod-cache")
-                    os.makedirs(build_cache)
-                    os.makedirs(module_cache)
-                    env = {"PATH": os.path.join(go_root, "bin"), "GOTOOLCHAIN": "local", "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64" if platform_key.endswith("amd64") else "arm64", "GOCACHE": build_cache, "GOMODCACHE": module_cache, "HOME": temp}
-                    commands = [
-                        ([os.path.join(go_root, "bin", "go"), "mod", "download"], 50, "Verifying Go module dependencies from go.sum..."),
-                        ([os.path.join(go_root, "bin", "go"), "build", "-trimpath", "-buildvcs=false", "-ldflags", "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0", "-o", str(staged_binary), self._cfg["build_package"]], 75, "Building Trivy from the verified source tag..."),
-                    ]
-                else:
-                    compiler = shutil.which("gcc")
-                    expected_compiler_sha = manifest.get("build_toolchain_sha256", {}).get(platform_key)
-                    if not compiler or not expected_compiler_sha or self._sha256_file(compiler) != expected_compiler_sha:
-                        raise SecurityError("Pinned Nmap compiler/toolchain verification failed")
-                    env = {"HOME": temp, "PATH": os.environ.get("PATH", "")}
-                    commands = [
-                        (["./configure", "--prefix=/usr/local", "--without-zenmap"], 50, "Configuring Nmap from the verified source archive..."),
-                        (["make", "-j2"], 75, "Building Nmap from the verified source archive..."),
-                        (["make", f"DESTDIR={temp}/nmap-root", "install"], 85, "Staging the verified Nmap executable..."),
-                    ]
-                for command, stage, message in commands:
-                    await emit_progress(stage, message)
-                    code, _, stderr = await process_supervisor.execute(command, cwd=source_root, env=env, timeout=900.0, max_output_bytes=10 * 1024 * 1024)
-                    if code != 0:
-                        raise RuntimeError(f"Source build command failed: {stderr[-2000:]}")
-                if self.tool_name == "nmap":
-                    built = Path(temp) / "nmap-root" / "usr" / "local" / "bin" / "nmap"
-                    if not built.is_file():
-                        raise SecurityError("Nmap source build did not produce the expected executable")
-                    shutil.copy2(built, staged_binary)
-                os.chmod(staged_binary, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
-                await emit_progress(90, "Verifying the built executable version and trust evidence...")
-                code, stdout, stderr = await process_supervisor.execute([str(staged_binary), "--version"], timeout=10.0, max_output_bytes=1024 * 1024)
-                if code != 0 or not re.search(self._cfg["version_regex"] + r"\b", stdout or stderr, re.IGNORECASE):
-                    raise SecurityError(f"Built {self.tool_name} failed exact runtime version verification: {stdout or stderr}")
-                executable_sha = hashlib.sha256(staged_binary.read_bytes()).hexdigest()
-                trust = {"tool_id": f"TOOL-{self.tool_name.upper().replace('-', '_')}", "tool_version": f"v{manifest['version']}", "artifact_filename": manifest["asset_names"]["source_archive"], "artifact_sha256": source_actual, "executable_relative_path": self.tool_name, "executable_sha256": executable_sha, "platform": "linux", "architecture": "arm64" if platform_key.endswith("arm64") else "amd64", "installer_version": APP_VERSION, "trust_status": "VALID", "claims": ["SOURCE_ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"]}
-                if self.tool_name == "trivy":
-                    trust.update({"source_commit": self._cfg["source_commit"], "build_toolchain": self._cfg["go_version"], "build_toolchain_sha256": go_actual})
-                    trust["claims"].append("BUILD_TOOLCHAIN_INTEGRITY_VERIFIED")
-                else:
-                    trust.update({"source_revision": self._cfg["source_revision"], "build_toolchain": manifest["build_toolchain"], "build_toolchain_sha256": manifest["build_toolchain_sha256"][platform_key]})
-                    trust["claims"].append("BUILD_TOOLCHAIN_INTEGRITY_VERIFIED")
-                staged_trust.write_text(json.dumps(trust, sort_keys=True), encoding="utf-8")
-                with open(staged_trust, "a", encoding="utf-8") as record:
-                    record.flush()
-                    os.fsync(record.fileno())
-                os.replace(staged_binary, bin_dir / "trivy")
-                os.replace(staged_trust, bin_dir / "trivy.trust.json")
-                await emit_progress(100, "Successfully installed verified Trivy source build (v0.50.0).")
-                return True
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False, trust_env=False) as client:
+                with tempfile.TemporaryDirectory() as temp:
+                    await self._verify_source_identity(client, manifest)
+                    source_archive = os.path.join(temp, manifest["asset_names"]["source_archive"])
+                    go_archive = os.path.join(temp, go_name) if go_name else None
+                    source_actual = await self._download(client, source_url, source_archive)
+                    go_actual = None
+                    if self.tool_name == "trivy":
+                        go_url = f"https://go.dev/dl/{go_name}"
+                        go_actual = await self._download(client, go_url, go_archive)
+                    if source_actual != source_sha:
+                        raise SecurityError(f"{self.tool_name} source archive SHA-256 mismatch: {source_actual}")
+                    if self.tool_name == "trivy" and go_actual != go_sha:
+                        raise SecurityError(f"Go toolchain SHA-256 mismatch: {go_actual}")
+                    await emit_progress(35, "Extracting verified source and toolchain...")
+                    source_dir = os.path.join(temp, "source")
+                    os.makedirs(source_dir)
+                    self._safe_extract_tar(source_archive, source_dir)
+                    source_root = os.path.join(source_dir, self._cfg["source_root"])
+                    if not os.path.isdir(source_root):
+                        raise SecurityError("Verified source-build inputs are incomplete")
+                    if self.tool_name == "trivy":
+                        go_dir = os.path.join(temp, "go")
+                        os.makedirs(go_dir)
+                        self._safe_extract_tar(go_archive, go_dir)
+                        go_root = os.path.join(go_dir, "go")
+                        if not os.path.isfile(os.path.join(go_root, "bin", "go")):
+                            raise SecurityError("Verified Go toolchain is incomplete")
+                        build_cache = os.path.join(temp, "go-cache")
+                        module_cache = os.path.join(temp, "go-mod-cache")
+                        os.makedirs(build_cache)
+                        os.makedirs(module_cache)
+                        env = {"PATH": os.path.join(go_root, "bin"), "GOTOOLCHAIN": "local", "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64" if platform_key.endswith("amd64") else "arm64", "GOCACHE": build_cache, "GOMODCACHE": module_cache, "HOME": temp}
+                        commands = [
+                            ([os.path.join(go_root, "bin", "go"), "mod", "download"], 50, "Verifying Go module dependencies from go.sum..."),
+                            ([os.path.join(go_root, "bin", "go"), "build", "-trimpath", "-buildvcs=false", "-ldflags", "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0", "-o", str(staged_binary), self._cfg["build_package"]], 75, "Building Trivy from the verified source tag..."),
+                        ]
+                    else:
+                        compiler = shutil.which("gcc")
+                        expected_compiler_sha = manifest.get("build_toolchain_sha256", {}).get(platform_key)
+                        if not compiler or not expected_compiler_sha or self._sha256_file(compiler) != expected_compiler_sha:
+                            raise SecurityError("Pinned Nmap compiler/toolchain verification failed")
+                        env = {"HOME": temp, "PATH": os.environ.get("PATH", "")}
+                        commands = [
+                            (["./configure", "--prefix=/usr/local", "--without-zenmap"], 50, "Configuring Nmap from the verified source archive..."),
+                            (["make", "-j2"], 75, "Building Nmap from the verified source archive..."),
+                            (["make", f"DESTDIR={temp}/nmap-root", "install"], 85, "Staging the verified Nmap executable..."),
+                        ]
+                    for command, stage, message in commands:
+                        await emit_progress(stage, message)
+                        code, _, stderr = await process_supervisor.execute(command, cwd=source_root, env=env, timeout=900.0, max_output_bytes=10 * 1024 * 1024)
+                        if code != 0:
+                            raise RuntimeError(f"Source build command failed: {stderr[-2000:]}")
+                    if self.tool_name == "nmap":
+                        built = Path(temp) / "nmap-root" / "usr" / "local" / "bin" / "nmap"
+                        if not built.is_file():
+                            raise SecurityError("Nmap source build did not produce the expected executable")
+                        shutil.copy2(built, staged_binary)
+                    os.chmod(staged_binary, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                    await emit_progress(90, "Verifying the built executable version and trust evidence...")
+                    code, stdout, stderr = await process_supervisor.execute([str(staged_binary), "--version"], timeout=10.0, max_output_bytes=1024 * 1024)
+                    if code != 0 or not re.search(self._cfg["version_regex"] + r"\b", stdout or stderr, re.IGNORECASE):
+                        raise SecurityError(f"Built {self.tool_name} failed exact runtime version verification: {stdout or stderr}")
+                    executable_sha = hashlib.sha256(staged_binary.read_bytes()).hexdigest()
+                    trust = {"tool_id": f"TOOL-{self.tool_name.upper().replace('-', '_')}", "tool_version": f"v{manifest['version']}", "artifact_filename": manifest["asset_names"]["source_archive"], "artifact_sha256": source_actual, "executable_relative_path": self.tool_name, "executable_sha256": executable_sha, "platform": "linux", "architecture": "arm64" if platform_key.endswith("arm64") else "amd64", "installer_version": APP_VERSION, "trust_status": "VALID", "claims": ["SOURCE_ARCHIVE_INTEGRITY_VERIFIED", "EXECUTABLE_INTEGRITY_VERIFIED"]}
+                    if self.tool_name == "trivy":
+                        trust.update({"source_commit": self._cfg["source_commit"], "build_toolchain": self._cfg["go_version"], "build_toolchain_sha256": go_actual})
+                        trust["claims"].append("BUILD_TOOLCHAIN_INTEGRITY_VERIFIED")
+                    else:
+                        trust.update({"source_revision": self._cfg["source_revision"], "build_toolchain": manifest["build_toolchain"], "build_toolchain_sha256": manifest["build_toolchain_sha256"][platform_key]})
+                        trust["claims"].append("BUILD_TOOLCHAIN_INTEGRITY_VERIFIED")
+                    staged_trust.write_text(json.dumps(trust, sort_keys=True), encoding="utf-8")
+                    with open(staged_trust, "a", encoding="utf-8") as record:
+                        record.flush()
+                        os.fsync(record.fileno())
+                    dest_name = f"{self.tool_name}.exe" if os.name == "nt" else self.tool_name
+                    os.replace(staged_binary, bin_dir / dest_name)
+                    os.replace(staged_trust, bin_dir / f"{dest_name}.trust.json")
+                    await emit_progress(100, f"Successfully installed verified {self.display_name} ({manifest.get('version', '')}).")
+                    return True
         except asyncio.CancelledError:
             raise
         except Exception as exc:

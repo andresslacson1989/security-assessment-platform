@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional, Dict
@@ -144,6 +145,23 @@ class PipToolInstaller(BaseToolInstaller):
         pkg = self._cfg["package_name"]
         path = self.resolve_binary_path()
         if path:
+            # 1. Query the managed virtualenv's interpreter metadata first for precise version
+            try:
+                python_name = "python.exe" if os.name == "nt" else "python"
+                interpreter = Path(path).resolve().parent / python_name
+                if interpreter.is_file():
+                    probe = f"import importlib.metadata as m; print(m.version('{pkg}'))"
+                    ret, stdout, stderr = await process_supervisor.execute(
+                        [str(interpreter), "-c", probe], timeout=5.0, max_output_bytes=1024 * 1024,
+                    )
+                    if ret == 0 and stdout:
+                        first_line = stdout.strip().splitlines()[0].strip()
+                        if re.fullmatch(r"\d+\.\d+(\.\d+)?([a-zA-Z0-9._-]+)?", first_line):
+                            return f"{pkg} {first_line}"
+            except Exception as exc:
+                logger.debug("Venv metadata probe failed: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
+
+            # 2. Fallback: probe CLI executable directly with --version
             try:
                 return_code, stdout, stderr = await process_supervisor.execute(
                     [path, "--version"], timeout=5.0, max_output_bytes=1024 * 1024,
@@ -151,6 +169,10 @@ class PipToolInstaller(BaseToolInstaller):
                 if return_code == 0:
                     output = (stdout or stderr or "").strip()
                     if output:
+                        for line in output.splitlines():
+                            m = re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", line)
+                            if m and m.group(1) == self._cfg["pinned_version"]:
+                                return f"{pkg} {m.group(1)}"
                         return output.splitlines()[0]
             except Exception as exc:
                 logger.debug("Package version probe failed: tool=%s error_type=%s", self._tool_name, type(exc).__name__)
@@ -174,6 +196,14 @@ class PipToolInstaller(BaseToolInstaller):
         force: bool = False,
     ) -> bool:
         pkg = self._cfg["package_name"]
+        existing_path = self.resolve_binary_path()
+        if not force and existing_path and self.is_assured_installation(existing_path):
+            ver = await self.get_version()
+            msg = f"{self.display_name} is already installed and verified."
+            await emit_progress(100, msg)
+            await emit_log(f"{self.display_name} is already installed and cryptographically assured ({ver or 'verified'}).")
+            return True
+
         lock_path = get_lock_path(self._tool_name)
         if not lock_path.is_file():
             await emit_log(f"Package '{pkg}' installation rejected: its hash-locked requirements file is missing.")
@@ -214,6 +244,24 @@ class PipToolInstaller(BaseToolInstaller):
                 await emit_progress(100, f"Environment creation failed for {pkg}")
                 return False
 
+        # Ensure pip module is available in the isolated venv
+        pip_check_ret, _, _ = await process_supervisor.execute(
+            [str(venv_python), "-m", "pip", "--version"],
+            timeout=10.0,
+            max_output_bytes=1024 * 1024,
+        )
+        if pip_check_ret != 0:
+            await emit_log(f"Bootstrapping pip in isolated environment for '{pkg}'...")
+            ensure_ret, _, ensure_err = await process_supervisor.execute(
+                [str(venv_python), "-m", "ensurepip", "--upgrade"],
+                timeout=60.0,
+                max_output_bytes=10 * 1024 * 1024,
+            )
+            if ensure_ret != 0:
+                await emit_log(f"Failed to bootstrap pip in virtual environment: {ensure_err}")
+                await emit_progress(100, f"pip bootstrap failed for {pkg}")
+                return False
+
         cmd = [str(venv_python), "-m", "pip", "install", "--no-compile", "--require-hashes", "-r", str(lock_path)]
         if force:
             cmd.insert(5, "--force-reinstall")
@@ -239,7 +287,9 @@ class PipToolInstaller(BaseToolInstaller):
                     return False
                 ver = await self.get_version()
                 expected = f"{pkg} {self._cfg['pinned_version']}"
-                if ver != expected:
+                ver_match = re.search(r"(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z.-])", ver or "")
+                is_version_ok = (ver == expected) or (ver_match and ver_match.group(1) == self._cfg["pinned_version"])
+                if not is_version_ok:
                     try:
                         invalidate_package_trust_record(str(binary_path))
                     except (OSError, PackageTrustError) as exc:
