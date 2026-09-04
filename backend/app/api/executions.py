@@ -175,7 +175,7 @@ async def approve_execution_request(
         raise HTTPException(status_code=422, detail="A unique Idempotency-Key header is required.")
     if not payload.confirm_owned_target:
         raise HTTPException(status_code=400, detail="Explicit owned-target acknowledgement is required before approval.")
-    result, decision_id = db_manager.approve_execution_request(
+    result, decision_id, execution_id = db_manager.approve_execution_request(
         request_id, current_user.organization_id, payload.request_fingerprint,
         idempotency_key,
         current_user.id, _session_jti(authorization, current_user), os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
@@ -183,12 +183,12 @@ async def approve_execution_request(
     if result == "NOT_FOUND":
         raise HTTPException(status_code=404, detail="Execution request not found.")
     if result == "REPLAY":
-        return {"request_id": request_id, "decision_id": decision_id, "state": "AUTHORIZED", "idempotent_replay": True}
+        return {"request_id": request_id, "decision_id": decision_id, "execution_id": execution_id, "state": "AUTHORIZED", "idempotent_replay": True}
     if result == "EXPIRED":
         raise HTTPException(status_code=409, detail="Execution request has expired.")
     if result != "AUTHORIZED":
         raise HTTPException(status_code=409, detail="Execution request cannot be authorized in its current state.")
-    return {"request_id": request_id, "decision_id": decision_id, "state": "AUTHORIZED", "idempotent_replay": False}
+    return {"request_id": request_id, "decision_id": decision_id, "execution_id": execution_id, "state": "AUTHORIZED", "idempotent_replay": False}
 
 
 @router.get("/{request_id}")
@@ -196,11 +196,13 @@ async def get_execution_request(request_id: str, current_user: UserProfile = Dep
     request = db_manager.get_execution_request(request_id, organization_id=current_user.organization_id)
     if not request:
         raise HTTPException(status_code=404, detail="Execution request not found.")
+    run = db_manager.get_execution_run_for_request(request.id, current_user.organization_id)
     return {"request_id": request.id, "state": request.state, "request_fingerprint": request.request_fingerprint,
             "organization_id": request.organization_id, "project_id": request.project_id, "asset_id": request.asset_id,
             "target_id": request.target_id, "tool_id": request.tool_id, "operation_family": request.operation_family,
             "operation_policy_revision": request.operation_policy_revision, "created_at": request.created_at.isoformat(),
-            "expires_at": request.expires_at.isoformat(), "approved_decision_id": request.approved_decision_id}
+            "expires_at": request.expires_at.isoformat(), "approved_decision_id": request.approved_decision_id,
+            "execution_run": run}
 
 
 @router.post("/{request_id}/revoke")

@@ -223,17 +223,18 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
 
     token = set_correlation_id("corr-approval-run")
     try:
-        result, decision_id = database.approve_execution_request(
+        result, decision_id, execution_id = database.approve_execution_request(
+            "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+        )
+        assert result == "AUTHORIZED"
+        assert decision_id
+        assert execution_id.startswith("run-")
+        replay = database.approve_execution_request(
             "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
         )
     finally:
         reset_correlation_id(token)
-    assert result == "AUTHORIZED"
-    assert decision_id
-    replay = database.approve_execution_request(
-        "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
-    )
-    assert replay == ("REPLAY", decision_id)
+    assert replay == ("REPLAY", decision_id, execution_id)
     with database._connection_scope() as conn:
         runs = conn.execute(
             "SELECT execution_id, request_id, organization_id, state, worker_identity, assurance_state, "

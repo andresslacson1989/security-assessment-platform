@@ -1305,25 +1305,34 @@ class DatabaseManager:
     def approve_execution_request(
         self, request_id: str, organization_id: str, request_fingerprint: str, approval_idempotency_key: str,
         approver_user_id: str, session_jti: str, worker_identity: str,
-    ) -> tuple[str, Optional[str]]:
+    ) -> tuple[str, Optional[str], Optional[str]]:
         """Atomically authorize a request or return an idempotent/conflict result."""
+        correlation_id = get_correlation_id()
+        if not correlation_id:
+            return "DENIED", None, None
         with self._connection_scope() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (request_id, organization_id))
             row = cur.fetchone()
             if not row:
-                return "NOT_FOUND", None
+                return "NOT_FOUND", None, None
             if row["request_fingerprint"] != request_fingerprint:
-                return "CONFLICT", None
+                return "CONFLICT", None, None
             if row["state"] == "AUTHORIZED":
                 if row["approval_idempotency_key"] != approval_idempotency_key:
-                    return "CONFLICT", None
-                return "REPLAY", row["approved_decision_id"]
+                    return "CONFLICT", None, None
+                run = cur.execute(
+                    "SELECT execution_id FROM execution_runs WHERE request_id = ? AND organization_id = ?",
+                    (request_id, organization_id),
+                ).fetchone()
+                if not run:
+                    raise ValueError("authorized execution request has no durable execution run")
+                return "REPLAY", row["approved_decision_id"], run["execution_id"]
             if row["state"] != "REQUESTED":
-                return "CONFLICT", None
+                return "CONFLICT", None, None
             now = utc_now()
             if datetime.fromisoformat(row["expires_at"]) <= now:
-                return "EXPIRED", None
+                return "EXPIRED", None, None
             cur.execute(
                 """SELECT id FROM assets WHERE id = ? AND organization_id = ?
                    AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
@@ -1331,10 +1340,10 @@ class DatabaseManager:
                 (row["asset_id"], organization_id, row["project_id"], row["project_id"]),
             )
             if not cur.fetchone():
-                return "DENIED", None
+                return "DENIED", None, None
             cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1", (approver_user_id, organization_id))
             if not cur.fetchone() or not session_jti or not worker_identity:
-                return "DENIED", None
+                return "DENIED", None, None
             decision_id = f"dec-{uuid.uuid4().hex[:16]}"
             cur.execute(
                 """UPDATE execution_requests SET state = 'AUTHORIZED', approved_decision_id = ?, approval_idempotency_key = ?
@@ -1342,7 +1351,7 @@ class DatabaseManager:
                 (decision_id, approval_idempotency_key, request_id, organization_id),
             )
             if cur.rowcount != 1:
-                return "CONFLICT", None
+                return "CONFLICT", None, None
             conn.execute(
                 """INSERT INTO execution_decisions (
                     id, organization_id, project_id, asset_id, target_id, authorization_decision_id,
@@ -1363,7 +1372,7 @@ class DatabaseManager:
                     execution_id, request_id, organization_id, state, worker_identity,
                     assurance_state, coverage_state, correlation_id, created_at
                 ) VALUES (?, ?, ?, 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?)""",
-                (execution_id, request_id, organization_id, worker_identity, get_correlation_id(), now.isoformat()),
+                    (execution_id, request_id, organization_id, worker_identity, correlation_id, now.isoformat()),
             )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
@@ -1375,10 +1384,24 @@ class DatabaseManager:
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
                 organization_id=organization_id, action=AuditAction.EXECUTION_RUN_CREATED,
                 object_type="execution_run", object_id=execution_id, result="SUCCESS",
-                correlation_id=get_correlation_id(),
+                correlation_id=correlation_id,
                 details={"request_id": request_id, "state": "REQUESTED"},
             ))
-            return "AUTHORIZED", decision_id
+            return "AUTHORIZED", decision_id, execution_id
+
+    def get_execution_run_for_request(self, request_id: str, organization_id: str) -> Optional[dict[str, Any]]:
+        """Return one tenant-scoped durable run snapshot for an execution request."""
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
+                "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
+                "correlation_id, created_at, started_at, finished_at FROM execution_runs "
+                "WHERE request_id = ? AND organization_id = ?",
+                (request_id, organization_id),
+            ).fetchone()
+            if not row:
+                return None
+            return dict(row)
 
     def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
         """Persist one immutable authorization decision transactionally."""
