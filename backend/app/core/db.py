@@ -281,7 +281,25 @@ class DatabaseManager:
                 rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
                 UNIQUE (attempt_id, event_type)
             )""")
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_schema_migration_attempt_event ON schema_migration_events(attempt_id, event_type)")
+            self._verify_migration_ledger(conn)
+
+    def _verify_migration_ledger(self, conn) -> None:
+        """Reject any existing migration ledger that cannot be trusted."""
+        required = {"event_id", "attempt_id", "migration_version", "migration_name", "event_type", "event_at", "backend", "schema_name", "previous_schema_version", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "error_code", "error_class", "error_message", "context_json", "rollback_status"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchall()
+            actual = {r["column_name"] for r in rows}
+            if actual != required:
+                raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
+            constraints = conn.execute("SELECT contype, convalidated FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'").fetchall()
+            if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "u") != 1 or sum(1 for r in constraints if r["contype"] == "c") != 3 or any(not r["convalidated"] for r in constraints):
+                raise RuntimeError("migration ledger constraints are not exact or validated")
+        else:
+            rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
+            if {r["name"] for r in rows} != required:
+                raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
+            if sum(1 for r in rows if r["pk"] == 1) != 1 or next((r["name"] for r in rows if r["pk"] == 1), None) != "event_id":
+                raise RuntimeError("migration ledger primary key drifted")
 
     def _get_connection(self) -> sqlite3.Connection:
         try:
