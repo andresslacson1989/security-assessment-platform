@@ -134,7 +134,7 @@ serialized as a normal ASVS control or silently omitted from a finding.
 
 The serialized union discriminator is exactly `kind`. A normal control object
 MUST have only `kind` and `value`, where `value` matches
-`^v5\\.0\\.0-V[0-9]+\\.[0-9]+\\.[0-9]+$`. An exception object MUST have only
+`^v5\.0\.0-V[0-9]+\.[0-9]+\.[0-9]+$`. An exception object MUST have only
 `kind`, `owner`, `rationale`, and `review_date`, where `review_date` is an ISO
 8601 calendar date in UTC (`YYYY-MM-DD`) and `kind` is exactly
 `ASVS_NOT_APPLICABLE`. `ASVS_NOT_APPLICABLE` may appear only as the explicit

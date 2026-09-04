@@ -133,6 +133,13 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "ASVS_NOT_APPLICABLE" in (
         canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md"
     ).read_text(encoding="utf-8")
+    contract_06 = (canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md").read_text(encoding="utf-8")
+    asvs_pattern = r"^v5\.0\.0-V[0-9]+\.[0-9]+\.[0-9]+$"
+    assert asvs_pattern in contract_06
+    assert re.fullmatch(asvs_pattern, "v5.0.0-V5.3.4")
+    assert not re.fullmatch(asvs_pattern, "V5.3.4")
+    assert not re.fullmatch(asvs_pattern, "v5.0.0-V5.3")
+    assert not re.fullmatch(asvs_pattern, "v5.0.0-V5.3.4-extra")
     assert "14.3.0" in contract_02
     detailed_sections = re.findall(r"^## TOOL (\d{2}):", contract_09, re.MULTILINE)
     assert detailed_sections == [f"{index:02d}" for index in range(1, 27)]
