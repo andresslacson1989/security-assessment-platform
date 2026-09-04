@@ -477,7 +477,7 @@ class DatabaseManager:
             rows = conn.execute("""SELECT column_name, data_type, is_nullable, column_default
                 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'""").fetchall()
             actual = {r["column_name"]: (str(r["data_type"]).lower(), r["is_nullable"], r["column_default"]) for r in rows}
-            expected = {name: ("text", "NO" if name in {"execution_id", "organization_id", "state", "attempt_count", "created_at"} else "YES", "'PENDING'::text" if name == "state" else "0" if name == "attempt_count" else None) for name in required}
+            expected = {name: ("integer" if name == "attempt_count" else "text", "NO" if name in {"execution_id", "organization_id", "state", "attempt_count", "created_at"} else "YES", "'PENDING'::text" if name == "state" else "0" if name == "attempt_count" else None) for name in required}
             if set(actual) != required or any(actual[n] != expected[n] for n in required):
                 raise RuntimeError("execution dispatch schema columns drifted")
             fk = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
