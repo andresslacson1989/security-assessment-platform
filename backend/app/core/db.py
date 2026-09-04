@@ -281,6 +281,18 @@ class DatabaseManager:
                 rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
                 UNIQUE (attempt_id, event_type)
             )""")
+            if isinstance(self, PostgresDatabaseManager):
+                conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
+                    LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
+                conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update_delete ON schema_migration_events")
+                conn.execute("""CREATE TRIGGER schema_migration_events_no_update_delete
+                    BEFORE UPDATE OR DELETE ON schema_migration_events FOR EACH ROW
+                    EXECUTE FUNCTION schema_migration_events_immutable()""")
+            else:
+                conn.executescript("""CREATE TRIGGER IF NOT EXISTS schema_migration_events_no_update
+                    BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;
+                    CREATE TRIGGER IF NOT EXISTS schema_migration_events_no_delete
+                    BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;""")
             self._verify_migration_ledger(conn)
 
     def _verify_migration_ledger(self, conn) -> None:
@@ -291,6 +303,12 @@ class DatabaseManager:
             actual = {r["column_name"] for r in rows}
             if actual != required:
                 raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
+            definitions = {r["column_name"]: (str(r["data_type"]).lower(), r["is_nullable"], r["column_default"]) for r in rows}
+            required_not_null = {"event_id", "attempt_id", "migration_version", "migration_name", "event_type", "event_at", "backend", "schema_name", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "context_json", "rollback_status"}
+            for name in required:
+                expected_type = "integer" if name in {"migration_version", "previous_schema_version", "target_schema_version"} else "text"
+                if definitions[name][0] != expected_type or ("NO" if name in required_not_null else "YES") != definitions[name][1]:
+                    raise RuntimeError("migration ledger column definitions drifted")
             constraints = conn.execute("SELECT contype, convalidated FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'").fetchall()
             if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "u") != 1 or sum(1 for r in constraints if r["contype"] == "c") != 3 or any(not r["convalidated"] for r in constraints):
                 raise RuntimeError("migration ledger constraints are not exact or validated")
@@ -298,8 +316,25 @@ class DatabaseManager:
             rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
             if {r["name"] for r in rows} != required:
                 raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
+            expected = {"event_id": ("text", False, None), "attempt_id": ("text", True, None), "migration_version": ("integer", True, None), "migration_name": ("text", True, None), "event_type": ("text", True, None), "event_at": ("text", True, None), "backend": ("text", True, None), "schema_name": ("text", True, None), "previous_schema_version": ("integer", False, None), "target_schema_version": ("integer", True, None), "migration_checksum": ("text", True, None), "runner_identity": ("text", True, None), "transaction_context_id": ("text", True, None), "error_code": ("text", False, None), "error_class": ("text", False, None), "error_message": ("text", False, None), "context_json": ("text", True, "'{}'"), "rollback_status": ("text", True, None)}
+            actual = {r["name"]: (str(r["type"]).strip().lower(), bool(r["notnull"]), r["dflt_value"]) for r in rows}
+            if any(actual[n] != expected[n] for n in required):
+                raise RuntimeError("migration ledger column definitions drifted")
             if sum(1 for r in rows if r["pk"] == 1) != 1 or next((r["name"] for r in rows if r["pk"] == 1), None) != "event_id":
                 raise RuntimeError("migration ledger primary key drifted")
+            unique = []
+            for index in conn.execute("PRAGMA index_list(schema_migration_events)").fetchall():
+                if index["unique"]:
+                    cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                    unique.append([c["name"] for c in sorted(cols, key=lambda c: c["seqno"])])
+            if ["attempt_id", "event_type"] not in unique:
+                raise RuntimeError("migration ledger attempt/event uniqueness drifted")
+            sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"].upper()
+            if any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")):
+                raise RuntimeError("migration ledger CHECK constraints drifted")
+            triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
+            if not {"schema_migration_events_no_update", "schema_migration_events_no_delete"}.issubset(triggers):
+                raise RuntimeError("migration ledger append-only protection is absent")
 
     def _get_connection(self) -> sqlite3.Connection:
         try:
