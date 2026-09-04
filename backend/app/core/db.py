@@ -512,6 +512,16 @@ class DatabaseManager:
                 raise RuntimeError("execution dispatch schema contains an unvalidated constraint")
             if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "f") != 2 or sum(1 for r in constraints if r["contype"] == "c") != 2:
                 raise RuntimeError("execution dispatch schema constraint set drifted")
+            org_fk = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace JOIN pg_namespace pn ON pn.oid=p.relnamespace
+                WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+                  AND t.relname='execution_dispatch_intents' AND p.relname='organizations'
+                  AND c.contype='f' AND c.convalidated
+                  AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='organization_id')]
+                  AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='id')]""").fetchone()
+            if not org_fk or int(org_fk["count"]) != 1:
+                raise RuntimeError("execution dispatch schema lacks exact organization foreign key")
             defs = [str(r["definition"]).upper().replace(' ', '') for r in constraints]
             if sum(1 for r in constraints if r["contype"] == "p") != 1 or not any("PRIMARYKEY(EXECUTION_ID)" in d for d in defs):
                 raise RuntimeError("execution dispatch schema primary key drifted")
@@ -536,7 +546,7 @@ class DatabaseManager:
             if sum(1 for r in rows if r["pk"] == 1) != 1 or next((r["name"] for r in rows if r["pk"] == 1), None) != "execution_id":
                 raise RuntimeError("execution dispatch schema primary key drifted")
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"].upper()
-            if "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
+            if "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql or " OR " in sql:
                 raise RuntimeError("execution dispatch schema lacks state/attempt constraints")
             parent_keys = []
             for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
