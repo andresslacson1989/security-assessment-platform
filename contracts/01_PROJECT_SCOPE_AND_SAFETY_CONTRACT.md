@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Enterprise Security Architecture
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (Enterprise Offensive/Defensive Alignment, 26-Tool Fleet & Production Readiness)  
+**Document Version:** 14.3.0 (Enterprise Offensive/Defensive Alignment, 26-Tool Fleet & Production Readiness)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards, Zero-Trust Security Controls, Multi-Tenant Governance & Operational Boundaries  
 

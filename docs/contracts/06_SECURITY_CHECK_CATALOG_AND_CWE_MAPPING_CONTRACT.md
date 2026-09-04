@@ -1,7 +1,7 @@
 # Contract 06: Security Check Catalog, ASVS 5.0.0, CWE Mappings & Evidence Hashing
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (ASVS 5.0.0 Version-Qualified Mapping, NIST SP 800-53 Control Mapping, 26-Tool Fleet Catalog & Cryptographic Hashing)  
+**Document Version:** 14.3.0 (ASVS 5.0.0 Version-Qualified Mapping, NIST SP 800-53 Control Mapping, 26-Tool Fleet Catalog & Cryptographic Hashing)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Canonical Security Checks, Vulnerability Taxonomies, Evidence Integrity & Sanitization  
 

@@ -1,7 +1,7 @@
 # Contract 05: Deliverables, Acceptance Criteria & Adversarial Security Scenarios
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (Acceptance Scenarios 1–35, 26-Tool Fleet Validation & Adversarial Security Matrix SEC-001 through SEC-035)  
+**Document Version:** 14.3.0 (Acceptance Scenarios 1–35, 26-Tool Fleet Validation & Adversarial Security Matrix SEC-001 through SEC-035)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Verification Criteria, Acceptance Scenarios & Mandatory Adversarial Test Vectors  
 

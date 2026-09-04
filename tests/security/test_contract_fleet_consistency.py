@@ -7,6 +7,7 @@ from app.adapters import get_adapter_registry
 from app.installers.manager import ToolInstallationManager
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 from app.core.tool_fleet import SUPPORTED_TOOL_COUNT, SUPPORTED_TOOL_IDS
+from app.core.version import CONTRACT_VERSION
 
 
 EXPECTED_TOOLS = SUPPORTED_TOOL_IDS
@@ -40,6 +41,14 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     dockerfile = (repository_root / "Dockerfile").read_text(encoding="utf-8")
     models = (repository_root / "backend" / "app" / "core" / "models.py").read_text(encoding="utf-8")
     frontend_index = (repository_root / "frontend" / "index.html").read_text(encoding="utf-8")
+
+    contract_headers = []
+    for contract_file in sorted(canonical.glob("[0-9][0-9]_*.md")):
+        contract_text = contract_file.read_text(encoding="utf-8")
+        match = re.search(r"^\*\*Document Version:\*\* ([0-9]+\.[0-9]+\.[0-9]+)", contract_text, re.MULTILINE)
+        assert match, f"missing document version header: {contract_file.name}"
+        contract_headers.append(match.group(1))
+    assert contract_headers == [CONTRACT_VERSION] * len(contract_headers)
 
     assert "26 specialized security tool adapters" in contract_01
     assert "across seven security domains" in contract_01

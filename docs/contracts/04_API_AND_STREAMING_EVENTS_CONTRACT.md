@@ -1,7 +1,7 @@
 # Contract 04: Control Plane REST API, SSE Streaming & Multi-Tenant Authorization Specification
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (Control Plane REST/SSE APIs, Per-Link Telemetry Dossiers, 26-Tool Fleet, RFC 8725 JWT & Multi-Layer Authorization)  
+**Document Version:** 14.3.0 (Control Plane REST/SSE APIs, Per-Link Telemetry Dossiers, 26-Tool Fleet, RFC 8725 JWT & Multi-Layer Authorization)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** REST Endpoints, Streaming SSE Protocol, Multi-Tenant Authorization, Middleware & API Security Headers  
 

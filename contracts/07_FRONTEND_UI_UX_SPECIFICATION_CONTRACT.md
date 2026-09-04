@@ -1,7 +1,7 @@
 # Contract 07: Frontend UI/UX, Real-Time Telemetry & Enterprise Workflow Contract
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (Enterprise ASPM Dashboard, 26-Tool Fleet, Per-Link Assessment Dossiers, Active Subdomain IP Resolution & Real-Time Telemetry Hub)  
+**Document Version:** 14.3.0 (Enterprise ASPM Dashboard, 26-Tool Fleet, Per-Link Assessment Dossiers, Active Subdomain IP Resolution & Real-Time Telemetry Hub)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Single Page Application (SPA), HUD Components, Real-Time SSE Streams & Client Security Controls  
 
