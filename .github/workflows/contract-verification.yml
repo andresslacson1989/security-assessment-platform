@@ -68,6 +68,7 @@ jobs:
       - name: Run real PostgreSQL schema assurance
         env:
           CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
+          CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
           OPERATING_MODE: TEST
           JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
         run: python -m pytest -q tests/security/test_postgres_integration.py

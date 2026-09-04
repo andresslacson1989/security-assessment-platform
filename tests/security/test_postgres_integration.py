@@ -16,6 +16,7 @@ from app.core.db import PostgresDatabaseManager
 
 
 POSTGRES_TEST_URL = os.getenv("CYBERASSESS_POSTGRES_TEST_URL", "").strip()
+POSTGRES_TEST_ACK = os.getenv("CYBERASSESS_POSTGRES_TEST_ACK", "").strip()
 
 
 pytestmark = pytest.mark.skipif(
@@ -27,8 +28,10 @@ pytestmark = pytest.mark.skipif(
 def _disposable_database_url() -> str:
     """Require the caller to identify a local, disposable test database."""
     parts = urlsplit(POSTGRES_TEST_URL)
-    if parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeError("PostgreSQL integration tests require a loopback host")
+    if parts.hostname not in {"127.0.0.1", "::1"}:
+        raise RuntimeError("PostgreSQL integration tests require the literal loopback IP")
+    if POSTGRES_TEST_ACK != "I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION":
+        raise RuntimeError("PostgreSQL integration tests require explicit disposable-database acknowledgment")
     if not (parts.path.rstrip("/").endswith("_ci") or parts.path.rstrip("/").endswith("_test")):
         raise RuntimeError("PostgreSQL integration tests require a database ending in _ci or _test")
     schema = "cyberassess_test_" + uuid.uuid4().hex
@@ -108,11 +111,24 @@ def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
                      and list(row["local_columns"]) == ["request_id", "organization_id"]
                      and list(row["parent_columns"]) == ["id", "organization_id"]]
             assert len(exact) == 1
+            legacy = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_class pt ON pt.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                  AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND c.contype = 'f' AND array_length(c.conkey, 1) = 1
+                  AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id)%'
+            """).fetchone()
+            assert legacy["count"] == 0
 
             # A second manager initialization exercises migration idempotency and
             # the startup health path against the real PostgreSQL service.
-        second = PostgresDatabaseManager(manager.database_url)
-        second._pool.close()
+            second = PostgresDatabaseManager(manager.database_url)
+            second._pool.close()
 
 
 def test_postgres_version_two_remediates_legacy_request_fk():
@@ -146,5 +162,14 @@ def test_postgres_health_rejects_same_name_wrong_column_index():
         with manager._connection_scope() as conn:
             conn.execute("DROP INDEX uq_execution_runs_request")
             conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, state)")
+        with pytest.raises(ValueError, match="schema health check"):
+            PostgresDatabaseManager(manager.database_url)
+
+
+def test_postgres_health_rejects_same_name_wrong_column_parent_index():
+    with _isolated_manager() as manager:
+        with manager._connection_scope() as conn:
+            conn.execute("DROP INDEX uq_execution_requests_id_org")
+            conn.execute("CREATE UNIQUE INDEX uq_execution_requests_id_org ON execution_requests(id, created_at)")
         with pytest.raises(ValueError, match="schema health check"):
             PostgresDatabaseManager(manager.database_url)
