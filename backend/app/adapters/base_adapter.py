@@ -244,6 +244,10 @@ class BaseToolAdapter(ABC):
         scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
         credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
         credential_context: Optional[CredentialExecutionContext] = None,
+        execution_capability=None,
+        operation_family: str = "",
+        operation_options: Optional[dict] = None,
+        tool_id: str = "",
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -266,6 +270,10 @@ class BaseToolAdapter(ABC):
             scanner_egress_proxy=scanner_egress_proxy,
             credential_handoff=credential_handoff,
             credential_context=credential_context,
+            execution_capability=execution_capability,
+            operation_family=operation_family,
+            operation_options=operation_options,
+            tool_id=tool_id or self.tool_name,
         )
         code, stdout, stderr = result
         process_status = getattr(result, "execution_status", None)

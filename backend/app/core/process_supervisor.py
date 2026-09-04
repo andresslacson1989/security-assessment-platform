@@ -20,6 +20,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set
 from app.core.tool_operation_policy import is_canonical_operation_policy_revision
+from app.core.execution_decision import ExecutionDecisionCapability, ExecutionDecisionError
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
@@ -467,6 +468,10 @@ class ProcessSupervisor:
         scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
         credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
         credential_context: Optional[CredentialExecutionContext] = None,
+        execution_capability: Optional[ExecutionDecisionCapability] = None,
+        operation_family: str = "",
+        operation_options: Optional[Dict[str, object]] = None,
+        tool_id: str = "",
     ) -> ProcessExecutionResult:
         """
         Executes a subprocess with execution tracking, timeout enforcement,
@@ -568,6 +573,18 @@ class ProcessSupervisor:
                         "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
                     )
                 try:
+                    if execution_capability is not None and type(execution_capability) is not ExecutionDecisionCapability:
+                        raise TypeError("execution capability type is not approved")
+                    if credential_handoff is not None and execution_capability is None:
+                        raise ExecutionDecisionError("credential release requires an execution decision capability")
+                    if execution_capability is not None:
+                        execution_capability.assert_valid_for_launch(
+                            tool_id=tool_id,
+                            operation_family=operation_family,
+                            operation_options=operation_options or {},
+                            command=cmd,
+                            worker_identity=os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
+                        )
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")
                     if credential_handoff is not None and type(credential_handoff) is not CredentialEnvironmentHandoff:

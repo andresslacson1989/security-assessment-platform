@@ -55,6 +55,14 @@ def is_canonical_operation_policy_revision(value: str) -> bool:
     return isinstance(value, str) and value == OPERATION_POLICY_REVISION
 
 
+def get_operation_policy(tool_id: str, operation_family: str) -> Mapping[str, Any] | None:
+    """Return the exact policy row for a tool and operation family."""
+    for row in _POLICY_DOCUMENT["records"]:
+        if row["tool_id"] == tool_id and row["operation_family"] == operation_family:
+            return row
+    return None
+
+
 def operation_policy_document() -> Mapping[str, Any]:
     """Expose an immutable policy view for diagnostics and audit evidence."""
     return _POLICY_DOCUMENT

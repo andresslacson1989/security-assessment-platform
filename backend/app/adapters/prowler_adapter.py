@@ -222,6 +222,13 @@ class ProwlerAdapter(BaseToolAdapter):
                 pre_launch_check=managed_check,
                 credential_handoff=credential_handoff,
                 credential_context=credential_context,
+                execution_capability=kwargs.get("execution_capability"),
+                operation_family="cloud_audit" if kwargs.get("require_managed_binary") else "",
+                operation_options=(
+                    {"provider": provider, "output_format": "json-asff", "quiet": True}
+                    if kwargs.get("require_managed_binary") else {}
+                ),
+                tool_id=self.tool_name,
                 max_output_bytes=10 * 1024 * 1024,
             )
             if output_path:

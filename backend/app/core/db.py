@@ -38,6 +38,7 @@ from app.core.models import (
     AuditAction,
     PrincipalType,
     Evidence,
+    ExecutionDecisionRecord,
     sanitize_sensitive_data,
     utc_now,
 )
@@ -324,6 +325,32 @@ class DatabaseManager:
                 expires_at TEXT
             );
 
+            -- Durable execution authorization decisions. Credential material
+            -- is never stored here; only its approved scope is recorded.
+            CREATE TABLE IF NOT EXISTS execution_decisions (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                project_id TEXT,
+                asset_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                authorization_decision_id TEXT NOT NULL,
+                target_policy_version TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                operation_family TEXT NOT NULL,
+                operation_options_json TEXT NOT NULL DEFAULT '{}',
+                operation_policy_revision TEXT NOT NULL,
+                approval_state TEXT NOT NULL,
+                approver_user_id TEXT NOT NULL,
+                session_jti TEXT NOT NULL,
+                worker_identity TEXT NOT NULL,
+                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT
+            );
+
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
@@ -456,6 +483,8 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
             CREATE INDEX IF NOT EXISTS idx_occurrences_canonical ON finding_occurrences(canonical_finding_id);
             CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit_events(organization_id, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_execution_decisions_scope ON execution_decisions(organization_id, asset_id, tool_id, operation_family);
+            CREATE INDEX IF NOT EXISTS idx_execution_decisions_session ON execution_decisions(session_jti, revoked_at, expires_at);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -696,6 +725,85 @@ class DatabaseManager:
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,))
             return bool(cur.fetchone())
+
+    def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
+        """Persist one immutable authorization decision transactionally."""
+        with self._connection_scope() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_decisions (
+                    id, organization_id, project_id, asset_id, target_id,
+                    authorization_decision_id, target_policy_version, tool_id,
+                    operation_family, operation_options_json, operation_policy_revision,
+                    approval_state, approver_user_id, session_jti, worker_identity,
+                    resource_budget_json, account_impact_budget_json, credential_scope_json,
+                    created_at, expires_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.id,
+                    decision.organization_id,
+                    decision.project_id,
+                    decision.asset_id,
+                    decision.target_id,
+                    decision.authorization_decision_id,
+                    decision.target_policy_version,
+                    decision.tool_id,
+                    decision.operation_family,
+                    json.dumps(decision.operation_options, sort_keys=True, separators=(",", ":")),
+                    decision.operation_policy_revision,
+                    decision.approval_state,
+                    decision.approver_user_id,
+                    decision.session_jti,
+                    decision.worker_identity,
+                    json.dumps(decision.resource_budget, sort_keys=True, separators=(",", ":")),
+                    json.dumps(decision.account_impact_budget, sort_keys=True, separators=(",", ":")),
+                    json.dumps(decision.credential_scope, sort_keys=True, separators=(",", ":")),
+                    decision.created_at.isoformat(),
+                    decision.expires_at.isoformat(),
+                    decision.revoked_at.isoformat() if decision.revoked_at else None,
+                ),
+            )
+
+    def get_execution_decision(self, decision_id: str, organization_id: Optional[str] = None) -> Optional[ExecutionDecisionRecord]:
+        """Load an execution decision with an optional mandatory tenant filter."""
+        with self._connection_scope() as conn:
+            query = "SELECT * FROM execution_decisions WHERE id = ?"
+            params: List[Any] = [decision_id]
+            if organization_id is not None:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+            cur = conn.cursor()
+            cur.execute(query, params)
+            row = cur.fetchone()
+            if not row:
+                return None
+            return ExecutionDecisionRecord(
+                id=row["id"], organization_id=row["organization_id"], project_id=row["project_id"],
+                asset_id=row["asset_id"], target_id=row["target_id"],
+                authorization_decision_id=row["authorization_decision_id"],
+                target_policy_version=row["target_policy_version"], tool_id=row["tool_id"],
+                operation_family=row["operation_family"], operation_options=json.loads(row["operation_options_json"]),
+                operation_policy_revision=row["operation_policy_revision"], approval_state=row["approval_state"],
+                approver_user_id=row["approver_user_id"], session_jti=row["session_jti"],
+                worker_identity=row["worker_identity"], resource_budget=json.loads(row["resource_budget_json"]),
+                account_impact_budget=json.loads(row["account_impact_budget_json"]),
+                credential_scope=json.loads(row["credential_scope_json"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                expires_at=datetime.fromisoformat(row["expires_at"]),
+                revoked_at=datetime.fromisoformat(row["revoked_at"]) if row["revoked_at"] else None,
+            )
+
+    def revoke_execution_decision(self, decision_id: str, organization_id: Optional[str] = None) -> bool:
+        """Revoke a decision without deleting its audit-relevant record."""
+        with self._connection_scope() as conn:
+            query = "UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL"
+            params: List[Any] = [utc_now().isoformat(), decision_id]
+            if organization_id is not None:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+            cur = conn.execute(query, params)
+            return cur.rowcount > 0
 
     # ========================================================================
     # 2. Immutable Audit Logging with Cryptographic Chained Hashes

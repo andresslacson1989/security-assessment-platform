@@ -249,6 +249,10 @@ async def safe_execute_subprocess(
     scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
     credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
     credential_context: Optional[CredentialExecutionContext] = None,
+    execution_capability=None,
+    operation_family: str = "",
+    operation_options: Optional[dict] = None,
+    tool_id: str = "",
 ) -> ProcessExecutionResult:
     """
     Loop-agnostic safe subprocess execution helper.
@@ -270,6 +274,10 @@ async def safe_execute_subprocess(
         scanner_egress_proxy=scanner_egress_proxy,
         credential_handoff=credential_handoff,
         credential_context=credential_context,
+        execution_capability=execution_capability,
+        operation_family=operation_family,
+        operation_options=operation_options,
+        tool_id=tool_id,
     )
     code, stdout, stderr = result
     if "<3>WSL" in stderr:

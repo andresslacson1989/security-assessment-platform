@@ -1146,6 +1146,34 @@ class UserProfile(BaseModel):
         return self
 
 
+class ExecutionDecisionRecord(BaseModel):
+    """Durable, tenant-bound authorization decision for one tool operation."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    id: str
+    organization_id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    target_id: str
+    authorization_decision_id: str
+    target_policy_version: str
+    tool_id: str
+    operation_family: str
+    operation_options: Dict[str, Any] = Field(default_factory=dict)
+    operation_policy_revision: str
+    approval_state: str
+    approver_user_id: str
+    session_jti: str
+    worker_identity: str
+    resource_budget: Dict[str, int] = Field(default_factory=dict)
+    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
+    credential_scope: Dict[str, str] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None
+
+
 class APIKeyRecord(BaseModel):
     key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")
     key_hash: str
