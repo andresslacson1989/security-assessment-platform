@@ -638,6 +638,19 @@ class DatabaseManager:
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
 
+            CREATE TABLE IF NOT EXISTS execution_dispatch_intents (
+                execution_id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'PENDING',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                claimed_at TEXT,
+                completed_at TEXT,
+                last_error TEXT,
+                FOREIGN KEY (execution_id) REFERENCES execution_runs(execution_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            );
+
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
@@ -1363,6 +1376,19 @@ class DatabaseManager:
                             raise RuntimeError(f"execution schema migration v6 failed postcondition for {table}.{column}")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (execution_columns_version, utc_now().isoformat()))
 
+            dispatch_version = 7
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_version,)).fetchone():
+                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_dispatch_intents'").fetchone() if not isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'execution_dispatch_intents'").fetchone()
+                if not exists:
+                    conn.execute("""CREATE TABLE execution_dispatch_intents (
+                        execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'PENDING', attempt_count INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
+                        FOREIGN KEY (execution_id) REFERENCES execution_runs(execution_id),
+                        FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                    )""")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_version, utc_now().isoformat()))
+
             self._verify_execution_snapshot_schema(conn)
             self._verify_execution_authority_binding_schema(conn)
             self._verify_execution_compatibility_schema(conn)
@@ -1885,6 +1911,10 @@ class DatabaseManager:
                     'COMPLETE', 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
                     FROM execution_requests WHERE id = ? AND organization_id = ?""",
                     (execution_id, decision_id, worker_identity, correlation_id, now.isoformat(), request_id, organization_id),
+            )
+            conn.execute(
+                "INSERT INTO execution_dispatch_intents (execution_id, organization_id, state, attempt_count, created_at) VALUES (?, ?, 'PENDING', 0, ?)",
+                (execution_id, organization_id, now.isoformat()),
             )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,

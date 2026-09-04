@@ -249,6 +249,10 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
             "WHERE object_type = 'execution_run' AND organization_id = ?",
             ("org-a",),
         ).fetchall()
+        intents = conn.execute(
+            "SELECT execution_id, organization_id, state, attempt_count FROM execution_dispatch_intents WHERE execution_id = ?",
+            (execution_id,),
+        ).fetchall()
     assert len(runs) == 1
     assert runs[0]["request_id"] == "req-a"
     assert runs[0]["approved_decision_id"] == decision_id
@@ -264,6 +268,11 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert runs[0]["assurance_state"] == "UNVERIFIED"
     assert runs[0]["coverage_state"] == "UNAVAILABLE"
     assert runs[0]["correlation_id"] == "corr-approval-run"
+    assert len(intents) == 1
+    assert intents[0]["execution_id"] == execution_id
+    assert intents[0]["organization_id"] == "org-a"
+    assert intents[0]["state"] == "PENDING"
+    assert intents[0]["attempt_count"] == 0
     assert len(run_events) == 1
     assert run_events[0]["action"] == AuditAction.EXECUTION_RUN_CREATED.value
     assert run_events[0]["object_type"] == "execution_run"
@@ -832,7 +841,7 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     DatabaseManager(db_path)
     with database._connection_scope() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions[-3:] == [4, 5, 6]
+        assert versions[-3:] == [5, 6, 7]
 
 
 def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
