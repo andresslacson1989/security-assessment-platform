@@ -1852,10 +1852,14 @@ class DatabaseManager:
                 raise ValueError("execution run state or identity is invalid")
             if run.state != "REQUESTED":
                 raise ValueError("execution run must be created in REQUESTED state")
-            request_row = conn.execute("SELECT state, approved_decision_id, expires_at FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()
-            if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"] or datetime.fromisoformat(request_row["expires_at"]) <= utc_now():
+            # Lock authority rows for the entire request-to-run transaction on
+            # PostgreSQL so revoke/expiry cannot race validation and insertion.
+            authority_lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            now = utc_now()
+            request_row = conn.execute(f"SELECT state, approved_decision_id, expires_at FROM execution_requests WHERE id = ? AND organization_id = ?{authority_lock}", (run.request_id, run.organization_id)).fetchone()
+            if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"] or datetime.fromisoformat(request_row["expires_at"]) <= now:
                 raise ValueError("execution run request is not tenant-bound")
-            decision_row = conn.execute("SELECT * FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL AND expires_at > ?", (request_row["approved_decision_id"], run.organization_id, utc_now().isoformat())).fetchone()
+            decision_row = conn.execute(f"SELECT * FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL AND expires_at > ?{authority_lock}", (request_row["approved_decision_id"], run.organization_id, now.isoformat())).fetchone()
             if not decision_row:
                 raise ValueError("execution run has no current approved decision")
             request_full = conn.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
-from app.core.models import ExecutionDecisionRecord, ExecutionLeaseClaim, Target, TargetType
+from app.core.models import ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -294,6 +294,36 @@ def test_execution_run_is_unique_per_authorized_request(tmp_path):
 
     with pytest.raises(Exception):
         database.create_execution_run(ExecutionRunRecord(execution_id="run-b", request_id="req-a", organization_id="org-a"))
+
+
+def test_postgres_execution_run_validation_locks_request_row(monkeypatch):
+    from app.core.db import PostgresDatabaseManager
+
+    class Connection:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            self.queries.append(sql)
+            return self
+
+        def fetchone(self):
+            return None
+
+    connection = Connection()
+
+    class Scope:
+        def __enter__(self):
+            return connection
+
+        def __exit__(self, *_):
+            return False
+
+    manager = object.__new__(PostgresDatabaseManager)
+    monkeypatch.setattr(manager, "_connection_scope", lambda: Scope())
+    with pytest.raises(ValueError, match="not tenant-bound"):
+        manager.create_execution_run(ExecutionRunRecord(execution_id="run-lock", request_id="req-lock", organization_id="org-lock"))
+    assert "FOR UPDATE" in connection.queries[0]
 
 
 def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
