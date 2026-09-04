@@ -350,7 +350,7 @@ class DatabaseManager:
                 raise RuntimeError("migration ledger append-only trigger is absent or disabled")
             trigger_def = "".join(str(trigger[0]["trigger_def"]).upper().split())
             function_def = "".join(str(trigger[0]["function_def"]).upper().split())
-            if "BEFOREDELETEORUPDATEON" not in trigger_def or "SCHEMA_MIGRATION_EVENTS" not in trigger_def or "FOREACHROW" not in trigger_def or "EXECUTEFUNCTION" not in trigger_def or "SCHEMA_MIGRATION_EVENTS_IMMUTABLE" not in trigger_def or "RAISEEXCEPTION" not in function_def or "APPEND-ONLY" not in function_def:
+            if "BEFOREDELETEORUPDATEON" not in trigger_def or "SCHEMA_MIGRATION_EVENTS" not in trigger_def or "FOREACHROW" not in trigger_def or "EXECUTEFUNCTION" not in trigger_def or "SCHEMA_MIGRATION_EVENTS_IMMUTABLE" not in trigger_def or "AS$FUNCTION$BEGINRAISEEXCEPTION" not in function_def or "APPEND-ONLY" not in function_def or "TG_OP" in function_def or "RETURNOLD" in function_def or "RETURNNEW" in function_def:
                 raise RuntimeError("migration ledger append-only trigger definition drifted")
         else:
             rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
@@ -374,7 +374,7 @@ class DatabaseManager:
             if sql.count("CHECK (") != 3 or any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")) or any(token not in sql for token in allowed_values):
                 raise RuntimeError("migration ledger CHECK constraints drifted")
             triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
-            if not {"schema_migration_events_no_update", "schema_migration_events_no_delete"}.issubset(triggers):
+            if triggers != {"schema_migration_events_no_update", "schema_migration_events_no_delete"}:
                 raise RuntimeError("migration ledger append-only protection is absent")
             trigger_sql = {r["name"]: "".join(str(r["sql"]).upper().split()) for r in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
             for name, operation in (("schema_migration_events_no_update", "UPDATE"), ("schema_migration_events_no_delete", "DELETE")):
