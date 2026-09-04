@@ -154,6 +154,18 @@ are the read/observation interfaces. A decision is stored with the request and
 audit record, is single-use for the exact operation, and is invalidated by
 logout, session expiry, idle timeout, explicit revocation, or request mutation.
 
+#### 1.5.1.3 Execution-run cardinality and upgrade safety
+
+One authorized execution request produces exactly one durable execution run.
+Recovery, re-execution, or retry MUST create a new execution request and obtain
+a new approval. Schema changes affecting execution requests, decisions, or
+runs MUST use versioned transactional migrations. Upgrades MUST preflight
+duplicates and orphaned or cross-tenant references and fail closed with an
+actionable error; they MUST NOT silently delete, merge, or select a winner.
+SQLite upgrades MUST rebuild tables when foreign keys cannot be altered in
+place, and PostgreSQL upgrades MUST enforce equivalent composite tenant
+constraints. Migration versions and outcomes MUST be recorded for auditability.
+
 Approval is an explicit action: `POST /api/system/executions/{request_id}/approve`
 requires the authenticated `ADMIN` principal with the tenant/tool permission,
 an idempotency key, and a confirmation payload containing the exact target

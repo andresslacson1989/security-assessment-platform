@@ -214,6 +214,14 @@ class CanonicalFinding(BaseModel):
 
 ### 4.1 Finding taxonomy and persistence invariants
 
+Execution requests and execution runs are tenant-owned durable records. One
+authorized request maps to exactly one execution run; retries and recovery
+attempts require a new request and approval. Request, decision, and run records
+MUST preserve the same tenant and authority binding through relational
+constraints and versioned migrations. Legacy upgrades MUST preflight duplicates
+and orphaned or cross-tenant references and fail closed with an actionable
+error rather than silently reconciling data.
+
 `asvs_control` MUST use the exact Contract 06 typed union: `ASVSControl` carries
 `kind="ASVS_CONTROL"` and a version-qualified value; `ASVSNotApplicable` carries
 `kind="ASVS_NOT_APPLICABLE"`, `owner`, `rationale`, and `review_date`. A finding

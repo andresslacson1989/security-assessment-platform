@@ -416,7 +416,6 @@ class DatabaseManager:
                 FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id);
 
             -- Attack Surface Assets Inventory Table
             CREATE TABLE IF NOT EXISTS assets (
@@ -593,6 +592,71 @@ class DatabaseManager:
                         raise
                     if "duplicate column name" not in str(exc).lower() and "already exists" not in str(exc).lower():
                         raise
+
+            # Versioned execution-run migration.  The execution plane uses one
+            # authorized request for one run; retries require a new request and
+            # approval.  Legacy SQLite tables are rebuilt only after a
+            # duplicate/orphan preflight so an upgrade cannot silently choose a
+            # winner or weaken tenant referential integrity.
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+            migration_version = 1
+            already_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (migration_version,)).fetchone()
+            if not already_applied:
+                duplicate = conn.execute("SELECT request_id, organization_id, COUNT(*) AS count FROM execution_runs GROUP BY request_id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                if duplicate:
+                    raise ValueError("execution_runs migration blocked: duplicate runs for one request require audited reconciliation before upgrade")
+                inconsistent = conn.execute("""
+                    SELECT r.execution_id
+                    FROM execution_runs r
+                    LEFT JOIN execution_requests q
+                      ON q.id = r.request_id AND q.organization_id = r.organization_id
+                    WHERE q.id IS NULL
+                    LIMIT 1
+                """).fetchone()
+                if inconsistent:
+                    raise ValueError("execution_runs migration blocked: orphaned or cross-tenant request reference requires audited reconciliation before upgrade")
+                table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs'").fetchone()["sql"] or ""
+                if "FOREIGN KEY (request_id, organization_id)" not in table_sql:
+                    conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
+                    conn.execute("""
+                        CREATE TABLE execution_runs (
+                            execution_id TEXT PRIMARY KEY,
+                            request_id TEXT NOT NULL,
+                            organization_id TEXT NOT NULL,
+                            state TEXT NOT NULL,
+                            worker_identity TEXT,
+                            process_id INTEGER,
+                            process_group_id TEXT,
+                            assurance_state TEXT NOT NULL,
+                            coverage_state TEXT NOT NULL,
+                            reason_code TEXT,
+                            evidence_ref TEXT,
+                            correlation_id TEXT,
+                            created_at TEXT NOT NULL,
+                            started_at TEXT,
+                            finished_at TEXT,
+                            FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
+                            FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                        )
+                    """)
+                    conn.execute("""
+                        INSERT INTO execution_runs (
+                            execution_id, request_id, organization_id, state,
+                            worker_identity, process_id, process_group_id,
+                            assurance_state, coverage_state, reason_code,
+                            evidence_ref, correlation_id, created_at, started_at,
+                            finished_at
+                        )
+                        SELECT execution_id, request_id, organization_id, state,
+                               worker_identity, process_id, process_group_id,
+                               assurance_state, coverage_state, reason_code,
+                               evidence_ref, correlation_id, created_at, started_at,
+                               finished_at
+                        FROM execution_runs_legacy
+                    """)
+                    conn.execute("DROP TABLE execution_runs_legacy")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (migration_version, utc_now().isoformat()))
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations

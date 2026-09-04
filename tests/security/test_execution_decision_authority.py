@@ -294,3 +294,47 @@ def test_execution_run_is_unique_per_authorized_request(tmp_path):
 
     with pytest.raises(Exception):
         database.create_execution_run(ExecutionRunRecord(execution_id="run-b", request_id="req-a", organization_id="org-a"))
+
+
+def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
+    import sqlite3
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "legacy-runs.db"
+    database = DatabaseManager(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES ('org-a', 'Org A', 'org-a', ?, 1)", (now,))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES ('asset-a', 'org-a', 'account', 'CLOUD_ACCOUNT', 'aws://123456789012', ?, ?)", (now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('user-a', 'user-a', 'a@example.test', 'hash', 'ADMIN', 'org-a', 1, ?)", (now,))
+        conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, state, created_at, expires_at) VALUES ('req-a', 'idem-a', ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'user-a', 'REQUESTED', ?, ?)", ("f" * 64, OPERATION_POLICY_REVISION, now, now))
+        conn.execute("DELETE FROM schema_migrations WHERE version = 1")
+        conn.execute("DROP INDEX uq_execution_runs_request")
+        conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
+        conn.execute("""CREATE TABLE execution_runs (execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, organization_id TEXT NOT NULL, state TEXT NOT NULL, worker_identity TEXT, process_id INTEGER, process_group_id TEXT, assurance_state TEXT NOT NULL, coverage_state TEXT NOT NULL, reason_code TEXT, evidence_ref TEXT, correlation_id TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id), FOREIGN KEY (organization_id) REFERENCES organizations(id))""")
+        conn.execute("INSERT INTO execution_runs SELECT * FROM execution_runs_legacy WHERE 0")
+        conn.execute("DROP TABLE execution_runs_legacy")
+    DatabaseManager(db_path)
+    with sqlite3.connect(db_path) as conn:
+        foreign_keys = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+        assert any(row[3] == "request_id" and row[4] == "id" for row in foreign_keys)
+        assert any(row[3] == "organization_id" and row[4] == "organization_id" for row in foreign_keys)
+        assert conn.execute("SELECT version FROM schema_migrations WHERE version = 1").fetchone()
+
+
+def test_legacy_execution_runs_duplicate_preflight_fails_closed(tmp_path):
+    from app.core.db import DatabaseManager
+
+    db_path = tmp_path / "legacy-duplicate-runs.db"
+    database = DatabaseManager(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES ('org-a', 'Org A', 'org-a', ?, 1)", (now,))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) VALUES ('asset-a', 'org-a', 'account', 'CLOUD_ACCOUNT', 'aws://123456789012', ?, ?)", (now, now))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('user-a', 'user-a', 'a@example.test', 'hash', 'ADMIN', 'org-a', 1, ?)", (now,))
+        conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, state, created_at, expires_at) VALUES ('req-a', 'idem-a', ?, 'org-a', 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'user-a', 'REQUESTED', ?, ?)", ("f" * 64, OPERATION_POLICY_REVISION, now, now))
+        conn.execute("DELETE FROM schema_migrations WHERE version = 1")
+        conn.execute("DROP INDEX uq_execution_runs_request")
+        conn.execute("INSERT INTO execution_runs (execution_id, request_id, organization_id, state, assurance_state, coverage_state, created_at) VALUES ('run-a', 'req-a', 'org-a', 'FAILED', 'UNVERIFIED', 'UNAVAILABLE', ?), ('run-b', 'req-a', 'org-a', 'FAILED', 'UNVERIFIED', 'UNAVAILABLE', ?)", (now, now))
+    with pytest.raises(ValueError, match="duplicate runs"):
+        DatabaseManager(db_path)
