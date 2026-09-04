@@ -102,6 +102,16 @@ class ExecutionDecisionCapability:
         ):
             raise ExecutionDecisionError("execution decision could not be atomically claimed")
 
+    def mark_started(self) -> None:
+        marker = getattr(self.database, "mark_execution_decision_started", None)
+        if marker is not None and not marker(self.decision.id, self.decision.organization_id, self.worker_identity):
+            raise ExecutionDecisionError("execution decision launch lease could not be committed")
+
+    def release_claim(self) -> None:
+        releaser = getattr(self.database, "release_execution_decision_claim", None)
+        if releaser is not None:
+            releaser(self.decision.id, self.decision.organization_id, self.worker_identity)
+
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(operation_options, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

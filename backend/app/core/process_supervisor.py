@@ -630,6 +630,8 @@ class ProcessSupervisor:
                     start_new_session=start_new_session,
                 )
                 proc_ref[0] = proc
+                if execution_capability is not None:
+                    execution_capability.mark_started()
                 self._register_execution(proc.pid, execution_id=execution_id)
 
                 stdout, stderr, bounded_failure = _bounded_communicate(proc)
@@ -639,10 +641,16 @@ class ProcessSupervisor:
                     return ProcessExecutionResult(-1, stdout, stderr)
                 return ProcessExecutionResult(proc.returncode, stdout, stderr)
             except FileNotFoundError as e:
+                if execution_capability is not None:
+                    execution_capability.release_claim()
                 return ProcessExecutionResult(127, "", f"Executable not found: {e}")
             except PermissionError as e:
+                if execution_capability is not None:
+                    execution_capability.release_claim()
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
+                if execution_capability is not None and proc is None:
+                    execution_capability.release_claim()
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
                 return ProcessExecutionResult(-1, "", str(e))

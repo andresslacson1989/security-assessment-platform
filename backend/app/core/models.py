@@ -1173,6 +1173,9 @@ class ExecutionDecisionRecord(BaseModel):
     expires_at: datetime
     revoked_at: Optional[datetime] = None
     consumed_at: Optional[datetime] = None
+    claim_owner: Optional[str] = None
+    claim_expires_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
 
 
 class ExecutionRequestRecord(BaseModel):
