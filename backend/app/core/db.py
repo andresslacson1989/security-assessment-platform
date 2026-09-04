@@ -503,9 +503,15 @@ class DatabaseManager:
                 GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
             if len(parent) != 1:
                 raise RuntimeError("execution dispatch schema lacks exact parent execution key")
-            constraints = conn.execute("""SELECT c.contype, pg_get_constraintdef(c.oid) AS definition
+            constraints = conn.execute("""SELECT c.contype, c.convalidated, pg_get_constraintdef(c.oid) AS definition
                 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
                 WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents'""").fetchall()
+            if any(not r["definition"] or not r["contype"] for r in constraints):
+                raise RuntimeError("execution dispatch schema contains unreadable constraints")
+            if any(r["contype"] in {"p", "f", "c"} and not r["convalidated"] for r in constraints):
+                raise RuntimeError("execution dispatch schema contains an unvalidated constraint")
+            if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "f") != 2 or sum(1 for r in constraints if r["contype"] == "c") != 2:
+                raise RuntimeError("execution dispatch schema constraint set drifted")
             defs = [str(r["definition"]).upper().replace(' ', '') for r in constraints]
             if sum(1 for r in constraints if r["contype"] == "p") != 1 or not any("PRIMARYKEY(EXECUTION_ID)" in d for d in defs):
                 raise RuntimeError("execution dispatch schema primary key drifted")
