@@ -45,6 +45,7 @@ class BaseToolAdapter(ABC):
         """Translate a supervisor outcome into the platform execution taxonomy."""
         return {
             ProcessExecutionStatus.SECURITY_REJECTED: NormalizedExecutionState.EXECUTION_BLOCKED,
+            ProcessExecutionStatus.CANCELLED: NormalizedExecutionState.EXECUTION_CANCELLED,
             ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED: NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING,
             ProcessExecutionStatus.TIMED_OUT: NormalizedExecutionState.EXECUTION_TIMED_OUT,
             ProcessExecutionStatus.NOT_FOUND: NormalizedExecutionState.TOOL_EXECUTION_FAILED,

@@ -1179,6 +1179,16 @@ class ExecutionDecisionRecord(BaseModel):
     claim_token: Optional[str] = None
 
 
+class ExecutionLeaseClaim(BaseModel):
+    """Typed, single-attempt launch lease returned only to the issuing worker."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    token: str
+    owner: str
+    expires_at: datetime
+
+
 class ExecutionRequestRecord(BaseModel):
     """Durable pre-approval execution request and its immutable fingerprint."""
 

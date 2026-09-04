@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
-from app.core.models import ExecutionDecisionRecord, Target, TargetType
+from app.core.models import ExecutionDecisionRecord, ExecutionLeaseClaim, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -26,9 +26,10 @@ class FakeDecisionStore:
 
     def claim_execution_decision(self, decision_id, organization_id, session_jti, worker_identity, policy_revision, now=None):
         if self.revoked or self.decision.consumed_at is not None:
-            return False
-        self.decision = self.decision.model_copy(update={"consumed_at": now or datetime.now(timezone.utc)})
-        return True
+            return None
+        lease_time = now or datetime.now(timezone.utc)
+        self.decision = self.decision.model_copy(update={"claim_owner": worker_identity, "claim_token": "test-claim", "claim_expires_at": lease_time + timedelta(seconds=30)})
+        return ExecutionLeaseClaim(token="test-claim", owner=worker_identity, expires_at=lease_time + timedelta(seconds=30))
 
 
 def _target():

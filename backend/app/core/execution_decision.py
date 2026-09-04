@@ -103,7 +103,7 @@ class ExecutionDecisionCapability:
         )
         if not claim:
             raise ExecutionDecisionError("execution decision could not be atomically claimed")
-        object.__setattr__(self, "claim_token", claim if isinstance(claim, str) else None)
+        object.__setattr__(self, "claim_token", claim.token)
 
     def mark_started(self) -> None:
         marker = getattr(self.database, "mark_execution_decision_started", None)

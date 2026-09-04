@@ -39,6 +39,7 @@ from app.core.models import (
     PrincipalType,
     Evidence,
     ExecutionDecisionRecord,
+    ExecutionLeaseClaim,
     ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
@@ -1044,8 +1045,8 @@ class DatabaseManager:
         worker_identity: str,
         policy_revision: str,
         now: Optional[datetime] = None,
-    ) -> bool:
-        """Atomically consume one approved decision at the launch boundary."""
+    ) -> Optional[ExecutionLeaseClaim]:
+        """Atomically reserve one approved decision and return its typed fence."""
         now = now or utc_now()
         with self._connection_scope() as conn:
             cur = conn.execute(
@@ -1062,7 +1063,7 @@ class DatabaseManager:
                 (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat()),
             )
             if cur.rowcount != 1:
-                return False
+                return None
             self._insert_audit_event_conn(
                 conn,
                 AuditEvent(
@@ -1073,7 +1074,8 @@ class DatabaseManager:
                     result="SUCCESS", details={"worker_identity": worker_identity},
                 ),
             )
-            return cur.connection.execute("SELECT claim_token FROM execution_decisions WHERE id = ? AND organization_id = ?", (decision_id, organization_id)).fetchone()[0]
+            claim_row = cur.connection.execute("SELECT claim_token, claim_expires_at FROM execution_decisions WHERE id = ? AND organization_id = ?", (decision_id, organization_id)).fetchone()
+            return ExecutionLeaseClaim(token=claim_row[0], owner=worker_identity, expires_at=datetime.fromisoformat(claim_row[1])) if claim_row else None
 
     def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, now: Optional[datetime] = None) -> bool:
         now = now or utc_now()
