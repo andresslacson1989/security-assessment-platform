@@ -103,7 +103,6 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["checkov"].install_method == ToolInstallMethod.PIP
     assert tool_map["prowler"].install_method == ToolInstallMethod.PIP
     assert tool_map["schemathesis"].install_method == ToolInstallMethod.PIP
-
     assert tool_map["nuclei"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["ffuf"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["gitleaks"].install_method == ToolInstallMethod.STANDALONE_BINARY
@@ -117,10 +116,41 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["trufflehog"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["dockle"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["kube-bench"].install_method == ToolInstallMethod.STANDALONE_BINARY
-
     assert tool_map["nmap"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["amass"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
+
+
+@pytest.mark.asyncio
+async def test_manager_tool_status_cache_is_backend_owned_and_expires():
+    manager = ToolInstallationManager()
+    installer = MagicMock()
+    installer.get_info = AsyncMock(side_effect=[MagicMock(name="nmap"), MagicMock(name="nmap")])
+    manager._installers = {"nmap": installer}
+
+    with patch("app.installers.manager.time.monotonic", side_effect=[0.0, 0.0, 20.0, 61.0, 61.0, 61.0]):
+        first = await manager.get_all_tools_info()
+        second = await manager.get_all_tools_info()
+        third = await manager.get_all_tools_info()
+
+    assert len(first) == len(second) == len(third) == 1
+    assert installer.get_info.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_manager_tool_status_forced_refresh_and_invalidation():
+    manager = ToolInstallationManager()
+    installer = MagicMock()
+    installer.get_info = AsyncMock(side_effect=[MagicMock(name="nmap"), MagicMock(name="nmap"), MagicMock(name="nmap")])
+    manager._installers = {"nmap": installer}
+
+    await manager.get_all_tools_info()
+    await manager.get_all_tools_info(force_refresh=True)
+    await manager.get_all_tools_info()
+    manager.invalidate_tool_status_cache()
+    await manager.get_all_tools_info()
+
+    assert installer.get_info.await_count == 3
 
 
 def test_pypi_manifest_records_match_hash_locked_release_metadata():
@@ -693,6 +723,11 @@ def test_tool_management_api_endpoints(client, manager, auth_headers):
     assert resp.status_code == 200
     tools = resp.json()
     assert len(tools) == 26
+
+    with patch.object(manager, "get_all_tools_info", new=AsyncMock(return_value=[])) as cached_list:
+        resp = client.get("/api/system/tools?refresh=true", headers=auth_headers)
+        assert resp.status_code == 200
+        cached_list.assert_awaited_once_with(force_refresh=True)
 
     # 2. GET /api/system/tools/nuclei/status
     resp = client.get("/api/system/tools/nuclei/status", headers=auth_headers)

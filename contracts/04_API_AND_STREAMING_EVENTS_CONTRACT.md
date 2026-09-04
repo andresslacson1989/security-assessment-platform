@@ -43,12 +43,14 @@
 - `POST /api/tools/repeater`: Executes an authorized HTTP test request (`scan:repeater`) with strict connection-level DNS pinning, safe destination binding, hop-by-hop redirect verification, and size bounds. Internal requests require explicit `scan:internal` permission.
 - `POST /api/system/tools/{tool_name}/install`: Initiates privileged tool binary installation (`tool:install` + `ADMIN` + audit event).
 - `GET /api/system/tools/events`: SSE stream for tool installation progress.
+- `GET /api/system/tools`: Authenticated (`tool:read`) list of all 26 toolbox installation/status records. The response is produced by a process-local backend snapshot with a 60-second TTL; `GET /api/system/tools?refresh=true` forces a live backend refresh. Installation success, reinstall, cancellation, and failure invalidate the snapshot before terminal telemetry is emitted.
 
 ### 1.5.1 Capability Status Snapshot (`/api/system/capabilities`)
 - `GET /api/system/capabilities`: Authenticated (`system:read`) observational capability status for the complete 26-tool fleet.
 - The default response is served from a process-local, 60-second cache keyed by the effective adapter configuration. Responses identify `capabilities_source` (`LIVE` or `CACHE`), `capabilities_checked_at`, `capabilities_cache_age_seconds`, and `capabilities_cache_ttl_seconds`.
 - `GET /api/system/capabilities?refresh=true` deliberately bypasses the cache and performs one live detection for that configuration. Concurrent requests share one live refresh; expired entries are refreshed and are never silently presented as current.
 - Detection failures are returned as failures; stale status is not returned as a current or trusted result. Capability registration is observational only and never authorizes tool execution. Scan orchestration performs its own live checks and pre-launch trust/version verification.
+- Toolbox installation status is also observational and does not authorize execution; runtime trust and exact-version checks remain live at the process-launch boundary.
 
 ### 1.6 Exporters & Reporting Endpoints (`/api/scans/{scan_id}/export`)
 - `GET /api/scans/{scan_id}/export/html`: Standalone offline interactive HTML report with secret masking (`report:read`, tenant-scoped).

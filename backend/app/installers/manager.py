@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import json
 import time
 import uuid
-from typing import Dict, List, Optional, AsyncGenerator, Set, Tuple
+from typing import Any, Dict, List, Optional, AsyncGenerator, Set, Tuple
 
 from app.core.models import (
     ToolInstallationInfo,
@@ -28,6 +28,7 @@ from app.installers.nmap_artifact_installer import NmapArtifactInstaller
 from app.core.tool_fleet import SUPPORTED_TOOL_IDS
 
 logger = logging.getLogger("cyberassess.installers.manager")
+TOOL_STATUS_CACHE_TTL_SECONDS = 60
 
 
 class ToolInstallationManager:
@@ -78,6 +79,9 @@ class ToolInstallationManager:
         self._tool_to_task: Dict[str, str] = {}
         self._subscribers: Set[asyncio.Queue] = set()
         self._tool_cache: Dict[str, ToolInstallationInfo] = {}
+        self._tool_status_snapshot: Optional[Tuple[float, List[ToolInstallationInfo]]] = None
+        self._tool_status_cache_lock_obj: Optional[asyncio.Lock] = None
+        self._tool_status_cache_lock_loop: Optional[Any] = None
         self._pip_lock_obj: Optional[asyncio.Lock] = None
         self._pip_lock_loop: Optional[Any] = None
 
@@ -101,6 +105,25 @@ class ToolInstallationManager:
     def get_installer(self, tool_name: str) -> Optional[BaseToolInstaller]:
         return self._installers.get(tool_name.lower())
 
+    @property
+    def _tool_status_cache_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._tool_status_cache_lock_obj is None or self._tool_status_cache_lock_loop is not loop:
+            self._tool_status_cache_lock_obj = asyncio.Lock()
+            self._tool_status_cache_lock_loop = loop
+        return self._tool_status_cache_lock_obj
+
+    def invalidate_tool_status_cache(self) -> None:
+        """Invalidate the process-local toolbox snapshot after installation state changes."""
+        self._tool_status_snapshot = None
+        self._tool_cache.clear()
+
+    def invalidate_status_caches(self) -> None:
+        """Invalidate toolbox and capability observations as one lifecycle operation."""
+        self.invalidate_tool_status_cache()
+        from app.adapters import invalidate_system_capabilities_cache
+        invalidate_system_capabilities_cache()
+
     async def get_tool_info(self, tool_name: str) -> Optional[ToolInstallationInfo]:
         inst = self.get_installer(tool_name)
         if not inst:
@@ -109,13 +132,22 @@ class ToolInstallationManager:
         self._tool_cache[tool_name] = info
         return info
 
-    async def get_all_tools_info(self) -> List[ToolInstallationInfo]:
-        results = []
-        for name, inst in self._installers.items():
-            info = await inst.get_info()
-            self._tool_cache[name] = info
-            results.append(info)
-        return results
+    async def get_all_tools_info(self, *, force_refresh: bool = False) -> List[ToolInstallationInfo]:
+        """Return the backend-owned toolbox snapshot, refreshing at most once per TTL."""
+        async with self._tool_status_cache_lock:
+            now = time.monotonic()
+            if self._tool_status_snapshot and not force_refresh:
+                cached_at, snapshot = self._tool_status_snapshot
+                if now - cached_at <= TOOL_STATUS_CACHE_TTL_SECONDS:
+                    return [info.model_copy(deep=True) for info in snapshot]
+
+            results = []
+            for name, inst in self._installers.items():
+                info = await inst.get_info()
+                self._tool_cache[name] = info
+                results.append(info)
+            self._tool_status_snapshot = (time.monotonic(), [info.model_copy(deep=True) for info in results])
+            return [info.model_copy(deep=True) for info in results]
 
     async def broadcast_event(self, event_type: str, data: dict) -> None:
         """Broadcasts SSE event payload to all active listeners."""
@@ -153,8 +185,7 @@ class ToolInstallationManager:
         if task_id and task_id in self._active_tasks:
             task = self._active_tasks[task_id]
             task.cancel()
-            from app.adapters import invalidate_system_capabilities_cache
-            invalidate_system_capabilities_cache()
+            self.invalidate_status_caches()
             return True
         return False
 
@@ -216,6 +247,7 @@ class ToolInstallationManager:
                 info = await inst.get_info()
 
                 if success:
+                    self.invalidate_status_caches()
                     await self.broadcast_event(
                         "install_completed",
                         {
@@ -227,6 +259,7 @@ class ToolInstallationManager:
                         },
                     )
                 else:
+                    self.invalidate_status_caches()
                     await self.broadcast_event(
                         "install_failed",
                         {
@@ -236,6 +269,7 @@ class ToolInstallationManager:
                         },
                     )
             except asyncio.CancelledError:
+                self.invalidate_status_caches()
                 await self.broadcast_event(
                     "install_failed",
                     {
@@ -245,6 +279,7 @@ class ToolInstallationManager:
                     },
                 )
             except Exception as exc:
+                self.invalidate_status_caches()
                 await self.broadcast_event(
                     "install_failed",
                     {
@@ -254,8 +289,7 @@ class ToolInstallationManager:
                     },
                 )
             finally:
-                from app.adapters import invalidate_system_capabilities_cache
-                invalidate_system_capabilities_cache()
+                self.invalidate_status_caches()
                 self._active_tasks.pop(task_id, None)
                 if self._tool_to_task.get(tool_name.lower()) == task_id:
                     self._tool_to_task.pop(tool_name.lower(), None)

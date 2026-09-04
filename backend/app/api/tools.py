@@ -9,7 +9,7 @@ import json
 import logging
 import time
 from typing import Optional, List, Any
-from fastapi import APIRouter, HTTPException, status, Request, Depends
+from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.responses import StreamingResponse
 import httpx
 
@@ -66,10 +66,11 @@ logger = logging.getLogger("cyberassess.api.tools")
 )
 async def list_tools(
     current_user: UserProfile = Depends(require_permission(required_scope="tool:read")),
+    refresh: bool = Query(default=False, description="Bypass the 60-second backend toolbox status cache"),
 ) -> List[ToolInstallationInfo]:
     """Returns installation status, detected binary path, version, and install method for all tools."""
     mgr = ToolInstallationManager.get_instance()
-    return await mgr.get_all_tools_info()
+    return await mgr.get_all_tools_info(force_refresh=refresh)
 
 
 @router.get(

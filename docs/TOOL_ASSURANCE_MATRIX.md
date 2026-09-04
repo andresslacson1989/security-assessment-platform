@@ -10,7 +10,7 @@ This specification serves as the **Audit & Assurance Matrix** for all 26 support
 
 ## 1. Tool Taxonomy & Role Classification Strategy
 
-Capability status shown in the toolbox is an observational, authenticated snapshot with a 60-second process-local cache and explicit live refresh. It is not execution assurance: every runtime invocation still performs live managed-binary integrity and exact-version checks and fails closed when those checks do not pass.
+Capability and installation status shown in the toolbox are observational, authenticated backend snapshots with a 60-second process-local cache and explicit live refresh. The frontend performs no detection. This is not execution assurance: every runtime invocation still performs live managed-binary integrity and exact-version checks and fails closed when those checks do not pass.
 
 | Security Domain | Tool Name | Tool ID | Tool Role | Primary / Fallback Purpose | Upstream Artifact Type |
 |---|---|---|---|---|---|

@@ -1394,9 +1394,10 @@ class ScanStreamManager {
     }
   }
 
-  async refreshToolboxData() {
+  async refreshToolboxData(forceRefresh = false) {
     try {
-      const res = await this.authFetch("/api/system/tools");
+      const url = forceRefresh ? "/api/system/tools?refresh=true" : "/api/system/tools";
+      const res = await this.authFetch(url);
       if (!res.ok) return;
       const tools = await res.json();
       this.renderToolboxTable(tools);
@@ -1905,6 +1906,8 @@ class ScanStreamManager {
           this.authStatusBadge.innerText = `USER: ${data.user.username} (${data.user.role})`;
           this.authStatusBadge.className = "auth-status-badge badge-admin";
         }
+        await this.refreshToolboxData(true);
+        await this.loadSystemCapabilities(true);
         this.closeAuthModal();
       } else {
         const err = await res.json();

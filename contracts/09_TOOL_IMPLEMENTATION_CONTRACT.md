@@ -107,7 +107,7 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
     - `UNVERIFIED`: Upstream feature claim pending empirical verification.
 
 11. **Capability Observation Cache Invariant:**
-    The authenticated system capability endpoint may return a process-local, 60-second snapshot keyed by adapter configuration. `refresh=true` forces live detection; cache expiry and detection failure MUST NOT be hidden by serving stale status as current. Capability snapshots are observational telemetry only and MUST NOT authorize execution or replace live pre-launch integrity/version verification.
+    The authenticated system capability and toolbox-status endpoints may return process-local, 60-second snapshots. The capability snapshot is keyed by adapter configuration; `refresh=true` forces live detection, and the toolbox endpoint’s `refresh=true` forces live installation/status detection. Cache expiry and detection failure MUST NOT be hidden by serving stale status as current. These snapshots are observational telemetry only and MUST NOT authorize execution or replace live pre-launch integrity/version verification.
 
 ---
 
