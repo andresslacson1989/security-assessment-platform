@@ -642,7 +642,10 @@ class ProcessSupervisor:
                 )
                 proc_ref[0] = proc
                 if execution_capability is not None:
-                    execution_capability.mark_started()
+                    execution_capability.mark_started(
+                        process_id=proc.pid,
+                        process_group_id=str(proc.pid) if start_new_session else None,
+                    )
                 self._register_execution(proc.pid, execution_id=execution_id)
 
                 stdout, stderr, bounded_failure = _bounded_communicate(proc)

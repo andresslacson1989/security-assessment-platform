@@ -3320,7 +3320,7 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
             rows = conn.execute(
-                f"""SELECT d.id AS decision_id, r.execution_id, r.state AS run_state, r.correlation_id,
+                f"""SELECT d.id AS decision_id, r.execution_id, r.state AS run_state, r.worker_identity AS run_worker_identity, r.correlation_id,
                            q.state AS request_state, q.expires_at AS request_expires_at,
                            i.state AS dispatch_state, i.claimed_by, i.claim_token AS existing_dispatch_token,
                            i.lease_expires_at, i.attempt_count
@@ -3331,6 +3331,7 @@ class DatabaseManager:
                      WHERE d.id = ? AND d.organization_id = ? AND d.session_jti = ?
                        AND d.worker_identity = ? AND d.operation_policy_revision = ?
                        AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.consumed_at IS NULL
+                       AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                        AND d.expires_at > ? AND q.state = 'AUTHORIZED' AND q.expires_at > ?
                        AND r.state IN ('REQUESTED', 'STARTING')
                        AND ((i.state = 'PENDING') OR
@@ -3360,6 +3361,16 @@ class DatabaseManager:
             else:
                 dispatch_token = row["existing_dispatch_token"]
                 lease_expires_at = datetime.fromisoformat(row["lease_expires_at"])
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = 'STARTING', worker_identity = ?
+                      WHERE execution_id = ? AND organization_id = ? AND state = 'REQUESTED'
+                        AND worker_identity = ?""",
+                (worker_identity, row["execution_id"], organization_id, worker_identity),
+            )
+            if run_update.rowcount != 1 and not (
+                row["run_state"] == "STARTING" and row["run_worker_identity"] == worker_identity
+            ):
+                raise RuntimeError("execution authority start transition lost its transaction fence")
             updated = conn.execute(
                 """UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
                       WHERE id = ? AND organization_id = ?
@@ -3383,6 +3394,12 @@ class DatabaseManager:
                 action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
                 object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
                 details={"attempt_count": attempt_count, "claim_token": dispatch_token},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run",
+                object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"from": "REQUESTED", "to": "STARTING", "decision_id": decision_id},
             ))
             return ExecutionAuthorityLease(
                 decision=ExecutionLeaseClaim(token=decision_token, owner=worker_identity, expires_at=lease_expires_at),
@@ -3444,7 +3461,7 @@ class DatabaseManager:
             ))
             return True
 
-    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, dispatch_claim_token: Optional[str] = None, now: Optional[datetime] = None) -> bool:
+    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, dispatch_claim_token: Optional[str] = None, process_id: Optional[int] = None, process_group_id: Optional[str] = None, now: Optional[datetime] = None) -> bool:
         now = now or utc_now()
         with self._connection_scope() as conn:
             cur = conn.execute(
@@ -3462,6 +3479,8 @@ class DatabaseManager:
                                AND r.organization_id = execution_decisions.organization_id
                                AND q.state = 'AUTHORIZED' AND q.expires_at > ?
                                 AND i.state = 'CLAIMED' AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?
+                                AND r.state = 'STARTING'
+                                AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = execution_decisions.session_jti)
                                AND (SELECT COUNT(*) FROM execution_runs r2
                                       JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
                                       JOIN execution_dispatch_intents i2 ON i2.execution_id = r2.execution_id AND i2.organization_id = r2.organization_id
@@ -3470,6 +3489,15 @@ class DatabaseManager:
                 (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat(), worker_identity, dispatch_claim_token, now.isoformat()),
             )
             if cur.rowcount == 1:
+                run_update = conn.execute(
+                    """UPDATE execution_runs SET state = 'RUNNING', process_id = ?, process_group_id = ?,
+                              started_at = COALESCE(started_at, ?)
+                        WHERE approved_decision_id = ? AND organization_id = ? AND state = 'STARTING'
+                          AND worker_identity = ?""",
+                    (process_id, process_group_id, now.isoformat(), decision_id, organization_id, worker_identity),
+                )
+                if run_update.rowcount != 1:
+                    raise RuntimeError("execution run could not commit RUNNING after process creation")
                 correlation_id = self._execution_correlation_id_conn(conn, organization_id=organization_id, decision_id=decision_id)
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_CONSUMED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))

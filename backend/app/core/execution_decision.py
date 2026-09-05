@@ -112,11 +112,14 @@ class ExecutionDecisionCapability:
         object.__setattr__(self, "claim_token", authority.decision.token)
         object.__setattr__(self, "dispatch_claim_token", authority.dispatch.token)
 
-    def mark_started(self) -> None:
+    def mark_started(self, *, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> None:
         marker = getattr(self.database, "mark_execution_decision_started", None)
         if marker is not None and not self.claim_token:
             raise ExecutionDecisionError("execution decision has no launch fence")
-        if marker is not None and not marker(self.decision.id, self.decision.organization_id, self.worker_identity, self.claim_token, self.dispatch_claim_token):
+        if marker is not None and not marker(
+            self.decision.id, self.decision.organization_id, self.worker_identity,
+            self.claim_token, self.dispatch_claim_token, process_id, process_group_id,
+        ):
             raise ExecutionDecisionError("execution decision launch lease could not be committed")
 
     def release_claim(self) -> None:
