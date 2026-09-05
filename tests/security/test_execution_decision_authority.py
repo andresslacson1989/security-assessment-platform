@@ -371,6 +371,51 @@ def test_orphaned_migration_attempt_is_durably_reconciled(tmp_path):
     assert row == ("RECONCILIATION_REQUIRED", 2, "UNKNOWN")
 
 
+def test_dispatch_reaper_closes_expired_request_and_lease_without_success(tmp_path):
+    from app.core.db import DatabaseManager
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+
+    database = DatabaseManager(tmp_path / "dispatch-reaper.db")
+    now = datetime.now(timezone.utc)
+    now_text = now.isoformat()
+    expires = (now + timedelta(minutes=5)).isoformat()
+    options = json.dumps({"provider": "aws", "output_format": "json-asff", "quiet": True}, separators=(",", ":"), sort_keys=True)
+    budget = json.dumps({"timeout_seconds": 120, "max_output_bytes": 10485760}, separators=(",", ":"), sort_keys=True)
+    account_budget = json.dumps({"read_only": 1}, separators=(",", ":"), sort_keys=True)
+    credentials = json.dumps({"provider": "aws"}, separators=(",", ":"), sort_keys=True)
+    with database._connection_scope() as conn:
+        conn.execute("INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES ('org-r', 'Org R', 'org-r', ?, 1)", (now_text,))
+        conn.execute("INSERT INTO assets (id, organization_id, name, type, target_value, active_probing_granted, created_at, updated_at) VALUES ('asset-r', 'org-r', 'asset', 'CLOUD_ACCOUNT', 'aws://123456789012', 1, ?, ?)", (now_text, now_text))
+        conn.execute("INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) VALUES ('admin-r', 'admin-r', 'r@example.test', 'hash', 'ADMIN', 'org-r', 1, ?)", (now_text,))
+        conn.execute(
+            "INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_options_json, operation_policy_revision, resource_budget_json, account_impact_budget_json, credential_scope_json, requested_by_user_id, state, created_at, expires_at) VALUES (?, 'idem-r', ?, 'org-r', 'asset-r', 'target-r', 'auth-r', 'v1', 'prowler', 'cloud_audit', ?, ?, ?, ?, ?, 'admin-r', 'REQUESTED', ?, ?)",
+            ("req-r", "f" * 64, options, OPERATION_POLICY_REVISION, budget, account_budget, credentials, now_text, expires),
+        )
+    token = set_correlation_id("corr-reaper")
+    try:
+        result, _decision_id, execution_id = database.approve_execution_request(
+            "req-r", "org-r", "f" * 64, "approval-r", "admin-r", "session-r", "worker-r",
+        )
+    finally:
+        reset_correlation_id(token)
+    assert result == "AUTHORIZED"
+    lease = database.claim_execution_dispatch_intent(execution_id, "org-r", "worker-r")
+    assert lease is not None
+    past = (now - timedelta(minutes=1)).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute("UPDATE execution_requests SET expires_at = ? WHERE id = ?", (past, "req-r"))
+        conn.execute("UPDATE execution_dispatch_intents SET lease_expires_at = ? WHERE execution_id = ?", (past, execution_id))
+    assert database.claim_execution_dispatch_intent(execution_id, "org-r", "worker-r") is None
+    assert database.reap_execution_dispatch(
+        execution_id, "org-r", terminal_state="TIMED_OUT", reason_code="EXECUTION_AUTHORITY_EXPIRED",
+    ) is True
+    with database._connection_scope() as conn:
+        run = conn.execute("SELECT state, reason_code FROM execution_runs WHERE execution_id = ?", (execution_id,)).fetchone()
+        intent = conn.execute("SELECT state, last_error, claim_token FROM execution_dispatch_intents WHERE execution_id = ?", (execution_id,)).fetchone()
+    assert run == ("TIMED_OUT", "EXECUTION_AUTHORITY_EXPIRED")
+    assert intent == ("FAILED", "EXECUTION_AUTHORITY_EXPIRED", None)
+
+
 def _issue(store, target, **kwargs):
     import os
     os.environ["CYBERASSESS_WORKER_IDENTITY"] = "worker-1"
@@ -597,6 +642,10 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
             "FROM execution_dispatch_intents WHERE execution_id = ? AND organization_id = ?",
             (execution_id, "org-a"),
         ).fetchone()
+        run = conn.execute(
+            "SELECT state, reason_code, finished_at FROM execution_runs WHERE execution_id = ? AND organization_id = ?",
+            (execution_id, "org-a"),
+        ).fetchone()
     assert dispatch["state"] == "BLOCKED"
     assert dispatch["attempt_count"] == 1
     assert dispatch["completed_at"]
@@ -604,6 +653,9 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert dispatch["claimed_by"] is None
     assert dispatch["claim_token"] is None
     assert dispatch["lease_expires_at"] is None
+    assert run["state"] == "CANCELLED"
+    assert run["reason_code"] == "EXECUTION_CANCELLED_ACKNOWLEDGED"
+    assert run["finished_at"]
 
 
 def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
