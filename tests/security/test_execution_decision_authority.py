@@ -75,6 +75,32 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
     ]
 
 
+def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript("""
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE organizations (id TEXT PRIMARY KEY);
+        CREATE TABLE execution_runs (
+            execution_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+            PRIMARY KEY (execution_id), UNIQUE (execution_id, organization_id)
+        );
+        CREATE TABLE execution_dispatch_intents (
+            execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
+            FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+            FOREIGN KEY (organization_id) REFERENCES organizations(id)
+        );
+    """)
+    manager = DatabaseManager.__new__(DatabaseManager)
+    manager._verify_migration_v7_postconditions(connection)
+    connection.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claimed_by TEXT")
+    with pytest.raises(RuntimeError, match="pre-lease target"):
+        manager._verify_migration_v7_postconditions(connection)
+
+
 def _decision(target, **changes):
     values = {
         "id": "decision-1",

@@ -1048,11 +1048,31 @@ class DatabaseManager:
                     "claimed_at", "completed_at", "last_error"}
         forbidden = {"claimed_by", "claim_token", "lease_expires_at", "correlation_id"}
         if isinstance(self, PostgresDatabaseManager):
-            rows = conn.execute("""SELECT column_name FROM information_schema.columns
+            rows = conn.execute("""SELECT column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns
                 WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'""").fetchall()
-            columns = {row["column_name"] for row in rows}
+            expected = {
+                "execution_id": ("text", "NO", None), "organization_id": ("text", "NO", None),
+                "state": ("text", "NO", "'PENDING'::text"), "attempt_count": ("integer", "NO", "0"),
+                "created_at": ("text", "NO", None), "claimed_at": ("text", "YES", None),
+                "completed_at": ("text", "YES", None), "last_error": ("text", "YES", None),
+            }
+            actual = {row["column_name"]: (str(row["data_type"]).lower(), row["is_nullable"], row["column_default"]) for row in rows}
+            if actual != expected:
+                raise RuntimeError("execution dispatch v7 column definitions drifted")
+            columns = set(actual)
         else:
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()}
+            rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
+            expected = {
+                "execution_id": ("text", True, None), "organization_id": ("text", True, None),
+                "state": ("text", True, "'PENDING'"), "attempt_count": ("integer", True, "0"),
+                "created_at": ("text", True, None), "claimed_at": ("text", False, None),
+                "completed_at": ("text", False, None), "last_error": ("text", False, None),
+            }
+            actual = {row["name"]: (str(row["type"]).strip().lower(), bool(row["notnull"]), row["dflt_value"]) for row in rows}
+            if actual != expected:
+                raise RuntimeError("execution dispatch v7 column definitions drifted")
+            columns = set(actual)
         if columns != required or columns & forbidden:
             raise RuntimeError("execution dispatch v7 schema does not match its pre-lease target")
         self._verify_execution_dispatch_constraints(conn, include_lease_columns=False)
@@ -1063,14 +1083,26 @@ class DatabaseManager:
             constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(c.oid) AS definition
                 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
                 WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents'""").fetchall()
-            if any(not row["convalidated"] for row in constraints):
+            definitions = {str(row["definition"]).upper().replace(" ", "") for row in constraints}
+            required_definitions = {
+                "PRIMARYKEY(EXECUTION_ID)",
+                "FOREIGNKEY(EXECUTION_ID,ORGANIZATION_ID)REFERENCESEXECUTION_RUNS(EXECUTION_ID,ORGANIZATION_ID)",
+                "FOREIGNKEY(ORGANIZATION_ID)REFERENCESORGANIZATIONS(ID)",
+                "CHECK((STATE=ANY(ARRAY['PENDING'::TEXT,'CLAIMED'::TEXT,'COMPLETED'::TEXT,'FAILED'::TEXT,'BLOCKED'::TEXT])))",
+                "CHECK((ATTEMPT_COUNT>=0))",
+            }
+            if any(not row["convalidated"] for row in constraints) or not required_definitions.issubset(definitions):
                 raise RuntimeError("execution dispatch schema contains an unvalidated constraint")
             if sum(1 for row in constraints if row["contype"] == "p") != 1 or sum(1 for row in constraints if row["contype"] == "f") != 2 or sum(1 for row in constraints if row["contype"] == "c") != 2:
                 raise RuntimeError("execution dispatch schema constraint set drifted")
         else:
-            rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
             sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"]).upper()
-            if sum(1 for row in rows if row["pk"] == 1) != 1 or "FOREIGN KEY (EXECUTION_ID, ORGANIZATION_ID)" not in sql or "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
+            foreign_keys = {}
+            for row in conn.execute("PRAGMA foreign_key_list(execution_dispatch_intents)").fetchall():
+                foreign_keys.setdefault(row["id"], []).append(row)
+            exact_run = any(len(rows) == 2 and sorted((r["seq"], r["from"], r["to"]) for r in rows) == [(0, "execution_id", "execution_id"), (1, "organization_id", "organization_id")] and all(r["table"] == "execution_runs" for r in rows) for rows in foreign_keys.values())
+            exact_org = any(len(rows) == 1 and rows[0]["table"] == "organizations" and rows[0]["from"] == "organization_id" and rows[0]["to"] == "id" for rows in foreign_keys.values())
+            if sum(1 for row in conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall() if row["pk"] == 1) != 1 or not exact_run or not exact_org or "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
                 raise RuntimeError("execution dispatch v7 keys or checks drifted")
 
     def _verify_execution_run_tenant_binding_schema(self, conn) -> None:
