@@ -150,11 +150,11 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
 MIGRATION_REGISTRY = tuple(_make_spec(*descriptor) for descriptor in _DESCRIPTORS)
 
 _EXPECTED_CHECKSUMS = {
-    1: "sha256:1f25654a3b3c0a7af2637953cbc6bc912918998aef4fd2c67e4c431570547d10",
-    2: "sha256:5a634eb831d64615e20b949c20ec3d0d2ab2d1a7af7f9c68a12b5ed2c7d246e8",
+    1: "sha256:d67b1f1dd9149120504c946f5d514b155f0b685ff0983b058c97a169bc0ceb1c",
+    2: "sha256:cb581847722adabb6b9fbdfa38f962790e0842dfa10eb0d1cd8c89f58c5eac64",
     3: "sha256:cd6e1b03a386049a28e2a9c1d8b33db6ec4f302d0d27e9a438629a63160e14e2",
     4: "sha256:245a6167393211c34f6963b3f2b1d78098fb5b5c7a47750ef446801e35e5d97a",
-    5: "sha256:4f6eeab458152b47611aea6a7e864796ab1d289a951d207d3c0fa288d7262aa5",
+    5: "sha256:bdc72fda90958fd58509c0e4afdcfc2079c82689db98abe49aeb0e41d0f8f869",
     6: "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
     7: "sha256:2a0e8c8469eb13951dabaa134f68c681b7ccbc74827cad77a02a4334941eb549",
     8: "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",

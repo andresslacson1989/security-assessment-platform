@@ -1056,7 +1056,7 @@ class DatabaseManager:
                 WHERE n.nspname = current_schema() AND t.relname = 'execution_requests'
                   AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
                 GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord) = ARRAY['id','organization_id']::text[]""").fetchall()
-            binding = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+            binding = conn.execute("""SELECT COUNT(DISTINCT c.oid) AS count FROM pg_constraint c
                 JOIN pg_class t ON t.oid = c.conrelid JOIN pg_class p ON p.oid = c.confrelid
                 JOIN pg_namespace n ON n.oid = t.relnamespace JOIN pg_namespace pn ON pn.oid = p.relnamespace
                 JOIN unnest(c.conkey) WITH ORDINALITY local_cols(attnum, ord) ON TRUE
