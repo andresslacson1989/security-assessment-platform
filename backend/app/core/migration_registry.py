@@ -14,6 +14,7 @@ from typing import Callable, Optional, Protocol
 
 from app.core.version import CONTRACT_VERSION, SCHEMA_VERSION
 from app.core.migration_artifacts import (
+    FORWARD_APPLY_MANIFESTS,
     FORWARD_APPLY_SOURCE_SHA256,
     POSTCONDITION_ARTIFACT_REVISION,
     POSTCONDITION_SOURCE_SHA256,
@@ -47,6 +48,7 @@ class MigrationSpec:
     registry_revision: str
     checksum: str
     apply_artifact: str
+    apply_manifest: dict
     apply: Optional[Callable] = None
     verify: Optional[Callable] = None
     reconcile: Optional[Callable] = None
@@ -155,6 +157,7 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         contract_schema_version=SCHEMA_VERSION, contract_version=CONTRACT_VERSION,
         registry_revision=REGISTRY_REVISION, checksum=_checksum(material),
         apply_artifact=FORWARD_APPLY_SOURCE_SHA256[version],
+        apply_manifest=FORWARD_APPLY_MANIFESTS[version],
         apply=_apply_version(version), verify=_VERIFIERS[version - 1],
         reconcile=_reconcile_version(version),
     )

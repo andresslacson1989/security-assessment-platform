@@ -67,13 +67,19 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
     database = DatabaseManager(tmp_path / "coordinator.sqlite3")
     with database._connection_scope() as conn:
         rows = conn.execute(
-            "SELECT migration_version, event_sequence, event_type "
+            "SELECT migration_version, event_sequence, event_type, context_json "
             "FROM schema_migration_events ORDER BY migration_version, event_sequence"
         ).fetchall()
 
     assert [(row["migration_version"], row["event_sequence"], row["event_type"]) for row in rows] == [
         item for version in range(1, 10) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
     ]
+    for row in rows:
+        context = json.loads(row["context_json"])
+        assert context["coordinator"] == "registry"
+        assert context["apply_artifact_revision"] == "execution-migration-apply-v1"
+        assert context["apply_artifact"].startswith("sha256:")
+        assert context["apply_manifest"]
 
 
 def test_v7_dispatch_postcondition_rejects_v8_lease_shape():

@@ -58,7 +58,11 @@ from app.core.models import (
     utc_now,
 )
 from app.core.migration_registry import MIGRATION_REGISTRY
-from app.core.migration_artifacts import FORWARD_APPLY_SOURCE_SHA256, POSTCONDITION_SOURCE_SHA256
+from app.core.migration_artifacts import (
+    FORWARD_APPLY_ARTIFACT_REVISION,
+    FORWARD_APPLY_SOURCE_SHA256,
+    POSTCONDITION_SOURCE_SHA256,
+)
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 from app.core.correlation import get_correlation_id
 
@@ -421,7 +425,18 @@ class DatabaseManager:
         implementation = getattr(DatabaseManager, "_init_db", None)
         if implementation is None:
             raise RuntimeError("migration forward-apply implementation is unavailable")
-        actual = "sha256:" + hashlib.sha256(inspect.getsource(implementation).encode("utf-8")).hexdigest()
+        backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        dispatcher = getattr(DatabaseManager, "_apply_migration_version", None)
+        if dispatcher is None:
+            raise RuntimeError("migration version dispatcher is unavailable")
+        material = "\n".join((
+            inspect.getsource(implementation),
+            inspect.getsource(dispatcher),
+            FORWARD_APPLY_ARTIFACT_REVISION,
+            json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
+            backend,
+        )).encode("utf-8")
+        actual = "sha256:" + hashlib.sha256(material).hexdigest()
         if actual != spec.apply_artifact or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version):
             raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
 
@@ -439,7 +454,14 @@ class DatabaseManager:
                 utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, spec.previous_version, spec.target_version, spec.checksum,
                 "database-startup", self._migration_transaction_id, error_class, error_message,
-                json.dumps({"coordinator": "registry", "migration_version": spec.version}, separators=(",", ":")),
+                json.dumps({
+                    "coordinator": "registry",
+                    "migration_version": spec.version,
+                    "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
+                    "apply_artifact": spec.apply_artifact,
+                    "apply_manifest": spec.apply_manifest,
+                    "backend_policy": spec.backend_policy,
+                }, sort_keys=True, separators=(",", ":")),
                 rollback_status))
 
     def _ensure_migration_ledger(self) -> None:
@@ -955,6 +977,17 @@ class DatabaseManager:
                 or not row["transaction_context_id"]
             ):
                 raise RuntimeError("migration ledger row identity or provenance drifted")
+            try:
+                context = json.loads(row["context_json"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("migration ledger row context is not valid JSON") from exc
+            if context.get("coordinator") == "registry" and (
+                context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
+                or context.get("apply_artifact") != spec.apply_artifact
+                or context.get("apply_manifest") != spec.apply_manifest
+                or context.get("backend_policy") != spec.backend_policy
+            ):
+                raise RuntimeError("migration ledger row forward-apply provenance drifted")
             attempts.setdefault(row["attempt_id"], []).append(row)
 
         for attempt_id, attempt_rows in attempts.items():

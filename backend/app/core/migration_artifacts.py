@@ -10,16 +10,27 @@ from __future__ import annotations
 
 POSTCONDITION_ARTIFACT_REVISION = "execution-postconditions-v2"
 FORWARD_APPLY_ARTIFACT_REVISION = "execution-migration-apply-v1"
+FORWARD_APPLY_MANIFESTS = {
+    1: {"sqlite": "execution_runs tenant composite request binding", "postgresql": "execution_runs tenant composite request binding"},
+    2: {"sqlite": "execution_runs legacy binding remediation", "postgresql": "execution_runs legacy binding remediation"},
+    3: {"sqlite": "execution_runs immutable snapshot columns", "postgresql": "execution_runs immutable snapshot columns"},
+    4: {"sqlite": "execution_runs decision composite binding", "postgresql": "execution_runs decision composite binding"},
+    5: {"sqlite": "migration-owned duplicate parent cleanup", "postgresql": "migration-owned duplicate parent cleanup"},
+    6: {"sqlite": "decision/request compatibility columns", "postgresql": "decision/request compatibility columns"},
+    7: {"sqlite": "durable execution dispatch intent table", "postgresql": "durable execution dispatch intent table"},
+    8: {"sqlite": "tenant-bound dispatch lease columns and foreign keys", "postgresql": "tenant-bound dispatch lease columns and foreign keys"},
+    9: {"sqlite": "remove only the proven migration-owned duplicate parent index", "postgresql": "remove only the proven migration-owned duplicate parent index"},
+}
 FORWARD_APPLY_SOURCE_SHA256 = {
-    1: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    2: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    3: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    4: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    5: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    6: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    7: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    8: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
-    9: "sha256:29f601d902180efcf378ac88f87e736364264dbf46cc87aa1c57658072fafc22",
+    1: "sha256:01ed6a22623898cd9b4e6cfc17ab5b846b63176d9d07d5514998a48d3989260a",
+    2: "sha256:e65a919602f96826aa76df53a81e551078f2c25c58f05ec0fe486142dea916fe",
+    3: "sha256:e12cbc7cba6c4b3a9d45b2d0de305ebfe25aa881c8ad74ea0e5b5bf4b3e95196",
+    4: "sha256:acc24bdf6a293a658d447713c44a30cec2d25c432453f40d5f3870cc5f91bd06",
+    5: "sha256:21d634173e51aa8625a722bd9fec5041ad2036fee56c8f02f209c0abec31bde9",
+    6: "sha256:268594886aa3ccc57a664439b192c6bc69c58aa0654fd1b72652a3ef04f23c18",
+    7: "sha256:3c7d463dc769b3dd9423d0b3ccceebccf8d2b189a36d3ba4dfe50ca7c144f3bb",
+    8: "sha256:2357e4ea280aae0d3bb34c9c7253164eb3f511c0ce48cab3932d9e66d78cf25b",
+    9: "sha256:ebc6937cc64d9439c9a2311f86f76d9acf2202e063cc44900ec434636ba133d1",
 }
 
 POSTCONDITION_SOURCE_SHA256 = {
