@@ -12,7 +12,7 @@ from app.core.execution_decision import ExecutionDecisionError, issue_execution_
 from app.core.db import DatabaseManager
 from app.core.migration_registry import MIGRATION_REGISTRY, _EXPECTED_CHECKSUMS
 from app.core.migration_artifacts import FORWARD_APPLY_ARTIFACT_REVISION
-from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType, EXECUTION_REASON_CODES, is_canonical_execution_reason_code
+from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType, EXECUTION_REASON_CODES, is_canonical_execution_reason_code, is_valid_execution_terminal_outcome
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -72,6 +72,10 @@ def test_execution_reason_codes_are_bounded_and_allowlisted():
     assert not is_canonical_execution_reason_code("free-form failure detail")
     assert not is_canonical_execution_reason_code("PROCESS_EXIT_NONZERO\nINJECTED")
     assert not is_canonical_execution_reason_code("A" * 65)
+    assert is_valid_execution_terminal_outcome("SUCCEEDED", None)
+    assert is_valid_execution_terminal_outcome("TIMED_OUT", "EXECUTION_TIMEOUT")
+    assert not is_valid_execution_terminal_outcome("TIMED_OUT", "PROCESS_EXIT_NONZERO")
+    assert not is_valid_execution_terminal_outcome("FAILED", "EXECUTION_CANCELLED")
 
 
 def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp_path):
@@ -762,6 +766,21 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert database.finish_execution(
         execution_id, "org-a", "worker-a", lease.token,
         terminal_state="FAILED", reason_code="unreviewed diagnostic",
+    ) is False
+    # The reason may be canonical for more than one failure class, but the
+    # requested terminal state must still equal the durable state.
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_runs SET state = 'FAILED', reason_code = ? WHERE execution_id = ? AND organization_id = ?",
+            ("EXECUTION_AUTHORITY_EXPIRED", execution_id, "org-a"),
+        )
+        conn.execute(
+            "UPDATE execution_dispatch_intents SET state = 'FAILED', last_error = ? WHERE execution_id = ? AND organization_id = ?",
+            ("EXECUTION_AUTHORITY_EXPIRED", execution_id, "org-a"),
+        )
+    assert database.finish_execution(
+        execution_id, "org-a", "worker-a", lease.token,
+        terminal_state="TIMED_OUT", reason_code="EXECUTION_AUTHORITY_EXPIRED",
     ) is False
 
 

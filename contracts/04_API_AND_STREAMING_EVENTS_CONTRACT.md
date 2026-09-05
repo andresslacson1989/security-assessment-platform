@@ -134,6 +134,12 @@ stored outcome. A conflicting terminal retry MUST be rejected and audited; it
 MUST NOT be treated as a successful duplicate. Non-success outcomes MUST use a
 reason code from the reviewed execution-reason registry and MUST NOT persist
 free-form diagnostic text. Success MUST persist no failure reason code.
+The registry is state-aware: `SUCCEEDED` has no reason, partial results use a
+coverage reason such as `OUTPUT_LIMIT_EXCEEDED`, failures use reviewed failure
+or authority-loss reasons, timeouts use timeout/authority-expiry reasons,
+cancellations use reviewed cancellation reasons, and blocked executions use
+reviewed authorization or launch-rejection reasons. Semantically contradictory
+state/reason pairs MUST be rejected.
 The API returns `202 Accepted` for an accepted job, `401/403` for authentication
 or authorization failure, `409` for idempotency/replay conflict, and `422` for
 invalid typed options. SSE emits `execution.requested`, `execution.authorized`,

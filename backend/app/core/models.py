@@ -1293,6 +1293,7 @@ EXECUTION_REASON_CODES = frozenset({
     "EXECUTION_CANCELLED",
     "EXECUTION_DECISION_CLAIM_REJECTED",
     "EXECUTION_DISPATCH_FENCE_REQUIRED",
+    "EXECUTION_DISPATCH_FAILED",
     "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED",
     "EXECUTION_IDENTITY_MISMATCH",
     "EXECUTION_LEASE_RENEWAL_FAILED",
@@ -1314,6 +1315,43 @@ def is_canonical_execution_reason_code(value: Optional[str]) -> bool:
         and len(value) <= 64
         and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value) is not None
         and value in EXECUTION_REASON_CODES
+    )
+
+
+# Terminal-state/reason pairing is part of the durable state machine.  A
+# globally valid token is not sufficient: for example, a process exit cannot
+# be recorded as a cancellation and a cancellation cannot be recorded as a
+# successful completion.  The registry is intentionally explicit so adding a
+# new outcome requires a reviewed contract and test update.
+EXECUTION_TERMINAL_REASON_CODES = {
+    "SUCCEEDED": frozenset(),
+    "PARTIAL_RESULTS_WITH_WARNING": frozenset({"OUTPUT_LIMIT_EXCEEDED"}),
+    "FAILED": frozenset({
+        "EXECUTION_AUTHORITY_EXPIRED", "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED",
+        "EXECUTION_DISPATCH_FAILED", "EXECUTION_LEASE_RENEWAL_FAILED",
+        "EXECUTABLE_NOT_FOUND", "EXECUTABLE_PERMISSION_DENIED",
+        "LINKED_DISPATCH_INTENT_MISSING", "PROCESS_EXECUTION_EXCEPTION",
+        "PROCESS_EXIT_NONZERO",
+    }),
+    "TIMED_OUT": frozenset({"EXECUTION_AUTHORITY_EXPIRED", "EXECUTION_TIMEOUT"}),
+    "CANCELLED": frozenset({
+        "EXECUTION_CANCELLED", "EXECUTION_CANCELLED_ACKNOWLEDGED",
+        "EXECUTION_CANCELLED_BEFORE_DISPATCH", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+    }),
+    "EXECUTION_BLOCKED": frozenset({
+        "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED", "EXECUTION_DECISION_CLAIM_REJECTED",
+        "EXECUTION_DISPATCH_FENCE_REQUIRED", "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED",
+        "EXECUTION_IDENTITY_MISMATCH", "PROCESS_LAUNCH_REJECTED_SECURITY",
+    }),
+}
+
+
+def is_valid_execution_terminal_outcome(terminal_state: str, reason_code: Optional[str]) -> bool:
+    """Validate a terminal state and its exact reviewed reason-code pairing."""
+    return terminal_state in EXECUTION_TERMINAL_REASON_CODES and (
+        reason_code in EXECUTION_TERMINAL_REASON_CODES[terminal_state]
+        if terminal_state != "SUCCEEDED"
+        else reason_code is None
     )
 
 

@@ -55,7 +55,7 @@ from app.core.models import (
     ExecutionAuthorityLease,
     ExecutionRunRecord,
     EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
-    is_canonical_execution_reason_code,
+    is_valid_execution_terminal_outcome,
     ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
@@ -3470,7 +3470,7 @@ class DatabaseManager:
     ) -> bool:
         """Atomically terminalize a fenced STARTING run after launch failure."""
         safe_states = {"FAILED", "CANCELLED", "TIMED_OUT", "EXECUTION_BLOCKED"}
-        if terminal_state not in safe_states or not is_canonical_execution_reason_code(reason_code):
+        if terminal_state not in safe_states or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
             raise ValueError("execution start abort requires a safe terminal state and reason")
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
@@ -3532,9 +3532,7 @@ class DatabaseManager:
         allowed = {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
         if terminal_state not in allowed or not execution_id or not organization_id or not worker_identity or not dispatch_claim_token:
             return False
-        if terminal_state == "SUCCEEDED" and reason_code is not None:
-            return False
-        if terminal_state != "SUCCEEDED" and not is_canonical_execution_reason_code(reason_code):
+        if not is_valid_execution_terminal_outcome(terminal_state, reason_code):
             return False
         now = utc_now().isoformat()
         dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if terminal_state == "CANCELLED" else "FAILED")
@@ -3569,7 +3567,8 @@ class DatabaseManager:
             if row["run_state"] in EXECUTION_RUN_TERMINAL_STATES:
                 expected_dispatch_state = "COMPLETED" if row["run_state"] in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if row["run_state"] == "CANCELLED" else "FAILED")
                 if (
-                    row["dispatch_state"] == expected_dispatch_state
+                    terminal_state == row["run_state"]
+                    and row["dispatch_state"] == expected_dispatch_state
                     and row["run_reason_code"] == reason_code
                     and row["last_error"] == reason_code
                     and row["worker_identity"] == worker_identity
@@ -3604,16 +3603,40 @@ class DatabaseManager:
                     WHERE execution_id = ? AND organization_id = ? AND state = 'RUNNING'
                       AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))
                       AND (process_group_id = ? OR (? IS NULL AND process_group_id IS NULL))
-                      AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)""",
-                (terminal_state, reason_code, process_id, process_group_id, now, execution_id, organization_id, worker_identity, process_id, process_id, process_group_id, process_group_id, row["session_jti"]),
+                      AND EXISTS (
+                          SELECT 1 FROM execution_runs r2
+                          JOIN execution_requests q2 ON q2.id = r2.request_id
+                             AND q2.organization_id = r2.organization_id
+                          JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id
+                             AND d2.organization_id = r2.organization_id
+                          WHERE r2.execution_id = execution_runs.execution_id
+                            AND r2.organization_id = execution_runs.organization_id
+                            AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                            AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL
+                            AND d2.expires_at > ?
+                            AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d2.session_jti)
+                      )""",
+                (terminal_state, reason_code, process_id, process_group_id, now, execution_id, organization_id, worker_identity, process_id, process_id, process_group_id, process_group_id, now, now),
             )
             dispatch_update = conn.execute(
                 """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
                           claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
                     WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
                       AND claimed_by = ? AND claim_token = ?
-                      AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)""",
-                (dispatch_state, now, reason_code, execution_id, organization_id, worker_identity, dispatch_claim_token, row["session_jti"]),
+                      AND EXISTS (
+                          SELECT 1 FROM execution_runs r2
+                          JOIN execution_requests q2 ON q2.id = r2.request_id
+                             AND q2.organization_id = r2.organization_id
+                          JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id
+                             AND d2.organization_id = r2.organization_id
+                          WHERE r2.execution_id = execution_dispatch_intents.execution_id
+                            AND r2.organization_id = execution_dispatch_intents.organization_id
+                            AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                            AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL
+                            AND d2.expires_at > ?
+                            AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d2.session_jti)
+                      )""",
+                (dispatch_state, now, reason_code, execution_id, organization_id, worker_identity, dispatch_claim_token, now, now),
             )
             if run_update.rowcount != 1 or dispatch_update.rowcount != 1:
                 raise RuntimeError("execution finish lost its transaction fence")
@@ -4331,7 +4354,7 @@ class DatabaseManager:
     ) -> bool:
         """Fail closed after lease/authority loss without permitting success."""
         safe_states = {"CANCELLED", "TIMED_OUT", "FAILED", "EXECUTION_BLOCKED"}
-        if terminal_state not in safe_states or not reason_code or not reason_code.strip():
+        if terminal_state not in safe_states or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
             raise ValueError("reaper requires a reason-coded safe terminal state")
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
@@ -4413,6 +4436,8 @@ class DatabaseManager:
         now = utc_now().isoformat()
         new_state = "COMPLETED" if success else "FAILED"
         message = None if success else (error_code or "EXECUTION_DISPATCH_FAILED")
+        if not is_valid_execution_terminal_outcome("SUCCEEDED" if success else "FAILED", message):
+            raise ValueError("dispatch settlement reason is not a valid terminal outcome")
         with self._connection_scope() as conn:
             lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
             row = conn.execute(
@@ -4535,6 +4560,8 @@ class DatabaseManager:
     def transition_execution_run(self, execution_id: str, organization_id: str, expected_state: str, new_state: str, *, reason_code: Optional[str] = None, process_id: Optional[int] = None, worker_identity: Optional[str] = None, dispatch_claim_token: Optional[str] = None) -> bool:
         with self._connection_scope() as conn:
             if expected_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_TRANSITIONS.get(expected_state, frozenset()):
+                return False
+            if new_state in EXECUTION_RUN_TERMINAL_STATES and not is_valid_execution_terminal_outcome(new_state, reason_code):
                 return False
             if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
                 conn.execute("BEGIN IMMEDIATE")
