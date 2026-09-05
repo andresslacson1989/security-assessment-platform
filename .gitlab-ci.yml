@@ -1,5 +1,8 @@
 stages:
+  - syntax
+  - focused
   - verify
+  - integration
 
 workflow:
   rules:
@@ -17,13 +20,39 @@ variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_CACHE_DIR: "1"
   OPERATING_MODE: TEST
-  JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+  CYBERASSESS_DB_PATH: "$CI_PROJECT_DIR/.ci/cyberassess.db"
+
+compile-backend:
+  stage: syntax
+  script:
+    - python -m compileall -q backend
+
+focused-contract-verification:
+  stage: focused
+  script:
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/focused-contract.xml backend/tests/test_scan_manifest_contract.py tests/security/test_contract_fleet_consistency.py
+  artifacts:
+    when: always
+    reports:
+      junit: reports/focused-contract.xml
+    paths:
+      - reports/focused-contract.xml
+    expire_in: 14 days
 
 full-repository-verification:
   stage: verify
   timeout: 15 minutes
   script:
-    - python -m pytest -q
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/full-suite.xml
+  artifacts:
+    when: always
+    reports:
+      junit: reports/full-suite.xml
+    paths:
+      - reports/full-suite.xml
+    expire_in: 14 days
 
 postgres-schema-assurance:
   stage: verify
@@ -43,4 +72,12 @@ postgres-schema-assurance:
     - >-
       ready=0; for i in $(seq 1 60); do python -c "import socket; socket.create_connection(('postgres', 5432), 1).close()" && ready=1 && break || sleep 1; done; test "$ready" = 1
   script:
-    - python -m pytest -q tests/security/test_postgres_integration.py
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/postgres-suite.xml tests/security/test_postgres_integration.py
+  artifacts:
+    when: always
+    reports:
+      junit: reports/postgres-suite.xml
+    paths:
+      - reports/postgres-suite.xml
+    expire_in: 14 days
