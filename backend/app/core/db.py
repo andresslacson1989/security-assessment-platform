@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -523,8 +524,7 @@ class DatabaseManager:
     def resolve_migration_reconciliation(
         self,
         attempt_id: str,
-        operator_id: str,
-        session_jti: str,
+        authorization_context: Dict[str, Any],
         resolution: str,
         evidence: Dict[str, Any],
         correlation_id: str,
@@ -538,7 +538,18 @@ class DatabaseManager:
         """
         if not getattr(self, "_allow_unresolved_reconciliation", False):
             raise PermissionError("migration reconciliation requires explicit maintenance mode")
-        if not operator_id.strip() or not session_jti.strip():
+        if not isinstance(authorization_context, dict):
+            raise PermissionError("migration reconciliation requires a verified authorization context")
+        operator_id = str(authorization_context.get("sub", ""))
+        session_jti = str(authorization_context.get("jti", ""))
+        if (
+            not operator_id.strip()
+            or not session_jti.strip()
+            or authorization_context.get("iss") != "CyberAssess-Control-Plane"
+            or authorization_context.get("aud") != "CyberAssess-Platform"
+            or int(authorization_context.get("exp", 0)) <= int(time.time())
+            or int(authorization_context.get("nbf", 0)) > int(time.time())
+        ):
             raise PermissionError("migration reconciliation requires an authenticated administrator session")
         if resolution != "VERIFIED":
             raise ValueError("migration reconciliation cannot unblock startup without independent verification")
@@ -556,6 +567,7 @@ class DatabaseManager:
                 raise PermissionError("migration reconciliation requires an active administrator")
             if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (session_jti,)).fetchone() is not None:
                 raise PermissionError("migration reconciliation session is revoked")
+            self._verify_authoritative_schema_state(conn)
             applied = [int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
             if applied != list(range(1, len(MIGRATION_REGISTRY) + 1)):
                 raise RuntimeError("migration reconciliation requires independently verified contiguous schema versions")
@@ -581,6 +593,19 @@ class DatabaseManager:
                 required["target_schema_version"], required["migration_checksum"], operator_id, required["transaction_context_id"],
                 f"MIGRATION_RECONCILIATION_{resolution}", "MigrationReconciliationResolved", "operator reconciliation recorded",
                 context, "NOT_APPLICABLE"))
+
+    def _verify_authoritative_schema_state(self, conn) -> None:
+        """Verify required migration-owned structures before unblocking startup."""
+        required_tables = {"schema_migrations", "schema_migration_events", "users", "organizations", "execution_requests", "execution_runs", "execution_decisions", "execution_dispatch_intents"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()").fetchall()
+            actual_tables = {row["table_name"] for row in rows}
+        else:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            actual_tables = {row["name"] for row in rows}
+        if not required_tables.issubset(actual_tables):
+            raise RuntimeError("migration reconciliation requires independently verified application schema structures")
+        self._verify_migration_ledger(conn)
 
     def _record_migration_failure(self, exc: Exception) -> None:
         if not getattr(self, "_migration_attempt_id", None):
