@@ -6,6 +6,8 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 import re
 import shutil
@@ -19,6 +21,24 @@ from app.core.process_supervisor import (
     ProcessExecutionStatus,
     VerifiedEgressProxy,
 )
+
+
+_execution_id_context: ContextVar[Optional[str]] = ContextVar(
+    "cyberassess_execution_id", default=None,
+)
+
+
+@contextmanager
+def execution_id_scope(execution_id: str):
+    """Bind one scan execution identity to all adapter subprocess calls."""
+    normalized = str(execution_id or "").strip()
+    if not normalized:
+        raise ValueError("execution identity is required")
+    token = _execution_id_context.set(normalized)
+    try:
+        yield
+    finally:
+        _execution_id_context.reset(token)
 
 
 class BaseToolAdapter(ABC):
@@ -249,6 +269,7 @@ class BaseToolAdapter(ABC):
         operation_family: str = "",
         operation_options: Optional[dict] = None,
         tool_id: str = "",
+        execution_id: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -261,6 +282,7 @@ class BaseToolAdapter(ABC):
         if not cmd:
             return -1, "", "Empty command provided"
 
+        effective_execution_id = execution_id or _execution_id_context.get()
         result = await self.safe_execute_subprocess(
             cmd=cmd,
             timeout=timeout,
@@ -275,6 +297,7 @@ class BaseToolAdapter(ABC):
             operation_family=operation_family,
             operation_options=operation_options,
             tool_id=tool_id or self.tool_name,
+            execution_id=effective_execution_id,
         )
         code, stdout, stderr = result
         process_status = getattr(result, "execution_status", None)

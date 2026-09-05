@@ -14,7 +14,11 @@ from app.core.process_supervisor import process_supervisor
 from app.core.path_sandbox import safe_workspace_relative_path
 
 
-async def audit_git_commit_history(repo_path: str, max_commits: int = 100) -> List[Finding]:
+async def audit_git_commit_history(
+    repo_path: str,
+    max_commits: int = 100,
+    execution_id: Optional[str] = None,
+) -> List[Finding]:
     """
     Scans git commit diff history for exposed secrets using regex rules and entropy checks.
     """
@@ -38,6 +42,7 @@ async def audit_git_commit_history(repo_path: str, max_commits: int = 100) -> Li
             timeout=8.0,
             max_output_bytes=10 * 1024 * 1024,
             env={"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
+            execution_id=execution_id,
         )
         if returncode not in (0, 1):
             return findings

@@ -28,6 +28,7 @@ from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
 from app.engines.base import BaseAssessmentEngine
 from app.adapters import discover_system_capabilities, get_adapter_registry
+from app.adapters.base_adapter import execution_id_scope
 
 logger = logging.getLogger("cyberassess.orchestrator")
 
@@ -738,14 +739,15 @@ class ScanOrchestrator:
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_cis_result"] = _cis_cb
 
-                    engine_findings = await engine.run(
-                        job.target,
-                        job.config,
-                        _log_cb,
-                        _prog_cb,
-                        _find_cb,
-                        **run_kwargs,
-                    )
+                    with execution_id_scope(scan_id):
+                        engine_findings = await engine.run(
+                            job.target,
+                            job.config,
+                            _log_cb,
+                            _prog_cb,
+                            _find_cb,
+                            **run_kwargs,
+                        )
                     await _raise_if_authoritatively_cancelled()
                     # Deduplicate and append
                     for finding in engine_findings:
