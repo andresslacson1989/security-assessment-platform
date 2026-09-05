@@ -393,9 +393,10 @@ class DatabaseManager:
                         raise RuntimeError(f"migration v{spec.version} is applied without a durable SUCCEEDED event")
                     continue
                 self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
-                self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
                 self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
                 self._migration_spec = spec
+                backend_key = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+                self._migration_transaction_id = f"txp-{uuid.uuid4().hex}-{spec.apply_artifact[backend_key].split(':', 1)[1]}"
                 self._migration_started_durable = False
                 self._migration_coordinator_active = True
                 try:
@@ -457,6 +458,7 @@ class DatabaseManager:
                 "database-startup", self._migration_transaction_id, error_class, error_message,
                 json.dumps({
                     "coordinator": "registry",
+                    "provenance_format": "registry-coordinator-v2",
                     "migration_version": spec.version,
                     "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
                     "apply_artifact": spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"),
@@ -989,8 +991,9 @@ class DatabaseManager:
                 # identity evidence but explicitly have unavailable apply
                 # provenance; new coordinator events must carry the complete
                 # claim set below.
-                legacy_provenance = "apply_artifact" not in context
+                legacy_provenance = not str(row["transaction_context_id"]).startswith("txp-")
                 if not legacy_provenance and (
+                    context.get("provenance_format") != "registry-coordinator-v2"
                     context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
                     or context.get("apply_artifact") != spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite")
                     or context.get("apply_artifacts") != spec.apply_artifact

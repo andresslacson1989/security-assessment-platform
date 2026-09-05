@@ -79,6 +79,7 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
     for row in rows:
         context = json.loads(row["context_json"])
         assert context["coordinator"] == "registry"
+        assert context["provenance_format"] == "registry-coordinator-v2"
         assert context["apply_artifact_revision"] == "execution-migration-apply-v1"
         assert context["apply_artifact"].startswith("sha256:")
         assert context["apply_manifest"]
