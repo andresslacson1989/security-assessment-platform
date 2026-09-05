@@ -509,7 +509,7 @@ def test_revoked_approver_session_fails_closed(monkeypatch):
         _issue(FakeDecisionStore(_decision(target), revoked=True), target)
 
 
-def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
+def test_sqlite_standalone_decision_cannot_enter_execution_dispatch(tmp_path):
     from app.core.db import DatabaseManager
 
     database = DatabaseManager(tmp_path / "authority.db")
@@ -524,19 +524,16 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     decision = _decision(target)
     database.create_execution_decision(decision)
     assert database.get_execution_decision(decision.id, organization_id="org-a").id == decision.id
-    assert database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION)
+    assert database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION) is None
     assert not database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION)
     assert database.claim_execution_decision(decision.id, "org-a", "wrong-session", "worker-1", OPERATION_POLICY_REVISION) is None
     stored = database.get_execution_decision(decision.id, organization_id="org-a")
     assert stored.consumed_at is None
-    assert stored.claim_owner == "worker-1"
-    assert stored.claim_token
-    assert database.mark_execution_decision_started(decision.id, "org-a", "worker-1", stored.claim_token)
-    assert database.get_execution_decision(decision.id, organization_id="org-a").consumed_at is not None
+    assert stored.claim_owner is None
+    assert stored.claim_token is None
     events, _ = database.list_audit_events(organization_id="org-a", limit=20)
     assert {event.action.value for event in events} >= {
-        "EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CLAIMED", "EXECUTION_DECISION_STARTED",
-        "EXECUTION_DECISION_CLAIM_REJECTED",
+        "EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CLAIM_REJECTED",
     }
 
 

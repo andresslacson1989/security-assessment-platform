@@ -3256,12 +3256,24 @@ class DatabaseManager:
                 SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
                 WHERE id = ? AND organization_id = ? AND session_jti = ?
                   AND worker_identity = ? AND operation_policy_revision = ?
-                  AND approval_state = 'APPROVED'
-                  AND revoked_at IS NULL AND consumed_at IS NULL
-                  AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
-                  AND expires_at > ?
-                """,
-                (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat()),
+                   AND approval_state = 'APPROVED'
+                   AND revoked_at IS NULL AND consumed_at IS NULL
+                   AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
+                   AND expires_at > ?
+                   AND EXISTS (
+                         SELECT 1
+                           FROM execution_runs r
+                           JOIN execution_requests q ON q.id = r.request_id
+                             AND q.organization_id = r.organization_id
+                           JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id
+                             AND i.organization_id = r.organization_id
+                          WHERE r.approved_decision_id = execution_decisions.id
+                            AND r.organization_id = execution_decisions.organization_id
+                            AND q.state = 'AUTHORIZED' AND q.expires_at > ?
+                            AND i.state = 'PENDING'
+                   )
+                 """,
+                 (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat(), now.isoformat()),
             )
             if cur.rowcount != 1:
                 self._insert_audit_event_conn(conn, AuditEvent(
@@ -3293,23 +3305,22 @@ class DatabaseManager:
                 """UPDATE execution_decisions SET started_at = ?, consumed_at = ?, claim_expires_at = NULL
                    WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ?
                      AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND claim_expires_at > ?
-                     AND (NOT EXISTS (
-                            SELECT 1 FROM execution_runs r
-                             WHERE r.approved_decision_id = execution_decisions.id
-                               AND r.organization_id = execution_decisions.organization_id
-                         ) OR EXISTS (
+                     AND EXISTS (
                             SELECT 1
                               FROM execution_runs r
                               JOIN execution_requests q ON q.id = r.request_id
                                 AND q.organization_id = r.organization_id
+                              JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id
+                                AND i.organization_id = r.organization_id
                              WHERE r.approved_decision_id = execution_decisions.id
                                AND r.organization_id = execution_decisions.organization_id
                                AND q.state = 'AUTHORIZED' AND q.expires_at > ?
-                         ))""",
+                               AND i.state IN ('PENDING', 'CLAIMED')
+                         )""",
                 (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat()),
             )
             if cur.rowcount == 1:
-                correlation_id = self._execution_correlation_id_conn(conn, decision_id, organization_id)
+                correlation_id = self._execution_correlation_id_conn(conn, organization_id=organization_id, decision_id=decision_id)
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_CONSUMED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
             return cur.rowcount == 1
@@ -3398,7 +3409,8 @@ class DatabaseManager:
                         organization_id=organization_id,
                         action=AuditAction.EXECUTION_DECISION_REVOKED,
                         object_type="execution_decision", object_id=decision_id,
-                        result="SUCCESS", details={"decision_id": decision_id},
+                        result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, organization_id=organization_id, decision_id=decision_id),
+                        details={"decision_id": decision_id},
                     ),
                 )
             return changed
@@ -3748,18 +3760,27 @@ class DatabaseManager:
             details={"reason_code": reason_code},
         ))
 
-    def _execution_correlation_id_conn(self, conn, execution_id: str, organization_id: str) -> str:
+    def _execution_correlation_id_conn(self, conn, execution_id: Optional[str] = None, organization_id: Optional[str] = None, decision_id: Optional[str] = None) -> str:
         """Return the stable durable lifecycle correlation for one execution."""
-        row = conn.execute(
-            "SELECT correlation_id FROM execution_runs WHERE execution_id = ? AND organization_id = ?",
-            (execution_id, organization_id),
-        ).fetchone()
+        if not organization_id:
+            raise ValueError("organization_id is required for lifecycle correlation")
+        if decision_id and not execution_id:
+            row = conn.execute(
+                "SELECT correlation_id FROM execution_runs WHERE approved_decision_id = ? AND organization_id = ? ORDER BY created_at, execution_id LIMIT 1",
+                (decision_id, organization_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT correlation_id FROM execution_runs WHERE execution_id = ? AND organization_id = ?",
+                (execution_id, organization_id),
+            ).fetchone()
         if row and row["correlation_id"]:
             return str(row["correlation_id"])
         current = get_correlation_id()
         if current:
             return current
-        return "corr-execution-" + hashlib.sha256(f"{organization_id}:{execution_id}".encode()).hexdigest()[:32]
+        durable_key = decision_id or execution_id or "unknown"
+        return "corr-execution-" + hashlib.sha256(f"{organization_id}:{durable_key}".encode()).hexdigest()[:32]
 
     def claim_execution_dispatch_intent(
         self,
