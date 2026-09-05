@@ -1566,7 +1566,7 @@ class DatabaseManager:
             );
 
             CREATE TABLE IF NOT EXISTS execution_runs (
-                execution_id TEXT PRIMARY KEY,
+                execution_id TEXT NOT NULL PRIMARY KEY,
                 request_id TEXT NOT NULL,
                 organization_id TEXT NOT NULL,
                 approved_decision_id TEXT,
@@ -1597,7 +1597,7 @@ class DatabaseManager:
             );
 
             CREATE TABLE IF NOT EXISTS execution_dispatch_intents (
-                execution_id TEXT PRIMARY KEY,
+                execution_id TEXT NOT NULL PRIMARY KEY,
                 organization_id TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED', 'BLOCKED')),
                 attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
@@ -2359,7 +2359,7 @@ class DatabaseManager:
                 exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_dispatch_intents'").fetchone() if not isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'execution_dispatch_intents'").fetchone()
                 if not exists:
                     conn.execute("""CREATE TABLE execution_dispatch_intents (
-                        execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+                        execution_id TEXT NOT NULL PRIMARY KEY, organization_id TEXT NOT NULL,
                         state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED', 'BLOCKED')),
                         attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
                         created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
@@ -2420,7 +2420,7 @@ class DatabaseManager:
                     if partial_columns:
                         raise RuntimeError(f"dispatch migration v8 found partial lease columns: {sorted(partial_columns)!r}")
                     conn.execute("""CREATE TABLE execution_dispatch_intents_v8 (
-                        execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+                        execution_id TEXT NOT NULL PRIMARY KEY, organization_id TEXT NOT NULL,
                         state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
                         attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
                         created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,

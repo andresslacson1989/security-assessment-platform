@@ -86,7 +86,7 @@ def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
             PRIMARY KEY (execution_id), UNIQUE (execution_id, organization_id)
         );
         CREATE TABLE execution_dispatch_intents (
-            execution_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+            execution_id TEXT NOT NULL PRIMARY KEY, organization_id TEXT NOT NULL,
             state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
             attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
             created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
