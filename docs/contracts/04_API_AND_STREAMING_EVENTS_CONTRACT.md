@@ -127,7 +127,19 @@ emit both fields consistently and MUST NOT represent them as conflicting states.
 Each
 state includes request ID, decision ID where applicable, worker identity,
 `target_policy_version`, `operation_policy_revision`, timestamps, coverage
-information, and a sanitized reason code.
+information, and a canonical, bounded reason code. Terminal persistence is
+idempotent only when the requested terminal state, linked dispatch state,
+worker identity, and supplied process identity are consistent with the already
+stored outcome. A conflicting terminal retry MUST be rejected and audited; it
+MUST NOT be treated as a successful duplicate. Non-success outcomes MUST use a
+reason code from the reviewed execution-reason registry and MUST NOT persist
+free-form diagnostic text. Success MUST persist no failure reason code.
+The registry is state-aware: `SUCCEEDED` has no reason, partial results use a
+coverage reason such as `OUTPUT_LIMIT_EXCEEDED`, failures use reviewed failure
+or authority-loss reasons, timeouts use timeout/authority-expiry reasons,
+cancellations use reviewed cancellation reasons, and blocked executions use
+reviewed authorization or launch-rejection reasons. Semantically contradictory
+state/reason pairs MUST be rejected.
 The API returns `202 Accepted` for an accepted job, `401/403` for authentication
 or authorization failure, `409` for idempotency/replay conflict, and `422` for
 invalid typed options. SSE emits `execution.requested`, `execution.authorized`,
@@ -153,6 +165,65 @@ checks. `GET /api/system/executions/{request_id}` and the execution SSE stream
 are the read/observation interfaces. A decision is stored with the request and
 audit record, is single-use for the exact operation, and is invalidated by
 logout, session expiry, idle timeout, explicit revocation, or request mutation.
+Once revocation is durably committed, terminal settlement MUST re-check the
+revocation predicate as part of both the run and dispatch updates. A worker
+that loses this authority MUST NOT report a successful terminal outcome; a
+durable cancellation/reaper path is responsible for closing the execution.
+Session revocation MUST also propagate to the durable decision authority under
+the same transaction and lock order used by execution settlement. Revoke and
+settle operations MUST have a deterministic serialization point: whichever
+transaction acquires the authority row first establishes the outcome, and a
+later transaction MUST observe the resulting revoked or terminal state.
+Expiry fences MUST use a timestamp captured after authority-row locks are
+acquired, so lock wait time cannot extend an expired approval.
+The application MUST run a lifecycle-managed recovery loop independent of
+browser sessions. It MUST periodically enumerate authority-lost active runs,
+cancel only the process group bound to each `execution_id`, then atomically
+settle the dispatch and run with a canonical safe outcome. Recovery attempts,
+successes, failures, and exhausted retries MUST be auditable and observable;
+the loop MUST use bounded batch size, cadence, and retry behavior and MUST be
+awaited during graceful shutdown. Process cancellation MUST return a typed
+result (`KILLED`, `ALREADY_EXITED`, `NOT_FOUND`, or `FAILED`); durable recovery
+MUST proceed only for `KILLED`/`ALREADY_EXITED`, or for a run with no process
+ever created. `NOT_FOUND` and `FAILED` MUST remain recoverable backlog and MUST
+surface an operator-visible health signal rather than being declared closed.
+PID-only cancellation is a compatibility/diagnostic surface and MUST return
+the same typed confirmation result; it MUST NOT discard its tracking entry or
+report success when termination is not confirmed. Governed execution recovery
+MUST use the durable `execution_id` binding.
+If a worker restart removes the in-memory supervisor mapping, a persisted PID
+MUST NOT be treated as safe to terminate by PID reuse. The execution MUST
+remain in an authority-lost/recovery-blocked state with bounded retry and an
+operator-visible escalation until a verified supervisor owning the process
+group can confirm termination.
+
+The execution lifecycle MUST conform to the closure matrix in
+`docs/EXECUTION_LIFECYCLE_CLOSURE_MATRIX.md`. In particular, the application
+MUST explicitly distinguish `NO_EXTERNAL_PROCESS`,
+`EXTERNAL_PROCESS_GOVERNED`, `LAUNCH_UNCERTAIN`, `RECOVERY_BLOCKED`, and
+`TERMINAL`. A null process ID, a stopped task, a missing in-memory mapping, or
+`NOT_FOUND` from a supervisor MUST NOT be treated as proof of
+`NO_EXTERNAL_PROCESS`. Capability discovery and installer/version probes MUST
+be classified as either part of the same governed execution container or as
+explicitly non-scan operations with a separate non-terminalizing lifecycle;
+they MUST NOT be mixed into scan cancellation by inference.
+
+The governed launch boundary MUST accept a typed execution context bound to
+the durable `execution_id`, organization, worker generation, approved
+decision, target seal, operation-policy revision, and exact command. Ambient
+context and optional string identifiers MAY assist diagnostics but MUST NOT be
+the sole authority. One execution ID MUST own a complete process container or
+complete member set; registering a later process MUST NOT overwrite an earlier
+member or make it unaddressable. A launch whose process creation is not
+atomically bound to that identity MUST enter `LAUNCH_UNCERTAIN` and remain
+non-terminal until a verified cleanup or attachment protocol succeeds.
+
+Cancellation MUST have one coordinator for task shutdown, process/container
+termination, authority revocation, and durable settlement. The coordinator
+MUST use bounded worker and database operations, persist retry/backoff and
+escalation state by execution ID, and expose that state to operators. A
+timed-out background operation MUST be tracked through shutdown and MUST NOT
+perform an unobserved late terminal mutation.
 
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 

@@ -155,6 +155,41 @@ To achieve deterministic CI verification across environments without requiring e
 - A successful login MUST establish the token/session even when capability detection is slow, unavailable, or fails. A login failure MUST not trigger a capability or toolbox refresh.
 - Application startup MUST create an autonomous observation task after readiness, with a bounded interval, per-tool/aggregate timeout, single-flight refresh, structured failure state, and graceful cancellation/await during shutdown. The task MUST operate without a browser session or user token.
 - Readiness and authentication latency tests MUST prove that the observation task cannot block either endpoint. Concurrent scheduler ticks MUST not overlap for the same configuration.
+- Execution terminalization MUST accept only the canonical bounded reason-code registry. A non-success terminal write with an unknown, overlong, multiline, or free-form reason MUST be rejected. A success terminal write carrying a reason MUST be rejected.
+- The reason-code registry MUST be state-aware. Tests MUST reject semantically contradictory pairs such as `FAILED` plus `EXECUTION_CANCELLED` and `TIMED_OUT` plus `PROCESS_EXIT_NONZERO`, while accepting each reviewed state-specific pair.
+- Repeating an identical terminal settlement MAY be idempotently successful only when the durable run state, mapped dispatch state, reason code, worker identity, and supplied process identity agree. A conflicting terminal retry MUST be rejected and MUST leave both durable records unchanged except for its rejection audit event.
+- A revocation committed before terminal update evaluation MUST prevent both the execution-run and dispatch-intent terminal updates. Tests MUST cover a revoked session and verify that no successful outcome is persisted.
+- `revoke_token` MUST propagate session revocation to the linked durable execution authority in the same transaction. PostgreSQL tests MUST cover revoke-versus-finish commit ordering, near-expiry finish after lock acquisition, and verify that no successful settlement occurs after authority loss.
+- Reaper eligibility MUST include session-token revocation and MUST close an otherwise active run with a canonical safe outcome while preserving tenant, correlation, and audit invariants.
+- The production observation lifecycle MUST invoke the authority reaper on a bounded cadence without authentication, cancel by exact `execution_id`, and atomically close recovered runs. Tests MUST prove startup registration, graceful shutdown/await, exact process identity targeting, and recovery after session revocation or lease expiry.
+- Recovery MUST be failure-isolated: bounded database/supervisor calls, per-candidate error handling, retryable backlog for unconfirmed termination, and a persistent/observable recovery error state. Tests MUST prove that `NOT_FOUND`/`FAILED` cancellation does not terminalize a run, one bad candidate does not stop later candidates, and a transient database failure does not kill the lifecycle task.
+- Process-tree confirmation MUST verify the root and every captured descendant/group member. PID-only cancellation MUST return the typed confirmation result and retain tracking on failure. A `RUNNING` candidate without durable process identity MUST remain blocked; only `REQUESTED`/`STARTING` candidates proven never to create a process may close without a process confirmation.
+- Worker-restart tests MUST prove that a missing in-memory mapping yields `NOT_FOUND`, does not close the durable run, and produces an operator-visible recovery condition; a raw persisted PID MUST never be used without an independently bound process-group identity.
+
+- The implementation MUST maintain the requirements and status fields in
+  `docs/EXECUTION_LIFECYCLE_CLOSURE_MATRIX.md`. Test vectors MUST cover the
+  explicit process-ownership states `NO_EXTERNAL_PROCESS`,
+  `EXTERNAL_PROCESS_GOVERNED`, `LAUNCH_UNCERTAIN`, `RECOVERY_BLOCKED`, and
+  `TERMINAL`. `NOT_FOUND`, null process identity, task completion, and missing
+  in-memory mappings MUST each be tested as insufficient proof of
+  `NO_EXTERNAL_PROCESS` unless a durable no-launch record exists.
+- A typed execution context bound to the durable execution run MUST be
+  required at every scan-reachable governed process boundary. Tests and a
+  repository call-site enforcement check MUST cover capability discovery,
+  every adapter family, direct helper launches, and child-task propagation.
+  Installation and observation processes MUST use an explicitly separate
+  non-scan capability and MUST NOT be eligible for scan terminalization.
+- Process ownership tests MUST cover multiple overlapping children under one
+  run, root exit with surviving descendants, PID/PGID reuse, membership races,
+  and restart attachment. Windows coverage MUST use a Job Object or an
+  equivalent kernel-owned process container; POSIX coverage MUST document the
+  precise pidfd/session/group threat model and fail closed when ownership
+  cannot be independently verified.
+- Cancellation tests MUST prove one coordinator owns task shutdown, process
+  termination, authority revocation, and terminal settlement. The coordinator
+  MUST persist bounded retry/backoff/escalation state and expose it through
+  operator health/audit. Database operations that outlive an async timeout
+  MUST be tracked and prevented from causing an unobserved late mutation.
 
 ### 6.1.3 Historical Persistence and Retention Vectors
 
