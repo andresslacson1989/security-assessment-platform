@@ -1407,6 +1407,7 @@ class ExecutionRecoveryStateRecord(BaseModel):
     last_error: Optional[str] = None
     next_retry_at: Optional[datetime] = None
     escalation_level: int = Field(default=0, ge=0)
+    worker_generation: Optional[str] = None
     updated_at: datetime = Field(default_factory=utc_now)
 
 

@@ -765,6 +765,7 @@ class ProcessSupervisor:
             if execution_context is None or type(execution_context) is not GovernedExecutionContext:
                 return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required")
             try:
+                execution_context.assert_bound_to_capability(execution_capability)
                 execution_context.assert_launch(
                     execution_id=execution_id or "",
                     organization_id=execution_capability.decision.organization_id,
@@ -779,6 +780,7 @@ class ProcessSupervisor:
                 return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context")
             try:
                 non_scan_context.assert_issued()
+                non_scan_context.assert_live()
             except Exception as exc:
                 return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context ({type(exc).__name__})")
         else:
@@ -898,13 +900,27 @@ class ProcessSupervisor:
             proc = None
             launch_committed = False
 
+            def _settle_durable(terminal_state: str, reason_code: str, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
+                if execution_capability is None:
+                    return True
+                if execution_id != execution_capability.execution_id:
+                    return False
+                from app.core.execution_service import settle_execution
+                return settle_execution(
+                    execution_capability,
+                    terminal_state=terminal_state,
+                    reason_code=reason_code,
+                    process_id=process_id,
+                    process_group_id=process_group_id,
+                )
+
             def _finish_durable(terminal_state: str, reason_code: Optional[str] = None) -> Optional[ProcessExecutionResult]:
                 if execution_capability is None:
                     return None
                 if execution_id != execution_capability.execution_id:
                     return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_REJECTED_SECURITY: execution identity mismatch")
-                if not execution_capability.finish(
-                    terminal_state=terminal_state, reason_code=reason_code,
+                if not _settle_durable(
+                    terminal_state, reason_code or "PROCESS_TERMINALIZED",
                     process_id=proc.pid if proc else None,
                     process_group_id=str(proc.pid) if proc and start_new_session else None,
                 ):
@@ -934,10 +950,10 @@ class ProcessSupervisor:
                             max_output_bytes=max_output_bytes,
                         )
                         if not execution_id or execution_id != execution_capability.execution_id:
-                            execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="EXECUTION_IDENTITY_MISMATCH")
+                            _settle_durable("EXECUTION_BLOCKED", "EXECUTION_IDENTITY_MISMATCH")
                             return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch")
                         if cancellation_requested.is_set():
-                            execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
+                            _settle_durable("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
                             return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")
@@ -967,7 +983,7 @@ class ProcessSupervisor:
                         clean_env.update(credential_handoff.materialize())
                 except (AttributeError, TypeError, ValueError) as exc:
                     if execution_capability is not None:
-                        execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="PROCESS_LAUNCH_REJECTED_SECURITY")
+                        _settle_durable("EXECUTION_BLOCKED", "PROCESS_LAUNCH_REJECTED_SECURITY")
                     return ProcessExecutionResult(
                         126,
                         "",
@@ -975,7 +991,7 @@ class ProcessSupervisor:
                     )
                 if cancellation_requested.is_set():
                     if execution_capability is not None:
-                        execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
+                        _settle_durable("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
                     return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
                 proc = subprocess.Popen(
                     cmd,
@@ -1064,11 +1080,11 @@ class ProcessSupervisor:
                 return ProcessExecutionResult(proc.returncode, stdout, stderr)
             except FileNotFoundError as e:
                 if execution_capability is not None:
-                    execution_capability.abort_start(terminal_state="FAILED", reason_code="EXECUTABLE_NOT_FOUND")
+                    _settle_durable("FAILED", "EXECUTABLE_NOT_FOUND")
                 return ProcessExecutionResult(127, "", f"Executable not found: {e}")
             except PermissionError as e:
                 if execution_capability is not None:
-                    execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="EXECUTABLE_PERMISSION_DENIED")
+                    _settle_durable("EXECUTION_BLOCKED", "EXECUTABLE_PERMISSION_DENIED")
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
                 termination_confirmed = True
@@ -1086,10 +1102,10 @@ class ProcessSupervisor:
                         if not termination_confirmed:
                             retain_execution_ref[0] = True
                             return ProcessExecutionResult(-1, "", "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
-                        if not execution_capability.finish(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
+                        if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
                             return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
                     else:
-                        if not execution_capability.abort_start(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION"):
+                        if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION"):
                             return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable launch failure was not committed")
                 return ProcessExecutionResult(-1, "", str(e))
             finally:
@@ -1113,14 +1129,14 @@ class ProcessSupervisor:
                     retain_execution_ref[0] = True
                     raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
                 if execution_capability is not None:
-                    if not execution_capability.finish(
-                        terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED",
+                    if not _settle_durable(
+                        "CANCELLED", "EXECUTION_CANCELLED",
                         process_id=proc_ref[0].pid,
                         process_group_id=str(process_group_ref[0]) if process_group_ref[0] else None,
                     ):
                         raise RuntimeError("PROCESS_FINALIZATION_FAILED: durable cancellation outcome was not committed")
             elif execution_capability is not None:
-                execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
+                _settle_durable("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
             raise
 
 

@@ -28,7 +28,8 @@ from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
 from app.engines.base import BaseAssessmentEngine
 from app.adapters import discover_system_capabilities, get_adapter_registry
-from app.adapters.base_adapter import execution_id_scope
+from app.core.execution_context import GovernedExecutionContext
+from app.core.execution_decision import ExecutionDecisionCapability
 
 logger = logging.getLogger("cyberassess.orchestrator")
 
@@ -150,13 +151,19 @@ class ScanOrchestrator:
             return job
         return get_scan(scan_id, organization_id=organization_id)
 
-    async def start_scan(self, scan_job: ScanJob) -> asyncio.Task:
+    async def start_scan(
+        self, scan_job: ScanJob, *,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        execution_capability: Optional[ExecutionDecisionCapability] = None,
+    ) -> asyncio.Task:
         """
         Queues and launches background execution for a new scan job governed by ScanQueueManager.
         """
         async with self._lock:
             self._active_jobs[scan_job.id] = scan_job
             save_scan(scan_job)
+        if (execution_context is None) != (execution_capability is None):
+            raise ValueError("governed scan start requires both typed context and decision capability")
 
         from app.core.queue import queue_manager
         if queue_manager.durable_enabled:
@@ -176,6 +183,8 @@ class ScanOrchestrator:
                     self._execute_scan,
                     scan_job.id,
                     organization_id=scan_job.organization_id,
+                    execution_context=execution_context,
+                    execution_capability=execution_capability,
                 )
             )
         self._tasks[scan_job.id] = task
@@ -563,7 +572,11 @@ class ScanOrchestrator:
 
     # --- Background Execution Engine ---
 
-    async def _execute_scan(self, scan_id: str) -> None:
+    async def _execute_scan(
+        self, scan_id: str, *,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        execution_capability: Optional[ExecutionDecisionCapability] = None,
+    ) -> None:
         job = self._active_jobs.get(scan_id)
         if not job:
             return
@@ -739,15 +752,12 @@ class ScanOrchestrator:
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_cis_result"] = _cis_cb
 
-                    with execution_id_scope(scan_id):
-                        engine_findings = await engine.run(
-                            job.target,
-                            job.config,
-                            _log_cb,
-                            _prog_cb,
-                            _find_cb,
-                            **run_kwargs,
-                        )
+                    if execution_context is not None:
+                        run_kwargs["execution_context"] = execution_context
+                        run_kwargs["execution_capability"] = execution_capability
+                    engine_findings = await engine.run(
+                        job.target, job.config, _log_cb, _prog_cb, _find_cb, **run_kwargs,
+                    )
                     await _raise_if_authoritatively_cancelled()
                     # Deduplicate and append
                     for finding in engine_findings:

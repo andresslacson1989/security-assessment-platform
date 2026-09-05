@@ -20,8 +20,9 @@ from app.core.tool_operation_policy import (
 )
 from app.core.execution_context import (
     GovernedExecutionContext,
-    _issue_verified_context,
     canonical_command_digest,
+    canonical_binding_digest,
+    _freeze_value,
 )
 
 
@@ -139,33 +140,19 @@ class ExecutionDecisionCapability:
         )
 
     def abort_start(self, *, terminal_state: str, reason_code: str, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
-        aborter = getattr(self.database, "abort_execution_start", None)
-        if aborter is None or not self.claim_token or not self.dispatch_claim_token:
-            return False
-        changed = bool(aborter(
-            self.decision.id, self.decision.organization_id, self.worker_identity,
-            self.claim_token, self.dispatch_claim_token, terminal_state=terminal_state,
-            reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
-        ))
-        if changed and process_id is None:
-            from app.core.execution_service import record_no_process
-            record_no_process(self, proof=f"no-process:{self.execution_id}:{reason_code}", reason_code=reason_code)
-        return changed
+        from app.core.execution_service import settle_execution
+        return settle_execution(
+            self, terminal_state=terminal_state, reason_code=reason_code,
+            process_id=process_id, process_group_id=process_group_id,
+        )
 
     def finish(self, *, terminal_state: str, reason_code: Optional[str] = None, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
-        finisher = getattr(self.database, "finish_execution", None)
-        if finisher is None or not self.execution_id or not self.dispatch_claim_token:
-            return False
-        changed = bool(finisher(
-            self.execution_id, self.decision.organization_id, self.worker_identity,
-            self.dispatch_claim_token, terminal_state=terminal_state,
-            reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
-        ))
-        if changed:
-            from app.core.execution_service import record_terminal
-            if not record_terminal(self, reason_code=reason_code or "PROCESS_TERMINALIZED"):
-                return False
-        return changed
+        from app.core.execution_service import settle_execution
+        return settle_execution(
+            self, terminal_state=terminal_state,
+            reason_code=reason_code or "PROCESS_TERMINALIZED",
+            process_id=process_id, process_group_id=process_group_id,
+        )
 
     def renew(self, *, lease_seconds: int = 30) -> bool:
         renewer = getattr(self.database, "renew_execution_dispatch_lease", None)
@@ -212,7 +199,7 @@ class ExecutionDecisionCapability:
         }
         if any(run.get(key) != value for key, value in expected.items()):
             raise ExecutionDecisionError("execution run snapshot does not match the approved decision")
-        return _issue_verified_context(
+        context = GovernedExecutionContext(
             execution_id=self.execution_id,
             request_id=str(run["request_id"]),
             organization_id=self.decision.organization_id,
@@ -225,10 +212,15 @@ class ExecutionDecisionCapability:
             operation_policy_revision=self.decision.operation_policy_revision,
             tool_id=self.tool_id,
             operation_family=self.operation_family,
-            operation_options=dict(self.decision.operation_options),
-            resource_budget=dict(self.decision.resource_budget),
-            account_impact_budget=dict(self.decision.account_impact_budget),
-            credential_scope=dict(self.decision.credential_scope),
+            operation_options=_freeze_value(self.decision.operation_options),
+            resource_budget=_freeze_value(self.decision.resource_budget),
+            account_impact_budget=_freeze_value(self.decision.account_impact_budget),
+            credential_scope=_freeze_value(self.decision.credential_scope),
+            operation_options_digest=canonical_binding_digest(self.decision.operation_options),
+            resource_budget_digest=canonical_binding_digest(self.decision.resource_budget),
+            account_impact_budget_digest=canonical_binding_digest(self.decision.account_impact_budget),
+            credential_scope_digest=canonical_binding_digest(self.decision.credential_scope),
+            revocation_check_reference=f"session-jti:{self.decision.session_jti}",
             worker_identity=self.worker_identity,
             worker_generation=worker_generation.strip(),
             session_jti=self.decision.session_jti,
@@ -238,6 +230,8 @@ class ExecutionDecisionCapability:
             command_digest=canonical_command_digest(tuple(command)),
             authority_token=self.dispatch_claim_token,
         )
+        object.__setattr__(context, "_issued_by", self)
+        return context
 
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:

@@ -18,7 +18,7 @@ spec.loader.exec_module(module)
 
 def _issued():
     command = ("nmap", "--version")
-    return module._issue_verified_context(
+    context = module.GovernedExecutionContext(
         execution_id="run-1", request_id="req-1", organization_id="org-1",
         asset_id="asset-1", target_id="target-1", authorization_decision_id="dec-1",
         request_fingerprint="fingerprint", target_policy_version="target-v1",
@@ -27,7 +27,14 @@ def _issued():
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=1), correlation_id="corr-1",
         exact_command=command, command_digest=module.canonical_command_digest(command),
         authority_token="opaque-claim",
+        operation_options_digest=module.canonical_binding_digest({}),
+        resource_budget_digest=module.canonical_binding_digest({}),
+        account_impact_budget_digest=module.canonical_binding_digest({}),
+        credential_scope_digest=module.canonical_binding_digest({}),
+        revocation_check_reference="session-jti:session-1",
     )
+    object.__setattr__(context, "_issued_by", object())
+    return context
 
 
 def test_context_is_issued_and_exact_command_bound():
@@ -46,6 +53,7 @@ def test_public_reconstruction_cannot_become_authority():
 
 def test_no_exported_issuer_or_public_issue_factory():
     assert not hasattr(module, "_AUTHORITY_ISSUER")
+    assert not hasattr(module, "_issue_verified_context")
     assert not hasattr(module.GovernedExecutionContext, "_issue")
 
 
@@ -78,3 +86,12 @@ def test_attestation_digest_is_recomputed_from_canonical_fields():
         module.WindowsJobAttestation(**values, digest="0" * 64)
     values["digest"] = module.canonical_binding_digest(values)
     module.WindowsJobAttestation(**values)
+
+
+def test_non_scan_capability_factory_is_purpose_and_ttl_bounded():
+    with pytest.raises(module.UnsupportedNonScanContextError):
+        module.issue_non_scan_execution_context("arbitrary-authority", ttl_seconds=300)
+    with pytest.raises(module.UnsupportedNonScanContextError):
+        module.issue_non_scan_execution_context("installer:tool", ttl_seconds=901)
+    context = module.issue_non_scan_execution_context("installer:tool", ttl_seconds=1)
+    context.assert_live()

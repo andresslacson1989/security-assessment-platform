@@ -6,8 +6,6 @@ Authoritative Reference: contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
-from contextlib import contextmanager
-from contextvars import ContextVar
 import os
 import re
 import shutil
@@ -21,25 +19,7 @@ from app.core.process_supervisor import (
     ProcessExecutionStatus,
     VerifiedEgressProxy,
 )
-from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext, issue_non_scan_execution_context
-
-
-_execution_id_context: ContextVar[Optional[str]] = ContextVar(
-    "cyberassess_execution_id", default=None,
-)
-
-
-@contextmanager
-def execution_id_scope(execution_id: str):
-    """Bind one scan execution identity to all adapter subprocess calls."""
-    normalized = str(execution_id or "").strip()
-    if not normalized:
-        raise ValueError("execution identity is required")
-    token = _execution_id_context.set(normalized)
-    try:
-        yield
-    finally:
-        _execution_id_context.reset(token)
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
 
 
 class BaseToolAdapter(ABC):
@@ -285,12 +265,7 @@ class BaseToolAdapter(ABC):
         if not cmd:
             return -1, "", "Empty command provided"
 
-        effective_execution_id = execution_id or _execution_id_context.get()
-        if effective_execution_id is None and execution_context is None and execution_capability is None and non_scan_context is None:
-            # Capability/version observation is explicitly non-scan work. A
-            # scan invocation always carries an execution identity/context and
-            # therefore cannot silently take this path.
-            non_scan_context = issue_non_scan_execution_context(f"observation:{self.tool_name}:probe")
+        effective_execution_id = execution_id
         if execution_context is not None:
             if type(execution_context) is not GovernedExecutionContext:
                 return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid typed execution context"

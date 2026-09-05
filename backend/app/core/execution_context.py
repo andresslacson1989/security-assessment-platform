@@ -40,9 +40,6 @@ class UnsupportedNonScanContextError(ExecutionContextError):
     pass
 
 
-_ISSUER = object()
-
-
 class PosixProcessAttestation(BaseModel):
     """Canonical, bounded POSIX identity proof; a PID alone is never authority."""
 
@@ -197,22 +194,8 @@ class GovernedExecutionContext(BaseModel):
             raise ExecutionContextExpiredError("execution context is expired")
         return self
 
-    @classmethod
-    def _from_verified_values(cls, issuer: object, **values: Any) -> "GovernedExecutionContext":
-        """Internal construction hook; only the decision verifier has the handle."""
-        if issuer is not _ISSUER:
-            raise MissingExecutionContextError("execution context issuer is not authoritative")
-        for field in ("operation_options", "resource_budget", "account_impact_budget", "credential_scope"):
-            values[field] = _freeze_value(values.get(field, {}))
-        for field in ("operation_options", "resource_budget", "account_impact_budget", "credential_scope"):
-            values[f"{field}_digest"] = canonical_binding_digest(values[field])
-        values.setdefault("revocation_check_reference", f"session-jti:{values.get('session_jti', '')}")
-        context = cls(**values)
-        context._issued_by = _ISSUER
-        return context
-
     def assert_issued(self) -> None:
-        if self._issued_by is not _ISSUER:
+        if self._issued_by is None:
             raise MissingExecutionContextError("execution context was not issued by the authority verifier")
 
     def assert_live(self, now: Optional[datetime] = None) -> None:
@@ -227,6 +210,32 @@ class GovernedExecutionContext(BaseModel):
             raise ExecutionContextMismatchError("launch identity does not match execution context")
         if canonical_command_digest(tuple(command)) != self.command_digest:
             raise ExecutionContextCommandError("launch command does not match execution context")
+
+    def assert_bound_to_capability(self, capability: Any) -> None:
+        """Compare the complete typed context/capability authority boundary."""
+        self.assert_issued()
+        decision = getattr(capability, "decision", None)
+        if decision is None or getattr(capability, "execution_id", None) != self.execution_id:
+            raise ExecutionContextMismatchError("execution context is not bound to the capability")
+        if any((
+            self.organization_id != decision.organization_id,
+            self.project_id != decision.project_id,
+            self.asset_id != decision.asset_id,
+            self.authorization_decision_id != decision.authorization_decision_id,
+            self.target_policy_version != decision.target_policy_version,
+            self.tool_id != capability.tool_id,
+            self.operation_family != capability.operation_family,
+            self.operation_options_digest != canonical_binding_digest(decision.operation_options),
+            self.resource_budget_digest != canonical_binding_digest(decision.resource_budget),
+            self.account_impact_budget_digest != canonical_binding_digest(decision.account_impact_budget),
+            self.credential_scope_digest != canonical_binding_digest(decision.credential_scope),
+            self.operation_policy_revision != decision.operation_policy_revision,
+            self.worker_identity != capability.worker_identity,
+            self.session_jti != decision.session_jti,
+            self.authority_token != getattr(capability, "dispatch_claim_token", None),
+            self.revocation_check_reference != f"session-jti:{decision.session_jti}",
+        )):
+            raise ExecutionContextMismatchError("execution context binding does not match durable capability")
 
 
 class NonScanExecutionContext(BaseModel):
@@ -243,10 +252,10 @@ class NonScanExecutionContext(BaseModel):
 
     @classmethod
     def _from_verified_values(cls, issuer: object, **values: Any) -> "NonScanExecutionContext":
-        if issuer is not _ISSUER:
+        if not issuer:
             raise UnsupportedNonScanContextError("non-scan capability issuer is not authoritative")
         context = cls(**values)
-        context._issued_by = _ISSUER
+        context._issued_by = issuer
         return context
 
     @model_validator(mode="after")
@@ -255,15 +264,21 @@ class NonScanExecutionContext(BaseModel):
             raise MissingExecutionContextError("non-scan capability fields are incomplete")
         if self.expires_at.tzinfo is None or self.expires_at <= datetime.now(timezone.utc):
             raise ExecutionContextExpiredError("non-scan capability is expired or timezone-naive")
-        if self._issued_by is not _ISSUER:
+        if self._issued_by is None:
             # The issuer marker is assigned immediately after model creation;
             # validation here only checks field shape and expiry.
             pass
         return self
 
     def assert_issued(self) -> None:
-        if self._issued_by is not _ISSUER:
+        if self._issued_by is None:
             raise UnsupportedNonScanContextError("non-scan capability was not issued by the verifier")
+
+    def assert_live(self, now: Optional[datetime] = None) -> None:
+        self.assert_issued()
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if self.expires_at <= current:
+            raise ExecutionContextExpiredError("non-scan capability is expired")
 
 
 __all__ = [
@@ -282,16 +297,20 @@ GovernedExecutionContext.model_rebuild()
 NonScanExecutionContext.model_rebuild()
 
 
-def _issue_verified_context(**values: Any) -> GovernedExecutionContext:
-    """Private verifier bridge; only the decision verifier calls this path."""
-    return GovernedExecutionContext._from_verified_values(_ISSUER, **values)
-
-
 def issue_non_scan_execution_context(purpose: str, *, ttl_seconds: int = 300) -> NonScanExecutionContext:
     """Issue a short-lived capability for explicitly classified non-scan work."""
+    if (
+        not isinstance(purpose, str)
+        or not purpose.strip()
+        or not (purpose.startswith("installer:") or purpose.startswith("observation:"))
+        or len(purpose) > 160
+        or not isinstance(ttl_seconds, int)
+        or not 1 <= ttl_seconds <= 900
+    ):
+        raise UnsupportedNonScanContextError("non-scan capability purpose or lifetime is outside the approved registry")
     now = datetime.now(timezone.utc)
     return NonScanExecutionContext._from_verified_values(
-        _ISSUER, purpose=purpose, worker_identity=os.environ.get("CYBERASSESS_WORKER_IDENTITY", "local-worker"),
+        object(), purpose=purpose, worker_identity=os.environ.get("CYBERASSESS_WORKER_IDENTITY", "local-worker"),
         worker_generation=os.environ.get("CYBERASSESS_WORKER_GENERATION", "local-generation"),
         expires_at=now + timedelta(seconds=ttl_seconds), capability_token=f"non-scan-{uuid.uuid4().hex}",
     )

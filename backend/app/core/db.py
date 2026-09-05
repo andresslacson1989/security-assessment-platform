@@ -1145,7 +1145,7 @@ class DatabaseManager:
         }
         state_required = {
             "execution_id", "organization_id", "status", "owner", "lease_token",
-            "lease_expires_at", "attempt_number", "last_outcome", "last_error",
+            "lease_expires_at", "worker_generation", "attempt_number", "last_outcome", "last_error",
             "next_retry_at", "escalation_level", "updated_at",
         }
         if isinstance(self, PostgresDatabaseManager):
@@ -2720,6 +2720,7 @@ class DatabaseManager:
                     owner TEXT,
                     lease_token TEXT,
                     lease_expires_at TEXT,
+                    worker_generation TEXT,
                     attempt_number INTEGER NOT NULL DEFAULT 0 CHECK (attempt_number >= 0),
                     last_outcome TEXT,
                     last_error TEXT,
@@ -3569,14 +3570,14 @@ class DatabaseManager:
             )
             conn.execute(
                 """INSERT INTO execution_recovery_state
-                (execution_id, organization_id, status, attempt_number, last_outcome, last_error,
-                 next_retry_at, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(execution_id) DO UPDATE SET organization_id=excluded.organization_id,
-                status=excluded.status, attempt_number=excluded.attempt_number, last_outcome=excluded.last_outcome,
+                (execution_id, organization_id, status, worker_generation, attempt_number, last_outcome, last_error,
+                 next_retry_at, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(execution_id, organization_id) DO UPDATE SET
+                status=excluded.status, worker_generation=excluded.worker_generation, attempt_number=excluded.attempt_number, last_outcome=excluded.last_outcome,
                 last_error=excluded.last_error, next_retry_at=excluded.next_retry_at,
                 escalation_level=excluded.escalation_level, updated_at=excluded.updated_at
                 WHERE execution_recovery_state.organization_id=excluded.organization_id""",
-                (attempt.execution_id, attempt.organization_id, attempt.status, attempt.attempt_number,
+                (attempt.execution_id, attempt.organization_id, attempt.status, attempt.worker_generation, attempt.attempt_number,
                  attempt.cancellation_status, attempt.error_code,
                  attempt.next_retry_at.isoformat() if attempt.next_retry_at else None,
                  attempt.escalation_level, utc_now().isoformat()),
@@ -3617,9 +3618,9 @@ class DatabaseManager:
             if state:
                 changed = conn.execute(
                     """UPDATE execution_recovery_state SET status='IN_PROGRESS', owner=?, lease_token=?,
-                    lease_expires_at=?, attempt_number=?, updated_at=?
+                    lease_expires_at=?, worker_generation=?, attempt_number=?, updated_at=?
                     WHERE execution_id=? AND organization_id=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
-                    (owner, token, expiry.isoformat(), attempt_number, now.isoformat(), execution_id, organization_id, now.isoformat()),
+                    (owner, token, expiry.isoformat(), worker_generation, attempt_number, now.isoformat(), execution_id, organization_id, now.isoformat()),
                 )
                 if changed.rowcount != 1:
                     return None
@@ -3627,26 +3628,35 @@ class DatabaseManager:
                 conn.execute(
                     """INSERT INTO execution_recovery_state
                     (execution_id, organization_id, status, owner, lease_token, lease_expires_at,
-                     attempt_number, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (execution_id, organization_id, "IN_PROGRESS", owner, token, expiry.isoformat(), attempt_number, 0, now.isoformat()),
+                     worker_generation, attempt_number, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (execution_id, organization_id, "IN_PROGRESS", owner, token, expiry.isoformat(), worker_generation, attempt_number, 0, now.isoformat()),
                 )
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
+                 attempt_number, status, reason_code, correlation_id, requested_at, started_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (token, execution_id, organization_id, owner, worker_generation,
+                 attempt_number, "IN_PROGRESS", "RECOVERY_CLAIMED",
+                 f"corr-recovery-{execution_id}", now.isoformat(), now.isoformat()),
+            )
             return {"execution_id": execution_id, "organization_id": organization_id, "owner": owner,
                     "worker_generation": worker_generation, "lease_token": token,
                     "lease_expires_at": expiry.isoformat(), "attempt_number": attempt_number}
 
-    def renew_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, *, lease_seconds: int = 30) -> bool:
+    def renew_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, lease_seconds: int = 30) -> bool:
         if lease_seconds <= 0:
             return False
         expiry = utc_now() + timedelta(seconds=lease_seconds)
         with self._connection_scope() as conn:
             return conn.execute(
                 """UPDATE execution_recovery_state SET lease_expires_at=?, updated_at=?
-                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=?
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=?
                 AND status='IN_PROGRESS' AND lease_expires_at > ?""",
-                (expiry.isoformat(), utc_now().isoformat(), execution_id, organization_id, owner, lease_token, utc_now().isoformat()),
+                (expiry.isoformat(), utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation, utc_now().isoformat()),
             ).rowcount == 1
 
-    def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, *, status: str, outcome: str, error: Optional[str] = None) -> bool:
+    def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, status: str, outcome: str, error: Optional[str] = None) -> bool:
         allowed = {"CONFIRMED_TERMINATED", "DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
         if status not in allowed:
             return False
@@ -3654,9 +3664,24 @@ class DatabaseManager:
             changed = conn.execute(
                 """UPDATE execution_recovery_state SET status=?, last_outcome=?, last_error=?,
                 owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=?
-                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND status='IN_PROGRESS'""",
-                (status, outcome, error, utc_now().isoformat(), execution_id, organization_id, owner, lease_token),
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=? AND status='IN_PROGRESS'""",
+                (status, outcome, error, utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation),
             )
+            if changed.rowcount == 1:
+                now = utc_now()
+                conn.execute(
+                    """INSERT INTO execution_recovery_attempts
+                    (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
+                     attempt_number, status, cancellation_status, reason_code, correlation_id,
+                     requested_at, completed_at, error_code, escalation_level)
+                    SELECT ?, execution_id, organization_id, ?, worker_generation,
+                           attempt_number, ?, ?, 'RECOVERY_COMPLETED', ?,
+                           ?, ?, ?, escalation_level
+                    FROM execution_recovery_state
+                    WHERE execution_id=? AND organization_id=?""",
+                    (f"{lease_token}-completed", owner, status, outcome, f"corr-recovery-{execution_id}",
+                     now.isoformat(), now.isoformat(), error, execution_id, organization_id),
+                )
             return changed.rowcount == 1
 
     def recovery_health(self, organization_id: str) -> list[dict[str, Any]]:

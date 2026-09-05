@@ -9,6 +9,7 @@ from typing import Any, Optional
 from app.core.execution_context import PosixProcessAttestation, canonical_binding_digest
 from app.core.models import (
     ExecutionProcessOwnershipRecord,
+    EXECUTION_REASON_CODES,
     ProcessContainerType,
     ProcessOwnershipState,
     LaunchCommitState,
@@ -16,9 +17,9 @@ from app.core.models import (
 )
 
 
-def record_no_process(capability: Any, *, proof: str, reason_code: str) -> bool:
+def record_no_process(capability: Any, *, proof_code: str, reason_code: str) -> bool:
     """Persist an explicit no-process result before terminal settlement."""
-    if not proof or not capability.execution_id:
+    if reason_code not in EXECUTION_REASON_CODES or not capability.execution_id:
         return False
     record = ExecutionProcessOwnershipRecord(
         execution_id=capability.execution_id,
@@ -26,7 +27,7 @@ def record_no_process(capability: Any, *, proof: str, reason_code: str) -> bool:
         ownership_state=ProcessOwnershipState.NO_EXTERNAL_PROCESS,
         container_type=ProcessContainerType.NONE,
         launch_commit_state=LaunchCommitState.NOT_ATTEMPTED,
-        no_process_proof=proof,
+        no_process_proof=f"NO_EXTERNAL_PROCESS:{proof_code}",
         correlation_id=f"corr-execution-{capability.execution_id}",
     )
     return capability.database.transition_process_ownership(
@@ -106,4 +107,34 @@ def record_terminal(capability: Any, *, reason_code: str) -> bool:
     return capability.database.transition_process_ownership(record, current, reason_code=reason_code)
 
 
-__all__ = ["record_no_process", "record_posix_launch", "record_terminal"]
+def settle_execution(
+    capability: Any,
+    *,
+    terminal_state: str,
+    reason_code: str,
+    process_id: Optional[int] = None,
+    process_group_id: Optional[str] = None,
+) -> bool:
+    """Coordinate durable ownership evidence and canonical run settlement."""
+    if not capability.execution_id or not capability.dispatch_claim_token:
+        return False
+    if process_id is None:
+        if not record_no_process(capability, proof_code=reason_code, reason_code=reason_code):
+            return False
+        return bool(capability.database.abort_execution_start(
+            capability.decision.id, capability.decision.organization_id,
+            capability.worker_identity, capability.claim_token,
+            capability.dispatch_claim_token, terminal_state=terminal_state,
+            reason_code=reason_code,
+        ))
+    if not record_terminal(capability, reason_code=reason_code):
+        return False
+    return bool(capability.database.finish_execution(
+        capability.execution_id, capability.decision.organization_id,
+        capability.worker_identity, capability.dispatch_claim_token,
+        terminal_state=terminal_state, reason_code=reason_code,
+        process_id=process_id, process_group_id=process_group_id,
+    ))
+
+
+__all__ = ["record_no_process", "record_posix_launch", "record_terminal", "settle_execution"]
