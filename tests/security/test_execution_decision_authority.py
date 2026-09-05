@@ -104,6 +104,35 @@ def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
     manager._verify_migration_v8_postconditions(connection)
 
 
+def test_v9_repairs_an_already_applied_legacy_parent_index_and_is_idempotent(tmp_path):
+    path = tmp_path / "legacy-parent-index.sqlite3"
+    database = DatabaseManager(path)
+    with database._connection_scope() as connection:
+        connection.execute("CREATE UNIQUE INDEX uq_execution_requests_id_org ON execution_requests(id, organization_id)")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 9")
+
+    repaired = DatabaseManager(path)
+    with repaired._connection_scope() as connection:
+        assert connection.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone() is None
+        assert connection.execute("SELECT 1 FROM schema_migrations WHERE version = 9").fetchone() is not None
+        success_count = connection.execute("SELECT COUNT(*) AS count FROM schema_migration_events WHERE migration_version = 9 AND event_type = 'SUCCEEDED'").fetchone()["count"]
+
+    DatabaseManager(path)
+    with repaired._connection_scope() as connection:
+        assert connection.execute("SELECT COUNT(*) AS count FROM schema_migration_events WHERE migration_version = 9 AND event_type = 'SUCCEEDED'").fetchone()["count"] == success_count
+
+
+def test_v9_rejects_an_ambiguous_same_name_parent_index(tmp_path):
+    path = tmp_path / "ambiguous-parent-index.sqlite3"
+    database = DatabaseManager(path)
+    with database._connection_scope() as connection:
+        connection.execute("CREATE INDEX uq_execution_requests_id_org ON execution_requests(organization_id, id)")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 9")
+
+    with pytest.raises(ValueError, match="ambiguous migration-owned artifact"):
+        DatabaseManager(path)
+
+
 def _decision(target, **changes):
     values = {
         "id": "decision-1",

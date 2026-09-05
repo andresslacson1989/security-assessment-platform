@@ -2441,7 +2441,30 @@ class DatabaseManager:
             repair_version = 9
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (repair_version,)).fetchone():
                 if isinstance(self, PostgresDatabaseManager):
-                    conn.execute("DROP INDEX IF EXISTS uq_execution_requests_id_org")
+                    legacy_index = conn.execute("""SELECT i.relname, x.indisunique, x.indpred,
+                        x.indisvalid, x.indisready, x.indnkeyatts, x.indnatts,
+                        array_agg(a.attname ORDER BY key_cols.ordinality) AS columns,
+                        EXISTS (SELECT 1 FROM pg_constraint pc WHERE pc.conindid = i.oid) AS constraint_backed
+                        FROM pg_class i
+                        JOIN pg_index x ON x.indexrelid = i.oid
+                        JOIN pg_class t ON t.oid = x.indrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
+                        WHERE n.nspname = current_schema() AND t.relname = 'execution_requests'
+                          AND i.relname = 'uq_execution_requests_id_org'
+                        GROUP BY i.oid, x.indisunique, x.indpred, x.indisvalid,
+                                 x.indisready, x.indnkeyatts, x.indnatts""").fetchone()
+                    if legacy_index is not None:
+                        if (
+                            not legacy_index["indisunique"] or legacy_index["indpred"] is not None
+                            or not legacy_index["indisvalid"] or not legacy_index["indisready"]
+                            or legacy_index["indnkeyatts"] != 2 or legacy_index["indnatts"] != 2
+                            or list(legacy_index["columns"]) != ["id", "organization_id"]
+                            or legacy_index["constraint_backed"]
+                        ):
+                            raise ValueError("execution request parent index repair found an ambiguous PostgreSQL artifact")
+                        conn.execute("DROP INDEX uq_execution_requests_id_org")
                 else:
                     legacy_request_index = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone()
                     if legacy_request_index:
