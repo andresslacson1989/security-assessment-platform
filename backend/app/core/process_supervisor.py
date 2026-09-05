@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
-from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set
+from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set, Tuple
 from app.core.tool_operation_policy import is_canonical_operation_policy_revision
 from app.core.execution_decision import ExecutionDecisionCapability, ExecutionDecisionError
 
@@ -63,6 +63,52 @@ class ProcessCancellationResult:
 
     def __bool__(self) -> bool:
         return self.confirmed
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """Platform-specific identity captured at process creation."""
+
+    pid: int
+    process_group_id: Optional[int]
+    start_token: str
+
+
+def _read_posix_start_token(pid: int) -> Optional[str]:
+    if os.name == "nt":
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as stat_file:
+            stat_text = stat_file.read()
+        after_comm = stat_text.rsplit(")", 1)[1].split()
+        start_ticks = after_comm[19]
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as boot_id_file:
+            boot_id = boot_id_file.read().strip()
+        return f"posix:{boot_id}:{start_ticks}"
+    except (OSError, IndexError):
+        return None
+
+
+def _read_windows_start_token(pid: int) -> Optional[str]:
+    if os.name != "nt":
+        return None
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        created, _exited, _kernel, _user = (_FileTime(), _FileTime(), _FileTime(), _FileTime())
+        if not ctypes.windll.kernel32.GetProcessTimes(
+            handle, ctypes.byref(created), ctypes.byref(_exited),
+            ctypes.byref(_kernel), ctypes.byref(_user),
+        ):
+            return None
+        value = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+        return f"windows:{value}"
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 class ProcessExecutionResult(NamedTuple):
@@ -187,6 +233,7 @@ class ProcessSupervisor:
         self._active_pids: Set[int] = set()
         self._execution_pids: dict[str, int] = {}
         self._execution_groups: dict[str, int] = {}
+        self._execution_identities: dict[str, ProcessIdentity] = {}
         self._lock = threading.Lock()
 
     @classmethod
@@ -195,13 +242,19 @@ class ProcessSupervisor:
             cls._instance = cls()
         return cls._instance
 
-    def _register_execution(self, pid: int, execution_id: Optional[str] = None, process_group_id: Optional[str] = None) -> None:
+    def _register_execution(
+        self, pid: int, execution_id: Optional[str] = None,
+        process_group_id: Optional[str] = None,
+        identity: Optional[ProcessIdentity] = None,
+    ) -> None:
         with self._lock:
             self._active_pids.add(pid)
             if execution_id:
                 self._execution_pids[execution_id] = pid
                 if process_group_id and process_group_id.isdigit():
                     self._execution_groups[execution_id] = int(process_group_id)
+                if identity is not None:
+                    self._execution_identities[execution_id] = identity
 
     def _unregister_execution(self, pid: int, execution_id: Optional[str] = None) -> None:
         with self._lock:
@@ -209,6 +262,7 @@ class ProcessSupervisor:
             if execution_id and self._execution_pids.get(execution_id) == pid:
                 self._execution_pids.pop(execution_id, None)
                 self._execution_groups.pop(execution_id, None)
+                self._execution_identities.pop(execution_id, None)
 
     def _register_pid(self, pid: int) -> None:
         self._register_execution(pid)
@@ -227,10 +281,16 @@ class ProcessSupervisor:
         with self._lock:
             pid = self._execution_pids.get(execution_id)
             group_id = self._execution_groups.get(execution_id)
+            identity = self._execution_identities.get(execution_id)
         if pid is None:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
-        if self._pid_exists(pid) or self._process_group_exists(group_id):
-            terminated = self.kill_process_tree(pid, process_group_id=group_id)
+        if identity is not None and not self._identity_matches(identity):
+            if self._pid_exists(pid) or self._process_group_exists(group_id):
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
+            status = ProcessCancellationStatus.ALREADY_EXITED
+            terminated = True
+        elif self._pid_exists(pid) or self._process_group_exists(group_id):
+            terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
             status = ProcessCancellationStatus.ALREADY_EXITED
@@ -239,6 +299,7 @@ class ProcessSupervisor:
                 if self._execution_pids.get(execution_id) == pid:
                     self._execution_pids.pop(execution_id, None)
                     self._execution_groups.pop(execution_id, None)
+                    self._execution_identities.pop(execution_id, None)
                     self._active_pids.discard(pid)
         return ProcessCancellationResult(execution_id, status, pid)
 
@@ -254,8 +315,11 @@ class ProcessSupervisor:
                 return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.NOT_FOUND, pid)
             execution_id = next((key for key, value in self._execution_pids.items() if value == pid), f"pid:{pid}")
             group_id = self._execution_groups.get(execution_id)
+            identity = self._execution_identities.get(execution_id)
+        if identity is not None and not self._identity_matches(identity):
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
         if self._pid_exists(pid) or self._process_group_exists(group_id):
-            terminated = self.kill_process_tree(pid, process_group_id=group_id)
+            terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
             status = ProcessCancellationStatus.ALREADY_EXITED
@@ -265,6 +329,7 @@ class ProcessSupervisor:
                 for key in [k for k, value in self._execution_pids.items() if value == pid]:
                     self._execution_pids.pop(key, None)
                     self._execution_groups.pop(key, None)
+                    self._execution_identities.pop(key, None)
         return ProcessCancellationResult(execution_id, status, pid)
 
     @staticmethod
@@ -393,7 +458,37 @@ class ProcessSupervisor:
             return False
 
     @staticmethod
-    def kill_process_tree(pid: int, process_group_id: Optional[int] = None) -> bool:
+    def _capture_process_identity(pid: int, process_group_id: Optional[int]) -> Optional[ProcessIdentity]:
+        start_token = _read_posix_start_token(pid)
+        if start_token is None:
+            if os.name == "nt":
+                start_token = _read_windows_start_token(pid)
+                if start_token is None:
+                    return None
+            else:
+                return None
+        return ProcessIdentity(pid, process_group_id, start_token)
+
+    @staticmethod
+    def _identity_matches(identity: ProcessIdentity) -> bool:
+        if not ProcessSupervisor._pid_exists(identity.pid):
+            return False
+        current = ProcessSupervisor._capture_process_identity(identity.pid, identity.process_group_id)
+        if current is None or current.start_token != identity.start_token:
+            return False
+        if identity.process_group_id is not None:
+            try:
+                return os.getpgid(identity.pid) == identity.process_group_id if os.name != "nt" else True
+            except OSError:
+                return False
+        return True
+
+    @staticmethod
+    def kill_process_tree(
+        pid: int,
+        process_group_id: Optional[int] = None,
+        identity: Optional[ProcessIdentity] = None,
+    ) -> bool:
         """
         Recursively terminates a process and all its child/grandchild descendants.
         Guarantees isolation: never signals the host, server process, or sibling processes.
@@ -405,6 +500,15 @@ class ProcessSupervisor:
         parent_pid = os.getppid() if hasattr(os, "getppid") else None
         if pid == current_pid or (parent_pid is not None and pid == parent_pid) or pid <= 1:
             logger.error("Security invariant: Refusing to terminate current/parent PID=%s", pid)
+            return False
+        if identity is not None and identity.pid != pid:
+            return False
+        if identity is not None and ProcessSupervisor._identity_matches(identity):
+            pass
+        elif identity is not None and (
+            ProcessSupervisor._pid_exists(pid) or ProcessSupervisor._process_group_exists(process_group_id)
+        ):
+            logger.error("Refusing to terminate process with mismatched launch identity PID=%s", pid)
             return False
 
         descendants: list[int] = []
@@ -631,7 +735,12 @@ class ProcessSupervisor:
         else:
             start_new_session = True
 
-        def _bounded_communicate(proc: subprocess.Popen, renew_lease: Optional[Callable[[], bool]] = None) -> Tuple[str, str, bool]:
+        def _bounded_communicate(
+            proc: subprocess.Popen,
+            renew_lease: Optional[Callable[[], bool]] = None,
+            process_identity: Optional[ProcessIdentity] = None,
+            process_group_id: Optional[int] = None,
+        ) -> Tuple[str, str, bool, bool]:
             """Drain both pipes concurrently while enforcing a combined byte cap."""
             output_lock = threading.Lock()
             captured = {"stdout": bytearray(), "stderr": bytearray()}
@@ -667,18 +776,19 @@ class ProcessSupervisor:
             next_lease_renewal = time.monotonic() + 10.0
             lease_lost = False
             timed_out = False
+            termination_confirmed = True
             while proc.poll() is None:
                 if limit_reached.is_set():
-                    self.kill_process_tree(proc.pid)
+                    termination_confirmed = self.kill_process_tree(proc.pid, process_group_id=process_group_id, identity=process_identity)
                     break
                 if time.monotonic() >= deadline:
                     timed_out = True
-                    self.kill_process_tree(proc.pid)
+                    termination_confirmed = self.kill_process_tree(proc.pid, process_group_id=process_group_id, identity=process_identity)
                     break
                 if renew_lease is not None and time.monotonic() >= next_lease_renewal:
                     if not renew_lease():
                         lease_lost = True
-                        self.kill_process_tree(proc.pid)
+                        termination_confirmed = self.kill_process_tree(proc.pid, process_group_id=process_group_id, identity=process_identity)
                         break
                     next_lease_renewal = time.monotonic() + 10.0
                 time.sleep(0.01)
@@ -686,8 +796,17 @@ class ProcessSupervisor:
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                # Do not bypass identity-bound tree termination with proc.kill().
+                # A failed confirmation must remain observable to the caller.
+                termination_confirmed = self.kill_process_tree(
+                    proc.pid,
+                    process_group_id=process_group_id,
+                    identity=process_identity,
+                ) and termination_confirmed
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    termination_confirmed = False
             for reader in readers:
                 reader.join(timeout=2)
 
@@ -699,9 +818,11 @@ class ProcessSupervisor:
                 stderr = f"Execution timed out after {timeout} seconds" + (f"\n{stderr}" if stderr else "")
             if lease_lost:
                 stderr = "Execution lease renewal failed" + (f"\n{stderr}" if stderr else "")
-            return stdout, stderr, limit_reached.is_set() or timed_out or lease_lost
+            return stdout, stderr, limit_reached.is_set() or timed_out or lease_lost, termination_confirmed
 
         proc_ref: list[Optional[subprocess.Popen]] = [None]
+        process_identity_ref: list[Optional[ProcessIdentity]] = [None]
+        process_group_ref: list[Optional[int]] = [None]
         cancellation_requested = threading.Event()
 
         def _run_sync() -> ProcessExecutionResult:
@@ -799,22 +920,51 @@ class ProcessSupervisor:
                     start_new_session=start_new_session,
                 )
                 proc_ref[0] = proc
+                process_group_id = proc.pid if start_new_session else None
+                process_identity = self._capture_process_identity(proc.pid, process_group_id)
+                process_identity_ref[0] = process_identity
+                process_group_ref[0] = process_group_id
+                if process_identity is None:
+                    terminated = self.kill_process_tree(proc.pid)
+                    if not terminated:
+                        return ProcessExecutionResult(
+                            -1, "",
+                            "PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable and process tree remains active",
+                        )
+                    if execution_capability is not None and terminated:
+                        execution_capability.abort_start(
+                            terminal_state="EXECUTION_BLOCKED",
+                            reason_code="PROCESS_LAUNCH_REJECTED_SECURITY",
+                            process_id=proc.pid,
+                            process_group_id=str(process_group_id) if process_group_id else None,
+                        )
+                    return ProcessExecutionResult(
+                        126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: process identity unavailable",
+                    )
                 if execution_capability is not None:
                     execution_capability.mark_started(
                         process_id=proc.pid,
-                        process_group_id=str(proc.pid) if start_new_session else None,
+                        process_group_id=str(process_group_id) if process_group_id else None,
                     )
                     launch_committed = True
                 self._register_execution(
                     proc.pid,
                     execution_id=execution_id,
-                    process_group_id=str(proc.pid) if start_new_session else None,
+                    process_group_id=str(process_group_id) if process_group_id else None,
+                    identity=process_identity,
                 )
 
-                stdout, stderr, bounded_failure = _bounded_communicate(
+                stdout, stderr, bounded_failure, termination_confirmed = _bounded_communicate(
                     proc,
                     renew_lease=(execution_capability.renew if execution_capability is not None else None),
+                    process_identity=process_identity,
+                    process_group_id=process_group_id,
                 )
+                if bounded_failure and not termination_confirmed:
+                    return ProcessExecutionResult(
+                        -1, stdout,
+                        "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active\n" + stderr,
+                    )
                 if "Output exceeded maximum" in stderr:
                     finalization = _finish_durable("PARTIAL_RESULTS_WITH_WARNING", "OUTPUT_LIMIT_EXCEEDED")
                     if finalization:
@@ -846,10 +996,17 @@ class ProcessSupervisor:
                     execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="EXECUTABLE_PERMISSION_DENIED")
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
+                termination_confirmed = True
                 if proc and proc.pid:
-                    self.kill_process_tree(proc.pid)
+                    termination_confirmed = self.kill_process_tree(
+                        proc.pid,
+                        process_group_id=process_group_ref[0],
+                        identity=process_identity_ref[0],
+                    )
                 if execution_capability is not None:
                     if launch_committed:
+                        if not termination_confirmed:
+                            return ProcessExecutionResult(-1, "", "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
                         if not execution_capability.finish(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
                             return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
                     else:
@@ -865,12 +1022,18 @@ class ProcessSupervisor:
         except asyncio.CancelledError:
             cancellation_requested.set()
             if proc_ref[0] and proc_ref[0].pid:
-                self.kill_process_tree(proc_ref[0].pid)
+                termination_confirmed = self.kill_process_tree(
+                    proc_ref[0].pid,
+                    process_group_id=process_group_ref[0],
+                    identity=process_identity_ref[0],
+                )
+                if not termination_confirmed:
+                    raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
                 if execution_capability is not None:
                     if not execution_capability.finish(
                         terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED",
                         process_id=proc_ref[0].pid,
-                        process_group_id=str(proc_ref[0].pid) if start_new_session else None,
+                        process_group_id=str(process_group_ref[0]) if process_group_ref[0] else None,
                     ):
                         raise RuntimeError("PROCESS_FINALIZATION_FAILED: durable cancellation outcome was not committed")
             elif execution_capability is not None:

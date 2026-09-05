@@ -65,6 +65,7 @@ class BackendObservationService:
         )
         self._refresh_lock = asyncio.Lock()
         self._recovery_lock = asyncio.Lock()
+        self._recovery_workers: set[asyncio.Task] = set()
         self._task: Optional[asyncio.Task[None]] = None
         self._state = ObservationState()
 
@@ -155,15 +156,34 @@ class BackendObservationService:
             # The supervisor registry is keyed by the durable execution ID;
             # cancellation cannot target an arbitrary PID or a sibling job.
             try:
-                cancellation = process_supervisor.cancel_execution(execution_id)
+                cancellation_task = asyncio.create_task(
+                    asyncio.to_thread(process_supervisor.cancel_execution, execution_id)
+                )
+                self._recovery_workers.add(cancellation_task)
+                cancellation_task.add_done_callback(self._recovery_workers.discard)
+                cancellation = await asyncio.wait_for(
+                    asyncio.shield(cancellation_task),
+                    timeout=self.refresh_timeout_seconds,
+                )
                 confirmed = getattr(cancellation, "confirmed", bool(cancellation))
                 if (
                     candidate.get("process_id") is not None
                     or candidate.get("run_state") == "RUNNING"
                 ) and not confirmed:
+                    message = (
+                        f"unconfirmed process termination: execution_id={execution_id} "
+                        f"status={getattr(cancellation, 'status', 'UNKNOWN')}"
+                    )[:512]
                     logger.warning(
                         "Execution recovery deferred: termination not confirmed execution_id=%s status=%s",
                         execution_id, getattr(cancellation, "status", "UNKNOWN"),
+                    )
+                    self._state = ObservationState(
+                        last_started_at=self._state.last_started_at,
+                        last_completed_at=self._state.last_completed_at,
+                        last_error=self._state.last_error,
+                        last_recovery_error=message,
+                        last_recovered_count=reaped,
                     )
                     continue
                 closed = await asyncio.wait_for(
@@ -229,6 +249,8 @@ class BackendObservationService:
             await task
         except asyncio.CancelledError:
             pass
+        if self._recovery_workers:
+            await asyncio.gather(*tuple(self._recovery_workers), return_exceptions=True)
 
 
 __all__ = ["BackendObservationService", "ObservationState"]
