@@ -104,6 +104,7 @@ def test_migration_provenance_rejects_malformed_or_mismatched_transaction_contex
     spec = MIGRATION_REGISTRY[0]
     digest = spec.apply_artifact["sqlite"].split(":", 1)[1]
     context = {
+        "coordinator": "registry",
         "provenance_format": "registry-coordinator-v2",
         "apply_artifact_revision": "execution-migration-apply-v1",
         "apply_artifact": spec.apply_artifact["sqlite"],
@@ -123,8 +124,23 @@ def test_migration_provenance_rejects_malformed_or_mismatched_transaction_contex
 
     with pytest.raises(RuntimeError, match="partial forward-apply provenance"):
         manager._validate_migration_event_provenance(
-            {"transaction_context_id": "tx-legacy"}, spec, {"apply_artifact": spec.apply_artifact["sqlite"]}
+            {"transaction_context_id": f"tx-{'1' * 32}"}, spec, {"apply_artifact": spec.apply_artifact["sqlite"]}
         )
+
+    for tampered_context in (
+        {key: value for key, value in context.items() if key != "coordinator"},
+        {**context, "coordinator": "operator"},
+    ):
+        with pytest.raises(RuntimeError, match="forward-apply provenance|provenance identity"):
+            manager._validate_migration_event_provenance({"transaction_context_id": f"txp-{'2' * 32}-{digest}"}, spec, tampered_context)
+
+    for transaction_context_id in ("tx-legacy", "tx-1"):
+        with pytest.raises(RuntimeError, match="transaction context format"):
+            manager._validate_migration_event_provenance({"transaction_context_id": transaction_context_id}, spec, {})
+
+    legacy_context_with_claim = {"coordinator": "operator", "apply_artifact": spec.apply_artifact["sqlite"]}
+    with pytest.raises(RuntimeError, match="partial forward-apply provenance"):
+        manager._validate_migration_event_provenance({"transaction_context_id": f"tx-{'3' * 32}"}, spec, legacy_context_with_claim)
 
 
 def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
@@ -243,11 +259,11 @@ def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
     """)
     conn.execute(
         "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("event-1", "attempt-1", 8, spec.name, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", "tx-1", None, None, None, "{}", "PENDING"),
+        ("event-1", "attempt-1", 8, spec.name, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", f"tx-{'1' * 32}", None, None, None, "{}", "PENDING"),
     )
     conn.execute(
         "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("event-2", "attempt-1", 8, spec.name, "SUCCEEDED", "2026-01-01T00:00:01+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", "tx-1", None, None, None, "{}", "NOT_APPLICABLE"),
+        ("event-2", "attempt-1", 8, spec.name, "SUCCEEDED", "2026-01-01T00:00:01+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", f"tx-{'1' * 32}", None, None, None, "{}", "NOT_APPLICABLE"),
     )
     conn.commit()
     conn.close()
@@ -279,7 +295,7 @@ def test_legacy_migration_ledger_fails_closed_on_forged_identity(tmp_path):
     """)
     conn.execute(
         "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("event-1", "attempt-1", 8, "FORGED-NAME", "SUCCEEDED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, "sha256:forged", "test", "tx-1", None, None, None, "{}", "NOT_APPLICABLE"),
+        ("event-1", "attempt-1", 8, "FORGED-NAME", "SUCCEEDED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, "sha256:forged", "test", f"tx-{'2' * 32}", None, None, None, "{}", "NOT_APPLICABLE"),
     )
     conn.commit()
     conn.close()

@@ -452,6 +452,8 @@ class DatabaseManager:
             if match is None or match.group(2) != selected_artifact.split(":", 1)[1]:
                 raise RuntimeError("migration ledger transaction provenance identity is invalid")
             if (
+                context.get("coordinator") != "registry"
+                or
                 context.get("provenance_format") != "registry-coordinator-v2"
                 or context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
                 or context.get("apply_artifact") != selected_artifact
@@ -461,7 +463,7 @@ class DatabaseManager:
             ):
                 raise RuntimeError("migration ledger row forward-apply provenance drifted")
             return
-        if not transaction_context_id.startswith("tx-"):
+        if re.fullmatch(r"tx-[0-9a-f]{32}", transaction_context_id) is None:
             raise RuntimeError("migration ledger transaction context format is invalid")
         new_claim_keys = {"provenance_format", "apply_artifact_revision", "apply_artifact", "apply_artifacts", "apply_manifest", "backend_policy"}
         if new_claim_keys & set(context):
@@ -1010,8 +1012,7 @@ class DatabaseManager:
                 context = json.loads(row["context_json"])
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("migration ledger row context is not valid JSON") from exc
-            if context.get("coordinator") == "registry":
-                self._validate_migration_event_provenance(row, spec, context)
+            self._validate_migration_event_provenance(row, spec, context)
             attempts.setdefault(row["attempt_id"], []).append(row)
 
         for attempt_id, attempt_rows in attempts.items():
