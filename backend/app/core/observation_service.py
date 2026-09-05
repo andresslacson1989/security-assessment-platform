@@ -111,10 +111,35 @@ class BackendObservationService:
             )
             return True
 
+    async def reap_execution_authority_once(self) -> int:
+        """Terminate and durably close authority-lost executions by exact ID."""
+        from app.core.db import db_manager
+        from app.core.process_supervisor import process_supervisor
+
+        candidates = await asyncio.to_thread(db_manager.list_execution_recovery_candidates)
+        reaped = 0
+        for candidate in candidates:
+            execution_id = candidate["execution_id"]
+            # The supervisor registry is keyed by the durable execution ID;
+            # cancellation cannot target an arbitrary PID or a sibling job.
+            process_supervisor.cancel_execution(execution_id)
+            closed = await asyncio.to_thread(
+                db_manager.reap_execution_dispatch,
+                execution_id,
+                candidate["organization_id"],
+                terminal_state=candidate["terminal_state"],
+                reason_code=candidate["reason_code"],
+                actor="execution-reaper",
+            )
+            if closed:
+                reaped += 1
+        return reaped
+
     async def _run(self) -> None:
         try:
             while True:
                 await self.refresh_once()
+                await self.reap_execution_authority_once()
                 await asyncio.sleep(self.interval_seconds)
         except asyncio.CancelledError:
             raise

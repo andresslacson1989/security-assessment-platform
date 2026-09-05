@@ -2892,6 +2892,14 @@ class DatabaseManager:
         """Revokes a JWT token by jti identifier."""
         with self._connection_scope() as conn:
             revoked_at = utc_now().isoformat()
+            affected = conn.execute(
+                """SELECT d.id AS decision_id, d.organization_id, r.execution_id
+                   FROM execution_decisions d
+                   LEFT JOIN execution_runs r ON r.approved_decision_id = d.id
+                     AND r.organization_id = d.organization_id
+                  WHERE d.session_jti = ?""",
+                (jti,),
+            ).fetchall()
             conn.execute(
                 """
                 INSERT INTO revoked_tokens (jti, token_hash, revoked_at, expires_at)
@@ -2907,6 +2915,73 @@ class DatabaseManager:
                 "UPDATE execution_decisions SET revoked_at = COALESCE(revoked_at, ?) WHERE session_jti = ? AND revoked_at IS NULL",
                 (revoked_at, jti),
             )
+            # Keep pending work from being claimed after logout while leaving
+            # an already-claimed dispatch visible to the exact process
+            # cancellation/reaper path.
+            conn.execute(
+                """UPDATE execution_requests SET state = 'REVOKED'
+                   WHERE approved_decision_id IN (SELECT id FROM execution_decisions WHERE session_jti = ?)
+                     AND state = 'AUTHORIZED'""",
+                (jti,),
+            )
+            for item in affected:
+                correlation_id = self._execution_correlation_id_conn(
+                    conn, item["execution_id"], item["organization_id"],
+                ) if item["execution_id"] else f"corr-decision-{item['decision_id']}"
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
+                    organization_id=item["organization_id"],
+                    action=AuditAction.EXECUTION_DECISION_REVOKED,
+                    object_type="execution_decision", object_id=item["decision_id"],
+                    result="SUCCESS", correlation_id=correlation_id,
+                    details={"reason_code": "EXECUTION_CANCELLED", "source": "SESSION_REVOCATION"},
+                ))
+                if item["execution_id"]:
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
+                        organization_id=item["organization_id"],
+                        action=AuditAction.EXECUTION_CANCEL_REQUESTED,
+                        object_type="execution_run", object_id=item["execution_id"],
+                        result="SUCCESS", correlation_id=correlation_id,
+                        details={"reason_code": "EXECUTION_CANCELLED", "source": "SESSION_REVOCATION"},
+                    ))
+
+    def list_execution_recovery_candidates(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return active executions whose durable authority is no longer valid."""
+        if not isinstance(limit, int) or limit <= 0 or limit > 1000:
+            raise ValueError("recovery candidate limit is outside the approved bound")
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            rows = conn.execute(
+                """SELECT r.execution_id, r.organization_id, r.process_id,
+                           CASE
+                             WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                               THEN 'CANCELLED'
+                             ELSE 'TIMED_OUT'
+                           END AS terminal_state,
+                           CASE
+                             WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                               THEN 'EXECUTION_CANCELLED'
+                             ELSE 'EXECUTION_AUTHORITY_EXPIRED'
+                           END AS reason_code
+                      FROM execution_runs r
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                      JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                     WHERE r.state IN ('REQUESTED', 'STARTING', 'RUNNING')
+                       AND (
+                            q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
+                            OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                            OR q.expires_at <= ? OR d.expires_at <= ?
+                            OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))
+                       )
+                     ORDER BY r.created_at
+                     LIMIT ?""",
+                (now, now, now, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def is_token_revoked(self, jti: str) -> bool:
         """Checks if a JWT token has been revoked in the database."""
@@ -4379,7 +4454,10 @@ class DatabaseManager:
                     WHERE i.execution_id = ? AND i.organization_id = ?{lock}""",
                 (execution_id, organization_id),
             ).fetchone()
-            now_dt = utc_now()
+            # The terminal timestamp is captured after the authority lock/read
+            # so audit and SLA data cannot predate a long lock wait.
+            now = utc_now().isoformat()
+            now_dt = datetime.fromisoformat(now)
             expired_or_revoked = (
                 row
                 and (

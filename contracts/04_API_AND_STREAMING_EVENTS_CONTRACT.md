@@ -176,6 +176,13 @@ transaction acquires the authority row first establishes the outcome, and a
 later transaction MUST observe the resulting revoked or terminal state.
 Expiry fences MUST use a timestamp captured after authority-row locks are
 acquired, so lock wait time cannot extend an expired approval.
+The application MUST run a lifecycle-managed recovery loop independent of
+browser sessions. It MUST periodically enumerate authority-lost active runs,
+cancel only the process group bound to each `execution_id`, then atomically
+settle the dispatch and run with a canonical safe outcome. Recovery attempts,
+successes, failures, and exhausted retries MUST be auditable and observable;
+the loop MUST use bounded batch size, cadence, and retry behavior and MUST be
+awaited during graceful shutdown.
 
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 
