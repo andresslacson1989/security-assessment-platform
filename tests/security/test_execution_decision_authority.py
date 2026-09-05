@@ -9,7 +9,7 @@ import pytest
 
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
 from app.core.db import DatabaseManager
-from app.core.migration_registry import MIGRATION_REGISTRY
+from app.core.migration_registry import MIGRATION_REGISTRY, _EXPECTED_CHECKSUMS
 from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
@@ -53,6 +53,12 @@ def _target():
         organization_id="org-a", project_id="project-a", asset_id="asset-a",
         active_probing_granted=True,
     )
+
+
+def test_migration_registry_has_fixed_executable_verifier_vectors():
+    assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, 9))
+    assert all(callable(spec.verify) for spec in MIGRATION_REGISTRY)
+    assert {spec.version: spec.checksum for spec in MIGRATION_REGISTRY} == _EXPECTED_CHECKSUMS
 
 
 def _decision(target, **changes):

@@ -133,6 +133,17 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
 
 MIGRATION_REGISTRY = tuple(_make_spec(*descriptor) for descriptor in _DESCRIPTORS)
 
+_EXPECTED_CHECKSUMS = {
+    1: "sha256:0c36e6c5488b142ccf4f74da0475aa834dcb6e386e10dfb7768e89303ed88654",
+    2: "sha256:1ccecb87f29e43d88d80aaa1b04c0c51b3d6d0c51e470304a7d45b53c0f12f6d",
+    3: "sha256:4a12b127f5094bfdbf6480964afdfa07ad2703c6b5384af1d27a3ceaac50432a",
+    4: "sha256:a16fad4273e77b4befb6ecbb179801b9aeb3ecb31508a121e734d44a8dd87f0a",
+    5: "sha256:71694628c476c7be89ac879be8b42fd6d61d9404cf7c6adc7c785521075e8c01",
+    6: "sha256:cb7d52bea96f013b396eee7f1f25e8a8a7045231518877f9696afa8ebc85569f",
+    7: "sha256:dd0feb2e5160ddd7625628cbabef51a98afbff648652a7bd87c1a0bc1ce1ba70",
+    8: "sha256:6d7c6fcb0af93ddccdd185c8fa486631cde40ab1ca0800e78946c52471ec520f",
+}
+
 
 def validate_registry() -> None:
     versions = [spec.version for spec in MIGRATION_REGISTRY]
@@ -142,8 +153,10 @@ def validate_registry() -> None:
     if len(ids) != len(set(ids)):
         raise RuntimeError("migration registry migration_id values are not unique")
     for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7]):
-        if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71:
+        if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71 or spec.checksum != _EXPECTED_CHECKSUMS.get(spec.version):
             raise RuntimeError(f"migration registry linkage/checksum invalid for version {spec.version}")
+        if spec.verify is None:
+            raise RuntimeError(f"migration registry verifier missing for version {spec.version}")
 
 
 validate_registry()
