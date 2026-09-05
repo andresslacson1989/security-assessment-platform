@@ -61,6 +61,7 @@ from app.core.tool_operation_policy import get_operation_policy, is_canonical_op
 from app.core.correlation import get_correlation_id
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
+MIGRATION_POSTCONDITION_REVISION = "execution-postconditions-v2"
 
 
 class _PostgresRow(dict):
@@ -487,6 +488,7 @@ class DatabaseManager:
 
     def _begin_migration_attempt(self) -> None:
         with self._connection_scope() as conn:
+            self._verify_resolved_reconciliation_artifacts(conn)
             unresolved = conn.execute("""SELECT 1 FROM schema_migration_events required
                 WHERE required.event_type = 'RECONCILIATION_REQUIRED' AND required.rollback_status = 'UNKNOWN'
                   AND NOT EXISTS (
@@ -570,7 +572,7 @@ class DatabaseManager:
                 raise PermissionError("migration reconciliation requires an active administrator")
             if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (session_jti,)).fetchone() is not None:
                 raise PermissionError("migration reconciliation session is revoked")
-            self._verify_authoritative_schema_state(conn)
+            schema_digest = self._verify_authoritative_schema_state(conn)
             applied = [int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
             if applied != list(range(1, len(MIGRATION_REGISTRY) + 1)):
                 raise RuntimeError("migration reconciliation requires independently verified contiguous schema versions")
@@ -584,7 +586,7 @@ class DatabaseManager:
             if resolved is not None:
                 raise ValueError("migration attempt has already been resolved")
             next_sequence = conn.execute("SELECT MAX(event_sequence) AS sequence FROM schema_migration_events WHERE attempt_id = ?", (attempt_id,)).fetchone()["sequence"] + 1
-            context = json.dumps({"resolution": resolution, "correlation_id": correlation_id, "session_jti": session_jti, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
+            context = json.dumps({"resolution": resolution, "correlation_id": correlation_id, "session_jti": session_jti, "verifier_revision": MIGRATION_POSTCONDITION_REVISION, "schema_digest": schema_digest, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
             conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
@@ -597,7 +599,7 @@ class DatabaseManager:
                 f"MIGRATION_RECONCILIATION_{resolution}", "MigrationReconciliationResolved", "operator reconciliation recorded",
                 context, "NOT_APPLICABLE"))
 
-    def _verify_authoritative_schema_state(self, conn) -> None:
+    def _verify_authoritative_schema_state(self, conn) -> str:
         """Verify required migration-owned structures before unblocking startup."""
         required_tables = {"schema_migrations", "schema_migration_events", "users", "organizations", "execution_requests", "execution_runs", "execution_decisions", "execution_dispatch_intents"}
         if isinstance(self, PostgresDatabaseManager):
@@ -613,6 +615,41 @@ class DatabaseManager:
         self._verify_execution_authority_binding_schema(conn)
         self._verify_execution_compatibility_schema(conn)
         self._verify_execution_dispatch_schema(conn)
+        return self._schema_postcondition_digest(conn)
+
+    def _schema_postcondition_digest(self, conn) -> str:
+        """Return a deterministic digest of the verified migration-owned schema."""
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("""SELECT table_name, column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns WHERE table_schema = current_schema()
+                ORDER BY table_name, ordinal_position""").fetchall()
+            objects = [tuple(row.values()) for row in rows]
+            constraints = conn.execute("""SELECT t.relname, c.contype, pg_get_constraintdef(c.oid)
+                FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() ORDER BY t.relname, c.contype, c.oid""").fetchall()
+            objects.extend(tuple(row.values()) for row in constraints)
+        else:
+            rows = conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name").fetchall()
+            objects = [tuple(row) for row in rows]
+            for table in sorted({row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}):
+                escaped_table = table.replace("'", "''")
+                table_info = conn.execute(f"PRAGMA table_info('{escaped_table}')").fetchall()
+                objects.extend((table, "column", row["name"], row["type"], row["notnull"], row["dflt_value"], row["pk"]) for row in table_info)
+        material = json.dumps({"revision": MIGRATION_POSTCONDITION_REVISION, "objects": objects}, sort_keys=True, default=str, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _verify_resolved_reconciliation_artifacts(self, conn) -> None:
+        resolved = conn.execute("SELECT * FROM schema_migration_events WHERE event_type = 'RECONCILIATION_RESOLVED'").fetchall()
+        for row in resolved:
+            try:
+                context = json.loads(row["context_json"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("migration reconciliation artifact context is invalid") from exc
+            if context.get("verifier_revision") != MIGRATION_POSTCONDITION_REVISION or not isinstance(context.get("schema_digest"), str):
+                raise RuntimeError("migration reconciliation artifact is missing verifier identity")
+            if context["schema_digest"] != self._schema_postcondition_digest(conn):
+                raise RuntimeError("migration reconciliation schema digest no longer matches live schema")
 
     def _record_migration_failure(self, exc: Exception) -> None:
         if not getattr(self, "_migration_attempt_id", None):
