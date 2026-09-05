@@ -524,7 +524,7 @@ class DatabaseManager:
     def resolve_migration_reconciliation(
         self,
         attempt_id: str,
-        authorization_context: Dict[str, Any],
+        access_token: str,
         resolution: str,
         evidence: Dict[str, Any],
         correlation_id: str,
@@ -538,8 +538,11 @@ class DatabaseManager:
         """
         if not getattr(self, "_allow_unresolved_reconciliation", False):
             raise PermissionError("migration reconciliation requires explicit maintenance mode")
-        if not isinstance(authorization_context, dict):
-            raise PermissionError("migration reconciliation requires a verified authorization context")
+        from app.core.auth import decode_access_token
+        try:
+            authorization_context = decode_access_token(access_token, revocation_store=self)
+        except Exception as exc:
+            raise PermissionError("migration reconciliation requires a valid signed administrator session") from exc
         operator_id = str(authorization_context.get("sub", ""))
         session_jti = str(authorization_context.get("jti", ""))
         if (
@@ -606,6 +609,10 @@ class DatabaseManager:
         if not required_tables.issubset(actual_tables):
             raise RuntimeError("migration reconciliation requires independently verified application schema structures")
         self._verify_migration_ledger(conn)
+        self._verify_execution_snapshot_schema(conn)
+        self._verify_execution_authority_binding_schema(conn)
+        self._verify_execution_compatibility_schema(conn)
+        self._verify_execution_dispatch_schema(conn)
 
     def _record_migration_failure(self, exc: Exception) -> None:
         if not getattr(self, "_migration_attempt_id", None):

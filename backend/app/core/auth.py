@@ -317,7 +317,7 @@ def create_access_token(
     )
 
 
-def decode_access_token(token: str) -> Dict[str, Any]:
+def decode_access_token(token: str, revocation_store=None) -> Dict[str, Any]:
     """
     Validates and decodes an HS256 JWT token under strict RFC 8725 requirements using PyJWT.
     Rejects algorithm confusion (alg=none), unauthorized algorithms, missing claims, and revoked tokens.
@@ -425,8 +425,10 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     # 3. Authoritative DB Token Revocation Check
     jti = payload.get("jti")
     if jti:
-        from app.core.db import db_manager
-        if db_manager.is_token_revoked(jti):
+        if revocation_store is None:
+            from app.core.db import db_manager
+            revocation_store = db_manager
+        if revocation_store.is_token_revoked(jti):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token has been revoked.",
