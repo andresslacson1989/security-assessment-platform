@@ -3290,12 +3290,28 @@ class DatabaseManager:
         now = now or utc_now()
         with self._connection_scope() as conn:
             cur = conn.execute(
-                "UPDATE execution_decisions SET started_at = ?, consumed_at = ?, claim_expires_at = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND claim_expires_at > ?",
-                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat()),
+                """UPDATE execution_decisions SET started_at = ?, consumed_at = ?, claim_expires_at = NULL
+                   WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ?
+                     AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND claim_expires_at > ?
+                     AND (NOT EXISTS (
+                            SELECT 1 FROM execution_runs r
+                             WHERE r.approved_decision_id = execution_decisions.id
+                               AND r.organization_id = execution_decisions.organization_id
+                         ) OR EXISTS (
+                            SELECT 1
+                              FROM execution_runs r
+                              JOIN execution_requests q ON q.id = r.request_id
+                                AND q.organization_id = r.organization_id
+                             WHERE r.approved_decision_id = execution_decisions.id
+                               AND r.organization_id = execution_decisions.organization_id
+                               AND q.state = 'AUTHORIZED' AND q.expires_at > ?
+                         ))""",
+                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat()),
             )
             if cur.rowcount == 1:
-                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
-                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_CONSUMED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
+                correlation_id = self._execution_correlation_id_conn(conn, decision_id, organization_id)
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_CONSUMED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
             return cur.rowcount == 1
 
     def release_execution_decision_claim(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str) -> bool:
@@ -3320,9 +3336,27 @@ class DatabaseManager:
             changed = cur.rowcount > 0
             if changed:
                 linked_runs = conn.execute(
-                    "SELECT execution_id, request_id, state FROM execution_runs WHERE approved_decision_id = ? AND organization_id = ?",
+                    """SELECT r.execution_id, r.request_id, r.state, i.state AS dispatch_state
+                         FROM execution_runs r
+                         LEFT JOIN execution_dispatch_intents i
+                           ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                        WHERE r.approved_decision_id = ? AND r.organization_id = ?""",
                     (decision_id, organization_id),
                 ).fetchall()
+                inconsistent_runs = [
+                    row["execution_id"] for row in linked_runs
+                    if row["dispatch_state"] is None
+                ]
+                if inconsistent_runs:
+                    conn.rollback()
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                        action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED, object_type="execution_decision",
+                        object_id=decision_id, result="FAILURE", correlation_id=f"corr-decision-{decision_id}",
+                        details={"reason_code": "LINKED_DISPATCH_INTENT_MISSING", "execution_ids": inconsistent_runs},
+                    ))
+                    conn.commit()
+                    raise ValueError("execution decision has a linked run without a dispatch intent")
                 conn.execute(
                     "UPDATE execution_requests SET state = 'REVOKED' WHERE approved_decision_id = ? AND organization_id = ? AND state = 'AUTHORIZED'",
                     (decision_id, organization_id),
@@ -3347,14 +3381,14 @@ class DatabaseManager:
                                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
                                     organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                                     object_type="execution_run", object_id=linked_run["execution_id"], result="SUCCESS",
-                                    correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                                    correlation_id=self._execution_correlation_id_conn(conn, linked_run["execution_id"], organization_id),
                                     details={"from": "REQUESTED", "to": "CANCELLED", "reason_code": "EXECUTION_CANCELLED_BEFORE_DISPATCH"},
                                 ))
                 self._insert_audit_event_conn(conn, AuditEvent(
                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
                     organization_id=organization_id, action=AuditAction.EXECUTION_CANCEL_REQUESTED,
                     object_type="execution_decision", object_id=decision_id, result="SUCCESS",
-                    correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                    correlation_id=self._execution_correlation_id_conn(conn, linked_runs[0]["execution_id"], organization_id) if linked_runs else f"corr-decision-{decision_id}",
                     details={"propagated_execution_ids": [row["execution_id"] for row in linked_runs]},
                 ))
                 self._insert_audit_event_conn(
@@ -3710,9 +3744,22 @@ class DatabaseManager:
             id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor or "system",
             organization_id=organization_id or "unknown",
             action=action, object_type="execution_dispatch_intent", object_id=execution_id or "unknown",
-            result="REJECTED", correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+            result="REJECTED", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
             details={"reason_code": reason_code},
         ))
+
+    def _execution_correlation_id_conn(self, conn, execution_id: str, organization_id: str) -> str:
+        """Return the stable durable lifecycle correlation for one execution."""
+        row = conn.execute(
+            "SELECT correlation_id FROM execution_runs WHERE execution_id = ? AND organization_id = ?",
+            (execution_id, organization_id),
+        ).fetchone()
+        if row and row["correlation_id"]:
+            return str(row["correlation_id"])
+        current = get_correlation_id()
+        if current:
+            return current
+        return "corr-execution-" + hashlib.sha256(f"{organization_id}:{execution_id}".encode()).hexdigest()[:32]
 
     def claim_execution_dispatch_intent(
         self,
@@ -3793,7 +3840,8 @@ class DatabaseManager:
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
-                object_id=execution_id, result="SUCCESS", details={"attempt_count": int(row["attempt_count"]) + 1},
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"attempt_count": int(row["attempt_count"]) + 1},
             ))
             return ExecutionDispatchLease(
                 execution_id=execution_id, organization_id=organization_id, owner=worker_identity,
@@ -3819,8 +3867,8 @@ class DatabaseManager:
                 """UPDATE execution_dispatch_intents SET lease_expires_at = ?
                    WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
                      AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
-                     AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'AUTHORIZED' AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ? )""",
-                (expires_at.isoformat(), execution_id, organization_id, worker_identity, claim_token, now.isoformat(), execution_id, organization_id, now.isoformat(), worker_identity),
+                      AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'AUTHORIZED' AND q.expires_at > ? AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ? )""",
+                 (expires_at.isoformat(), execution_id, organization_id, worker_identity, claim_token, now.isoformat(), execution_id, organization_id, now.isoformat(), now.isoformat(), worker_identity),
             )
             if cur.rowcount != 1:
                 self._record_dispatch_rejection_conn(
@@ -3831,7 +3879,7 @@ class DatabaseManager:
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, object_type="execution_dispatch_intent",
-                object_id=execution_id, result="SUCCESS", details={},
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={},
             ))
             return expires_at
 
@@ -3870,7 +3918,7 @@ class DatabaseManager:
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED, object_type="execution_dispatch_intent",
-                object_id=execution_id, result="SUCCESS", details={},
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={},
             ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
@@ -3950,12 +3998,13 @@ class DatabaseManager:
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DISPATCH_FAILED, object_type="execution_dispatch_intent",
-                object_id=execution_id, result="SUCCESS", details={"reason_code": reason_code, "state": dispatch_state},
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={"reason_code": reason_code, "state": dispatch_state},
             ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
                 action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
-                result="SUCCESS", details={"to": terminal_state, "reason_code": reason_code},
+                result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"to": terminal_state, "reason_code": reason_code},
             ))
             return True
 
@@ -4027,13 +4076,14 @@ class DatabaseManager:
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DISPATCH_COMPLETED if success else AuditAction.EXECUTION_DISPATCH_FAILED,
-                object_type="execution_dispatch_intent", object_id=execution_id, result="SUCCESS",
+                object_type="execution_dispatch_intent", object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
                 details={"error_code": message} if message else {},
             ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
-                result="SUCCESS", details={"to": run_state, "reason_code": message},
+                result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"to": run_state, "reason_code": message},
             ))
             return True
 
@@ -4114,7 +4164,7 @@ class DatabaseManager:
                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
                     organization_id=organization_id or "unknown", action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                     object_type="execution_run", object_id=execution_id or "unknown", result="REJECTED",
-                    correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                    correlation_id=get_correlation_id() or f"corr-execution-{execution_id}",
                     details={"reason_code": "EXECUTION_AUTHORITY_RECORD_MISSING", "from": expected_state, "to": new_state},
                 ))
                 return False
@@ -4155,7 +4205,7 @@ class DatabaseManager:
                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
                     organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                     object_type="execution_run", object_id=execution_id, result="REJECTED",
-                    correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                    correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
                     details={"reason_code": reason_code_for_rejection, "from": expected_state, "to": new_state},
                 ))
                 return False
@@ -4183,7 +4233,7 @@ class DatabaseManager:
                         id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
                         organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                         object_type="execution_run", object_id=execution_id, result="REJECTED",
-                        correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                        correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
                         details={"reason_code": "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED", "from": expected_state, "to": new_state},
                     ))
                     return False
@@ -4192,7 +4242,7 @@ class DatabaseManager:
                 (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state),
             )
             if cur.rowcount == 1:
-                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system", organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id, result="SUCCESS", details={"from": expected_state, "to": new_state, "reason_code": reason_code}))
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system", organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={"from": expected_state, "to": new_state, "reason_code": reason_code}))
                 return True
             if terminal_dispatch_state is not None:
                 raise RuntimeError("execution run transition could not commit with its dispatch settlement")

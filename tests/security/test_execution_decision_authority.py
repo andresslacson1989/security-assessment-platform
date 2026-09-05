@@ -617,6 +617,24 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert run_events[0]["object_type"] == "execution_run"
     assert run_events[0]["correlation_id"] == "corr-approval-run"
 
+    decision_claim = database.claim_execution_decision(
+        decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
+    )
+    assert decision_claim is not None
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET expires_at = ? WHERE id = ? AND organization_id = ?",
+            ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), "req-a", "org-a"),
+        )
+    assert not database.mark_execution_decision_started(
+        decision_id, "org-a", "worker-a", decision_claim.token,
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET expires_at = ? WHERE id = ? AND organization_id = ?",
+            (expires, "req-a", "org-a"),
+        )
+
     assert database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-b", lease_seconds=30) is None
     lease = database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-a", lease_seconds=30)
     assert lease is not None
@@ -625,6 +643,19 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
         execution_id, "org-a", "worker-a", lease.token, lease_seconds=45,
     )
     assert renewed is not None and renewed > lease.expires_at
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET expires_at = ? WHERE id = ? AND organization_id = ?",
+            ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), "req-a", "org-a"),
+        )
+    assert database.renew_execution_dispatch_lease(
+        execution_id, "org-a", "worker-a", lease.token, lease_seconds=45,
+    ) is None
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET expires_at = ? WHERE id = ? AND organization_id = ?",
+            (expires, "req-a", "org-a"),
+        )
     assert not database.renew_execution_dispatch_lease(
         execution_id, "org-a", "other-worker", lease.token,
     )
