@@ -633,6 +633,26 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert lifecycle_events
     assert {event["correlation_id"] for event in lifecycle_events} == {"corr-approval-run"}
 
+    stale = database.claim_execution_authority(
+        decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
+    )
+    assert stale is not None
+    with database._connection_scope() as conn:
+        expired_claim = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        conn.execute(
+            "UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ? WHERE id = ? AND organization_id = ?",
+            ("crashed-worker", expired_claim, decision_id, "org-a"),
+        )
+    recovered = database.claim_execution_authority(
+        decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
+        dispatch_claim_token=stale.dispatch.token,
+    )
+    assert recovered is not None
+    assert recovered.decision.token != stale.decision.token
+    assert database.release_execution_authority(
+        decision_id, "org-a", "worker-a", recovered.decision.token, recovered.dispatch.token,
+    )
+
     decision_claim = database.claim_execution_decision(
         decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
     )

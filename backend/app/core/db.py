@@ -3362,10 +3362,10 @@ class DatabaseManager:
                 lease_expires_at = datetime.fromisoformat(row["lease_expires_at"])
             updated = conn.execute(
                 """UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
-                      WHERE id = ? AND organization_id = ? AND claim_owner IS NULL
+                      WHERE id = ? AND organization_id = ?
                         AND approval_state = 'APPROVED' AND revoked_at IS NULL AND consumed_at IS NULL
                         AND expires_at > ?
-                        AND (claim_owner IS NULL OR claim_expires_at <= ?)""",
+                        AND (claim_owner IS NULL OR (claim_expires_at IS NOT NULL AND claim_expires_at <= ?))""",
                 (worker_identity, lease_expires_at.isoformat(), decision_token, decision_id, organization_id, now.isoformat(), now.isoformat()),
             )
             if updated.rowcount != 1:
@@ -3410,7 +3410,8 @@ class DatabaseManager:
                 """SELECT i.execution_id, r.correlation_id FROM execution_dispatch_intents i
                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
                     WHERE i.organization_id = ? AND i.claimed_by = ? AND i.claim_token = ?
-                      AND r.approved_decision_id = ?""",
+                      AND i.state = 'CLAIMED' AND r.approved_decision_id = ?
+                      AND r.state IN ('REQUESTED', 'STARTING')""",
                 (organization_id, worker_identity, dispatch_claim_token, decision_id),
             ).fetchone()
             if not run:
@@ -3437,7 +3438,7 @@ class DatabaseManager:
             ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
-                action=AuditAction.EXECUTION_DISPATCH_FAILED, object_type="execution_dispatch_intent",
+                action=AuditAction.EXECUTION_AUTHORITY_RELEASED, object_type="execution_dispatch_intent",
                 object_id=run["execution_id"], result="SUCCESS", correlation_id=correlation_id,
                 details={"reason_code": "EXECUTION_AUTHORITY_RELEASED"},
             ))
