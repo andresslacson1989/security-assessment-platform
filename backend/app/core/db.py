@@ -2891,6 +2891,7 @@ class DatabaseManager:
     def revoke_token(self, jti: str, token_hash: Optional[str] = None, expires_at: Optional[str] = None) -> None:
         """Revokes a JWT token by jti identifier."""
         with self._connection_scope() as conn:
+            revoked_at = utc_now().isoformat()
             conn.execute(
                 """
                 INSERT INTO revoked_tokens (jti, token_hash, revoked_at, expires_at)
@@ -2900,7 +2901,11 @@ class DatabaseManager:
                     revoked_at = excluded.revoked_at,
                     expires_at = excluded.expires_at
                 """,
-                (jti, token_hash, utc_now().isoformat(), expires_at),
+                (jti, token_hash, revoked_at, expires_at),
+            )
+            conn.execute(
+                "UPDATE execution_decisions SET revoked_at = COALESCE(revoked_at, ?) WHERE session_jti = ? AND revoked_at IS NULL",
+                (revoked_at, jti),
             )
 
     def is_token_revoked(self, jti: str) -> bool:
@@ -3564,6 +3569,10 @@ class DatabaseManager:
             ).fetchone()
             if not row:
                 return False
+            # Capture the fence timestamp only after the PostgreSQL row lock
+            # has been acquired; a pre-lock timestamp could outlive authority
+            # while the transaction waits.
+            now = utc_now().isoformat()
             if row["run_state"] in EXECUTION_RUN_TERMINAL_STATES:
                 expected_dispatch_state = "COMPLETED" if row["run_state"] in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if row["run_state"] == "CANCELLED" else "FAILED")
                 if (
@@ -4362,7 +4371,7 @@ class DatabaseManager:
             row = conn.execute(
                 f"""SELECT i.state, i.lease_expires_at, r.state AS run_state,
                            q.state AS request_state, q.expires_at AS request_expires_at,
-                           d.approval_state, d.revoked_at, d.expires_at
+                           d.approval_state, d.revoked_at, d.expires_at, d.session_jti
                     FROM execution_dispatch_intents i
                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
                     JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
@@ -4381,6 +4390,7 @@ class DatabaseManager:
                     or datetime.fromisoformat(row["request_expires_at"]) <= now_dt
                     or row["expires_at"] is None
                     or datetime.fromisoformat(row["expires_at"]) <= now_dt
+                    or conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (row["session_jti"],)).fetchone()
                     or (
                         row["state"] == "CLAIMED"
                         and (
@@ -4443,7 +4453,7 @@ class DatabaseManager:
             row = conn.execute(
                 f"""SELECT i.state, i.claimed_by, i.claim_token, i.lease_expires_at, r.state AS run_state,
                            q.state AS request_state, q.expires_at AS request_expires_at,
-                           d.approval_state, d.revoked_at, d.expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at, d.session_jti,
                            d.worker_identity
                     FROM execution_dispatch_intents i
                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
@@ -4452,6 +4462,7 @@ class DatabaseManager:
                     WHERE i.execution_id = ? AND i.organization_id = ?{lock}""",
                 (execution_id, organization_id),
             ).fetchone()
+            now = utc_now().isoformat()
             current = (
                 row
                 and row["state"] == "CLAIMED"
@@ -4463,6 +4474,7 @@ class DatabaseManager:
                 and row["request_state"] == "AUTHORIZED"
                 and row["approval_state"] == "APPROVED"
                 and row["revoked_at"] is None
+                and not conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (row["session_jti"],)).fetchone()
                 and row["expires_at"] is not None
                 and datetime.fromisoformat(row["expires_at"]) > utc_now()
                 and row["request_expires_at"] is not None
@@ -4481,13 +4493,27 @@ class DatabaseManager:
                 """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
                        claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
                    WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
-                     AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?""",
-                (new_state, now, message, execution_id, organization_id, worker_identity, claim_token, now),
+                     AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
+                     AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)
+                     AND EXISTS (SELECT 1 FROM execution_runs r2
+                         JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                         JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id AND d2.organization_id = r2.organization_id
+                         WHERE r2.execution_id = ? AND r2.organization_id = ?
+                           AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                           AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)""",
+                (new_state, now, message, execution_id, organization_id, worker_identity, claim_token, now, row["session_jti"], execution_id, organization_id, now, now),
             )
             run_update = conn.execute(
                 """UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), finished_at = ?
-                   WHERE execution_id = ? AND organization_id = ? AND state IN ('REQUESTED','STARTING','RUNNING')""",
-                (run_state, message, now, execution_id, organization_id),
+                   WHERE execution_id = ? AND organization_id = ? AND state IN ('REQUESTED','STARTING','RUNNING')
+                     AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)
+                     AND EXISTS (SELECT 1 FROM execution_requests q2
+                         JOIN execution_decisions d2 ON d2.id = (SELECT approved_decision_id FROM execution_runs r2 WHERE r2.execution_id = execution_runs.execution_id AND r2.organization_id = execution_runs.organization_id)
+                         WHERE q2.id = (SELECT request_id FROM execution_runs r3 WHERE r3.execution_id = execution_runs.execution_id AND r3.organization_id = execution_runs.organization_id)
+                           AND q2.organization_id = execution_runs.organization_id
+                           AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                           AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)""",
+                (run_state, message, now, execution_id, organization_id, row["session_jti"], now, now),
             )
             if dispatch_update.rowcount != 1 or run_update.rowcount != 1:
                 raise RuntimeError("execution dispatch settlement could not atomically settle its run")
@@ -4570,7 +4596,7 @@ class DatabaseManager:
                 ("""SELECT q.state AS request_state, q.expires_at AS request_expires_at,
                           d.approval_state, d.revoked_at, d.expires_at,
                           i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
-                          d.worker_identity AS approved_worker_identity
+                          d.worker_identity AS approved_worker_identity, d.session_jti
                    FROM execution_runs r
                    JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
                    JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
@@ -4579,6 +4605,7 @@ class DatabaseManager:
                 + (" FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else "")),
                 (execution_id, organization_id),
             ).fetchone()
+            now = utc_now().isoformat()
             if not authority:
                 self._insert_audit_event_conn(conn, AuditEvent(
                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
@@ -4588,11 +4615,12 @@ class DatabaseManager:
                     details={"reason_code": "EXECUTION_AUTHORITY_RECORD_MISSING", "from": expected_state, "to": new_state},
                 ))
                 return False
-            now_dt = utc_now()
+            now_dt = datetime.fromisoformat(now)
             authority_current = (
                 authority["request_state"] == "AUTHORIZED"
                 and authority["approval_state"] == "APPROVED"
                 and authority["revoked_at"] is None
+                and not conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (authority["session_jti"],)).fetchone()
                 and authority["expires_at"] is not None
                 and datetime.fromisoformat(authority["expires_at"]) > now_dt
                 and authority["request_expires_at"] is not None
@@ -4644,9 +4672,17 @@ class DatabaseManager:
                            last_error = CASE WHEN ? IN ('FAILED', 'BLOCKED') THEN COALESCE(?, last_error) ELSE last_error END,
                            claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
                        WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
-                         AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?""",
+                         AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
+                         AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)
+                         AND EXISTS (SELECT 1 FROM execution_runs r2
+                             JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                             JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id AND d2.organization_id = r2.organization_id
+                             WHERE r2.execution_id = ? AND r2.organization_id = ?
+                               AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                               AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)""",
                     (terminal_dispatch_state, now, terminal_dispatch_state, reason_code,
-                     execution_id, organization_id, worker_identity, dispatch_claim_token, now),
+                     execution_id, organization_id, worker_identity, dispatch_claim_token, now,
+                     authority["session_jti"], execution_id, organization_id, now, now),
                 )
                 if dispatch_update.rowcount != 1:
                     self._insert_audit_event_conn(conn, AuditEvent(
@@ -4658,8 +4694,8 @@ class DatabaseManager:
                     ))
                     return False
             cur = conn.execute(
-                "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','PARTIAL_RESULTS_WITH_WARNING','FAILED','TIMED_OUT','CANCELLED','EXECUTION_BLOCKED') THEN COALESCE(finished_at, ?) ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ?",
-                (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state),
+                "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','PARTIAL_RESULTS_WITH_WARNING','FAILED','TIMED_OUT','CANCELLED','EXECUTION_BLOCKED') THEN COALESCE(finished_at, ?) ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ? AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?) AND EXISTS (SELECT 1 FROM execution_requests q2 JOIN execution_decisions d2 ON d2.id = (SELECT approved_decision_id FROM execution_runs r2 WHERE r2.execution_id = execution_runs.execution_id AND r2.organization_id = execution_runs.organization_id) WHERE q2.id = (SELECT request_id FROM execution_runs r3 WHERE r3.execution_id = execution_runs.execution_id AND r3.organization_id = execution_runs.organization_id) AND q2.organization_id = execution_runs.organization_id AND q2.state = 'AUTHORIZED' AND q2.expires_at > ? AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)",
+                (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state, authority["session_jti"], now, now),
             )
             if cur.rowcount == 1:
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system", organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={"from": expected_state, "to": new_state, "reason_code": reason_code}))

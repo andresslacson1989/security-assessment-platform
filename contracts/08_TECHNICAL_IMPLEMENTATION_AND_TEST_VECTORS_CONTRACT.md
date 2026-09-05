@@ -159,6 +159,8 @@ To achieve deterministic CI verification across environments without requiring e
 - The reason-code registry MUST be state-aware. Tests MUST reject semantically contradictory pairs such as `FAILED` plus `EXECUTION_CANCELLED` and `TIMED_OUT` plus `PROCESS_EXIT_NONZERO`, while accepting each reviewed state-specific pair.
 - Repeating an identical terminal settlement MAY be idempotently successful only when the durable run state, mapped dispatch state, reason code, worker identity, and supplied process identity agree. A conflicting terminal retry MUST be rejected and MUST leave both durable records unchanged except for its rejection audit event.
 - A revocation committed before terminal update evaluation MUST prevent both the execution-run and dispatch-intent terminal updates. Tests MUST cover a revoked session and verify that no successful outcome is persisted.
+- `revoke_token` MUST propagate session revocation to the linked durable execution authority in the same transaction. PostgreSQL tests MUST cover revoke-versus-finish commit ordering, near-expiry finish after lock acquisition, and verify that no successful settlement occurs after authority loss.
+- Reaper eligibility MUST include session-token revocation and MUST close an otherwise active run with a canonical safe outcome while preserving tenant, correlation, and audit invariants.
 
 ### 6.1.3 Historical Persistence and Retention Vectors
 

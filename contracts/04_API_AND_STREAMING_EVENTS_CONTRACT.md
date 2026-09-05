@@ -169,6 +169,13 @@ Once revocation is durably committed, terminal settlement MUST re-check the
 revocation predicate as part of both the run and dispatch updates. A worker
 that loses this authority MUST NOT report a successful terminal outcome; a
 durable cancellation/reaper path is responsible for closing the execution.
+Session revocation MUST also propagate to the durable decision authority under
+the same transaction and lock order used by execution settlement. Revoke and
+settle operations MUST have a deterministic serialization point: whichever
+transaction acquires the authority row first establishes the outcome, and a
+later transaction MUST observe the resulting revoked or terminal state.
+Expiry fences MUST use a timestamp captured after authority-row locks are
+acquired, so lock wait time cannot extend an expired approval.
 
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 
