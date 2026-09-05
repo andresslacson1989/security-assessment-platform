@@ -3264,10 +3264,14 @@ class DatabaseManager:
                 (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat()),
             )
             if cur.rowcount != 1:
-                self._record_dispatch_rejection_conn(
-                    conn, execution_id, organization_id, worker_identity,
-                    AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, "DISPATCH_LEASE_RENEWAL_REJECTED",
-                )
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
+                    organization_id=organization_id or "unknown",
+                    action=AuditAction.EXECUTION_DECISION_CLAIM_REJECTED,
+                    object_type="execution_decision", object_id=decision_id or "unknown", result="REJECTED",
+                    correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                    details={"reason_code": "EXECUTION_DECISION_CLAIM_REJECTED"},
+                ))
                 return None
             self._insert_audit_event_conn(
                 conn,

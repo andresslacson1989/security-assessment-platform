@@ -481,6 +481,7 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     assert database.get_execution_decision(decision.id, organization_id="org-a").id == decision.id
     assert database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION)
     assert not database.claim_execution_decision(decision.id, "org-a", "session-1", "worker-1", OPERATION_POLICY_REVISION)
+    assert database.claim_execution_decision(decision.id, "org-a", "wrong-session", "worker-1", OPERATION_POLICY_REVISION) is None
     stored = database.get_execution_decision(decision.id, organization_id="org-a")
     assert stored.consumed_at is None
     assert stored.claim_owner == "worker-1"
@@ -490,6 +491,7 @@ def test_sqlite_decision_claim_is_durable_atomic_and_audited(tmp_path):
     events, _ = database.list_audit_events(organization_id="org-a", limit=20)
     assert {event.action.value for event in events} >= {
         "EXECUTION_DECISION_CREATED", "EXECUTION_DECISION_CLAIMED", "EXECUTION_DECISION_STARTED",
+        "EXECUTION_DECISION_CLAIM_REJECTED",
     }
 
 
