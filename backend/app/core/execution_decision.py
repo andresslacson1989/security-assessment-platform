@@ -131,6 +131,16 @@ class ExecutionDecisionCapability:
             self.claim_token, self.dispatch_claim_token,
         )
 
+    def abort_start(self, *, terminal_state: str, reason_code: str, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
+        aborter = getattr(self.database, "abort_execution_start", None)
+        if aborter is None or not self.claim_token or not self.dispatch_claim_token:
+            return False
+        return bool(aborter(
+            self.decision.id, self.decision.organization_id, self.worker_identity,
+            self.claim_token, self.dispatch_claim_token, terminal_state=terminal_state,
+            reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
+        ))
+
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(operation_options, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

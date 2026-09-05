@@ -592,7 +592,7 @@ class ProcessSupervisor:
                             max_output_bytes=max_output_bytes,
                         )
                         if cancellation_requested.is_set():
-                            execution_capability.release_claim()
+                            execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
                             return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")
@@ -621,6 +621,8 @@ class ProcessSupervisor:
                             raise ValueError("operation policy revision is not canonical")
                         clean_env.update(credential_handoff.materialize())
                 except (AttributeError, TypeError, ValueError) as exc:
+                    if execution_capability is not None:
+                        execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="PROCESS_LAUNCH_REJECTED_SECURITY")
                     return ProcessExecutionResult(
                         126,
                         "",
@@ -628,7 +630,7 @@ class ProcessSupervisor:
                     )
                 if cancellation_requested.is_set():
                     if execution_capability is not None:
-                        execution_capability.release_claim()
+                        execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
                     return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
                 proc = subprocess.Popen(
                     cmd,
@@ -656,15 +658,15 @@ class ProcessSupervisor:
                 return ProcessExecutionResult(proc.returncode, stdout, stderr)
             except FileNotFoundError as e:
                 if execution_capability is not None:
-                    execution_capability.release_claim()
+                    execution_capability.abort_start(terminal_state="FAILED", reason_code="EXECUTABLE_NOT_FOUND")
                 return ProcessExecutionResult(127, "", f"Executable not found: {e}")
             except PermissionError as e:
                 if execution_capability is not None:
-                    execution_capability.release_claim()
+                    execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="EXECUTABLE_PERMISSION_DENIED")
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
                 if execution_capability is not None:
-                    execution_capability.release_claim()
+                    execution_capability.abort_start(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION")
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
                 return ProcessExecutionResult(-1, "", str(e))
@@ -679,7 +681,7 @@ class ProcessSupervisor:
             if proc_ref[0] and proc_ref[0].pid:
                 self.kill_process_tree(proc_ref[0].pid)
             elif execution_capability is not None:
-                execution_capability.release_claim()
+                execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
             raise
 
 
