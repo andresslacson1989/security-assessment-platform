@@ -3303,7 +3303,81 @@ class DatabaseManager:
             claim_row = cur.connection.execute("SELECT claim_token, claim_expires_at FROM execution_decisions WHERE id = ? AND organization_id = ?", (decision_id, organization_id)).fetchone()
             return ExecutionLeaseClaim(token=claim_row[0], owner=worker_identity, expires_at=datetime.fromisoformat(claim_row[1])) if claim_row else None
 
-    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, now: Optional[datetime] = None) -> bool:
+    def claim_execution_authority(
+        self, decision_id: str, organization_id: str, session_jti: str,
+        worker_identity: str, policy_revision: str,
+        dispatch_claim_token: Optional[str] = None, now: Optional[datetime] = None,
+        lease_seconds: int = 30,
+    ) -> Optional[Tuple[ExecutionLeaseClaim, ExecutionDispatchLease, str]]:
+        """Atomically bind one decision to its exact durable dispatch tuple."""
+        if not decision_id or not organization_id or not session_jti or not worker_identity or lease_seconds <= 0:
+            return None
+        now = now or utc_now()
+        decision_token = uuid.uuid4().hex
+        dispatch_token = dispatch_claim_token or uuid.uuid4().hex
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            rows = conn.execute(
+                f"""SELECT d.id AS decision_id, r.execution_id, r.state AS run_state, r.correlation_id,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           i.state AS dispatch_state, i.claimed_by, i.claim_token AS existing_dispatch_token,
+                           i.lease_expires_at, i.attempt_count
+                      FROM execution_decisions d
+                      JOIN execution_runs r ON r.approved_decision_id = d.id AND r.organization_id = d.organization_id
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                     WHERE d.id = ? AND d.organization_id = ? AND d.session_jti = ?
+                       AND d.worker_identity = ? AND d.operation_policy_revision = ?
+                       AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.consumed_at IS NULL
+                       AND d.expires_at > ? AND q.state = 'AUTHORIZED' AND q.expires_at > ?
+                       AND r.state IN ('REQUESTED', 'STARTING')
+                       AND ((i.state = 'PENDING') OR
+                            (i.state = 'CLAIMED' AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?))
+                     ORDER BY r.execution_id{lock}""",
+                (decision_id, organization_id, session_jti, worker_identity, policy_revision,
+                 now.isoformat(), now.isoformat(), worker_identity, dispatch_claim_token, now.isoformat()),
+            ).fetchall()
+            if len(rows) != 1:
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                    action=AuditAction.EXECUTION_DECISION_CLAIM_REJECTED, object_type="execution_decision",
+                    object_id=decision_id, result="REJECTED", correlation_id=f"corr-decision-{decision_id}",
+                    details={"reason_code": "EXECUTION_AUTHORITY_TUPLE_NOT_EXACTLY_ONE", "candidate_count": len(rows)},
+                ))
+                return None
+            row = rows[0]
+            if row["dispatch_state"] == "PENDING":
+                updated = conn.execute(
+                    """UPDATE execution_dispatch_intents SET state = 'CLAIMED', attempt_count = attempt_count + 1,
+                              claimed_at = ?, claimed_by = ?, claim_token = ?, lease_expires_at = ?
+                        WHERE execution_id = ? AND organization_id = ? AND state = 'PENDING'""",
+                    (now.isoformat(), worker_identity, dispatch_token, lease_expires_at.isoformat(), row["execution_id"], organization_id),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("execution authority dispatch claim lost its transaction fence")
+            else:
+                dispatch_token = row["existing_dispatch_token"]
+                lease_expires_at = datetime.fromisoformat(row["lease_expires_at"])
+            updated = conn.execute(
+                """UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
+                      WHERE id = ? AND organization_id = ? AND claim_owner IS NULL
+                        AND approval_state = 'APPROVED' AND revoked_at IS NULL AND consumed_at IS NULL
+                        AND expires_at > ?""",
+                (worker_identity, lease_expires_at.isoformat(), decision_token, decision_id, organization_id, now.isoformat()),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("execution authority decision claim lost its transaction fence")
+            correlation_id = row["correlation_id"] or f"corr-execution-{row['execution_id']}"
+            return (
+                ExecutionLeaseClaim(token=decision_token, owner=worker_identity, expires_at=lease_expires_at),
+                ExecutionDispatchLease(execution_id=row["execution_id"], organization_id=organization_id,
+                                       owner=worker_identity, token=dispatch_token, expires_at=lease_expires_at,
+                                       attempt_count=int(row["attempt_count"]) + (1 if row["dispatch_state"] == "PENDING" else 0)),
+                correlation_id,
+            )
+
+    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, dispatch_claim_token: Optional[str] = None, now: Optional[datetime] = None) -> bool:
         now = now or utc_now()
         with self._connection_scope() as conn:
             cur = conn.execute(
@@ -3320,13 +3394,13 @@ class DatabaseManager:
                              WHERE r.approved_decision_id = execution_decisions.id
                                AND r.organization_id = execution_decisions.organization_id
                                AND q.state = 'AUTHORIZED' AND q.expires_at > ?
-                               AND i.state IN ('PENDING', 'CLAIMED')
+                                AND i.state = 'CLAIMED' AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?
                                AND (SELECT COUNT(*) FROM execution_runs r2
                                       JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
                                       JOIN execution_dispatch_intents i2 ON i2.execution_id = r2.execution_id AND i2.organization_id = r2.organization_id
                                      WHERE r2.approved_decision_id = execution_decisions.id AND r2.organization_id = execution_decisions.organization_id) = 1
                          )""",
-                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat()),
+                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat(), worker_identity, dispatch_claim_token, now.isoformat()),
             )
             if cur.rowcount == 1:
                 correlation_id = self._execution_correlation_id_conn(conn, organization_id=organization_id, decision_id=decision_id)

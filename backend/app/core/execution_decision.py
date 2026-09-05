@@ -41,6 +41,7 @@ class ExecutionDecisionCapability:
     _issuer_token: object
     database: Any
     claim_token: Optional[str] = None
+    dispatch_claim_token: Optional[str] = None
 
     def assert_valid_for_launch(
         self,
@@ -97,19 +98,30 @@ class ExecutionDecisionCapability:
             raise ExecutionDecisionError("execution resource budget is incomplete")
         if timeout > float(timeout_limit) or max_output_bytes > int(output_limit):
             raise ExecutionDecisionError("launch request exceeds approved resource budget")
-        claim = self.database.claim_execution_decision(
-            decision.id, decision.organization_id, decision.session_jti,
-            decision.worker_identity, decision.operation_policy_revision, now=now,
-        )
+        combined_claim = getattr(self.database, "claim_execution_authority", None)
+        if combined_claim is not None:
+            authority = combined_claim(
+                decision.id, decision.organization_id, decision.session_jti,
+                decision.worker_identity, decision.operation_policy_revision, now=now,
+            )
+            claim = authority[0] if authority else None
+            dispatch_claim = authority[1] if authority else None
+        else:
+            claim = self.database.claim_execution_decision(
+                decision.id, decision.organization_id, decision.session_jti,
+                decision.worker_identity, decision.operation_policy_revision, now=now,
+            )
+            dispatch_claim = None
         if not claim:
             raise ExecutionDecisionError("execution decision could not be atomically claimed")
         object.__setattr__(self, "claim_token", claim.token)
+        object.__setattr__(self, "dispatch_claim_token", dispatch_claim.token if dispatch_claim else None)
 
     def mark_started(self) -> None:
         marker = getattr(self.database, "mark_execution_decision_started", None)
         if marker is not None and not self.claim_token:
             raise ExecutionDecisionError("execution decision has no launch fence")
-        if marker is not None and not marker(self.decision.id, self.decision.organization_id, self.worker_identity, self.claim_token):
+        if marker is not None and not marker(self.decision.id, self.decision.organization_id, self.worker_identity, self.claim_token, self.dispatch_claim_token):
             raise ExecutionDecisionError("execution decision launch lease could not be committed")
 
     def release_claim(self) -> None:
