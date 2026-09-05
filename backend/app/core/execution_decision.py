@@ -143,15 +143,24 @@ class ExecutionDecisionCapability:
             reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
         ))
 
-    def finish(self, *, terminal_state: str, reason_code: Optional[str] = None, process_id: Optional[int] = None) -> bool:
+    def finish(self, *, terminal_state: str, reason_code: Optional[str] = None, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
         finisher = getattr(self.database, "finish_execution", None)
         if finisher is None or not self.execution_id or not self.dispatch_claim_token:
             return False
         return bool(finisher(
             self.execution_id, self.decision.organization_id, self.worker_identity,
             self.dispatch_claim_token, terminal_state=terminal_state,
-            reason_code=reason_code, process_id=process_id,
+            reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
         ))
+
+    def renew(self, *, lease_seconds: int = 30) -> bool:
+        renewer = getattr(self.database, "renew_execution_dispatch_lease", None)
+        if renewer is None or not self.execution_id or not self.dispatch_claim_token:
+            return False
+        return renewer(
+            self.execution_id, self.decision.organization_id, self.worker_identity,
+            self.dispatch_claim_token, lease_seconds=lease_seconds,
+        ) is not None
 
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:

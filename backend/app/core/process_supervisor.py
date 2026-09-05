@@ -503,7 +503,7 @@ class ProcessSupervisor:
         else:
             start_new_session = True
 
-        def _bounded_communicate(proc: subprocess.Popen) -> Tuple[str, str, bool]:
+        def _bounded_communicate(proc: subprocess.Popen, renew_lease: Optional[Callable[[], bool]] = None) -> Tuple[str, str, bool]:
             """Drain both pipes concurrently while enforcing a combined byte cap."""
             output_lock = threading.Lock()
             captured = {"stdout": bytearray(), "stderr": bytearray()}
@@ -536,6 +536,8 @@ class ProcessSupervisor:
                 reader.start()
 
             deadline = time.monotonic() + max(timeout, 0.0)
+            next_lease_renewal = time.monotonic() + 10.0
+            lease_lost = False
             timed_out = False
             while proc.poll() is None:
                 if limit_reached.is_set():
@@ -545,6 +547,12 @@ class ProcessSupervisor:
                     timed_out = True
                     self.kill_process_tree(proc.pid)
                     break
+                if renew_lease is not None and time.monotonic() >= next_lease_renewal:
+                    if not renew_lease():
+                        lease_lost = True
+                        self.kill_process_tree(proc.pid)
+                        break
+                    next_lease_renewal = time.monotonic() + 10.0
                 time.sleep(0.01)
 
             try:
@@ -561,7 +569,9 @@ class ProcessSupervisor:
                 stderr = f"Output exceeded maximum of {max_output_bytes} bytes" + (f"\n{stderr}" if stderr else "")
             if timed_out:
                 stderr = f"Execution timed out after {timeout} seconds" + (f"\n{stderr}" if stderr else "")
-            return stdout, stderr, limit_reached.is_set() or timed_out
+            if lease_lost:
+                stderr = "Execution lease renewal failed" + (f"\n{stderr}" if stderr else "")
+            return stdout, stderr, limit_reached.is_set() or timed_out or lease_lost
 
         proc_ref: list[Optional[subprocess.Popen]] = [None]
         cancellation_requested = threading.Event()
@@ -579,6 +589,7 @@ class ProcessSupervisor:
                 if not execution_capability.finish(
                     terminal_state=terminal_state, reason_code=reason_code,
                     process_id=proc.pid if proc else None,
+                    process_group_id=str(proc.pid) if proc and start_new_session else None,
                 ):
                     return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable terminal state was not committed")
                 return None
@@ -668,7 +679,10 @@ class ProcessSupervisor:
                     launch_committed = True
                 self._register_execution(proc.pid, execution_id=execution_id)
 
-                stdout, stderr, bounded_failure = _bounded_communicate(proc)
+                stdout, stderr, bounded_failure = _bounded_communicate(
+                    proc,
+                    renew_lease=(execution_capability.renew if execution_capability is not None else None),
+                )
                 if "Output exceeded maximum" in stderr:
                     finalization = _finish_durable("PARTIAL_RESULTS_WITH_WARNING", "OUTPUT_LIMIT_EXCEEDED")
                     if finalization:
@@ -676,6 +690,11 @@ class ProcessSupervisor:
                     return ProcessExecutionResult(-1, stdout, stderr)
                 if bounded_failure and "Execution timed out" in stderr:
                     finalization = _finish_durable("TIMED_OUT", "EXECUTION_TIMEOUT")
+                    if finalization:
+                        return finalization
+                    return ProcessExecutionResult(-1, stdout, stderr)
+                if bounded_failure and "Execution lease renewal failed" in stderr:
+                    finalization = _finish_durable("FAILED", "EXECUTION_LEASE_RENEWAL_FAILED")
                     if finalization:
                         return finalization
                     return ProcessExecutionResult(-1, stdout, stderr)
@@ -695,13 +714,15 @@ class ProcessSupervisor:
                     execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="EXECUTABLE_PERMISSION_DENIED")
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
-                if execution_capability is not None:
-                    if launch_committed:
-                        execution_capability.finish(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None)
-                    else:
-                        execution_capability.abort_start(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION")
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
+                if execution_capability is not None:
+                    if launch_committed:
+                        if not execution_capability.finish(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
+                            return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
+                    else:
+                        if not execution_capability.abort_start(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION"):
+                            return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable launch failure was not committed")
                 return ProcessExecutionResult(-1, "", str(e))
             finally:
                 if proc and proc.pid:
@@ -714,10 +735,12 @@ class ProcessSupervisor:
             if proc_ref[0] and proc_ref[0].pid:
                 self.kill_process_tree(proc_ref[0].pid)
                 if execution_capability is not None:
-                    execution_capability.finish(
+                    if not execution_capability.finish(
                         terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED",
                         process_id=proc_ref[0].pid,
-                    )
+                        process_group_id=str(proc_ref[0].pid) if start_new_session else None,
+                    ):
+                        raise RuntimeError("PROCESS_FINALIZATION_FAILED: durable cancellation outcome was not committed")
             elif execution_capability is not None:
                 execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
             raise

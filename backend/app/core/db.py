@@ -3525,17 +3525,20 @@ class DatabaseManager:
         self, execution_id: str, organization_id: str, worker_identity: str,
         dispatch_claim_token: str, *, terminal_state: str,
         reason_code: Optional[str] = None, process_id: Optional[int] = None,
+        process_group_id: Optional[str] = None,
     ) -> bool:
         """Atomically settle a running execution and its dispatch lease."""
         allowed = {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
         if terminal_state not in allowed or not execution_id or not organization_id or not worker_identity or not dispatch_claim_token:
             return False
+        if terminal_state != "SUCCEEDED" and not reason_code:
+            return False
         now = utc_now().isoformat()
-        dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else "FAILED"
+        dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if terminal_state == "CANCELLED" else "FAILED")
         with self._connection_scope() as conn:
             row = conn.execute(
                 """SELECT i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
-                           r.state AS run_state, r.process_id, r.correlation_id, r.worker_identity
+                           r.state AS run_state, r.process_id, r.process_group_id, r.correlation_id, r.worker_identity
                      FROM execution_dispatch_intents i
                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
                     WHERE i.execution_id = ? AND i.organization_id = ?""",
@@ -3549,11 +3552,15 @@ class DatabaseManager:
                 return False
             if process_id is not None and row["process_id"] != process_id:
                 return False
+            if process_group_id is not None and row["process_group_id"] != process_group_id:
+                return False
             run_update = conn.execute(
-                """UPDATE execution_runs SET state = ?, reason_code = ?, process_id = COALESCE(?, process_id), finished_at = ?
+                """UPDATE execution_runs SET state = ?, reason_code = ?, process_id = COALESCE(?, process_id),
+                              process_group_id = COALESCE(?, process_group_id), finished_at = ?
                     WHERE execution_id = ? AND organization_id = ? AND state = 'RUNNING'
-                      AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))""",
-                (terminal_state, reason_code, process_id, now, execution_id, organization_id, worker_identity, process_id, process_id),
+                      AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))
+                      AND (process_group_id = ? OR (? IS NULL AND process_group_id IS NULL))""",
+                (terminal_state, reason_code, process_id, process_group_id, now, execution_id, organization_id, worker_identity, process_id, process_id, process_group_id, process_group_id),
             )
             dispatch_update = conn.execute(
                 """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
