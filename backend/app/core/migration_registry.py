@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
 from typing import Callable, Optional, Protocol
 
@@ -94,6 +95,16 @@ def _verify_v8(manager: MigrationManagerProtocol, conn) -> None:
 
 
 _VERIFIERS = (_verify_v1, _verify_v2, _verify_v3, _verify_v4, _verify_v5, _verify_v6, _verify_v7, _verify_v8)
+_VERIFIER_METHODS = (
+    "_verify_migration_v1_postconditions",
+    "_verify_migration_v2_postconditions",
+    "_verify_migration_v3_postconditions",
+    "_verify_migration_v4_postconditions",
+    "_verify_migration_v5_postconditions",
+    "_verify_migration_v6_postconditions",
+    "_verify_migration_v7_postconditions",
+    "_verify_migration_v8_postconditions",
+)
 
 
 def _make_spec(version: int, migration_id: str, name: str, previous: Optional[int], manifest: str) -> MigrationSpec:
@@ -108,6 +119,8 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         "registry_revision": REGISTRY_REVISION,
         "canonical_manifest": manifest,
         "postcondition_manifest_revision": "execution-postconditions-v2",
+        "verifier_method": _VERIFIER_METHODS[version - 1],
+        "verifier_artifact": inspect.getsource(_VERIFIERS[version - 1]),
     }
     return MigrationSpec(
         version=version, migration_id=migration_id, name=name,

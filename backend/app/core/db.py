@@ -914,10 +914,15 @@ class DatabaseManager:
             binding = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
                 JOIN pg_class t ON t.oid = c.conrelid JOIN pg_class p ON p.oid = c.confrelid
                 JOIN pg_namespace n ON n.oid = t.relnamespace JOIN pg_namespace pn ON pn.oid = p.relnamespace
+                JOIN unnest(c.conkey) WITH ORDINALITY local_cols(attnum, ord) ON TRUE
+                JOIN unnest(c.confkey) WITH ORDINALITY parent_cols(attnum, ord) ON parent_cols.ord = local_cols.ord
+                JOIN pg_attribute la ON la.attrelid = t.oid AND la.attnum = local_cols.attnum
+                JOIN pg_attribute pa ON pa.attrelid = p.oid AND pa.attnum = parent_cols.attnum
                 WHERE n.nspname = current_schema() AND pn.nspname = current_schema()
                   AND t.relname = 'execution_runs' AND p.relname = 'execution_requests'
                   AND c.contype = 'f' AND c.convalidated
-                  AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id, organization_id)%'""").fetchone()
+                GROUP BY c.oid HAVING array_agg(la.attname::text ORDER BY local_cols.ord) = ARRAY['request_id','organization_id']::text[]
+                  AND array_agg(pa.attname::text ORDER BY parent_cols.ord) = ARRAY['id','organization_id']::text[]""").fetchone()
             run_unique = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i
                 JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
                 JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON TRUE
