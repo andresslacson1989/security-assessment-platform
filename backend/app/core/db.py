@@ -3778,6 +3778,10 @@ class DatabaseManager:
                 (expires_at.isoformat(), execution_id, organization_id, worker_identity, claim_token, now.isoformat(), execution_id, organization_id, now.isoformat(), worker_identity),
             )
             if cur.rowcount != 1:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, "DISPATCH_LEASE_RENEWAL_REJECTED",
+                )
                 return None
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
