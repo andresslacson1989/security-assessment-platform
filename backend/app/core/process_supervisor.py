@@ -285,12 +285,15 @@ class ProcessSupervisor:
             identity = self._execution_identities.get(execution_id)
         if pid is None:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
-        if identity is not None and not self._identity_matches(identity):
-            if self._pid_exists(pid) or self._process_group_exists(group_id):
-                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-            status = ProcessCancellationStatus.ALREADY_EXITED
-            terminated = True
-        elif self._pid_exists(pid) or self._process_group_exists(group_id):
+        root_exists = self._pid_exists(pid)
+        group_exists = self._process_group_exists(group_id)
+        identity_valid = identity is not None and (
+            (root_exists and self._identity_matches(identity))
+            or (group_exists and self._process_group_identity_matches(identity))
+        )
+        if identity is not None and not identity_valid and (root_exists or group_exists):
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
+        if root_exists or group_exists:
             terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
@@ -317,9 +320,15 @@ class ProcessSupervisor:
             execution_id = next((key for key, value in self._execution_pids.items() if value == pid), f"pid:{pid}")
             group_id = self._execution_groups.get(execution_id)
             identity = self._execution_identities.get(execution_id)
-        if identity is not None and not self._identity_matches(identity):
+        root_exists = self._pid_exists(pid)
+        group_exists = self._process_group_exists(group_id)
+        identity_valid = identity is not None and (
+            (root_exists and self._identity_matches(identity))
+            or (group_exists and self._process_group_identity_matches(identity))
+        )
+        if identity is not None and not identity_valid and (root_exists or group_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-        if self._pid_exists(pid) or self._process_group_exists(group_id):
+        if root_exists or group_exists:
             terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
@@ -561,10 +570,9 @@ class ProcessSupervisor:
                 ProcessSupervisor._windows_terminate_pid(pid)
             except Exception as e:
                 logger.debug(f"Failed to taskkill PID +{pid}: {e}")
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except Exception as exc:
-                    logger.debug("Fallback termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
+                # Do not fall back to an unbound PID signal after a Windows
+                # process-table operation fails; the caller must observe failure.
+                return False
         else:
             descendants = ProcessSupervisor._posix_descendant_pids(pid)
             try:
@@ -855,6 +863,7 @@ class ProcessSupervisor:
         proc_ref: list[Optional[subprocess.Popen]] = [None]
         process_identity_ref: list[Optional[ProcessIdentity]] = [None]
         process_group_ref: list[Optional[int]] = [None]
+        retain_execution_ref = [False]
         cancellation_requested = threading.Event()
 
         def _run_sync() -> ProcessExecutionResult:
@@ -981,6 +990,7 @@ class ProcessSupervisor:
                     process_group_id=process_group_id,
                 )
                 if bounded_failure and not termination_confirmed:
+                    retain_execution_ref[0] = True
                     return ProcessExecutionResult(
                         -1, stdout,
                         "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active\n" + stderr,
@@ -1029,6 +1039,7 @@ class ProcessSupervisor:
                 if execution_capability is not None:
                     if launch_committed:
                         if not termination_confirmed:
+                            retain_execution_ref[0] = True
                             return ProcessExecutionResult(-1, "", "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
                         if not execution_capability.finish(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
                             return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
@@ -1037,7 +1048,7 @@ class ProcessSupervisor:
                             return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable launch failure was not committed")
                 return ProcessExecutionResult(-1, "", str(e))
             finally:
-                if proc and proc.pid:
+                if proc and proc.pid and not retain_execution_ref[0]:
                     self._unregister_execution(proc.pid, execution_id=execution_id)
 
         try:
@@ -1046,6 +1057,7 @@ class ProcessSupervisor:
             cancellation_requested.set()
             if proc_ref[0] and proc_ref[0].pid:
                 if process_identity_ref[0] is None:
+                    retain_execution_ref[0] = True
                     raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable; governed cleanup refused")
                 termination_confirmed = self.kill_process_tree(
                     proc_ref[0].pid,
@@ -1053,6 +1065,7 @@ class ProcessSupervisor:
                     identity=process_identity_ref[0],
                 )
                 if not termination_confirmed:
+                    retain_execution_ref[0] = True
                     raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
                 if execution_capability is not None:
                     if not execution_capability.finish(
