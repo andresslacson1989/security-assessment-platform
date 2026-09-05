@@ -1,7 +1,7 @@
 # Contract 01: Project Scope, Safety, Legal Boundaries & Enterprise Security Architecture
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (Enterprise Offensive/Defensive Alignment, 26-Tool Fleet & Production Readiness)  
+**Document Version:** 14.3.0 (Enterprise Offensive/Defensive Alignment, 26-Tool Fleet & Production Readiness)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Platform Core Architecture, Safety Standards, Zero-Trust Security Controls, Multi-Tenant Governance & Operational Boundaries  
 
@@ -18,9 +18,9 @@ CyberAssess is logically separated into:
 
 The platform orchestrates an authoritative fleet of **26 specialized security tool adapters** backed by native fallback engines across seven security domains:
 - **Network Perimeter & EASM:** `nmap`, `sslyze`, `subfinder`, `httpx`, `amass`
-- **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`, `sqlmap`, `schemathesis`
-- **Exploitation & Auxiliary Verification:** `metasploit` (strictly non-destructive auxiliary scanners)
-- **Authentication & Password Resilience:** `hydra` (bounded, explicitly authorized credential-resilience auditing)
+- **Web DAST & Crawling:** `nuclei`, `ffuf`, `katana`, `sqlmap` (full upstream capability surface with policy-gated automation), `schemathesis`
+- **Exploitation & Auxiliary Verification:** `metasploit` (full upstream capability surface with policy-gated automation)
+- **Authentication & Password Resilience:** `hydra` (full upstream capability surface with policy-gated credential-resilience automation)
 - **SAST & Secrets:** `semgrep`, `bandit`, `gitleaks`, `trufflehog`, `retire`
 - **Supply Chain & SCA:** `trivy`, `syft`, `grype`, `osv-scanner`
 - **Cloud, K8s & Host Posture:** `checkov`, `prowler`, `kube-bench`, `dockle`, `gtfobins` (host/privesc rule engine)
@@ -57,7 +57,7 @@ The platform enforces eight non-negotiable security invariants across all subsys
 3. **Target Invariant (ASVS v5.0.0-V5.1.1):** Every scan target must pass through the authoritative target security gateway (`assert_safe_target()`) covering `URL`, `DOMAIN`, `IP`, `LOCAL_PATH`, `DOCKERFILE`, `IAC_MANIFEST`. Fail-closed DNS resolution, connection-level IP binding, and hop-by-hop redirect validation are strictly enforced.
 4. **Workspace Invariant (ASVS v5.0.0-V5.3.4):** Local scan paths must be strictly confined to server-derived authorized workspace roots (`resolved_path ∈ authorized_workspace_root`). Clients cannot supply arbitrary roots; symlink traversal escapes are rejected; missing workspace configurations fail closed.
 5. **Supply-Chain Invariant (NIST SP 800-218 PW.4):** A binary is trusted only when exact release, exact asset, platform, architecture, and trusted SHA-256 digest match. Tool installation uses quarantine extraction and atomic promotion; unpinned or digest-less tools fail closed.
-6. **Persistence Invariant (ASVS v5.0.0-V1.1.2):** Exactly one authoritative relational database source of truth. JSON files are strictly export/backup artifacts and never resurrect deleted or alternate database records. Database failures are never swallowed.
+6. **Persistence Invariant (ASVS v5.0.0-V1.1.2):** Exactly one authoritative relational database source of truth. Scan jobs, tests, findings, telemetry, and lifecycle outcomes remain retrievable across refresh, logout/login, process restart, and ordinary redeployment. JSON files are strictly export/backup artifacts and never resurrect deleted or alternate database records. Normal authentication, capability refresh, toolbox installation lifecycle, cancellation, and deployment operations never delete history. Database failures are never swallowed. Any destructive purge is a separate, explicitly authorized, audited, tenant-scoped retention operation.
 7. **Execution Invariant (NIST SP 800-53 SC-2):** A scan cancellation or timeout strictly terminates the entire process tree (orchestrator task, child subprocesses, and grandchild binaries) via `ProcessSupervisor`. Concurrency is strictly bounded.
 8. **Evidence & Audit Invariant (NIST SP 800-53 AU-9):** Security evidence is sanitized at data boundaries, hashed, and attributable. Audit logs are tamper-evident using cryptographically chained SHA-256 hashes (`event_hash = SHA256(canonical_payload + previous_event_hash)`). SLA clocks never reset on redetections.
 
@@ -91,9 +91,22 @@ To prevent denial of service and server resource exhaustion:
 
 ---
 
-## 6. Safety & Non-Destructive Operations
+## 6. Safety, Authorization & Full-Capability Operations
 
-All assessment engines operate strictly within a non-destructive framework:
-- **No Destructive Payloads:** Prohibits SQL `DROP`/`DELETE`/`UPDATE`, live shell commands, filesystem wiping, memory corruption, or real data exfiltration.
+CyberAssess does not water down the installed tools or remove upstream modules, options, protocols, payloads, dictionaries, or rule coverage. The platform separates capability from authority. A capability may be fully available while an individual execution remains unauthorized.
+
+### 6.1 Operation classes
+
+- **Default unattended:** Read-only and non-destructive assessment operations may run through approved scan profiles with server-derived targets, bounded resources, and normal tenant authorization.
+- **Elevated approved automation:** Legitimate offensive, exploit-verification, sqlmap extraction/takeover, Metasploit payload/session/post-exploitation, and Hydra credential-resilience operations may run only after an explicit administrator decision. The decision MUST identify the tenant, project, asset owner, immutable target seal, exact tool operation/options, policy version, expiry, worker, resource and account-impact budgets, credential envelope, emergency-stop authority, and audit correlation ID.
+- **Isolated/manual-approved:** An operation may require a dedicated isolated worker or human-in-the-loop confirmation when its impact cannot be safely bounded for unattended execution. This is an execution state, not a claim that the tool lacks the capability.
+- **Permanently prohibited:** CyberAssess MUST permanently reject execution that bypasses tenant or target authorization, uses an untrusted executable, escapes the approved destination, evades isolation or budgets, exposes credentials, suppresses audit evidence, continues after expiry/cancellation, or performs uncontrolled activity outside the typed policy request. These are control-plane violations, not removed tool capabilities.
+- **Deferred/unverified:** A capability whose artifact, provenance, host prerequisite, adapter, or policy control is not verified MUST be reported as `UNVERIFIED` or `DEFERRED` and MUST fail closed for assured execution.
+
+The approving authority is an authenticated administrator with the required tenant/tool scope. Asset ownership or delegated authorization MUST be verified before approval. Credentials MUST be tenant-scoped, purpose-bound, time-limited, and excluded from logs and evidence. The worker MUST be isolated and cancellable; exhaustion of time, output, network, or account-impact budget MUST stop the process and produce an auditable rejection or degraded state. Emergency stop MUST be available to the approving authority and platform security operator.
+
+The authorization decision is revalidated immediately before process launch and during long-running execution where supported. Missing, expired, revoked, mismatched, or replayed decisions return `EXECUTION_BLOCKED` or `AUTHORIZATION_REQUIRED`; they MUST NOT be relabeled `NOT_SUPPORTED` or `MANUAL_ONLY`.
+
+Benign defaults remain preferred for ordinary assessments:
 - **Benign Probes Only:** SQL injection uses timing delays (`SLEEP(2)`) and benign boolean reflections (`1=1`). XSS uses inert elements (`<script>/*probe*/</script>`).
 - **Active Parameter Fuzzing:** Rate-bounded, non-destructive parameter probes with full reproduction `curl` generation.

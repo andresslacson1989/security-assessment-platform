@@ -1,7 +1,7 @@
 # Contract 06: Security Check Catalog, ASVS 5.0.0, CWE Mappings & Evidence Hashing
 
 **Project Name:** CyberAssess Automated Security Assessment & Vulnerability Management Platform  
-**Document Version:** 14.0.0 (ASVS 5.0.0 Version-Qualified Mapping, NIST SP 800-53 Control Mapping, 26-Tool Fleet Catalog & Cryptographic Hashing)  
+**Document Version:** 14.3.0 (ASVS 5.0.0 Version-Qualified Mapping, NIST SP 800-53 Control Mapping, 26-Tool Fleet Catalog & Cryptographic Hashing)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Scope Authority:** Canonical Security Checks, Vulnerability Taxonomies, Evidence Integrity & Sanitization  
 
@@ -81,3 +81,104 @@ Sensitive credentials MUST be masked BEFORE storage, logging, SSE transmission, 
 - **API Keys / JWTs / Bearer Tokens:** Retain first 6 and last 4 characters; mask middle with `******` (e.g., `eyJhbG******9abc`).
 - **Passwords / Connection Strings:** Completely replace credential components (e.g., `postgres://user:********@db:5432/app`).
 - **Private Keys:** Mask internal key material, preserving header and footer markers only.
+
+## 5. Contract Authority and Registry Reconciliation
+
+Contract 06 is authoritative for finding taxonomy, evidence identity, and secret
+masking. Implementations MUST conform to these exact rules; tests or existing
+helper behavior MUST NOT redefine them silently.
+
+### 5.1 Versioned check registry
+
+The canonical, versioned check registry is the sole authority for `check_id`,
+CWE, OWASP, ASVS, and NIST mappings. Every catalog entry and canonical finding
+MUST carry an ASVS control matching the version-qualified format
+`v5.0.0-V<chapter>.<section>.<requirement>` and MUST resolve to that registry.
+There are no implicit ASVS omissions. If a check is genuinely inapplicable,
+the registry MUST carry an explicit approved exception with owner, rationale,
+review date, and the `ASVS_NOT_APPLICABLE` normalization state; an ordinary
+finding MUST NOT use a null ASVS value.
+Direct, duplicated mapping literals in adapters are prohibited unless generated
+from the registry. Deprecated IDs MUST fail validation rather than being
+silently aliased. CI MUST produce a deterministic report of registry entries,
+emitted IDs, missing mappings, deprecated IDs, and unmapped findings; acceptance
+requires zero unexplained mappings.
+
+### 5.1.1 Canonical registry artifact
+
+The authoritative registry artifact is
+`backend/app/core/security_check_registry.py`, mirrored in
+`docs/security_check_registry.json` when a generated exchange artifact is
+published. The Python artifact is the source of truth; JSON is generated and
+MUST NOT be edited independently. Each entry contains `check_id`, `title`,
+`cwe_id`, `owasp_category`, `asvs_control` or the explicit exception state,
+`nist_control`, `registry_version`, `status`, `owner`, `deprecated_at`,
+`replacement_check_id`, and `evidence_normalization`.
+
+`asvs_control` is a typed union, not an unstructured nullable string:
+
+```json
+{"kind":"ASVS_CONTROL","value":"v5.0.0-V5.3.4"}
+```
+
+or, only for a registry-approved exception:
+
+```json
+{"kind":"ASVS_NOT_APPLICABLE","owner":"team-id","rationale":"...","review_date":"2026-12-31"}
+```
+
+The exception object MUST contain exactly the stated kind, owner, rationale,
+and review date; the date MUST be future-dated at approval and periodically
+re-reviewed. An exception is a normalization/registry state and MUST NOT be
+serialized as a normal ASVS control or silently omitted from a finding.
+
+The serialized union discriminator is exactly `kind`. A normal control object
+MUST have only `kind` and `value`, where `value` matches
+`^v5\.0\.0-V[0-9]+\.[0-9]+\.[0-9]+$`. An exception object MUST have only
+`kind`, `owner`, `rationale`, and `review_date`, where `review_date` is an ISO
+8601 calendar date in UTC (`YYYY-MM-DD`) and `kind` is exactly
+`ASVS_NOT_APPLICABLE`. `ASVS_NOT_APPLICABLE` may appear only as the explicit
+registry/normalization state and never as an ordinary valid ASVS control.
+
+IDs are unique and immutable. Changes require an incremented registry version,
+security-control-owner review, and a migration/replacement entry for
+deprecated IDs. Adapters submit a check ID to the registry validation entry
+point and receive the canonical mapping; they MUST NOT maintain duplicate
+taxonomy dictionaries. CI MUST report duplicate IDs, missing required fields,
+unknown/deprecated emitted IDs, invalid ASVS values, missing owners, and
+unapproved exceptions, and MUST fail on any unexplained result.
+
+### 5.2 Evidence digest canonicalization
+
+The normative digest is exactly:
+
+```text
+evidence_hash = SHA-256(UTF-8(observed_value + location))
+```
+
+The concatenation has no delimiter, implicit trimming, case conversion, or
+serialization transformation unless a future contract revision explicitly
+defines one. The exact observed value and location used as inputs MUST be
+captured in the evidence-normalization record without retaining prohibited
+secrets. Any implementation that uses a delimiter or trims inputs is
+non-conforming until reconciled and covered by contract vectors.
+
+### 5.3 Exact masking vectors
+
+For API keys, JWTs, and bearer tokens, the canonical representation retains the
+first six and last four characters and replaces the entire middle with the
+literal `******`. Values shorter than eleven characters MUST use a defined
+non-reversible short-value policy and MUST never expose the original secret;
+the short-value policy must be tested and documented before production use.
+Passwords and connection-string credentials MUST be replaced as credential
+components, preserving only non-sensitive structural context. Private-key
+material MUST preserve only the header/footer markers. Sanitization MUST occur
+before persistence, logs, SSE, API responses, history replay, exports, and
+errors, and the same recursive sanitizer MUST be used at each boundary.
+
+### 5.4 Acceptance status
+
+The current repository requires implementation reconciliation for the digest and
+masking vectors above before Contract 06 can be marked fully accepted. This is
+an explicit evidence gap, not permission to weaken the contract to match an
+unverified helper implementation.

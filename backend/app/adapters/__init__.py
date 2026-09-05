@@ -7,6 +7,9 @@ from __future__ import annotations
 import platform
 import inspect
 import re
+import asyncio
+import json
+import time
 from typing import Optional, Dict, List
 
 from app.core.models import (
@@ -16,6 +19,7 @@ from app.core.models import (
     SystemCapabilities,
     ToolInstallMethod,
     ToolInstallStatus,
+    utc_now,
 )
 from app.adapters.base_adapter import BaseToolAdapter
 from app.adapters.nmap_adapter import NmapAdapter
@@ -46,6 +50,64 @@ from app.adapters.amass_adapter import AmassAdapter
 from app.adapters.hydra_adapter import HydraAdapter
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, audit_tool_manifest
 from app.core.tool_fleet import SUPPORTED_TOOL_IDS
+
+
+CAPABILITY_CACHE_TTL_SECONDS = 60
+_capability_cache: Dict[str, tuple[float, SystemCapabilities]] = {}
+_capability_cache_lock: Optional[asyncio.Lock] = None
+_capability_cache_loop = None
+
+
+def _get_capability_cache_lock() -> asyncio.Lock:
+    global _capability_cache_lock, _capability_cache_loop
+    loop = asyncio.get_running_loop()
+    if _capability_cache_lock is None or _capability_cache_loop is not loop:
+        _capability_cache_lock = asyncio.Lock()
+        _capability_cache_loop = loop
+    return _capability_cache_lock
+
+
+def _capability_config_key(config: Optional[ToolAdapterConfig]) -> str:
+    cfg = config or ToolAdapterConfig()
+    return json.dumps(cfg.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+
+
+def invalidate_system_capabilities_cache() -> None:
+    """Drop cached host capability observations after installation lifecycle changes."""
+    _capability_cache.clear()
+
+
+async def get_cached_system_capabilities(
+    config: Optional[ToolAdapterConfig] = None,
+    *,
+    force_refresh: bool = False,
+) -> SystemCapabilities:
+    """Return a bounded API snapshot; scans continue to call live discovery directly."""
+    key = _capability_config_key(config)
+    requested_at = time.monotonic()
+    lock = _get_capability_cache_lock()
+    async with lock:
+        now = time.monotonic()
+        cached = _capability_cache.get(key)
+        if cached:
+            cached_at, snapshot = cached
+            age = max(0.0, now - cached_at)
+            if age <= CAPABILITY_CACHE_TTL_SECONDS and (not force_refresh or cached_at >= requested_at):
+                return snapshot.model_copy(update={
+                    "capabilities_source": "CACHE",
+                    "capabilities_cache_age_seconds": round(age, 3),
+                }, deep=True)
+
+        live = await discover_system_capabilities(config)
+        checked_at = utc_now()
+        live = live.model_copy(update={
+            "capabilities_source": "LIVE",
+            "capabilities_checked_at": checked_at,
+            "capabilities_cache_age_seconds": 0.0,
+            "capabilities_cache_ttl_seconds": CAPABILITY_CACHE_TTL_SECONDS,
+        }, deep=True)
+        _capability_cache[key] = (time.monotonic(), live)
+        return live.model_copy(deep=True)
 
 
 __all__ = [
@@ -188,6 +250,7 @@ async def discover_system_capabilities(
         "hydra": ToolInstallMethod.MANUAL,
     }
     manual_only_tools = {"metasploit", "sqlmap", "hydra"}
+    native_engine_tools = {"gtfobins"}
 
     for name, adapter in registry.items():
         is_enabled, custom_path = adapter_configs.get(name, (True, None))
@@ -205,6 +268,24 @@ async def discover_system_capabilities(
                     is_installed=False,
                     installable=True,
                     assurance_status="DISABLED",
+                )
+            )
+            continue
+
+        if name in native_engine_tools:
+            native_available = await adapter.is_available(custom_path)
+            native_version = await adapter.get_version(custom_path) if native_available else None
+            tool_statuses.append(
+                ToolStatus(
+                    name=name,
+                    available=bool(native_available),
+                    version=native_version,
+                    path=None,
+                    execution_mode=ToolExecutionMode.NATIVE_ENGINE_READY if native_available else ToolExecutionMode.NATIVE_FALLBACK,
+                    install_method=inst_method,
+                    is_installed=False,
+                    installable=False,
+                    assurance_status="NOT_APPLICABLE" if native_available else "UNASSURED",
                 )
             )
             continue

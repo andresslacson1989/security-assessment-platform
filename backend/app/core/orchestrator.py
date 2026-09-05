@@ -28,8 +28,12 @@ from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
 from app.engines.base import BaseAssessmentEngine
 from app.adapters import discover_system_capabilities, get_adapter_registry
+from app.core.execution_context import GovernedExecutionContext
+from app.core.execution_decision import ExecutionDecisionCapability
 
 logger = logging.getLogger("cyberassess.orchestrator")
+
+_CANCELLATION_JOIN_TIMEOUT_SECONDS = 5.0
 
 _TOOL_ID_ALIASES = {
     "retirejs": "retire",
@@ -147,13 +151,19 @@ class ScanOrchestrator:
             return job
         return get_scan(scan_id, organization_id=organization_id)
 
-    async def start_scan(self, scan_job: ScanJob) -> asyncio.Task:
+    async def start_scan(
+        self, scan_job: ScanJob, *,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        execution_capability: Optional[ExecutionDecisionCapability] = None,
+    ) -> asyncio.Task:
         """
         Queues and launches background execution for a new scan job governed by ScanQueueManager.
         """
         async with self._lock:
             self._active_jobs[scan_job.id] = scan_job
             save_scan(scan_job)
+        if (execution_context is None) != (execution_capability is None):
+            raise ValueError("governed scan start requires both typed context and decision capability")
 
         from app.core.queue import queue_manager
         if queue_manager.durable_enabled:
@@ -173,6 +183,8 @@ class ScanOrchestrator:
                     self._execute_scan,
                     scan_job.id,
                     organization_id=scan_job.organization_id,
+                    execution_context=execution_context,
+                    execution_capability=execution_capability,
                 )
             )
         self._tasks[scan_job.id] = task
@@ -190,12 +202,54 @@ class ScanOrchestrator:
 
         # 2. Explicitly terminate any subprocess tracked by process_supervisor for this scan
         from app.core.process_supervisor import process_supervisor
-        process_supervisor.cancel_execution(scan_id)
+        cancellation = process_supervisor.cancel_execution(scan_id)
 
-        # 3. Cancel running task if present
+        # 3. Cancel the owning scan task and wait for it to stop. A task
+        # cancellation request alone is not proof that the task or any
+        # supervised child has stopped.
         task = self._tasks.get(scan_id)
         if task and not task.done():
             task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=_CANCELLATION_JOIN_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    "Scan cancellation is pending: the owning task did not stop within the cancellation deadline.",
+                )
+                return False
+            except Exception as exc:
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    f"Scan cancellation is pending: task shutdown failed ({type(exc).__name__}).",
+                )
+                return False
+
+        # A NOT_FOUND result is accepted as a no-process proof only after the
+        # owning task has stopped and a second exact-ID lookup still finds no
+        # supervised execution. External launches are required to register
+        # under this same scan execution ID.
+        if not cancellation.confirmed:
+            no_process_proven = (
+                cancellation.status.value == "NOT_FOUND"
+                and task is not None
+                and task.done()
+                and process_supervisor.cancel_execution(scan_id).status.value == "NOT_FOUND"
+            )
+            if not no_process_proven:
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    f"Scan cancellation is pending verified process termination ({cancellation.status.value}).",
+                )
+                return False
 
         # 4. Mark cancelled state if in cancellable state
         if job.status in {ScanStatus.PENDING, ScanStatus.RUNNING}:
@@ -518,7 +572,11 @@ class ScanOrchestrator:
 
     # --- Background Execution Engine ---
 
-    async def _execute_scan(self, scan_id: str) -> None:
+    async def _execute_scan(
+        self, scan_id: str, *,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        execution_capability: Optional[ExecutionDecisionCapability] = None,
+    ) -> None:
         job = self._active_jobs.get(scan_id)
         if not job:
             return
@@ -694,13 +752,11 @@ class ScanOrchestrator:
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_cis_result"] = _cis_cb
 
+                    if execution_context is not None:
+                        run_kwargs["execution_context"] = execution_context
+                        run_kwargs["execution_capability"] = execution_capability
                     engine_findings = await engine.run(
-                        job.target,
-                        job.config,
-                        _log_cb,
-                        _prog_cb,
-                        _find_cb,
-                        **run_kwargs,
+                        job.target, job.config, _log_cb, _prog_cb, _find_cb, **run_kwargs,
                     )
                     await _raise_if_authoritatively_cancelled()
                     # Deduplicate and append

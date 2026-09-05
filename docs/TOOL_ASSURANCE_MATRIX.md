@@ -10,9 +10,11 @@ This specification serves as the **Audit & Assurance Matrix** for all 26 support
 
 ## 1. Tool Taxonomy & Role Classification Strategy
 
+Capability and installation status shown in the toolbox are observational, authenticated backend snapshots with a 60-second process-local cache and explicit live refresh. The frontend performs no detection. This is not execution assurance: every runtime invocation still performs live managed-binary integrity and exact-version checks and fails closed when those checks do not pass.
+
 | Security Domain | Tool Name | Tool ID | Tool Role | Primary / Fallback Purpose | Upstream Artifact Type |
 |---|---|---|---|---|---|
-| **Network / EASM** | Nmap | `TOOL-NMAP` | PRIMARY | Network Port Probing & Service Fingerprinting | Verified Source Build (Linux production image) |
+| **Network / EASM** | Nmap | `TOOL-NMAP` | PRIMARY | Network Port Probing & Service Fingerprinting | Verified Source Build (container) / Direct Release RPM (Linux x86-64) |
 | **Network / TLS** | SSLyze | `TOOL-SSLYZE` | PRIMARY | Comprehensive TLS Protocol & Cipher Suite Analysis | Pure Python Package (pip) |
 | **Perimeter / EASM** | Subfinder | `TOOL-SUBFINDER` | PRIMARY | Passive `crtsh`-only Subdomain Enumeration | Standalone Go Binary (GitHub Release) |
 | **HTTP Probing** | httpx | `TOOL-HTTPX` | VALIDATION | High-Speed HTTP Endpoint Verification & Technology Detection | Standalone Go Binary (GitHub Release) |
@@ -68,7 +70,7 @@ The following five auxiliary adapters are part of the same 26-tool fleet. Their 
 - **Failure Handling**: Zero cascade failure; missing or failed Nmap preserves `tool_failed` event log, degrades assessment coverage (`COVERAGE_DEGRADED`), and activates native fallback tagged with `source_tool="native"`.
 - **Role Strategy**: **PRIMARY**. Retain native port checker as non-blocking fallback.
 - **Implementation Status**: `REPOSITORY_VERIFIED` (Passed all 13 security assurance tests, 53 adapter tests, 30 adversarial tests, and 32 acceptance scenarios).
-- **Runtime Evidence**: The production image verifies and runs the managed source-built Nmap `7.95` executable with its source archive, GCC toolchain, and executable trust record; unmanaged host Nmap versions remain non-assured.
+- **Runtime Evidence**: The production image verifies and runs the managed source-built Nmap `7.95` executable with its source archive, GCC toolchain, and executable trust record; the standalone dynamic installer verifies the official Linux x86-64 RPM package with resource tree integrity hash-locking (`RESOURCE_TREE_INTEGRITY_VERIFIED`); unmanaged host Nmap versions remain non-assured.
 
 ### 2. SSLyze (TLS/SSL Cipher Suite & Protocol Analyzer)
 - **Security Domain**: Network / TLS

@@ -13,7 +13,7 @@ import os
 import sys
 import pytest
 
-from app.core.process_supervisor import ProcessSupervisor, process_supervisor, ProcessExecutionResult
+from app.core.process_supervisor import ProcessSupervisor, process_supervisor, ProcessExecutionResult, ProcessCancellationStatus, ProcessCancellationResult
 from app.core.orchestrator import orchestrator
 from app.core.models import (
     ScanJob,
@@ -50,10 +50,12 @@ async def test_self_and_parent_process_termination_protection():
 
 @pytest.mark.asyncio
 async def test_cancel_nonexistent_execution_fails_cleanly():
-    """Cancelling a non-existent execution ID returns False without side effects."""
+    """A missing execution mapping is explicitly not proof of process exit."""
     supervisor = ProcessSupervisor.get_instance()
-    assert supervisor.cancel_execution("non-existent-exec-id") is False
-    assert supervisor.cancel_pid(99999999) is False
+    result = supervisor.cancel_execution("non-existent-exec-id")
+    assert result.status is ProcessCancellationStatus.NOT_FOUND
+    assert result.confirmed is False
+    assert supervisor.cancel_pid(99999999).status is ProcessCancellationStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -80,7 +82,7 @@ async def test_concurrent_sibling_execution_isolation():
 
     # Cancel execution A only
     cancelled_a = supervisor.cancel_execution("exec-sibling-a")
-    assert cancelled_a is True
+    assert cancelled_a.confirmed is True
 
     # Execution B must complete cleanly on its own
     res_b = await exec_b_task
@@ -123,7 +125,7 @@ async def test_asyncio_cancellation_does_not_kill_siblings():
 
 
 @pytest.mark.asyncio
-async def test_tenant_cancellation_isolation_in_orchestrator():
+async def test_tenant_cancellation_isolation_in_orchestrator(monkeypatch):
     """
     Verify orchestrator.cancel_scan respects tenant boundaries:
     A tenant cannot cancel a scan belonging to another organization.
@@ -144,6 +146,14 @@ async def test_tenant_cancellation_isolation_in_orchestrator():
     cancelled_by_beta = await orch.cancel_scan(job.id, organization_id="org-tenant-beta")
     assert cancelled_by_beta is False
     assert orch._active_jobs[job.id].status == ScanStatus.RUNNING
+
+    monkeypatch.setattr(
+        process_supervisor,
+        "cancel_execution",
+        lambda execution_id: ProcessCancellationResult(
+            execution_id, ProcessCancellationStatus.KILLED, 1234,
+        ),
+    )
 
     # Attempt to cancel with Tenant Alpha's organization_id -> MUST SUCCEED
     cancelled_by_alpha = await orch.cancel_scan(job.id, organization_id="org-tenant-alpha")

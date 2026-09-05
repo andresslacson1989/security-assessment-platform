@@ -1,5 +1,6 @@
 """Regression checks for the authoritative 26-tool contract fleet."""
 
+import ast
 from pathlib import Path
 import re
 
@@ -7,6 +8,7 @@ from app.adapters import get_adapter_registry
 from app.installers.manager import ToolInstallationManager
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
 from app.core.tool_fleet import SUPPORTED_TOOL_COUNT, SUPPORTED_TOOL_IDS
+from app.core.version import CONTRACT_VERSION
 
 
 EXPECTED_TOOLS = SUPPORTED_TOOL_IDS
@@ -30,15 +32,43 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     canonical = repository_root / "contracts"
     mirror = repository_root / "docs" / "contracts"
 
-    contract_01 = (canonical / "01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md").read_text()
-    contract_03 = (canonical / "03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md").read_text()
-    contract_07 = (canonical / "07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md").read_text()
-    contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text()
-    contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text()
-    assurance_matrix = (repository_root / "docs" / "TOOL_ASSURANCE_MATRIX.md").read_text()
-    dockerfile = (repository_root / "Dockerfile").read_text()
-    models = (repository_root / "backend" / "app" / "core" / "models.py").read_text()
+    contract_01 = (canonical / "01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md").read_text(encoding="utf-8")
+    contract_03 = (canonical / "03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md").read_text(encoding="utf-8")
+    contract_04 = (canonical / "04_API_AND_STREAMING_EVENTS_CONTRACT.md").read_text(encoding="utf-8")
+    contract_07 = (canonical / "07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md").read_text(encoding="utf-8")
+    contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text(encoding="utf-8")
+    contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text(encoding="utf-8")
+    assurance_matrix = (repository_root / "docs" / "TOOL_ASSURANCE_MATRIX.md").read_text(encoding="utf-8")
+    dockerfile = (repository_root / "Dockerfile").read_text(encoding="utf-8")
+    models = (repository_root / "backend" / "app" / "core" / "models.py").read_text(encoding="utf-8")
     frontend_index = (repository_root / "frontend" / "index.html").read_text(encoding="utf-8")
+
+    contract_headers = []
+    for contract_file in sorted(canonical.glob("[0-9][0-9]_*.md")):
+        contract_text = contract_file.read_text(encoding="utf-8")
+        match = re.search(r"^\*\*Document Version:\*\* ([0-9]+\.[0-9]+\.[0-9]+)", contract_text, re.MULTILINE)
+        assert match, f"missing document version header: {contract_file.name}"
+        contract_headers.append(match.group(1))
+    assert contract_headers == [CONTRACT_VERSION] * len(contract_headers)
+
+    traceability = contract_08.split("## 5. Security Invariant Traceability Matrix", 1)[1].split(
+        "## 6. Adversarial Test Vectors", 1
+    )[0]
+    for row in traceability.splitlines():
+        if not row.startswith("|") or row.startswith("|---") or row.startswith("| Requirement"):
+            continue
+        references = re.findall(r"`(tests/[^`]+)`", row)
+        for reference in references:
+            if "::" not in reference:
+                assert "(suite-scoped)" in row, f"unqualified test reference: {reference}"
+                assert (repository_root / reference).is_file(), f"missing test suite: {reference}"
+                continue
+            test_path, test_name = reference.split("::", 1)
+            source_path = repository_root / test_path
+            assert source_path.is_file(), f"missing test file: {test_path}"
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=test_path)
+            symbols = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            assert test_name in symbols, f"missing test symbol: {reference}"
 
     assert "26 specialized security tool adapters" in contract_01
     assert "across seven security domains" in contract_01
@@ -46,6 +76,37 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "john" not in contract_01
     assert "Supported 26 Tools" in contract_03
     assert "26 tools" in contract_07
+    assert "NATIVE_ENGINE_READY" in contract_07
+    assert "GET /api/system/tools?refresh=true" in contract_04
+    assert "backend snapshot" in contract_04
+    assert "target_policy_version" in contract_04
+    assert "operation_policy_revision" in contract_04
+    assert "immutable nested representations" in contract_09
+    assert "NOT_SUPPORTED`" in contract_09
+    assert "permanent" in contract_09
+    assert "platform exclusion" in contract_09
+    assert "DELEGATED` to FFuF" in contract_09
+    assert "refresh=true" in contract_04
+    assert "capabilities_source" in contract_04
+    assert "process-local, 60-second cache" in contract_04
+    assert "Authentication Side-Effect Boundary" in contract_04
+    assert "Backend-Owned Observation Service" in contract_04
+    assert "canonical response envelope" in contract_04
+    assert "Current Implementation-Gap Register" in contract_04
+    assert "No ordinary scan-history delete endpoint is exposed" in contract_04
+    assert "lifecycle-managed backend observation service" in contract_04
+    assert "observational only" in contract_03
+    assert "Capability Detection Cache Vectors" in contract_08
+    assert "Authentication Isolation and Backend Observation Vectors" in contract_08
+    assert "Historical Persistence and Retention Vectors" in contract_08
+    assert "Managed Resolution and Probe Vectors" in contract_08
+    assert "Managed Package-Adapter Resolution" in contract_03
+    assert "NATIVE_ENGINE_READY" in models
+    assert "authentication-only interaction" in contract_07
+    assert "canonical `items` collection" in contract_07
+    assert 'id="tool-pill-gtfobins"' in frontend_index
+    assert 'tool-pill--active" id="tool-pill-gtfobins"' in frontend_index
+    assert "observational telemetry only" in contract_09
     assert "`grype`: `v0.74.0`" in contract_08
     assert "`nmap`: `7.95` -> verified official source archive" in contract_08
     assert "complete 26-tool fleet" in contract_09
@@ -64,7 +125,29 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     expected_matrix_ids.add("TOOL-RETIREJS")
     assert matrix_tool_ids == expected_matrix_ids
     assert "Part II defines all 26 supported tools" in contract_09
-    assert "five auxiliary/manual adapter specifications" in contract_09
+    assert "policy-gated automation specifications" in contract_09
+    assert "Full-Capability Tool Principle" in contract_09
+    assert "complete supported command, module, protocol, and option surface" in contract_03
+    assert "Tool Installation and Full-Capability Execution Requests" in contract_04
+    assert "recursive evidence sanitizer" in contract_04
+    assert "Contract Authority and Registry Reconciliation" in (
+        (canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md").read_text(encoding="utf-8")
+    )
+    assert "Enterprise cross-cutting security and automation vectors" in contract_08
+    assert "Full-capability automated-tool vectors" in contract_08
+    contract_02 = (canonical / "02_DATA_SCHEMA_AND_MODELS_CONTRACT.md").read_text(encoding="utf-8")
+    assert "asvs_control: ASVSControl | ASVSNotApplicable" in contract_02
+    assert "ASVS_NOT_APPLICABLE" in (
+        canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md"
+    ).read_text(encoding="utf-8")
+    contract_06 = (canonical / "06_SECURITY_CHECK_CATALOG_AND_CWE_MAPPING_CONTRACT.md").read_text(encoding="utf-8")
+    asvs_pattern = r"^v5\.0\.0-V[0-9]+\.[0-9]+\.[0-9]+$"
+    assert asvs_pattern in contract_06
+    assert re.fullmatch(asvs_pattern, "v5.0.0-V5.3.4")
+    assert not re.fullmatch(asvs_pattern, "V5.3.4")
+    assert not re.fullmatch(asvs_pattern, "v5.0.0-V5.3")
+    assert not re.fullmatch(asvs_pattern, "v5.0.0-V5.3.4-extra")
+    assert "14.3.0" in contract_02
     detailed_sections = re.findall(r"^## TOOL (\d{2}):", contract_09, re.MULTILINE)
     assert detailed_sections == [f"{index:02d}" for index in range(1, 27)]
     traceability_rows = [line for line in contract_09.splitlines() if line.startswith("| `TOOL-")]
@@ -119,4 +202,4 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     }
 
     for contract_file in canonical.glob("*.md"):
-        assert (mirror / contract_file.name).read_text() == contract_file.read_text()
+        assert (mirror / contract_file.name).read_bytes() == contract_file.read_bytes()

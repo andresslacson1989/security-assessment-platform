@@ -1,10 +1,12 @@
 """Contract 01 database backend compatibility and selection tests."""
 
 import asyncio
+import sys
+import types
 
 import pytest
 
-from app.core.db import _PostgresRow, _qmark_to_postgres, DatabaseManager
+from app.core.db import _PostgresConnection, _PostgresRow, _qmark_to_postgres, DatabaseManager, PostgresDatabaseManager
 
 
 def test_worker_does_not_reexecute_terminal_authoritative_scan_states():
@@ -25,12 +27,50 @@ def test_qmark_translation_preserves_quoted_literals():
     )
 
 
+def test_qmark_translation_escapes_literal_percent_signs_for_psycopg():
+    assert _qmark_to_postgres("SELECT * FROM items WHERE name LIKE '%run%' AND id = ?") == (
+        "SELECT * FROM items WHERE name LIKE '%%run%%' AND id = %s"
+    )
+
+
 def test_postgres_row_supports_mapping_and_positional_access():
     row = _PostgresRow(["id", "status"], ("row-1", "READY"))
 
     assert row["id"] == "row-1"
     assert row[0] == "row-1"
     assert row["status"] == row[1] == "READY"
+
+
+def test_postgres_schema_execution_tables_are_deferred_until_dependencies_exist():
+    class Cursor:
+        description = None
+
+        def __init__(self, statements):
+            self.statements = statements
+
+        def execute(self, sql, params=()):
+            self.statements.append(sql)
+
+    class Connection:
+        def __init__(self):
+            self.statements = []
+
+        def cursor(self):
+            return Cursor(self.statements)
+
+    raw = Connection()
+    _PostgresConnection(raw).executescript("""
+        CREATE TABLE IF NOT EXISTS execution_requests (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS execution_runs (id TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id));
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(id);
+    """)
+    assert raw.statements[:1] == ["CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY)"]
+    assert raw.statements[-3:] == [
+        "CREATE TABLE IF NOT EXISTS execution_requests (id TEXT PRIMARY KEY)",
+        "CREATE TABLE IF NOT EXISTS execution_runs (id TEXT, FOREIGN KEY (request_id) REFERENCES execution_requests(id))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(id)",
+    ]
 
 
 def test_database_manager_selects_postgres_for_enterprise_url(monkeypatch):
@@ -49,6 +89,42 @@ def test_database_manager_selects_postgres_for_enterprise_url(monkeypatch):
         assert manager.database_url.startswith("postgresql://")
     finally:
         DatabaseManager._instance = original_instance
+
+
+def test_postgres_manager_closes_pool_when_initialization_fails(monkeypatch):
+    class Pool:
+        closed = False
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def close(self):
+            self.closed = True
+
+    pool = Pool()
+    monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(ConnectionPool=lambda **kwargs: pool))
+    monkeypatch.setattr(PostgresDatabaseManager, "_init_db", lambda self: (_ for _ in ()).throw(RuntimeError("schema failure")))
+
+    with pytest.raises(RuntimeError, match="schema failure"):
+        PostgresDatabaseManager("postgresql://user:pass@127.0.0.1/cyberassess_test")
+
+    assert pool.closed is True
+
+
+def test_postgres_manager_preserves_initialization_failure_when_pool_close_fails(monkeypatch, caplog):
+    class Pool:
+        def close(self):
+            raise OSError("pool close failure")
+
+    monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(ConnectionPool=lambda **kwargs: Pool()))
+    monkeypatch.setattr(PostgresDatabaseManager, "_init_db", lambda self: (_ for _ in ()).throw(RuntimeError("authoritative schema failure")))
+
+    with caplog.at_level("ERROR", logger="cyberassess.persistence"):
+        with pytest.raises(RuntimeError, match="authoritative schema failure"):
+            PostgresDatabaseManager("postgresql://user:pass@127.0.0.1/cyberassess_test")
+
+    assert "pool cleanup failed during initialization" in caplog.text
+    assert "pool close failure" not in caplog.text
 
 
 @pytest.mark.asyncio

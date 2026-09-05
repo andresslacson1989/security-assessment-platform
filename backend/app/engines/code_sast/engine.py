@@ -430,7 +430,11 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 await emit_finding(f)
 
         # Historical Git Commit Secret Scanning (SAST-GIT-001)
-        git_findings = await audit_git_commit_history(repo_path)
+        git_findings = await audit_git_commit_history(
+            repo_path,
+            execution_context=kwargs.get("execution_context"),
+            execution_capability=kwargs.get("execution_capability"),
+        )
         mark_fallback(git_findings, ("gitleaks",))
         for f in git_findings:
             if f.fingerprint not in existing_fps:

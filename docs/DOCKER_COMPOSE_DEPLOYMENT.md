@@ -44,6 +44,16 @@ This repository verifies the Compose topology and application boundaries. It
 does not claim host-firewall or egress-gateway enforcement merely because the
 Compose file parses successfully.
 
+## Non-root runtime configuration
+
+Systemd deployments MUST provide a service-owned ephemeral runtime directory
+for tool configuration and caches. The reference unit in
+`deploy/cyberassess.service` uses `RuntimeDirectory=cyberassess` with mode `0700`
+and directs `HOME`, `APPDATA`, `LOCALAPPDATA`, and the XDG configuration/cache/data
+variables into `/run/cyberassess`. This prevents tool version probes from writing
+under the root-owned application directory while preserving `ProtectSystem` and
+the restricted application write paths.
+
 ## Startup checklist
 
 For enterprise deployment, verify the following outside the application:

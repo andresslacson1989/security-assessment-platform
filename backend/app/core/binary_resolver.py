@@ -24,6 +24,14 @@ import subprocess
 import sys
 from typing import Callable, Optional, List
 
+from app.core.process_supervisor import (
+    CredentialEnvironmentHandoff,
+    CredentialExecutionContext,
+    ProcessExecutionResult,
+    VerifiedEgressProxy,
+)
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
+
 logger = logging.getLogger("cyberassess.binary_resolver")
 
 
@@ -160,6 +168,9 @@ def resolve_tool_binary(
     Tier 4: System PATH discovery via shutil.which(tool_name)
     Tier 5: Platform-Specific Auto-Discovery (Windows Registry, drive scan, package managers, Unix dirs)
     """
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+
     # Tier 1: Explicit custom configured path
     if custom_path:
         if os.path.isfile(custom_path):
@@ -236,7 +247,16 @@ async def safe_execute_subprocess(
     max_output_bytes: int = 10 * 1024 * 1024,
     pre_launch_check: Optional[Callable[[], bool]] = None,
     execution_id: Optional[str] = None,
-) -> "ProcessExecutionResult":
+    execution_context: Optional[GovernedExecutionContext] = None,
+    non_scan_context: Optional[NonScanExecutionContext] = None,
+    scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
+    credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
+    credential_context: Optional[CredentialExecutionContext] = None,
+    execution_capability=None,
+    operation_family: str = "",
+    operation_options: Optional[dict] = None,
+    tool_id: str = "",
+) -> ProcessExecutionResult:
     """
     Loop-agnostic safe subprocess execution helper.
     Delegates to central ProcessSupervisor to track subprocesses and guarantee
@@ -245,7 +265,7 @@ async def safe_execute_subprocess(
     if not cmd:
         return -1, "", "Empty command provided"
 
-    from app.core.process_supervisor import ProcessExecutionResult, process_supervisor
+    from app.core.process_supervisor import process_supervisor
     result = await process_supervisor.execute(
         cmd=cmd,
         timeout=timeout,
@@ -254,6 +274,15 @@ async def safe_execute_subprocess(
         max_output_bytes=max_output_bytes,
         pre_launch_check=pre_launch_check,
         execution_id=execution_id,
+        execution_context=execution_context,
+        non_scan_context=non_scan_context,
+        scanner_egress_proxy=scanner_egress_proxy,
+        credential_handoff=credential_handoff,
+        credential_context=credential_context,
+        execution_capability=execution_capability,
+        operation_family=operation_family,
+        operation_options=operation_options,
+        tool_id=tool_id,
     )
     code, stdout, stderr = result
     if "<3>WSL" in stderr:

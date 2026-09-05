@@ -4,7 +4,7 @@
 **Document Version:** 14.3.0 (Authoritative 26-Tool Fleet Implementation Specifications, Normative Destination Binding, Strict Provenance Governance & Multi-Tier Execution State Architecture)  
 **Status:** APPROVED / AUTHORITATIVE SPECIFICATION  
 **Authority:** Platform Core Architecture, Tool Adapter Layer, Process Supervisor & Verification Pipeline  
-**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. Part II defines all 26 supported tools, including the five auxiliary/manual adapter specifications in §4.1–§4.5; no supported tool is outside this authoritative specification.
+**Scope:** Canonical implementation specifications, invocation boundaries, failure semantics, output error handling, rate/timing governance, normative schemas, and security classifications for the complete 26-tool fleet. Part II defines all 26 supported tools, including the policy-gated automation specifications in §4.1–§4.5; no supported tool is outside this authoritative specification.
 **Dependencies:** Contract 01 (Scope & Safety), Contract 02 (Data Schemas), Contract 03 (Engine & Plugin Interface), Contract 04 (API & Streaming), Contract 05 (Deliverables & Acceptance), Contract 06 (Check Catalog & CWE Mapping), Contract 07 (Frontend UI/UX), Contract 08 (Technical Implementation & Test Vectors).
 
 ---
@@ -17,6 +17,51 @@ This authoritative contract governs the integration, execution, sandboxing, pars
 
 No security tool may execute within the CyberAssess ecosystem unless it strictly satisfies the 41-point specification, normative schemas, and foundational invariants defined in this contract.
 
+### 1.1 Full-Capability Tool Principle
+
+Metasploit, sqlmap, Hydra, and the GTFOBins/LOLBAS engine MUST be automated as complete capabilities within their technical domains. “Automated” means that CyberAssess can install, detect, authorize, invoke, supervise, parse, persist, and report the tool through its governed production path. It does not mean that the platform may silently replace the upstream tool with a reduced implementation.
+
+The platform MUST preserve the complete upstream capability surface while applying policy at the execution boundary. A default profile may select a conservative operation, but any supported higher-impact operation MUST have a defined authorization path rather than being mislabeled `NOT_SUPPORTED`. The authorization decision MUST bind tenant, project, asset, immutable target, tool, requested operation/options, `target_policy_version`, `operation_policy_revision`, resource budget, and approving principal. An installation record or capability snapshot alone MUST never grant that decision.
+
+Full-capability automation requires managed artifact identity, exact version verification, pre-launch integrity verification, typed argument construction, no shell injection, tenant-scoped credentials where applicable, destination/egress governance, process isolation, bounded resources, cancellation, sanitized evidence, durable telemetry, and explicit normalized failure/coverage states. Unsupported host prerequisites or missing authorization MUST produce `AUTHORIZATION_REQUIRED` or `EXECUTION_BLOCKED`, not a false “manual-only” classification.
+
+### 1.2 Current assurance status of the four requested tools
+
+The full-capability promise is normative future behavior, not current acceptance
+evidence. Metasploit, sqlmap, and Hydra are `DEFERRED` for full-capability
+automation until their production adapters, typed execution boundary, policy
+decisions, credential controls, and runtime tests are complete. GTFOBins/LOLBAS
+is `DEFERRED` for complete-catalog assurance until the catalog revision,
+complete-rule coverage, and production evaluation evidence are recorded. Existing
+bounded/manual tests are baseline safety evidence only and MUST NOT be cited as
+proof of full-capability automation.
+
+### 1.3 Full-capability measurement and re-verification
+
+“Full upstream capability” is measured against the pinned upstream version and
+an evidence-backed capability snapshot. For Metasploit the snapshot enumerates
+available module families and payload/session/resource classes; for sqlmap it
+enumerates supported option families; for Hydra it enumerates supported
+protocol/module and dictionary interfaces; for GTFOBins/LOLBAS it enumerates
+the reviewed catalog revision and rule count. Each feature class is recorded
+as `AVAILABLE`, `LIMITED`, `DEFERRED`, `HOST_UNAVAILABLE`, `NOT_SUPPORTED`, or
+`UNVERIFIED`
+with a reason and evidence location. A default profile selecting fewer options
+does not change the snapshot.
+
+`NOT_SUPPORTED` is measured only for a permanent platform exclusion. Adapter
+delegation, profile selection, missing approval, host prerequisites, failed
+installation, deferral, and unverified capability MUST use their applicable
+state or reason and MUST NOT be reported as a platform exclusion.
+
+The snapshot records upstream version/tag, acquisition identity, platform and
+architecture, enumeration method, observed feature inventory, verifier,
+verification timestamp, and reverification expiry. Any upstream update,
+adapter change, catalog change, host-platform change, `target_policy_version`
+change, or `operation_policy_revision` change
+invalidates the prior assurance and requires re-verification. No full-capability
+acceptance claim may rely solely on a command-builder unit test.
+
 ### 1.1 The Ten Fundamental Tool Execution Invariants
 
 1. **The Target Validation & Normative Target Binding Invariant (Contract 01 §3, Contract 08 §2):**
@@ -26,7 +71,7 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
      class ValidatedTarget(BaseModel):
          model_config = ConfigDict(frozen=True, extra="forbid")
          target_id: str                 # Cryptographic resource identity: sha256(canonical_value + ":" + selected_destination)
-         authorization_decision_id: str # Cryptographic authorization token: sha256(org_id + ":" + project_id + ":" + asset_id + ":" + target_id + ":" + policy_version)
+         authorization_decision_id: str # Cryptographic authorization token: sha256(org_id + ":" + project_id + ":" + asset_id + ":" + target_id + ":" + target_policy_version + ":" + operation_policy_revision)
          integrity_seal: str            # Cryptographic signature/HMAC from Target Security Gateway
          organization_id: str           # Tenant isolation boundary (UUID)
          project_id: str                # Project isolation boundary (UUID)
@@ -34,15 +79,15 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
          target_type: TargetType        # URL, DOMAIN, IP, LOCAL_PATH, DOCKERFILE, IAC_MANIFEST
          raw_value: str                 # Original user-supplied input string
          canonical_value: str           # Normalized string (e.g. lowercase FQDN, normalized URL)
-         authorized_scope: List[str]    # Authorized CIDRs / root domain wildcards
-         resolved_addresses: List[str]  # All resolved IPv4/IPv6 addresses from pre-resolution
+         authorized_scope: tuple[str, ...]    # Immutable authorized CIDRs / root domain wildcards
+         resolved_addresses: tuple[str, ...]  # Immutable IPv4/IPv6 addresses from pre-resolution
          selected_destination: str      # Specific pinned IP address selected for connection
          port: Optional[int] = None     # Target port (e.g. 443, 80, 22)
          scheme: Optional[str] = None   # Protocol scheme (http, https, tcp, udp)
          validation_timestamp: datetime # ISO-8601 UTC validation timestamp
-         policy_version: str            # Target Security Gateway policy version (e.g. "14.3.0")
+         target_policy_version: str     # Target Security Gateway policy version (e.g. "14.3.0")
      ```
-   - **Operational Immutability Definition:** `ValidatedTarget` is a frozen data structure (`frozen=True`). Once constructed and cryptographically sealed by the Target Security Gateway (`assert_safe_target()`), no attribute may be modified. Any target mutation, hostname change, or redirect resolution strictly requires instantiating a NEW `ValidatedTarget` instance through the gateway.
+   - **Operational Immutability Definition:** `ValidatedTarget` MUST use immutable nested representations (for example `tuple[str, ...]` and immutable mappings) or a documented defensive-copy boundary that prevents retained caller references from mutating the sealed value. `frozen=True` is necessary for top-level assignment but is not, by itself, sufficient for nested containers. Once constructed and cryptographically sealed by the Target Security Gateway (`assert_safe_target()`), no attribute or nested value may be modified; any mutation attempt MUST fail or be detected before execution. Any target mutation, hostname change, or redirect resolution strictly requires instantiating a NEW `ValidatedTarget` instance through the gateway. The canonical serialized form MUST be defined separately from the in-memory immutable representation.
    - **Tool-Specific Destination Binding Invariant:** Pre-resolving DNS is necessary but insufficient to defeat Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Adapters MUST enforce connection-level destination binding using tool-native mechanisms:
      - **Nmap:** Targets `ValidatedTarget.selected_destination` (IP) with `--script-args http.host=<canonical_value>`.
      - **httpx:** Invoked with `httpx -u http://<selected_destination> -H "Host: <canonical_value>" -sni <canonical_value>`.
@@ -63,7 +108,7 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
    - **Exact Version Enforcement:** The adapter MUST enforce `actual_version == approved_version` during runtime probe. Any version discrepancy triggers `INVALID_VERSION` and blocks tool execution.
 
 4. **The Process Supervision & Non-Destructive Invariant (Contract 03 §3, Contract 05 §2):**
-   All subprocess executions are governed exclusively through `ProcessSupervisor` with isolated process groups, strict execution timeouts (default 60s), 10MB output buffers, and recursive process tree termination on cancellation or timeout. Destructive exploits and data dumps are prohibited in automated modes.
+   All subprocess executions are governed exclusively through `ProcessSupervisor` with isolated process groups, strict execution timeouts (default 60s), 10MB output buffers, and recursive process tree termination on cancellation or timeout. Powerful offensive operations are unavailable to default unattended profiles and require the elevated policy-decision contract; uncontrolled or governance-bypassing execution remains permanently prohibited.
 
 5. **The Deterministic Output & Parser Invariant (Contract 06 §1, Contract 06 §2):**
    Tool output is untrusted input. Every adapter must validate schema integrity and transform raw observations into canonical `Finding` objects mapped to explicit CWE, OWASP Top 10, ASVS 5.0, and NIST SP 800-53 controls with cryptographic SHA-256 evidence digests (`evidence_hash`).
@@ -103,8 +148,11 @@ No security tool may execute within the CyberAssess ecosystem unless it strictly
     - `SUPPORTED`: Implemented, tested, and verified in CyberAssess adapter.
     - `LIMITED`: Partially implemented with explicit boundary constraints.
     - `DEFERRED`: Planned for future roadmap milestones (e.g. E12).
-    - `NOT_SUPPORTED`: Excluded by design or safety policy.
+    - `NOT_SUPPORTED`: Permanently unsupported by the platform; never use for missing approval, host prerequisites, installation failure, deferral, or unverified capability.
     - `UNVERIFIED`: Upstream feature claim pending empirical verification.
+
+11. **Capability Observation Cache Invariant:**
+    The authenticated system capability and toolbox-status endpoints may return process-local, 60-second snapshots. The capability snapshot is keyed by adapter configuration; `refresh=true` forces live detection, and the toolbox endpoint’s `refresh=true` forces live installation/status detection. Cache expiry and detection failure MUST NOT be hidden by serving stale status as current. These snapshots are observational telemetry only and MUST NOT authorize execution or replace live pre-launch integrity/version verification.
 
 ---
 
@@ -216,15 +264,22 @@ ToolDefinition
 - **Version Detection:** `[REPOSITORY_VERIFIED]` `nmap --version` -> Regex `Nmap version\s+([0-9\.]+)`
 
 ### 8. Artifact / Installation Method & Supply-Chain Trust Mode
-- **Trust Mode:** `[CYBERASSESS_REQUIRED]` `SOURCE_BUILD_MODE` for the approved Linux production image, using the official Nmap source archive and pinned GCC toolchain; unmanaged package-manager binaries remain diagnostic-only unless a separately verified installation record exists.
+- **Trust Mode:** `[CYBERASSESS_REQUIRED]` Dual-mode support:
+  1. `SOURCE_BUILD_MODE`: Approved source build for the hardened Linux production image, compiling from the official Nmap source archive with a pinned GCC toolchain.
+  2. `DIRECT_ARTIFACT_MODE`: Direct release artifact mode for dynamic, user-space installation on supported Linux x86-64 environments using the official Insecure.Org release package. Unmanaged package-manager binaries remain diagnostic-only unless a separately verified installation record exists.
 - **Resolver Path:** Tier 1: custom diagnostic path, Tier 2: managed `backend/bin/nmap[.exe]`, later tiers diagnostic-only and never sufficient for assured execution.
 
 ### 9. Supply-Chain Integrity & Provenance
 - **Version Verification:** `[REPOSITORY_VERIFIED]` `nmap --version` runtime probe.
-- **Artifact Integrity (SHA-256):** `[REPOSITORY_VERIFIED]` The official `nmap-7.95.tar.bz2` source archive is pinned to `e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778` and verified before compilation.
-- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved `linux/amd64` build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation; other target architectures fail closed until separately pinned.
+- **Artifact Integrity (SHA-256):**
+  - Official Source Archive (`nmap-7.95.tar.bz2`): `[REPOSITORY_VERIFIED]` Pinned to `e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778` and verified before compilation.
+  - Official Release Package (`nmap-7.95-1.x86_64.rpm`): `[REPOSITORY_VERIFIED]` Pinned to `c0465e70217565bd825554e37b5a419221fd688ebcf9ad5633303d69a2287206` and verified before extraction.
+  - Extracted Binary (`backend/bin/nmap`): `[REPOSITORY_VERIFIED]` Pinned to `f344bee202f0befb3c2f9cfd7fdd81d6332fe857d0076552f53b3cea115ee80a`.
+- **Build Toolchain Integrity:** `[REPOSITORY_VERIFIED]` The approved `linux/amd64` source build verifies GCC `12.2.0-14+deb12u1` with SHA-256 `75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8` before compilation; other target architectures fail closed until separately pinned.
+- **Runtime Resource Tree Integrity (`RESOURCE_TREE_INTEGRITY_VERIFIED`):** `[CYBERASSESS_REQUIRED]` Supporting runtime assets (`usr/share/nmap/*`: NSE scripts, `nmap-services`, `nmap-os-db`) extracted to `backend/bin/resources/nmap` are hash-locked via `build_resource_manifest()`, producing a deterministic sorted SHA-256 manifest embedded in `nmap.trust.json`. Pre-launch verification fails closed on any modified, missing, or extraneous file.
+- **Extraction Security Boundary Controls:** `[CYBERASSESS_REQUIRED]` Direct-artifact RPM unpacking via `_extract_rpm_payload()` enforces path-traversal sequence rejection, `os.path.commonpath` boundary checks, absolute path rejection, symlink rejection (`0o120000`), hardlink rejection (`nlink > 1`), duplicate path rejection, strict hexadecimal header parsing, and quota limits (max 100 MiB per single file, max 150 MiB decompressed payload, max 8192 entries, max 4096-byte header names).
 - **Provenance / Attestation:** `[UPSTREAM_REFERENCE]` Nmap publishes an Insecure.Org GPG signing key (`43D0F654`); the CyberAssess verified source-build record does not claim upstream release-binary provenance unless that signature is separately verified.
-- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Verified managed source-built executable in `backend/bin/`.
+- **Resolution Source:** `[CYBERASSESS_REQUIRED]` Verified managed executable in `backend/bin/` with hash-bound trust record.
 
 ### 10. Required Permissions & Privileges
 - `[UPSTREAM_VERIFIED]` Unprivileged TCP connect scanning (`-sT` mode via standard user socket). Root/Administrator raw socket privileges (`-sS` SYN stealth) are strictly PROHIBITED in automated background scans to prevent privilege escalation risks.
@@ -363,8 +418,8 @@ Stderr: Captures runtime diagnostics and errors
   - Port Scanning: `SUPPORTED`
   - Banner Grabbing: `SUPPORTED`
   - Approved NSE Scripts: `SUPPORTED`
-  - OS Fingerprinting (Raw Sockets): `NOT_SUPPORTED` (Requires root privileges)
-  - Intrusive Exploit Scripts: `NOT_SUPPORTED` (Safety policy violation)
+  - OS Fingerprinting (Raw Sockets): `HOST_UNAVAILABLE` when the approved worker lacks the required privilege.
+  - Intrusive Exploit Scripts: `ELEVATED_APPROVAL_REQUIRED` under Contract 01 §6 and Contract 04 §1.5.1.2.
 - **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/nmap_adapter.py`, `backend/app/core/binary_trust.py`); approved managed `7.95` source-built runtime is verified in the production image, while unmanaged host versions remain non-assured.
 
 ---
@@ -717,8 +772,8 @@ Stderr: Diagnostic logs
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestSubfinderAdapter` passing.
 - **Capability Taxonomy:**
   - Passive CT Log Enumeration: `SUPPORTED`
-  - Multi-Source Aggregator API Queries: `NOT_SUPPORTED` (Current governed baseline is public `crtsh` only; credentialed providers require a future tenant-scoped egress and secret-injection control)
-  - Active DNS Brute-Forcing: `NOT_SUPPORTED` (Passive scope constraint)
+  - Multi-Source Aggregator API Queries: `DEFERRED` until tenant-scoped egress and secret-injection controls are verified.
+  - Active DNS Brute-Forcing: `PERMANENTLY_BLOCKED` by the passive Subfinder contract; passive discovery remains fully available.
 - **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/subfinder_adapter.py`, `tests/security/test_subfinder_assurance.py`); the approved managed `v2.6.5` executable was verified and executed against `example.com` on 2026-09-01. A later run timed out at the provider boundary and was correctly recorded as `EXECUTION_TIMED_OUT`; runtime success is not inferred from that degraded run.
 
 ---
@@ -875,7 +930,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - HTTP Probe & Status: `SUPPORTED`
   - Technology Fingerprinting: `SUPPORTED`
-  - Raw Request Fuzzing: `NOT_SUPPORTED` (Handled by FFuF)
+  - Raw Request Fuzzing: `SUPPORTED` at fleet level; `DELEGATED` to FFuF and not exposed by the Httpx adapter
 - **Verification Status:** `VERIFIED FROM REPOSITORY AND MANAGED RUNTIME` (`backend/app/adapters/httpx_adapter.py`, `backend/app/core/binary_trust.py`); the production image verified the managed `v1.6.0` runtime and trust record under uid 999.
 
 ---
@@ -1194,7 +1249,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - Route / Directory Fuzzing: `SUPPORTED`
   - Query Parameter Fuzzing: `SUPPORTED`
-  - Destructive Method Fuzzing (DELETE/PUT): `NOT_SUPPORTED`
+  - Destructive Method Fuzzing (DELETE/PUT): `ELEVATED_APPROVAL_REQUIRED` under the typed execution policy.
 - **Verification Status:** Repository controls and managed runtime verified (`backend/app/adapters/ffuf_adapter.py`, `backend/app/core/binary_trust.py`); the production image executed the managed `v2.1.0` version probe and verified its trust record under uid 999.
 
 ---
@@ -1822,7 +1877,7 @@ Stderr: Diagnostic logs
 - `[REPOSITORY_VERIFIED]` `tests/test_adapters.py::TestBanditAdapter` passing.
 - **Capability Taxonomy:**
   - Python AST Security Linting: `SUPPORTED`
-  - Cross-File Taint Tracking: `NOT_SUPPORTED`
+  - Cross-File Taint Tracking: `DEFERRED` pending verified engine capability.
 - **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/bandit_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
@@ -1979,7 +2034,7 @@ Stderr: Diagnostic logs
 - **Capability Taxonomy:**
   - Filesystem Secret Detection: `SUPPORTED`
   - Git Commit History Traversal: `SUPPORTED`
-  - Secret Live Verification: `NOT_SUPPORTED` (Delegated to TruffleHog)
+  - Secret Live Verification: `DEFERRED` for this adapter because the capability is delegated to TruffleHog.
 - **Verification Status:** `REPOSITORY_VERIFIED` (`backend/app/adapters/gitleaks_adapter.py`, `tests/security/test_code_sast_assurance.py`); managed runtime evidence is environment-dependent and recorded separately.
 
 ---
@@ -3559,19 +3614,19 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: executable msfconsole; upstream Rapid7 Metasploit Framework.
   - 2. Purpose: governed auxiliary TLS verification; role SPECIALIZED; class ACTIVE_READ_ONLY.
-  - 3. Automated capability is restricted to auxiliary/scanner/ssl/openssl_heartbleed.
-  - 4. Exploit modules, payloads, sessions, shells, and arbitrary resource scripts are forbidden.
-  - 5. Execution mode is MANUAL_MODE unless managed trust, ValidatedTarget, and active-probing authorization pass.
+  - 3. Full upstream modules, payloads, sessions, and supported resource capabilities are available through typed policy-gated requests.
+  - 4. The default unattended profile is non-destructive auxiliary verification; exploit delivery, payloads, sessions, shells, persistence, post-exploitation, and arbitrary scripts require explicit elevated authorization and isolated worker policy.
+  - 5. Execution mode is `POLICY_GATED_AUTOMATION`; a request is executable only after managed trust, `ValidatedTarget`, operation authorization, and resource policy pass.
   - 6. Unmanaged PATH/custom binaries are diagnostic-only and fail closed for assured execution.
   - 7. Version probe is msfconsole -v and must match the manifest-approved exact version.
   - 8. Invocation is fixed msfconsole -q -x with server-generated RHOSTS/RPORT, run, and exit.
   - 9. Host is normalized and port is restricted to 1 through 65535.
-  - 10. No user-provided Metasploit script or module is accepted.
+  - 10. User requests may select an upstream module and typed options only through server-side validation and policy authorization; raw shell/resource-script injection is never accepted.
   - 11. Required permissions are least-privilege and limited to the target or workspace supplied by the orchestrator.
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3605,9 +3660,9 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: executable sqlmap; upstream sqlmap project.
   - 2. Purpose: bounded SQL injection verification; role SPECIALIZED; class ACTIVE_INTRUSIVE.
-  - 3. Automated capability is limited to batch banner and low-risk injection verification.
-  - 4. Dumping, OS shell, file read/write, takeover, and equivalent escalation flags are forbidden.
-  - 5. Execution mode is MANUAL_MODE until managed trust, ValidatedTarget, and active authorization pass.
+  - 3. Full upstream sqlmap options remain available through typed policy-gated requests.
+  - 4. Dumping, OS shell, file read/write, takeover, and equivalent high-impact options require explicit elevated authorization and are blocked only when that decision is absent or denied.
+  - 5. Execution mode is `POLICY_GATED_AUTOMATION`; a request is executable only after managed trust, `ValidatedTarget`, operation authorization, and resource policy pass.
   - 6. PATH/custom installations are diagnostic-only and fail closed for assured execution.
   - 7. Version probe is sqlmap --version and must match the manifest-approved exact version.
   - 8. Invocation fixes batch, banner, level 1, risk 1, timeout 15, retries 1, threads 2, and output directory.
@@ -3617,7 +3672,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3663,7 +3718,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3697,9 +3752,9 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: executable hydra; upstream THC-Hydra.
   - 2. Purpose: explicit credential-resilience audit; role SPECIALIZED; class STATE_CHANGING.
-  - 3. Capability is limited to small, explicitly authorized credential-audit checks.
-  - 4. Unrestricted brute force, arbitrary modules, and unrestricted dictionaries are forbidden.
-  - 5. Execution mode is MANUAL_MODE until managed trust, ValidatedTarget, active authorization, and credential-audit authorization pass.
+  - 3. Full upstream protocol, module, and dictionary capabilities remain available through typed policy-gated credential-audit requests.
+  - 4. Unbounded brute force is not an unattended default; broader audits require explicit credential-audit authorization, a tenant-scoped secret envelope, target-owner approval, and a recorded account-impact budget.
+  - 5. Execution mode is `POLICY_GATED_AUTOMATION`; a request is executable only after managed trust, `ValidatedTarget`, active authorization, credential-audit authorization, and resource policy pass.
   - 6. Unmanaged PATH/custom binaries are diagnostic-only and fail closed for assured execution.
   - 7. Version probe is hydra -h and must match the manifest-approved exact version.
   - 8. Invocation fixes approved protocol, -t 2, -W 1, -f, JSON output, and server-derived files.
@@ -3709,7 +3764,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3743,7 +3798,7 @@ Stderr: Diagnostic logs
 - **41-point implementation specification:**
   - 1. Identity: native GTFOBinsAdapter using repository-controlled GTFOBins/LOLBAS rule catalogs.
   - 2. Purpose: host/container privilege-escalation rule evaluation; role SPECIALIZED; class NATIVE_ENGINE_MODE.
-  - 3. Capability is static/native evaluation of supplied observations only.
+  - 3. Capability is complete automated static/native evaluation of all reviewed GTFOBins/LOLBAS rules against supplied observations; it does not execute escalation recipes.
   - 4. It never executes escalation recipes, spawns a subprocess, or performs exploit delivery.
   - 5. Execution mode is native; no external artifact installation or binary trust is required.
   - 6. Catalog and rule data are governed as reviewed application code/data.
@@ -3755,7 +3810,7 @@ Stderr: Diagnostic logs
   - 12. Credentials are absent unless the tool-specific authorization explicitly permits them.
   - 13. Workspace and temporary files are server-derived and confined to the scan workspace.
   - 14. External egress is governed by platform policy; tool flags are not treated as network isolation.
-  - 15. Safety controls forbid destructive, exploit-delivery, persistence, or unrestricted data-extraction behavior.
+  - 15. Safety controls require the elevated policy-decision contract for exploit delivery, persistence, sessions, and data-extraction operations; uncontrolled or out-of-scope behavior remains permanently prohibited.
   - 16. Version probing is independently bounded before the main invocation.
   - 17. Concurrency is fixed or bounded by the adapter policy.
   - 18. Stdout and stderr are captured through the bounded process supervisor.
@@ -3789,7 +3844,7 @@ Stderr: Diagnostic logs
 
 | Tool ID | Display Name | Security Class | Trust Mode | Role | Primary Check IDs | Test Suite Reference | Upstream Project |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `SOURCE_BUILD_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
+| `TOOL-NMAP` | Nmap | `ACTIVE_INTRUSIVE` | `SOURCE_BUILD_MODE / DIRECT_ARTIFACT_MODE` | `PRIMARY` | `NET-PORT-001/2`, `NET-SVC-001` | `tests/test_adapters.py::TestNmapAdapter` | Insecure.Org |
 | `TOOL-SSLYZE` | SSLyze | `ACTIVE_READ_ONLY` | `PACKAGE_MANAGER_MODE` | `PRIMARY` | `NET-TLS-001/2/3` | `tests/test_adapters.py::TestSslyzeAdapter` | Nabla C0d3 |
 | `TOOL-SUBFINDER` | Subfinder | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `PRIMARY` | `NET-OSINT-001` | `tests/test_adapters.py::TestSubfinderAdapter` | ProjectDiscovery |
 | `TOOL-HTTPX` | httpx | `ACTIVE_READ_ONLY` | `DIRECT_ARTIFACT_MODE` | `VALIDATION` | `NET-HTTP-001` | `tests/test_adapters.py::TestHttpxAdapter` | ProjectDiscovery |
@@ -3811,10 +3866,10 @@ Stderr: Diagnostic logs
 | `TOOL-KUBE-BENCH` | Kube-Bench | `PRIVILEGED` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-K8S-002` | `tests/test_adapters.py::TestKubeBenchAdapter` | Aqua Security |
 | `TOOL-DOCKLE` | Dockle | `SUPPLY_CHAIN` | `DIRECT_ARTIFACT_MODE` | `SPECIALIZED` | `IAC-DOCKER-001/2` | `tests/test_adapters.py::TestDockleAdapter` | GoodWithTech |
 | `TOOL-AMASS` | Amass | `PASSIVE` | `DIRECT_ARTIFACT_MODE` | `AUXILIARY` | `NET-OSINT-001` | `tests/security/test_extended_adapters_assurance.py` | OWASP Amass |
-| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY` | `MANUAL_MODE` | `AUXILIARY` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | Rapid7 |
-| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE` | `MANUAL_MODE` | `AUXILIARY` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` | sqlmap Project |
-| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE` | `MANUAL_MODE` | `AUXILIARY` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` | THC-Hydra |
-| `TOOL-GTFOBINS` | GTFOBins / LOLBAS | `HOST_ANALYSIS` | `NATIVE_ENGINE_MODE` | `AUXILIARY` | `HOST-PRIV-001`, `HOST-SUDO-001` | `tests/security/test_gtfobins_assurance.py` | GTFOBins / LOLBAS |
+| `TOOL-METASPLOIT` | Metasploit | `ACTIVE_READ_ONLY / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE / DEFERRED` | `NET-TLS-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` (baseline only); future production-boundary suite required | Rapid7 |
+| `TOOL-SQLMAP` | sqlmap | `ACTIVE_INTRUSIVE / POLICY_GATED` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE / DEFERRED` | `DAST-INJ-001` | `tests/security/test_extended_adapters_assurance.py` (baseline only); future production-boundary suite required | sqlmap Project |
+| `TOOL-HYDRA` | Hydra | `ACTIVE_INTRUSIVE / CREDENTIAL_AWARE` | `POLICY_GATED_AUTOMATION` | `FULL_UPSTREAM_SURFACE / DEFERRED` | `AUTH-STUFF-001`, `NET-PORT-001` | `tests/security/test_extended_adapters_assurance.py` (baseline only); future production-boundary suite required | THC-Hydra |
+| `TOOL-GTFOBINS` | GTFOBins / LOLBAS | `HOST_ANALYSIS` | `NATIVE_ENGINE_MODE` | `COMPLETE_REVIEWED_CATALOG / DEFERRED` | `HOST-PRIV-001`, `HOST-SUDO-001` | `tests/security/test_gtfobins_assurance.py` (baseline only); catalog revision and complete-rule suite required | GTFOBins / LOLBAS |
 
 ---
 

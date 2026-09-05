@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.core.models import (
+    SystemCapabilities,
     Target,
     TargetType,
     ScanConfig,
@@ -33,7 +34,12 @@ from app.adapters.gitleaks_adapter import GitleaksAdapter
 from app.adapters.bandit_adapter import BanditAdapter
 from app.adapters.trivy_adapter import TrivyAdapter
 from app.adapters.checkov_adapter import CheckovAdapter
-from app.adapters import get_adapter_registry, discover_system_capabilities
+from app.adapters import (
+    get_adapter_registry,
+    discover_system_capabilities,
+    get_cached_system_capabilities,
+    invalidate_system_capabilities_cache,
+)
 
 
 # ============================================================================
@@ -1066,6 +1072,34 @@ class TestCheckovAdapter:
 # ============================================================================
 
 class TestCapabilitiesAndRegistry:
+    def test_package_adapter_resolves_its_managed_virtual_environment(self, tmp_path, monkeypatch):
+        venv_root = tmp_path / "tool-venvs"
+        binary_dir = venv_root / "semgrep" / ("Scripts" if os.name == "nt" else "bin")
+        binary_dir.mkdir(parents=True)
+        binary = binary_dir / ("semgrep.exe" if os.name == "nt" else "semgrep")
+        binary.write_bytes(b"managed semgrep")
+        binary.chmod(0o755)
+        monkeypatch.setenv("CYBERASSESS_TOOL_VENV_DIR", str(venv_root))
+
+        adapter = SemgrepAdapter()
+
+        assert adapter.resolve_binary_path() == str(binary)
+        custom = tmp_path / "custom-semgrep.exe"
+        custom.write_bytes(b"unmanaged semgrep")
+        assert adapter.resolve_binary_path(str(custom)) == str(custom)
+
+    @pytest.mark.asyncio
+    async def test_trivy_version_probe_uses_explicit_non_writing_config(self):
+        adapter = TrivyAdapter()
+        with patch.object(adapter, "resolve_binary_path", return_value="/managed/trivy"), patch.object(
+            adapter,
+            "execute_command",
+            new=AsyncMock(return_value=(0, "Version: 0.50.0\n", "")),
+        ) as execute:
+            assert await adapter.get_version() == "trivy 0.50.0"
+
+        assert execute.await_args.args[0] == ["/managed/trivy", "--config", "/dev/null", "--version"]
+
     def test_adapter_registry(self):
         registry = get_adapter_registry()
         expected_tools = {
@@ -1089,6 +1123,10 @@ class TestCapabilitiesAndRegistry:
                 assert caps.native_engines_ready is True
                 manual_only = {"metasploit", "sqlmap", "hydra"}
                 for t in caps.tools:
+                    if t.name == "gtfobins":
+                        assert t.available is True
+                        assert t.execution_mode == ToolExecutionMode.NATIVE_ENGINE_READY
+                        continue
                     assert t.available is False
                     expected_mode = ToolExecutionMode.MANUAL_ONLY if t.name in manual_only else ToolExecutionMode.NATIVE_FALLBACK
                     assert t.execution_mode == expected_mode
@@ -1238,6 +1276,102 @@ class TestCapabilitiesAndRegistry:
         assert status.assurance_status == "INVALID"
         assert status.execution_mode == ToolExecutionMode.NATIVE_FALLBACK
         assert status.version is None
+
+    @pytest.mark.asyncio
+    async def test_cached_capabilities_reuse_snapshot_until_expiry(self):
+        invalidate_system_capabilities_cache()
+        response = SystemCapabilities(tools=[])
+        detector = AsyncMock(return_value=response)
+        clock = [100.0]
+        with patch("app.adapters.discover_system_capabilities", detector), patch(
+            "app.adapters.time.monotonic", side_effect=lambda: clock[0]
+        ):
+            first = await get_cached_system_capabilities()
+            clock[0] = 120.0
+            second = await get_cached_system_capabilities()
+            clock[0] = 161.0
+            third = await get_cached_system_capabilities()
+
+        assert detector.await_count == 2
+        assert first.capabilities_source == "LIVE"
+        assert second.capabilities_source == "CACHE"
+        assert second.capabilities_cache_age_seconds == 20.0
+        assert third.capabilities_source == "LIVE"
+        invalidate_system_capabilities_cache()
+
+    @pytest.mark.asyncio
+    async def test_forced_capability_refresh_bypasses_cache(self):
+        invalidate_system_capabilities_cache()
+        from app.core.models import SystemCapabilities
+
+        detector = AsyncMock(return_value=SystemCapabilities(tools=[]))
+        with patch("app.adapters.discover_system_capabilities", detector):
+            await get_cached_system_capabilities()
+            refreshed = await get_cached_system_capabilities(force_refresh=True)
+
+        assert detector.await_count == 2
+        assert refreshed.capabilities_source == "LIVE"
+        invalidate_system_capabilities_cache()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_capability_requests_share_live_refresh(self):
+        invalidate_system_capabilities_cache()
+        from app.core.models import SystemCapabilities
+
+        detector = AsyncMock(return_value=SystemCapabilities(tools=[]))
+        with patch("app.adapters.discover_system_capabilities", detector):
+            results = await asyncio.gather(
+                get_cached_system_capabilities(),
+                get_cached_system_capabilities(),
+            )
+
+        assert detector.await_count == 1
+        assert [result.capabilities_source for result in results] == ["LIVE", "CACHE"]
+        invalidate_system_capabilities_cache()
+
+    @pytest.mark.asyncio
+    async def test_capability_cache_isolated_by_adapter_configuration(self):
+        invalidate_system_capabilities_cache()
+        from app.core.models import SystemCapabilities
+
+        detector = AsyncMock(side_effect=[SystemCapabilities(tools=[]), SystemCapabilities(tools=[])])
+        config_a = ToolAdapterConfig(enable_nmap=True)
+        config_b = ToolAdapterConfig(enable_nmap=False)
+        with patch("app.adapters.discover_system_capabilities", detector):
+            await get_cached_system_capabilities(config_a)
+            await get_cached_system_capabilities(config_b)
+
+        assert detector.await_count == 2
+        invalidate_system_capabilities_cache()
+
+    @pytest.mark.asyncio
+    async def test_installation_cache_invalidation_forces_new_capability_observation(self):
+        invalidate_system_capabilities_cache()
+        from app.core.models import SystemCapabilities
+
+        detector = AsyncMock(return_value=SystemCapabilities(tools=[]))
+        with patch("app.adapters.discover_system_capabilities", detector):
+            await get_cached_system_capabilities()
+            invalidate_system_capabilities_cache()
+            await get_cached_system_capabilities()
+
+        assert detector.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failed_refresh_does_not_serve_expired_snapshot_as_current(self):
+        from app.core.models import SystemCapabilities
+
+        invalidate_system_capabilities_cache()
+        response = SystemCapabilities(tools=[])
+        with patch("app.adapters.discover_system_capabilities", new_callable=AsyncMock) as detector:
+            detector.return_value = response
+            with patch("app.adapters.time.monotonic", side_effect=[0.0, 0.0, 0.0, 61.0, 61.0]):
+                await get_cached_system_capabilities()
+                detector.side_effect = RuntimeError("capability probe failed")
+                with pytest.raises(RuntimeError, match="capability probe failed"):
+                    await get_cached_system_capabilities()
+        invalidate_system_capabilities_cache()
+        invalidate_system_capabilities_cache()
 
 
 # ============================================================================

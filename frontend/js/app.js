@@ -777,10 +777,10 @@ class ScanStreamManager {
     // Remove all state classes
     pill.classList.remove("tool-pill--active", "tool-pill--fallback", "tool-pill--disabled");
 
-    if (mode === "ADAPTER_ACTIVE") {
+    if (mode === "ADAPTER_ACTIVE" || mode === "NATIVE_ENGINE_READY") {
       pill.classList.add("tool-pill--active");
       if (iconEl) iconEl.textContent = "🟢";
-      if (modeEl) modeEl.textContent = version ? `v${version}` : "ACTIVE";
+      if (modeEl) modeEl.textContent = mode === "NATIVE_ENGINE_READY" ? "NATIVE ENGINE" : (version ? `v${version}` : "ACTIVE");
     } else if (mode === "DISABLED") {
       pill.classList.add("tool-pill--disabled");
       if (iconEl) iconEl.textContent = "⚫";
@@ -1244,7 +1244,7 @@ class ScanStreamManager {
       const res = await this.authFetch("/api/scans/history?limit=30");
       if (!res.ok) return;
       const data = await res.json();
-      this.renderHistoryTable(data.scans || []);
+      this.renderHistoryTable(Array.isArray(data.items) ? data.items : []);
     } catch (e) {
       console.error(e);
     }
@@ -1278,7 +1278,6 @@ class ScanStreamManager {
           <td>
             <button class="btn btn-xs btn-outline" data-action="load-past-scan" data-scan-id="${this.escapeHtml(s.id)}">View</button>
             <button class="btn btn-xs btn-outline" data-action="open-telemetry-modal" data-scan-id="${this.escapeHtml(s.id)}">📊 Telemetry</button>
-            <button class="btn btn-xs btn-ghost" style="color: var(--color-critical);" data-action="delete-past-scan" data-scan-id="${this.escapeHtml(s.id)}">Delete</button>
           </td>
         </tr>
       `;
@@ -1324,19 +1323,10 @@ class ScanStreamManager {
     }
   }
 
-  async deletePastScan(scanId) {
-    if (!confirm("Are you sure you want to delete this scan record?")) return;
+  async loadSystemCapabilities(forceRefresh = false) {
     try {
-      await this.authFetch(`/api/scans/${scanId}`, { method: "DELETE" });
-      this.openHistoryModal();
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  async loadSystemCapabilities() {
-    try {
-      const res = await this.authFetch("/api/system/capabilities");
+      const url = forceRefresh ? "/api/system/capabilities?refresh=true" : "/api/system/capabilities";
+      const res = await this.authFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       const tools = data.tools || [];
@@ -1351,9 +1341,9 @@ class ScanStreamManager {
 
           // Availability only means that a binary was detected.  It is not
           // evidence that the binary passed managed trust and version gates.
-          if (tool.execution_mode === "ADAPTER_ACTIVE") {
+          if (tool.execution_mode === "ADAPTER_ACTIVE" || tool.execution_mode === "NATIVE_ENGINE_READY") {
             pill.classList.add("tool-pill--active");
-            if (modeSpan) modeSpan.innerText = tool.version || "ACTIVE";
+            if (modeSpan) modeSpan.innerText = tool.execution_mode === "NATIVE_ENGINE_READY" ? "NATIVE ENGINE" : (tool.version || "ACTIVE");
             if (iconSpan) iconSpan.innerText = "🟢";
             activeCount++;
           } else if (tool.execution_mode === "DISABLED") {
@@ -1393,9 +1383,10 @@ class ScanStreamManager {
     }
   }
 
-  async refreshToolboxData() {
+  async refreshToolboxData(forceRefresh = false) {
     try {
-      const res = await this.authFetch("/api/system/tools");
+      const url = forceRefresh ? "/api/system/tools?refresh=true" : "/api/system/tools";
+      const res = await this.authFetch(url);
       if (!res.ok) return;
       const tools = await res.json();
       this.renderToolboxTable(tools);
@@ -1708,7 +1699,7 @@ class ScanStreamManager {
         this.appendToolboxLog(`[SUCCESS] ${d.message || d.tool_name + ' installed.'}`);
         this.updateToolboxStage(`${d.tool_name} installed successfully!`, 100);
         this.refreshToolboxData();
-        this.loadSystemCapabilities();
+        this.loadSystemCapabilities(true);
       });
 
       this.toolEventsSource.addEventListener("install_failed", (e) => {
@@ -2443,8 +2434,6 @@ window.filterFindingsBySeverity = function (sev) {
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new ScanStreamManager();
-  // Load tool capabilities immediately on page load (Contract 04 v4.1.0)
-  window.app.loadSystemCapabilities();
 
   // Unified delegated click dispatcher for CSP compliant zero-inline-handler architecture
   document.addEventListener("click", (e) => {
@@ -2487,11 +2476,6 @@ document.addEventListener("DOMContentLoaded", () => {
       case "open-telemetry-modal": {
         const scanId = actionEl.getAttribute("data-scan-id");
         if (window.app && scanId) window.app.openTelemetryModal(scanId);
-        break;
-      }
-      case "delete-past-scan": {
-        const scanId = actionEl.getAttribute("data-scan-id");
-        if (window.app && scanId) window.app.deletePastScan(scanId);
         break;
       }
       case "open-tool-instructions": {

@@ -103,7 +103,6 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["checkov"].install_method == ToolInstallMethod.PIP
     assert tool_map["prowler"].install_method == ToolInstallMethod.PIP
     assert tool_map["schemathesis"].install_method == ToolInstallMethod.PIP
-
     assert tool_map["nuclei"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["ffuf"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["gitleaks"].install_method == ToolInstallMethod.STANDALONE_BINARY
@@ -117,10 +116,41 @@ async def test_manager_get_all_tools_info(manager):
     assert tool_map["trufflehog"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["dockle"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["kube-bench"].install_method == ToolInstallMethod.STANDALONE_BINARY
-
     assert tool_map["nmap"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["amass"].install_method == ToolInstallMethod.STANDALONE_BINARY
     assert tool_map["retire"].install_method == ToolInstallMethod.SYSTEM_PACKAGE_MANAGER
+
+
+@pytest.mark.asyncio
+async def test_manager_tool_status_cache_is_backend_owned_and_expires():
+    manager = ToolInstallationManager()
+    installer = MagicMock()
+    installer.get_info = AsyncMock(side_effect=[MagicMock(name="nmap"), MagicMock(name="nmap")])
+    manager._installers = {"nmap": installer}
+
+    with patch("app.installers.manager.time.monotonic", side_effect=[0.0, 0.0, 20.0, 61.0, 61.0, 61.0]):
+        first = await manager.get_all_tools_info()
+        second = await manager.get_all_tools_info()
+        third = await manager.get_all_tools_info()
+
+    assert len(first) == len(second) == len(third) == 1
+    assert installer.get_info.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_manager_tool_status_forced_refresh_and_invalidation():
+    manager = ToolInstallationManager()
+    installer = MagicMock()
+    installer.get_info = AsyncMock(side_effect=[MagicMock(name="nmap"), MagicMock(name="nmap"), MagicMock(name="nmap")])
+    manager._installers = {"nmap": installer}
+
+    await manager.get_all_tools_info()
+    await manager.get_all_tools_info(force_refresh=True)
+    await manager.get_all_tools_info()
+    manager.invalidate_tool_status_cache()
+    await manager.get_all_tools_info()
+
+    assert installer.get_info.await_count == 3
 
 
 def test_pypi_manifest_records_match_hash_locked_release_metadata():
@@ -392,6 +422,7 @@ async def test_subfinder_version_probe_initializes_fresh_windows_config_dir(monk
     installer = GithubReleaseInstaller("subfinder")
     appdata = tmp_path / "AppData" / "Roaming"
     monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setattr(os, "name", "nt")
 
     with patch("app.installers.github_release_installer.process_supervisor.execute", new=AsyncMock(return_value=(
         0, "subfinder v2.6.5\n", ""
@@ -693,6 +724,11 @@ def test_tool_management_api_endpoints(client, manager, auth_headers):
     tools = resp.json()
     assert len(tools) == 26
 
+    with patch.object(manager, "get_all_tools_info", new=AsyncMock(return_value=[])) as cached_list:
+        resp = client.get("/api/system/tools?refresh=true", headers=auth_headers)
+        assert resp.status_code == 200
+        cached_list.assert_awaited_once_with(force_refresh=True)
+
     # 2. GET /api/system/tools/nuclei/status
     resp = client.get("/api/system/tools/nuclei/status", headers=auth_headers)
     assert resp.status_code == 200
@@ -861,4 +897,538 @@ async def test_installers_idempotent_when_already_assured():
         assert await sb_installer.install(AsyncMock(), AsyncMock(), force=False) is True
         sb_exec.assert_not_awaited()
 
+
+# ============================================================================
+# Checkpoint 2 & 3 — Nmap Resource Integrity & Pre-launch Verification
+# ============================================================================
+
+import struct as _struct
+import tempfile as _tempfile
+
+
+def _make_cpio_newc_header(name: bytes, filesize: int, mode: int, nlink: int = 1) -> bytes:
+    """Build a minimal CPIO newc (070701) header for test payloads."""
+    namesize = len(name) + 1  # include NUL terminator
+    header = (
+        b"070701"                          # magic
+        + b"00000001"                      # ino
+        + f"{mode:08X}".encode()           # mode
+        + b"00000000"                      # uid
+        + b"00000000"                      # gid
+        + f"{nlink:08X}".encode()          # nlink
+        + b"00000000"                      # mtime
+        + f"{filesize:08X}".encode()       # filesize
+        + b"00000000"                      # devmajor
+        + b"00000000"                      # devminor
+        + b"00000000"                      # rdevmajor
+        + b"00000000"                      # rdevminor
+        + f"{namesize:08X}".encode()       # namesize
+        + b"00000000"                      # check
+    )
+    assert len(header) == 110
+    entry = header + name + b"\x00"
+    pad = (4 - (len(entry) % 4)) % 4
+    entry += b"\x00" * pad
+    if filesize > 0:
+        entry += b"X" * filesize
+        pad2 = (4 - (filesize % 4)) % 4
+        entry += b"\x00" * pad2
+    return entry
+
+
+def _make_trailer() -> bytes:
+    return _make_cpio_newc_header(b"TRAILER!!!", 0, 0)
+
+
+def _make_rpm_with_cpio(cpio_payload: bytes) -> bytes:
+    """Wrap a raw CPIO payload in a minimal RPM shell (lead + sig header + gen header + zstd payload)."""
+    import zstandard
+    cctx = zstandard.ZstdCompressor()
+    compressed = cctx.compress(cpio_payload)
+
+    lead = b"\xed\xab\xee\xdb" + b"\x00" * 92
+
+    def _hdr(il: int = 0, dl: int = 0) -> bytes:
+        return b"\x8e\xad\xe8\x01" + b"\x00" * 4 + _struct.pack("!2I", il, dl)
+
+    sig = _hdr()
+    rem = (len(lead) + len(sig)) % 8
+    pad = (8 - rem) % 8
+    gen = _hdr()
+    return lead + sig + b"\x00" * pad + gen + compressed
+
+
+def _nmap_extractor():
+    from app.installers.nmap_artifact_installer import NmapArtifactInstaller
+    return NmapArtifactInstaller._extract_rpm_payload
+
+
+# ---- Resource integrity tests (Checkpoint 2 & 3) ----
+
+def test_nmap_accepts_intact_managed_resource_tree():
+    """verify_resource_manifest returns True when on-disk tree exactly matches the stored manifest."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        (res_dir / "scripts").mkdir()
+        (res_dir / "scripts" / "banner.nse").write_bytes(b"-- banner script")
+
+        manifest = build_resource_manifest(res_dir)
+        assert len(manifest) == 2
+        assert "nmap-services" in manifest
+        assert "scripts/banner.nse" in manifest
+        assert verify_resource_manifest(res_dir, manifest) is True
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rejects_modified_managed_resource():
+    """verify_resource_manifest returns False when a managed resource file has been modified."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        script = res_dir / "nmap-services"
+        script.write_bytes(b"original content")
+
+        manifest = build_resource_manifest(res_dir)
+        assert verify_resource_manifest(res_dir, manifest) is True
+
+        script.write_bytes(b"TAMPERED content")
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rejects_missing_managed_resource():
+    """verify_resource_manifest returns False when a hash-bound resource has been deleted."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        (res_dir / "nmap-os-db").write_bytes(b"os data")
+
+        manifest = build_resource_manifest(res_dir)
+        assert verify_resource_manifest(res_dir, manifest) is True
+
+        (res_dir / "nmap-os-db").unlink()
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rejects_extra_unexpected_file_in_resource_tree():
+    """verify_resource_manifest returns False when an unexpected file appears in the resource tree."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+
+        manifest = build_resource_manifest(res_dir)
+
+        (res_dir / "injected.nse").write_bytes(b"malicious script")
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_manifest_rejects_symlinked_resource_dir():
+    """build_resource_manifest raises ValueError when the resource dir itself is a symlink."""
+    from app.core.binary_trust import build_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        real_dir = base / "real_nmap"
+        real_dir.mkdir()
+        link_dir = base / "link_nmap"
+        os.symlink(str(real_dir), str(link_dir))
+
+        with pytest.raises(ValueError, match="symlink"):
+            build_resource_manifest(link_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_manifest_rejects_injected_symlink_file():
+    """build_resource_manifest raises ValueError if any entry is a symlinked file."""
+    from app.core.binary_trust import build_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        target_file = base / "outside.txt"
+        target_file.write_bytes(b"target")
+        os.symlink(str(target_file), str(res_dir / "bad_link"))
+
+        with pytest.raises(ValueError, match="symlink"):
+            build_resource_manifest(res_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_manifest_rejects_symlinked_subdirectory():
+    """build_resource_manifest raises ValueError if any entry is a symlinked directory."""
+    from app.core.binary_trust import build_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        outside_dir = base / "outside_dir"
+        outside_dir.mkdir()
+        (outside_dir / "evil.nse").write_bytes(b"evil")
+        os.symlink(str(outside_dir), str(res_dir / "scripts"))
+
+        with pytest.raises(ValueError, match="symlink"):
+            build_resource_manifest(res_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlinks require elevated privileges on Windows")
+def test_nmap_resource_verifier_rejects_injected_symlink():
+    """verify_resource_manifest returns False if a symlink exists in the resource tree."""
+    from app.core.binary_trust import build_resource_manifest, verify_resource_manifest
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "nmap-services").write_bytes(b"svc data")
+        manifest = build_resource_manifest(res_dir)
+        assert verify_resource_manifest(res_dir, manifest) is True
+
+        target_file = base / "outside.txt"
+        target_file.write_bytes(b"target")
+        os.symlink(str(target_file), str(res_dir / "injected_link"))
+
+        assert verify_resource_manifest(res_dir, manifest) is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_resource_verifier_rejects_excessive_entry_count(monkeypatch):
+    """verify_resource_manifest returns False if manifest or tree exceeds _MAX_RESOURCE_MANIFEST_ENTRIES."""
+    import app.core.binary_trust as bt
+    from pathlib import Path
+
+    base = Path(_tempfile.mkdtemp())
+    try:
+        res_dir = base / "resources" / "nmap"
+        res_dir.mkdir(parents=True)
+        (res_dir / "file1").write_bytes(b"1")
+        (res_dir / "file2").write_bytes(b"2")
+        manifest = bt.build_resource_manifest(res_dir)
+        assert bt.verify_resource_manifest(res_dir, manifest) is True
+
+        monkeypatch.setattr(bt, "_MAX_RESOURCE_MANIFEST_ENTRIES", 1)
+        # Tree has 2 entries, max is 1 -> verify must return False
+        assert bt.verify_resource_manifest(res_dir, manifest) is False
+        # build_resource_manifest should also raise ValueError
+        with pytest.raises(ValueError, match="maximum permitted entry count"):
+            bt.build_resource_manifest(res_dir)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+
+def test_build_direct_artifact_trust_record_embeds_resource_manifest():
+    """build_direct_artifact_trust_record embeds resource_manifest and RESOURCE_TREE_INTEGRITY_VERIFIED claim."""
+    from app.core.binary_trust import build_direct_artifact_trust_record, get_managed_bin_dir
+
+    managed_dir = get_managed_bin_dir()
+    fake_bin = managed_dir / "nmap"
+    if not fake_bin.exists():
+        pytest.skip("Managed nmap binary not present on this dev machine")
+
+    res_manifest = {"nmap-services": "a" * 64, "scripts/banner.nse": "b" * 64}
+    record = build_direct_artifact_trust_record(
+        "nmap",
+        str(fake_bin),
+        installer_version="14.3.0",
+        resource_manifest=res_manifest,
+    )
+    assert "RESOURCE_TREE_INTEGRITY_VERIFIED" in record["claims"]
+    assert record["resource_manifest"] == dict(sorted(res_manifest.items()))
+
+
+# ---- RPM/CPIO extraction hardening tests (Checkpoint 4) ----
+
+def test_nmap_rpm_extraction_rejects_path_traversal():
+    """_extract_rpm_payload raises SecurityError on CPIO entries with path traversal sequences."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    traversal_entry = _make_cpio_newc_header(b"usr/share/nmap/../../etc/passwd", 4, IS_REG | 0o644)
+    cpio = traversal_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_absolute_path():
+    """_extract_rpm_payload raises SecurityError on CPIO entries with absolute paths."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    abs_entry = _make_cpio_newc_header(b"/etc/passwd", 4, IS_REG | 0o644)
+    cpio = abs_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_symlink_entry():
+    """_extract_rpm_payload raises SecurityError when a CPIO entry is a symlink."""
+    extract = _nmap_extractor()
+    IS_SYMLINK = 0o120000
+
+    sym_entry = _make_cpio_newc_header(b"usr/share/nmap/evil-link", 0, IS_SYMLINK | 0o777)
+    cpio = sym_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_hardlink_entry():
+    """_extract_rpm_payload raises SecurityError when a CPIO entry is a hardlink (nlink > 1 with data)."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    hardlink_entry = _make_cpio_newc_header(b"usr/share/nmap/hl-file", 4, IS_REG | 0o644, nlink=2)
+    cpio = hardlink_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_skips_unexpected_file_types():
+    """_extract_rpm_payload silently skips device/fifo/socket entries — does NOT raise."""
+    extract = _nmap_extractor()
+    IS_FIFO = 0o010000
+    IS_REG = 0o100000
+
+    nmap_entry = _make_cpio_newc_header(b"usr/bin/nmap", 4, IS_REG | 0o755)
+    fifo_entry = _make_cpio_newc_header(b"usr/share/nmap/fifo", 0, IS_FIFO | 0o600)
+    cpio = nmap_entry + fifo_entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        bin_out = os.path.join(base, "nmap_bin")
+        extract(rpm_file, bin_out, os.path.join(base, "resources"))
+        assert os.path.isfile(bin_out)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_duplicate_binary_entry():
+    """_extract_rpm_payload raises SecurityError when the nmap binary entry appears twice."""
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    nmap1 = _make_cpio_newc_header(b"usr/bin/nmap", 4, IS_REG | 0o755)
+    nmap2 = _make_cpio_newc_header(b"usr/bin/nmap", 4, IS_REG | 0o755)
+    cpio = nmap1 + nmap2 + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_extraction_rejects_malformed_hex_in_header():
+    """_extract_rpm_payload raises SecurityError when a CPIO header field contains invalid hex."""
+    extract = _nmap_extractor()
+
+    bad_header = (
+        b"070701"        # magic
+        + b"00000001"    # ino
+        + b"00100755"    # mode (regular + 0755)
+        + b"00000000"    # uid
+        + b"00000000"    # gid
+        + b"00000001"    # nlink
+        + b"00000000"    # mtime
+        + b"ZZZZZZZZ"    # filesize — INVALID HEX
+        + b"00000000"    # devmajor
+        + b"00000000"    # devminor
+        + b"00000000"    # rdevmajor
+        + b"00000000"    # rdevminor
+        + b"0000000C"    # namesize = 12
+        + b"00000000"    # check
+    )
+    assert len(bad_header) == 110
+    entry = bad_header + b"usr/bin/nmap\x00" + b"\x00\x00\x00"
+
+    import zstandard
+    cctx = zstandard.ZstdCompressor()
+    compressed = cctx.compress(entry + _make_trailer())
+
+    lead = b"\xed\xab\xee\xdb" + b"\x00" * 92
+    sig = b"\x8e\xad\xe8\x01" + b"\x00" * 4 + _struct.pack("!2I", 0, 0)
+    rem = (len(lead) + len(sig)) % 8
+    pad = (8 - rem) % 8
+    gen = b"\x8e\xad\xe8\x01" + b"\x00" * 4 + _struct.pack("!2I", 0, 0)
+    rpm_bytes = lead + sig + b"\x00" * pad + gen + compressed
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "bad.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm_bytes)
+        with pytest.raises(Exception):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_leading_parent_traversal_binary():
+    """_extract_rpm_payload raises SecurityError when binary path begins with leading parent traversal."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"../usr/bin/nmap", 4, IS_REG | 0o755)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_leading_parent_traversal_resource():
+    """_extract_rpm_payload raises SecurityError when resource path begins with leading parent traversal."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"../usr/share/nmap/nmap-services", 4, IS_REG | 0o644)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_dot_slash_parent_traversal():
+    """_extract_rpm_payload raises SecurityError when entry contains ./.. traversal sequence."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"./../usr/bin/nmap", 4, IS_REG | 0o755)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_nmap_rpm_rejects_backslash_parent_traversal():
+    """_extract_rpm_payload raises SecurityError when entry contains backslash traversal sequence."""
+    from app.installers.base_installer import SecurityError
+    extract = _nmap_extractor()
+    IS_REG = 0o100000
+
+    entry = _make_cpio_newc_header(b"..\\usr\\bin\\nmap", 4, IS_REG | 0o755)
+    cpio = entry + _make_trailer()
+    rpm = _make_rpm_with_cpio(cpio)
+
+    base = _tempfile.mkdtemp()
+    try:
+        rpm_file = os.path.join(base, "test.rpm")
+        with open(rpm_file, "wb") as f:
+            f.write(rpm)
+        with pytest.raises(SecurityError, match="traversal"):
+            extract(rpm_file, os.path.join(base, "nmap"), os.path.join(base, "resources"))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 

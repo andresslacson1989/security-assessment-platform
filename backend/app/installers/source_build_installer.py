@@ -21,6 +21,7 @@ import httpx
 from app.core.models import ToolInstallMethod
 from app.core.version import APP_VERSION
 from app.core.process_supervisor import process_supervisor
+from app.core.execution_context import issue_non_scan_execution_context
 from app.installers.base_installer import (
     BaseToolInstaller,
     LogCallback,
@@ -217,7 +218,8 @@ class SourceBuildInstaller(BaseToolInstaller):
         if not path:
             return None
         code, stdout, stderr = await process_supervisor.execute(
-            [path] + self._cfg["version_cmd"], timeout=5.0, max_output_bytes=1024 * 1024
+            [path] + self._cfg["version_cmd"], timeout=5.0, max_output_bytes=1024 * 1024,
+            non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:version"),
         )
         output = stdout or stderr
         match = re.search(self._cfg["version_regex"], output or "", re.IGNORECASE)
@@ -309,7 +311,7 @@ class SourceBuildInstaller(BaseToolInstaller):
                         expected_compiler_sha = manifest.get("build_toolchain_sha256", {}).get(platform_key)
                         if not compiler or not expected_compiler_sha or self._sha256_file(compiler) != expected_compiler_sha:
                             raise SecurityError("Pinned Nmap compiler/toolchain verification failed")
-                        env = {"HOME": temp, "PATH": os.environ.get("PATH", "")}
+                        env = {"HOME": temp}
                         commands = [
                             (["./configure", "--prefix=/usr/local", "--without-zenmap"], 50, "Configuring Nmap from the verified source archive..."),
                             (["make", "-j2"], 75, "Building Nmap from the verified source archive..."),
@@ -317,7 +319,7 @@ class SourceBuildInstaller(BaseToolInstaller):
                         ]
                     for command, stage, message in commands:
                         await emit_progress(stage, message)
-                        code, _, stderr = await process_supervisor.execute(command, cwd=source_root, env=env, timeout=900.0, max_output_bytes=10 * 1024 * 1024)
+                        code, _, stderr = await process_supervisor.execute(command, cwd=source_root, env=env, timeout=900.0, max_output_bytes=10 * 1024 * 1024, non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:build"))
                         if code != 0:
                             raise RuntimeError(f"Source build command failed: {stderr[-2000:]}")
                     if self.tool_name == "nmap":
@@ -327,7 +329,7 @@ class SourceBuildInstaller(BaseToolInstaller):
                         shutil.copy2(built, staged_binary)
                     os.chmod(staged_binary, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
                     await emit_progress(90, "Verifying the built executable version and trust evidence...")
-                    code, stdout, stderr = await process_supervisor.execute([str(staged_binary), "--version"], timeout=10.0, max_output_bytes=1024 * 1024)
+                    code, stdout, stderr = await process_supervisor.execute([str(staged_binary), "--version"], timeout=10.0, max_output_bytes=1024 * 1024, non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:verify"))
                     if code != 0 or not re.search(self._cfg["version_regex"] + r"\b", stdout or stderr, re.IGNORECASE):
                         raise SecurityError(f"Built {self.tool_name} failed exact runtime version verification: {stdout or stderr}")
                     executable_sha = hashlib.sha256(staged_binary.read_bytes()).hexdigest()

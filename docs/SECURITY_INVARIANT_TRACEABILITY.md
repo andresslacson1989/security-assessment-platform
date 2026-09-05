@@ -26,10 +26,17 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 | **INV-013** | Finding Lifecycle, SLA Clock Preservation & Correlation | Contract 01 Section 5.2, Contract 02 Section 4, Contract 08 Section 2 | backend/app/core/correlator.py, backend/app/core/models.py | tests/security/test_adversarial_sec_matrix.py::test_sec_024_risk_acceptance_visibility, test_sec_025_sla_clock_preservation, test_sec_026_correlation_false_merge_prevention, test_sec_027_correlation_duplicate_merging | **VERIFIED** |
 | **INV-014** | Relational Database ACID Persistence | Contract 01 Section 4, Contract 02 Section 3-6 | backend/app/core/db.py, backend/app/core/storage.py | tests/security/test_adversarial_sec_matrix.py::test_sec_029_database_transaction_integrity | **VERIFIED** |
 | **INV-015** | Development Mode Privilege Isolation | Contract 01 Section 3, Contract 08 Section 1 | backend/app/core/auth.py | tests/security/test_adversarial_sec_matrix.py::test_sec_030_development_mode_privilege_isolation | **VERIFIED** |
+| **INV-016** | Authentication Side-Effect Isolation & Backend-Owned Tool Observation | Contract 04 Section 1.1.1, 1.5.2, Contract 07 Section 2, Contract 08 Section 6.1.2 | frontend/js/app.js, backend/app/main.py, backend/app/core/observation_service.py | tests/test_frontend_contract.py, tests/test_observation_service.py | **REPOSITORY VERIFIED / DEPLOYMENT PENDING** |
+| **INV-017** | Durable Scan History & Retention Boundary | Contract 01 Section 3, Contract 04 Section 1.3.1, Contract 07 Section 7, Contract 08 Section 6.1.3 | backend/app/core/db.py, backend/app/core/storage.py, backend/app/api/scans.py, frontend/js/app.js | tests/test_api_endpoints.py, tests/security/test_database_backend.py, tests/test_models_and_grading.py | **REPOSITORY VERIFIED / DEPLOYMENT PENDING** |
 
 ---
 
 ## 2. Invariant Implementation Details
+
+### Capability Status Observation (non-authorization)
+- The authenticated system capability and toolbox endpoints report the 26-tool fleet using backend-owned process-local 60-second snapshots; capability snapshots are keyed by adapter configuration and each endpoint supports `refresh=true` for deliberate live detection/status refresh.
+- Cache metadata distinguishes live and cached observations, expiry triggers a new live check, and failures do not present stale status as current.
+- This UI/status cache is not persisted and cannot authorize execution; scan execution retains live discovery plus pre-launch integrity and exact-version verification.
 
 ### INV-001 & INV-002: Zero-Trust Multi-Tenancy & Identity
 - **Contract Specification:** Contracts 01 Section 3, 02 Section 2, 08 Section 1.

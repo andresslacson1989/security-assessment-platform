@@ -32,6 +32,7 @@ from app.installers.base_installer import (
     resolve_allowed_https_redirect,
 )
 from app.core.process_supervisor import process_supervisor
+from app.core.execution_context import issue_non_scan_execution_context
 
 
 GITHUB_TOOL_CONFIGS: Dict[str, dict] = {
@@ -330,6 +331,7 @@ class GithubReleaseInstaller(BaseToolInstaller):
             [path] + self._cfg["version_cmd"],
             timeout=5.0,
             max_output_bytes=1024 * 1024,
+            non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:version"),
         )
         output = stdout + (f"\n{stderr}" if stderr else "")
         lines = [line.strip() for line in output.strip().splitlines() if line.strip()]

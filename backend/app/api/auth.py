@@ -36,6 +36,7 @@ API_KEY_ALLOWED_SCOPES = frozenset({
     "scan:create", "scan:read", "scan:cancel", "scan:delete", "scan:repeater", "scan:internal",
     "asset:read", "asset:write", "asset:delete",
     "finding:read", "finding:write", "finding:triage", "finding:risk_accept", "report:read", "tool:read", "tool:install",
+    "execution:request", "execution:approve", "execution:read", "execution:revoke",
 })
 
 

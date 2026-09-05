@@ -12,6 +12,7 @@ import pytest
 
 from app.core.models import Target, TargetType, ScanConfig, Severity, NormalizedExecutionState, CloudCredentialEnvelope
 from app.core.ssrf_protector import create_validated_target
+from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 from app.engines.infra_iac.dockerfile_auditor import audit_dockerfile_content, audit_dockerfiles
 from app.engines.infra_iac.compose_auditor import audit_compose_yaml, audit_compose_files
 from app.engines.infra_iac.k8s_manifest_auditor import audit_k8s_yaml, audit_k8s_manifests
@@ -315,12 +316,12 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
         active_probing_granted=True,
     )
     commands = []
-    environments = []
+    handoffs = []
     findings = []
 
     async def execute(command, **kwargs):
         commands.append(command)
-        environments.append(dict(kwargs.get("env") or {}))
+        handoffs.append(kwargs.get("credential_handoff"))
         if command[-1] == "-v":
             return 0, "prowler 4.1.0", ""
         report_path = command[command.index("--output-filename") + 1]
@@ -365,10 +366,16 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
             require_managed_binary=True,
             validated_target=validated,
             cloud_credentials=credentials,
+                operation_policy_revision=OPERATION_POLICY_REVISION,
         )
 
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
-    assert environments[-1] == credentials.credentials
+    assert handoffs[-1] is not None
+    assert handoffs[-1].organization_id == "org-a"
+    assert handoffs[-1].asset_id == "asset-a"
+    assert handoffs[-1].provider == "aws"
+    assert handoffs[-1].authorization_decision_id == validated.authorization_decision_id
+    assert dict(handoffs[-1].credentials) == credentials.credentials
     assert findings[-1].severity == Severity.CRITICAL
 
 

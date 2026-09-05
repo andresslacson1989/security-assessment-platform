@@ -20,21 +20,31 @@ PINNED_TOOL_MANIFEST: Dict[str, Dict[str, Any]] = {
         "pinned_version": "v7.95",
         "category": "Network Perimeter",
         "trust_mode": "DIRECT_ARTIFACT_MODE",
+        "allowed_trust_modes": ["DIRECT_ARTIFACT_MODE", "SOURCE_BUILD_MODE"],
         "direct_release_artifact_available": True,
+        "source_build": True,
         "download_urls": {
             "linux_amd64": "https://nmap.org/dist/nmap-7.95-1.x86_64.rpm",
         },
+        "source_archive_url": "https://nmap.org/dist/nmap-7.95.tar.bz2",
+        "source_revision": "svn-r39734",
+        "build_toolchain": "gcc 12.2.0-14+deb12u1",
+        "build_toolchain_sha256": {
+            "linux_amd64": "75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8",
+        },
         "sha256_checksums": {
             "linux_amd64": "c0465e70217565bd825554e37b5a419221fd688ebcf9ad5633303d69a2287206",
+            "source_archive": "e14ab530e47b5afd88f1c8a2bac7f89cd8fe6b478e22d255c5b9bddb7a1c5778",
         },
         "asset_names": {
             "linux_amd64": "nmap-7.95-1.x86_64.rpm",
+            "source_archive": "nmap-7.95.tar.bz2",
         },
         "executable_sha256": {
             "linux_amd64": "f344bee202f0befb3c2f9cfd7fdd81d6332fe857d0076552f53b3cea115ee80a",
         },
         "supported_platforms": ["linux_amd64"],
-        "integrity_note": "Official pre-compiled Insecure.Org release package and extracted binary SHA-256 are cryptographically verified before promotion for universal Linux distribution execution.",
+        "integrity_note": "Official pre-compiled Insecure.Org release package and source archive are cryptographically verified before promotion for supported Linux x86-64 environments.",
     },
     "nuclei": {
         "tool_name": "nuclei",

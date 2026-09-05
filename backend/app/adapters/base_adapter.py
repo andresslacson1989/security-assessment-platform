@@ -13,7 +13,13 @@ from typing import Any, Optional, List, Callable, Awaitable, Tuple
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
-from app.core.process_supervisor import ProcessExecutionStatus
+from app.core.process_supervisor import (
+    CredentialEnvironmentHandoff,
+    CredentialExecutionContext,
+    ProcessExecutionStatus,
+    VerifiedEgressProxy,
+)
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
 
 
 class BaseToolAdapter(ABC):
@@ -24,67 +30,23 @@ class BaseToolAdapter(ABC):
     safe_execute_subprocess = staticmethod(safe_execute_subprocess)
     last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
 
-    # External tools must not inherit ambient credentials, proxy settings, or
-    # provider configuration from the API/worker process.  Adapters may add
-    # further server-derived values (for example Subfinder's isolated HOME),
-    # but only this non-sensitive execution baseline is inherited by default.
-    _SAFE_ENVIRONMENT_KEYS = frozenset({
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "HOME",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_DATA_HOME",
-        "TMP",
-        "TEMP",
-        "TMPDIR",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "PYTHONIOENCODING",
-        "PYTHONUNBUFFERED",
-        "SYSTEMDRIVE",
-        "COMSPEC",
-        "NMAPDIR",
-    })
-
     @classmethod
     def _governed_environment(cls, supplied: Optional[dict], sensitive_keys: Optional[set[str]] = None) -> dict:
         """Return a server-governed environment without ambient secrets/egress settings."""
-        source = supplied if supplied is not None else os.environ
-        allowed_sensitive = {str(key).upper() for key in (sensitive_keys or set())}
-        env = {
+        # ProcessSupervisor owns the only environment allowlist. This layer
+        # must not merge ambient values or translate proxy configuration.
+        return {
             str(key): str(value)
-            for key, value in source.items()
-            if (
-                str(key).upper() in cls._SAFE_ENVIRONMENT_KEYS
-                or (supplied is not None and str(key).upper() in allowed_sensitive)
-            )
-            and value is not None
+            for key, value in (supplied or {}).items()
+            if value is not None
         }
-        scanner_proxy = os.environ.get("SCANNER_EGRESS_PROXY", "").strip()
-        if scanner_proxy:
-            env["HTTP_PROXY"] = scanner_proxy
-            env["HTTPS_PROXY"] = scanner_proxy
-            env["ALL_PROXY"] = scanner_proxy
-            env["http_proxy"] = scanner_proxy
-            env["https_proxy"] = scanner_proxy
-            env["all_proxy"] = scanner_proxy
-        else:
-            for p in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
-                env.pop(p, None)
-        return env
 
     @staticmethod
     def _state_for_process_status(status: Optional[ProcessExecutionStatus]) -> Optional[NormalizedExecutionState]:
         """Translate a supervisor outcome into the platform execution taxonomy."""
         return {
             ProcessExecutionStatus.SECURITY_REJECTED: NormalizedExecutionState.EXECUTION_BLOCKED,
+            ProcessExecutionStatus.CANCELLED: NormalizedExecutionState.EXECUTION_CANCELLED,
             ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED: NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING,
             ProcessExecutionStatus.TIMED_OUT: NormalizedExecutionState.EXECUTION_TIMED_OUT,
             ProcessExecutionStatus.NOT_FOUND: NormalizedExecutionState.TOOL_EXECUTION_FAILED,
@@ -131,14 +93,35 @@ class BaseToolAdapter(ABC):
 
     def resolve_binary_path(self, custom_path: Optional[str] = None) -> Optional[str]:
         """
-        Deterministic 5-Tier Binary Resolution Order:
+        Deterministic managed-first binary resolution order:
         Tier 1: Explicit custom configured path (if file exists and is executable or on PATH)
         Tier 2: In-App Managed Binaries directory ('backend/bin/<tool_name>[.exe|.bat|.cmd|.pl]')
-        Tier 3: Active Python environment Scripts / bin directory (for pip-installed tools)
-        Tier 4: System PATH discovery via shutil.which(tool_name)
-        Tier 5: Platform-Specific Auto-Discovery (Windows Registry, multi-drive Program Files, package managers, Unix paths)
+        Tier 3: Per-tool managed Python environment (for package-managed adapters)
+        Tier 4: Active Python environment Scripts / bin directory
+        Tier 5: System PATH discovery via shutil.which(tool_name)
+        Tier 6: Platform-Specific Auto-Discovery (Windows Registry, multi-drive Program Files, package managers, Unix paths)
+
+        The per-tool environment is resolved here, at the shared adapter
+        boundary, so capability discovery and execution select the same
+        installer-owned executable identity. Custom paths remain diagnostic
+        inputs and are never silently replaced by managed paths.
         """
         local_bin_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bin"))
+
+        if not custom_path and getattr(self, "package_name", None):
+            from app.core.package_trust import get_tool_venv_dir
+
+            venv_dir = get_tool_venv_dir(self.tool_name)
+            venv_bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+            binary_name = getattr(self, "binary_name", self.tool_name)
+            candidates = (
+                venv_bin_dir / f"{binary_name}.exe",
+                venv_bin_dir / binary_name,
+            )
+            for candidate in candidates:
+                if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                    return str(candidate)
+
         return resolve_tool_binary(
             tool_name=self.tool_name,
             custom_path=custom_path,
@@ -260,6 +243,16 @@ class BaseToolAdapter(ABC):
         emit_log: Optional[Callable[[LogLevel, str], Awaitable[None]]] = None,
         pre_launch_check: Optional[Callable[[], bool]] = None,
         sensitive_env_keys: Optional[set[str]] = None,
+        scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
+        credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
+        credential_context: Optional[CredentialExecutionContext] = None,
+        execution_capability=None,
+        operation_family: str = "",
+        operation_options: Optional[dict] = None,
+        tool_id: str = "",
+        execution_id: Optional[str] = None,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        non_scan_context: Optional[NonScanExecutionContext] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -272,6 +265,13 @@ class BaseToolAdapter(ABC):
         if not cmd:
             return -1, "", "Empty command provided"
 
+        effective_execution_id = execution_id
+        if execution_context is not None:
+            if type(execution_context) is not GovernedExecutionContext:
+                return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid typed execution context"
+            if effective_execution_id and effective_execution_id != execution_context.execution_id:
+                return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch"
+            effective_execution_id = execution_context.execution_id
         result = await self.safe_execute_subprocess(
             cmd=cmd,
             timeout=timeout,
@@ -279,6 +279,16 @@ class BaseToolAdapter(ABC):
             env=self._governed_environment(env, sensitive_keys=sensitive_env_keys),
             max_output_bytes=max_output_bytes,
             pre_launch_check=pre_launch_check,
+            scanner_egress_proxy=scanner_egress_proxy,
+            credential_handoff=credential_handoff,
+            credential_context=credential_context,
+            execution_capability=execution_capability,
+            operation_family=operation_family,
+            operation_options=operation_options,
+            tool_id=tool_id or self.tool_name,
+            execution_id=effective_execution_id,
+            execution_context=execution_context,
+            non_scan_context=non_scan_context,
         )
         code, stdout, stderr = result
         process_status = getattr(result, "execution_status", None)

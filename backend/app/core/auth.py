@@ -164,7 +164,7 @@ ALL_VALID_SCOPES = frozenset({
     "scan:create", "scan:read", "scan:cancel", "scan:delete", "scan:repeater", "scan:internal",
     "asset:read", "asset:write", "asset:delete",
     "finding:read", "finding:write", "finding:triage", "finding:risk_accept",
-    "report:read", "tool:read", "tool:install",
+    "report:read", "tool:read", "tool:install", "execution:request", "execution:approve", "execution:read", "execution:revoke",
 })
 
 ROLE_BASE_SCOPES: Dict[UserRole, List[str]] = {
@@ -218,6 +218,7 @@ ROLE_BASE_SCOPES: Dict[UserRole, List[str]] = {
         "report:read",
         "tool:read",
         "tool:install",
+        "execution:request", "execution:approve", "execution:read", "execution:revoke",
     ],
 }
 
@@ -316,7 +317,7 @@ def create_access_token(
     )
 
 
-def decode_access_token(token: str) -> Dict[str, Any]:
+def decode_access_token(token: str, revocation_store=None) -> Dict[str, Any]:
     """
     Validates and decodes an HS256 JWT token under strict RFC 8725 requirements using PyJWT.
     Rejects algorithm confusion (alg=none), unauthorized algorithms, missing claims, and revoked tokens.
@@ -424,8 +425,10 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     # 3. Authoritative DB Token Revocation Check
     jti = payload.get("jti")
     if jti:
-        from app.core.db import db_manager
-        if db_manager.is_token_revoked(jti):
+        if revocation_store is None:
+            from app.core.db import db_manager
+            revocation_store = db_manager
+        if revocation_store.is_token_revoked(jti):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token has been revoked.",
@@ -528,6 +531,12 @@ async def get_current_user(
     Supports Bearer and X-API-Key headers. Streaming clients must use the
     Authorization header; credentials are never accepted in URLs.
     """
+    if isinstance(authorization, str) and authorization.strip() and isinstance(x_api_key, str) and x_api_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conflicting authentication credentials are not permitted.",
+        )
+
     # 1. API Key Authentication (Hashed Token Lookup)
     if isinstance(x_api_key, str) and x_api_key.strip():
         key_hash = hashlib.sha256(x_api_key.strip().encode("utf-8")).hexdigest()

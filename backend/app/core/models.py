@@ -195,6 +195,7 @@ class ToolExecutionMode(str, Enum):
     Operating execution mode for hybrid external security tool adapters.
     """
     ADAPTER_ACTIVE = "ADAPTER_ACTIVE"    # Host CLI tool found, verified, and active
+    NATIVE_ENGINE_READY = "NATIVE_ENGINE_READY"  # Built-in rule engine ready; no external executable
     NATIVE_FALLBACK = "NATIVE_FALLBACK"  # Pure Python native fallback engine
     MANUAL_ONLY = "MANUAL_ONLY"          # Explicitly authorized manual-only adapter
     DISABLED = "DISABLED"                # Adapter explicitly disabled by user/config
@@ -210,6 +211,7 @@ class ToolAssuranceStatus(str, Enum):
     UNASSURED = "UNASSURED"
     UNREGISTERED = "UNREGISTERED"
     DISABLED = "DISABLED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 class ToolInstallMethod(str, Enum):
@@ -232,6 +234,62 @@ class ToolInstallStatus(str, Enum):
     INSTALLED = "INSTALLED"
     FAILED = "FAILED"
     UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
+
+
+class ProcessOwnershipState(str, Enum):
+    """Lifecycle dimension for process ownership, separate from run outcome."""
+
+    UNKNOWN = "UNKNOWN"
+    NO_EXTERNAL_PROCESS = "NO_EXTERNAL_PROCESS"
+    EXTERNAL_PROCESS_GOVERNED = "EXTERNAL_PROCESS_GOVERNED"
+    LAUNCH_UNCERTAIN = "LAUNCH_UNCERTAIN"
+    RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
+    TERMINAL = "TERMINAL"
+
+
+class ProcessContainerType(str, Enum):
+    """Platform process-container types; NONE is valid only for no-process runs."""
+
+    NONE = "NONE"
+    POSIX_SESSION = "POSIX_SESSION"
+    WINDOWS_JOB = "WINDOWS_JOB"
+    PROCESS_SET = "PROCESS_SET"
+
+
+class LaunchCommitState(str, Enum):
+    """Durable launch-handshake state."""
+
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    COMMITTED = "COMMITTED"
+    UNCERTAIN = "UNCERTAIN"
+
+
+PROCESS_OWNERSHIP_TRANSITIONS = {
+    ProcessOwnershipState.UNKNOWN: frozenset({
+        ProcessOwnershipState.NO_EXTERNAL_PROCESS,
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        ProcessOwnershipState.LAUNCH_UNCERTAIN,
+    }),
+    ProcessOwnershipState.NO_EXTERNAL_PROCESS: frozenset({ProcessOwnershipState.TERMINAL}),
+    ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED: frozenset({
+        ProcessOwnershipState.RECOVERY_BLOCKED, ProcessOwnershipState.TERMINAL,
+    }),
+    ProcessOwnershipState.LAUNCH_UNCERTAIN: frozenset({
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        ProcessOwnershipState.NO_EXTERNAL_PROCESS,
+        ProcessOwnershipState.RECOVERY_BLOCKED,
+    }),
+    ProcessOwnershipState.RECOVERY_BLOCKED: frozenset({ProcessOwnershipState.TERMINAL}),
+    ProcessOwnershipState.TERMINAL: frozenset(),
+}
+
+
+def is_valid_process_ownership_transition(
+    current: ProcessOwnershipState,
+    requested: ProcessOwnershipState,
+) -> bool:
+    """Return whether a process-ownership transition is contract-legal."""
+    return requested == current or requested in PROCESS_OWNERSHIP_TRANSITIONS.get(current, frozenset())
 
 
 # ============================================================================
@@ -515,13 +573,13 @@ class ToolStatus(BaseModel):
     available: bool = Field(default=False, description="Whether a binary was detected on the host; this is not trust or execution evidence")
     version: Optional[str] = Field(default=None, description="Detected executable version string")
     path: Optional[str] = Field(default=None, description="Resolved absolute executable path")
-    execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_FALLBACK', 'MANUAL_ONLY', or 'DISABLED'")
+    execution_mode: ToolExecutionMode = Field(default=ToolExecutionMode.NATIVE_FALLBACK, description="'ADAPTER_ACTIVE', 'NATIVE_ENGINE_READY', 'NATIVE_FALLBACK', 'MANUAL_ONLY', or 'DISABLED'")
     install_method: ToolInstallMethod = Field(default=ToolInstallMethod.MANUAL, description="Installation method for this tool")
     is_installed: bool = Field(default=False, description="Whether tool binary is present and executable")
     installable: bool = Field(default=True, description="Whether tool can be installed in-app")
     assurance_status: ToolAssuranceStatus = Field(
         default=ToolAssuranceStatus.UNASSURED,
-        description="Execution trust state: ASSURED, DELEGATED, INCOMPLETE, INVALID, UNASSURED, UNREGISTERED, or DISABLED",
+        description="Execution trust state: ASSURED, DELEGATED, INCOMPLETE, INVALID, UNASSURED, UNREGISTERED, DISABLED, or NOT_APPLICABLE",
     )
 
 
@@ -580,6 +638,10 @@ class SystemCapabilities(BaseModel):
     tools: List[ToolStatus] = Field(default_factory=list, description="Tool availability and capability status")
     native_engines_ready: bool = True
     os_platform: str = Field(default="Unknown", description="Operating system platform details")
+    capabilities_source: str = Field(default="LIVE", description="Whether this snapshot was produced LIVE or served from CACHE")
+    capabilities_checked_at: Optional[datetime] = Field(default=None, description="UTC time of the live capability check")
+    capabilities_cache_age_seconds: float = Field(default=0.0, ge=0, description="Age of the capability snapshot when returned")
+    capabilities_cache_ttl_seconds: int = Field(default=60, ge=1, description="Maximum cache age for API capability snapshots")
 
 
 # ============================================================================
@@ -1140,6 +1202,299 @@ class UserProfile(BaseModel):
         return self
 
 
+class ExecutionDecisionRecord(BaseModel):
+    """Durable, tenant-bound authorization decision for one tool operation."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    id: str
+    organization_id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    target_id: str
+    authorization_decision_id: str
+    target_policy_version: str
+    tool_id: str
+    operation_family: str
+    operation_options: Dict[str, Any] = Field(default_factory=dict)
+    operation_policy_revision: str
+    approval_state: str
+    approver_user_id: str
+    session_jti: str
+    worker_identity: str
+    resource_budget: Dict[str, int] = Field(default_factory=dict)
+    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
+    credential_scope: Dict[str, str] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None
+    consumed_at: Optional[datetime] = None
+    claim_owner: Optional[str] = None
+    claim_expires_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    claim_token: Optional[str] = None
+
+
+class ExecutionLeaseClaim(BaseModel):
+    """Typed, single-attempt launch lease returned only to the issuing worker."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    token: str
+    owner: str
+    expires_at: datetime
+
+
+class ExecutionDispatchLease(BaseModel):
+    """Typed durable lease for one worker's execution-dispatch attempt."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    execution_id: str
+    organization_id: str
+    owner: str
+    token: str
+    expires_at: datetime
+    attempt_count: int
+
+
+class ExecutionAuthorityLease(BaseModel):
+    """Typed shared launch fence for one decision, run, and dispatch attempt."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    decision: ExecutionLeaseClaim
+    dispatch: ExecutionDispatchLease
+    execution_id: str
+    correlation_id: str
+
+
+class ExecutionRequestRecord(BaseModel):
+    """Durable pre-approval execution request and its immutable fingerprint."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    id: str
+    idempotency_key: str
+    request_fingerprint: str
+    organization_id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    target_id: str
+    authorization_decision_id: str
+    target_policy_version: str
+    tool_id: str
+    operation_family: str
+    operation_options: Dict[str, Any] = Field(default_factory=dict)
+    operation_policy_revision: str
+    resource_budget: Dict[str, int] = Field(default_factory=dict)
+    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
+    credential_scope: Dict[str, str] = Field(default_factory=dict)
+    requested_by_user_id: str
+    state: str = "REQUESTED"
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    approved_decision_id: Optional[str] = None
+    approval_idempotency_key: Optional[str] = None
+
+
+class ExecutionRunRecord(BaseModel):
+    """Durable execution observation linked to one authorized request."""
+    model_config = {"frozen": True, "extra": "forbid"}
+    execution_id: str
+    request_id: str
+    organization_id: str
+    approved_decision_id: Optional[str] = None
+    target_policy_version: Optional[str] = None
+    operation_policy_revision: Optional[str] = None
+    request_fingerprint: Optional[str] = None
+    operation_options: Dict[str, Any] = Field(default_factory=dict)
+    resource_budget: Dict[str, int] = Field(default_factory=dict)
+    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
+    credential_scope: Dict[str, str] = Field(default_factory=dict)
+    snapshot_completeness: str = "LEGACY_SNAPSHOT_UNAVAILABLE"
+    state: str = "REQUESTED"
+    worker_identity: Optional[str] = None
+    process_id: Optional[int] = None
+    process_group_id: Optional[str] = None
+    assurance_state: str = "UNVERIFIED"
+    coverage_state: str = "UNAVAILABLE"
+    reason_code: Optional[str] = None
+    evidence_ref: Optional[str] = None
+    correlation_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class ExecutionProcessOwnershipRecord(BaseModel):
+    """Durable process-ownership dimension for one execution run."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    execution_id: str
+    organization_id: str
+    ownership_state: ProcessOwnershipState = ProcessOwnershipState.UNKNOWN
+    container_type: ProcessContainerType = ProcessContainerType.NONE
+    container_identity: Optional[str] = None
+    root_process_id: Optional[int] = None
+    root_process_start_token: Optional[str] = None
+    process_group_id: Optional[str] = None
+    session_id: Optional[str] = None
+    worker_generation: Optional[str] = None
+    launch_commit_state: LaunchCommitState = LaunchCommitState.NOT_ATTEMPTED
+    no_process_proof: Optional[str] = None
+    identity_attestation: Optional[str] = None
+    correlation_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    launched_at: Optional[datetime] = None
+    last_verified_at: Optional[datetime] = None
+    terminalized_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_identity_dimension(self) -> "ExecutionProcessOwnershipRecord":
+        if self.ownership_state == ProcessOwnershipState.NO_EXTERNAL_PROCESS:
+            if self.container_type != ProcessContainerType.NONE or self.root_process_id is not None:
+                raise ValueError("NO_EXTERNAL_PROCESS cannot carry process identity")
+            if not self.no_process_proof:
+                raise ValueError("NO_EXTERNAL_PROCESS requires explicit proof")
+        if self.ownership_state == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED:
+            if self.container_type == ProcessContainerType.NONE or self.root_process_id is None:
+                raise ValueError("governed process ownership requires container and root identity")
+            if not self.identity_attestation:
+                raise ValueError("governed process ownership requires attestation")
+        return self
+
+
+class ExecutionRecoveryAttemptRecord(BaseModel):
+    """Append-only durable evidence for one recovery attempt."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    attempt_id: str
+    execution_id: str
+    organization_id: str
+    worker_identity: str
+    worker_generation: str
+    attempt_number: int = Field(ge=1)
+    status: str
+    cancellation_status: Optional[str] = None
+    reason_code: str
+    correlation_id: str
+    requested_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    next_retry_at: Optional[datetime] = None
+    error_code: Optional[str] = None
+    escalation_level: int = Field(default=0, ge=0)
+    health_reference: Optional[str] = None
+
+
+class ExecutionRecoveryStateRecord(BaseModel):
+    """Mutable current recovery coordination state; evidence is append-only."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    execution_id: str
+    organization_id: str
+    status: str = "REQUESTED"
+    owner: Optional[str] = None
+    lease_token: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
+    attempt_number: int = Field(default=0, ge=0)
+    last_outcome: Optional[str] = None
+    last_error: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    escalation_level: int = Field(default=0, ge=0)
+    worker_generation: Optional[str] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+EXECUTION_RUN_STATES = frozenset({"REQUESTED", "STARTING", "RUNNING", "SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED", "EXECUTION_BLOCKED"})
+EXECUTION_RUN_TERMINAL_STATES = frozenset({"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED", "EXECUTION_BLOCKED"})
+EXECUTION_RUN_TRANSITIONS = {
+    "REQUESTED": frozenset({"STARTING", "CANCELLED", "EXECUTION_BLOCKED"}),
+    "STARTING": frozenset({"RUNNING", "FAILED", "CANCELLED", "EXECUTION_BLOCKED"}),
+    "RUNNING": frozenset({"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}),
+}
+
+# Contract 04/08: execution outcomes are durable security evidence, not free-form
+# diagnostic text.  Keep this registry deliberately bounded so callers cannot
+# smuggle unreviewed states into the audit trail or make outcome reconciliation
+# ambiguous.  Human-readable detail belongs in sanitized process telemetry.
+EXECUTION_REASON_CODES = frozenset({
+    "EXECUTION_AUTHORITY_EXPIRED",
+    "EXECUTION_AUTHORITY_RELEASED",
+    "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED",
+    "EXECUTION_CANCELLED_ACKNOWLEDGED",
+    "EXECUTION_CANCELLED_BEFORE_DISPATCH",
+    "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+    "EXECUTION_CANCELLED",
+    "EXECUTION_DECISION_CLAIM_REJECTED",
+    "EXECUTION_DISPATCH_FENCE_REQUIRED",
+    "EXECUTION_DISPATCH_FAILED",
+    "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED",
+    "EXECUTION_IDENTITY_MISMATCH",
+    "EXECUTION_LEASE_RENEWAL_FAILED",
+    "EXECUTION_TIMEOUT",
+    "EXECUTABLE_NOT_FOUND",
+    "EXECUTABLE_PERMISSION_DENIED",
+    "LINKED_DISPATCH_INTENT_MISSING",
+    "OUTPUT_LIMIT_EXCEEDED",
+    "PROCESS_EXECUTION_EXCEPTION",
+    "PROCESS_EXIT_NONZERO",
+    "PROCESS_LAUNCH_REJECTED_SECURITY",
+})
+
+
+def is_canonical_execution_reason_code(value: Optional[str]) -> bool:
+    """Return whether *value* is a reviewed, bounded execution reason code."""
+    return (
+        isinstance(value, str)
+        and len(value) <= 64
+        and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value) is not None
+        and value in EXECUTION_REASON_CODES
+    )
+
+
+# Terminal-state/reason pairing is part of the durable state machine.  A
+# globally valid token is not sufficient: for example, a process exit cannot
+# be recorded as a cancellation and a cancellation cannot be recorded as a
+# successful completion.  The registry is intentionally explicit so adding a
+# new outcome requires a reviewed contract and test update.
+EXECUTION_TERMINAL_REASON_CODES = {
+    "SUCCEEDED": frozenset(),
+    "PARTIAL_RESULTS_WITH_WARNING": frozenset({"OUTPUT_LIMIT_EXCEEDED"}),
+    "FAILED": frozenset({
+        "EXECUTION_AUTHORITY_EXPIRED", "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED",
+        "EXECUTION_DISPATCH_FAILED", "EXECUTION_LEASE_RENEWAL_FAILED",
+        "EXECUTABLE_NOT_FOUND", "EXECUTABLE_PERMISSION_DENIED",
+        "LINKED_DISPATCH_INTENT_MISSING", "PROCESS_EXECUTION_EXCEPTION",
+        "PROCESS_EXIT_NONZERO",
+    }),
+    "TIMED_OUT": frozenset({"EXECUTION_AUTHORITY_EXPIRED", "EXECUTION_TIMEOUT"}),
+    "CANCELLED": frozenset({
+        "EXECUTION_CANCELLED", "EXECUTION_CANCELLED_ACKNOWLEDGED",
+        "EXECUTION_CANCELLED_BEFORE_DISPATCH", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+    }),
+    "EXECUTION_BLOCKED": frozenset({
+        "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED", "EXECUTION_DECISION_CLAIM_REJECTED",
+        "EXECUTION_DISPATCH_FENCE_REQUIRED", "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED",
+        "EXECUTION_IDENTITY_MISMATCH", "PROCESS_LAUNCH_REJECTED_SECURITY",
+    }),
+}
+
+
+def is_valid_execution_terminal_outcome(terminal_state: str, reason_code: Optional[str]) -> bool:
+    """Validate a terminal state and its exact reviewed reason-code pairing."""
+    return terminal_state in EXECUTION_TERMINAL_REASON_CODES and (
+        reason_code in EXECUTION_TERMINAL_REASON_CODES[terminal_state]
+        if terminal_state != "SUCCEEDED"
+        else reason_code is None
+    )
+
+
 class APIKeyRecord(BaseModel):
     key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")
     key_hash: str
@@ -1326,6 +1681,28 @@ class AuditAction(str, Enum):
     TOOL_INSTALL_STARTED = "TOOL_INSTALL_STARTED"
     TOOL_INSTALL_COMPLETED = "TOOL_INSTALL_COMPLETED"
     TOOL_INSTALL_FAILED = "TOOL_INSTALL_FAILED"
+    EXECUTION_DECISION_CREATED = "EXECUTION_DECISION_CREATED"
+    EXECUTION_DECISION_REVOKED = "EXECUTION_DECISION_REVOKED"
+    EXECUTION_DECISION_CONSUMED = "EXECUTION_DECISION_CONSUMED"
+    EXECUTION_DECISION_CLAIMED = "EXECUTION_DECISION_CLAIMED"
+    EXECUTION_DECISION_CLAIM_REJECTED = "EXECUTION_DECISION_CLAIM_REJECTED"
+    EXECUTION_DECISION_LEASE_RELEASED = "EXECUTION_DECISION_LEASE_RELEASED"
+    EXECUTION_DECISION_STARTED = "EXECUTION_DECISION_STARTED"
+    EXECUTION_CANCEL_REQUESTED = "EXECUTION_CANCEL_REQUESTED"
+    EXECUTION_RUN_CREATED = "EXECUTION_RUN_CREATED"
+    EXECUTION_RUN_TRANSITIONED = "EXECUTION_RUN_TRANSITIONED"
+    EXECUTION_DISPATCH_CLAIMED = "EXECUTION_DISPATCH_CLAIMED"
+    EXECUTION_DISPATCH_LEASE_RENEWED = "EXECUTION_DISPATCH_LEASE_RENEWED"
+    EXECUTION_DISPATCH_COMPLETED = "EXECUTION_DISPATCH_COMPLETED"
+    EXECUTION_DISPATCH_FAILED = "EXECUTION_DISPATCH_FAILED"
+    EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED = "EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED"
+    EXECUTION_AUTHORITY_RELEASED = "EXECUTION_AUTHORITY_RELEASED"
+    EXECUTION_REQUESTED = "EXECUTION_REQUESTED"
+    EXECUTION_AUTHORIZED = "EXECUTION_AUTHORIZED"
+    EXECUTION_AUTHORITY_INVARIANT_FAILED = "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+    EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED = "EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED"
+    EXECUTION_RECOVERY_ATTEMPT_RECORDED = "EXECUTION_RECOVERY_ATTEMPT_RECORDED"
+    EXECUTION_RECOVERY_RECONCILIATION_REQUIRED = "EXECUTION_RECOVERY_RECONCILIATION_REQUIRED"
     FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"
     FINDING_ASSIGNED = "FINDING_ASSIGNED"
     FINDING_COMMENTED = "FINDING_COMMENTED"

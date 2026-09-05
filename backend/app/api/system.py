@@ -5,7 +5,7 @@ Contract 04 & 08 System Health and Engine Metadata Endpoints.
 from __future__ import annotations
 import time
 from typing import Dict, Any, List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from app.core.auth import get_current_user, UserProfile
 from app.core.models import utc_now, TargetType, Target
 from app.core.storage import list_scans
@@ -69,9 +69,10 @@ async def get_registered_engines(
 @router.get("/capabilities", summary="System Tool & Engine Capabilities")
 async def get_system_capabilities(
     current_user: UserProfile = Depends(get_current_user),
+    refresh: bool = Query(default=False, description="Bypass the 60-second capability snapshot cache"),
 ) -> Any:
     """
     Returns host tool discovery status, binary paths, versions, and execution modes.
     """
-    from app.adapters import discover_system_capabilities
-    return await discover_system_capabilities()
+    from app.adapters import get_cached_system_capabilities
+    return await get_cached_system_capabilities(force_refresh=refresh)

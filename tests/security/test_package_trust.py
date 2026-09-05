@@ -5,6 +5,7 @@ import hashlib
 import os
 import platform
 from pathlib import Path
+import pytest
 
 from app.adapters.bandit_adapter import BanditAdapter
 from app.core import package_trust
@@ -231,3 +232,81 @@ def test_source_artifact_record_binds_nmap_source_and_toolchain(tmp_path, monkey
     assert binary_trust.verify_managed_binary_artifact(
         "nmap", str(binary), expected_version="7.95"
     ) is False
+
+
+def test_nmap_trust_mode_explicit_authorization():
+    """Nmap must explicitly authorize both DIRECT_ARTIFACT_MODE and SOURCE_BUILD_MODE."""
+    import app.core.binary_trust as bt
+
+    manifest = PINNED_TOOL_MANIFEST.get("nmap", {})
+    allowed = manifest.get("allowed_trust_modes")
+    assert allowed == ["DIRECT_ARTIFACT_MODE", "SOURCE_BUILD_MODE"]
+    assert bt._is_trust_mode_authorized(manifest, "DIRECT_ARTIFACT_MODE") is True
+    assert bt._is_trust_mode_authorized(manifest, "SOURCE_BUILD_MODE") is True
+    assert bt._is_trust_mode_authorized(manifest, "MANUAL_MODE") is False
+    assert bt._is_trust_mode_authorized(manifest, "PACKAGE_MANAGER_MODE") is False
+
+
+def test_direct_artifact_trust_record_rejects_unauthorized_mode(tmp_path, monkeypatch):
+    """build_direct_artifact_trust_record raises ValueError when direct mode is unauthorized."""
+    import app.core.binary_trust as bt
+
+    managed_dir = tmp_path / "managed-bin"
+    managed_dir.mkdir()
+    binary = managed_dir / "trivy"
+    binary.write_bytes(b"dummy trivy")
+    if os.name != "nt":
+        binary.chmod(0o755)
+    monkeypatch.setattr(bt, "get_managed_bin_dir", lambda: managed_dir)
+
+    # trivy only has SOURCE_BUILD_MODE, DIRECT_ARTIFACT_MODE is unauthorized
+    with pytest.raises(ValueError, match="direct-artifact trust is not authorized"):
+        bt.build_direct_artifact_trust_record("trivy", str(binary), installer_version="14.3.0")
+
+
+def test_source_artifact_trust_record_rejects_unauthorized_mode(tmp_path, monkeypatch):
+    """build_source_artifact_trust_record raises ValueError when source mode is unauthorized."""
+    import app.core.binary_trust as bt
+
+    managed_dir = tmp_path / "managed-bin"
+    managed_dir.mkdir()
+    binary = managed_dir / "nuclei"
+    binary.write_bytes(b"dummy nuclei")
+    if os.name != "nt":
+        binary.chmod(0o755)
+    monkeypatch.setattr(bt, "get_managed_bin_dir", lambda: managed_dir)
+
+    # nuclei only has DIRECT_ARTIFACT_MODE, SOURCE_BUILD_MODE is unauthorized
+    with pytest.raises(ValueError, match="source-build trust is not authorized"):
+        bt.build_source_artifact_trust_record(
+            "nuclei",
+            str(binary),
+            source_identity="v3.2.0",
+            build_toolchain_sha256="0" * 64,
+            installer_version="14.3.0",
+        )
+
+
+def test_verify_managed_binary_artifact_rejects_unauthorized_trust_mode(tmp_path, monkeypatch):
+    """verify_managed_binary_artifact returns False when record mode is excluded from allowed_trust_modes."""
+    import app.core.binary_trust as bt
+    import copy
+
+    managed_dir = tmp_path / "managed-bin"
+    managed_dir.mkdir()
+    binary = managed_dir / "nuclei"
+    binary.write_bytes(b"dummy nuclei")
+    if os.name != "nt":
+        binary.chmod(0o755)
+    monkeypatch.setattr(bt, "get_managed_bin_dir", lambda: managed_dir)
+
+    bt.write_direct_artifact_trust_record("nuclei", str(binary), installer_version="14.3.0")
+    assert bt.verify_managed_binary_artifact("nuclei", str(binary), expected_version="3.2.0") is True
+
+    # Mutate manifest to exclude DIRECT_ARTIFACT_MODE
+    mock_manifest = copy.deepcopy(PINNED_TOOL_MANIFEST)
+    mock_manifest["nuclei"]["allowed_trust_modes"] = ["SOURCE_BUILD_MODE"]
+    monkeypatch.setattr("app.installers.tool_manifest.PINNED_TOOL_MANIFEST", mock_manifest)
+
+    assert bt.verify_managed_binary_artifact("nuclei", str(binary), expected_version="3.2.0") is False
+

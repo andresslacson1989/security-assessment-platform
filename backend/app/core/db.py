@@ -7,15 +7,26 @@ API Keys, Assets, Scans, Canonical Findings, Occurrences, and Append-Only Audit 
 
 from __future__ import annotations
 import hashlib
+import inspect
 import json
+import logging
 import os
+import re
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import uuid
+
+logger = logging.getLogger("cyberassess.persistence")
+
+
+def _quote_postgres_identifier(identifier: str) -> str:
+    """Quote a catalog-derived PostgreSQL identifier without interpolation risk."""
+    return '"' + str(identifier).replace('"', '""') + '"'
 
 from app.core.models import (
     Asset,
@@ -38,11 +49,32 @@ from app.core.models import (
     AuditAction,
     PrincipalType,
     Evidence,
+    ExecutionDecisionRecord,
+    ExecutionLeaseClaim,
+    ExecutionDispatchLease,
+    ExecutionAuthorityLease,
+    ExecutionRunRecord,
+    ExecutionProcessOwnershipRecord,
+    ExecutionRecoveryAttemptRecord,
+    ExecutionRecoveryStateRecord,
+    ProcessOwnershipState, ProcessContainerType, LaunchCommitState, PROCESS_OWNERSHIP_TRANSITIONS,
+    EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
+    is_valid_execution_terminal_outcome,
+    ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
 )
+from app.core.migration_registry import MIGRATION_REGISTRY
+from app.core.migration_artifacts import (
+    FORWARD_APPLY_ARTIFACT_REVISION,
+    FORWARD_APPLY_SOURCE_SHA256,
+    POSTCONDITION_SOURCE_SHA256,
+)
+from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
+from app.core.correlation import get_correlation_id
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
+MIGRATION_POSTCONDITION_REVISION = "execution-postconditions-v2"
 
 
 class _PostgresRow(dict):
@@ -66,7 +98,10 @@ def _qmark_to_postgres(sql: str) -> str:
     while index < len(sql):
         char = sql[index]
         if quote:
-            output.append(char)
+            if char == "%":
+                output.append("%%")
+            else:
+                output.append(char)
             if char == quote:
                 if index + 1 < len(sql) and sql[index + 1] == quote:
                     output.append(sql[index + 1])
@@ -78,6 +113,15 @@ def _qmark_to_postgres(sql: str) -> str:
             output.append(char)
         elif char == "?":
             output.append("%s")
+        elif char == "%":
+            # psycopg treats percent signs as placeholder syntax even inside
+            # SQL string literals; preserve existing escape/format sequences
+            # and escape literal percent signs for DB-API execution.
+            next_char = sql[index + 1] if index + 1 < len(sql) else ""
+            if next_char in ("%", "s", "b", "t"):
+                output.append(char)
+            else:
+                output.append("%%")
         else:
             output.append(char)
         index += 1
@@ -133,7 +177,18 @@ class _PostgresConnection:
     def executescript(self, sql: str):
         # The schema contains independent DDL statements and no procedural
         # blocks; execute each statement so PostgreSQL can plan them normally.
-        for statement in sql.split(";"):
+        # Execution tables are deliberately deferred until their referenced
+        # inventory/principal tables exist.  This is explicit dependency
+        # ordering for PostgreSQL, where forward references are not accepted.
+        sql_without_line_comments = re.sub(r"(?m)^\s*--[^\r\n]*", "", sql)
+        statements = [statement.strip() for statement in sql_without_line_comments.split(";") if statement.strip()]
+        deferred = []
+        for statement in statements:
+            if re.search(r"CREATE\s+(?:TABLE|(?:UNIQUE\s+)?INDEX)\s+IF\s+NOT\s+EXISTS\s+(?:execution_|idx_execution_|uq_execution_)", statement, re.IGNORECASE):
+                deferred.append(statement)
+                continue
+            self.execute(statement)
+        for statement in deferred:
             statement = statement.strip()
             if statement:
                 self.execute(statement)
@@ -152,7 +207,7 @@ class _PostgresConnection:
 class PostgresDatabaseManager:
     """PostgreSQL enterprise backend using a bounded connection pool."""
 
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, allow_unresolved_reconciliation: bool = False):
         try:
             from psycopg_pool import ConnectionPool
         except ImportError as exc:
@@ -160,13 +215,42 @@ class PostgresDatabaseManager:
                 "Enterprise mode requires psycopg[binary,pool] to be installed."
             ) from exc
         self.database_url = database_url
-        self._pool = ConnectionPool(
-            conninfo=database_url,
-            min_size=int(os.getenv("POSTGRES_POOL_MIN_SIZE", "1")),
-            max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
-            open=True,
-        )
-        self._init_db()
+        self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
+        self._pool = None
+        try:
+            pool_max_size = int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10"))
+            if pool_max_size < 2:
+                raise ValueError("POSTGRES_POOL_MAX_SIZE must be at least 2 for serialized migration coordination")
+            self._pool = ConnectionPool(
+                conninfo=database_url,
+                min_size=int(os.getenv("POSTGRES_POOL_MIN_SIZE", "1")),
+                max_size=pool_max_size,
+                open=True,
+            )
+            if self._allow_unresolved_reconciliation:
+                with self._migration_lock():
+                    self._ensure_migration_ledger()
+                return
+            self._run_migration_coordinator()
+        except Exception as exc:
+            # Initialization can fail after the pool has opened (for example,
+            # on schema drift).  Never leak those connections on a failed
+            # manager construction.
+            if self._pool is not None:
+                try:
+                    self._record_migration_failure(exc)
+                except Exception as audit_exc:
+                    logger.error("migration failure event could not be persisted: error_type=%s", type(audit_exc).__name__)
+                try:
+                    self._pool.close()
+                except Exception as cleanup_exc:
+                    # Cleanup is best-effort here; preserve the authoritative
+                    # initialization failure for the caller and audit trail.
+                    logger.error(
+                        "PostgreSQL pool cleanup failed during initialization: error_type=%s",
+                        type(cleanup_exc).__name__,
+                    )
+            raise
 
     @contextmanager
     def _connection_scope(self):
@@ -181,9 +265,22 @@ class PostgresDatabaseManager:
         finally:
             self._pool.putconn(raw_connection)
 
-    def _init_db(self):
+    def _init_db(self, max_migration_version: Optional[int] = None):
         # Reuse the canonical schema/method implementation from the SQLite DAL.
-        DatabaseManager._init_db(self)
+        DatabaseManager._init_db(self, max_migration_version=max_migration_version)
+
+    @contextmanager
+    def _migration_lock(self):
+        """Hold a database-scoped advisory lock for the full migration run."""
+        raw_connection = self._pool.getconn()
+        try:
+            raw_connection.execute("SELECT pg_advisory_lock(hashtext('cyberassess:schema-migrations'))")
+            yield
+        finally:
+            try:
+                raw_connection.execute("SELECT pg_advisory_unlock(hashtext('cyberassess:schema-migrations'))")
+            finally:
+                self._pool.putconn(raw_connection)
 
     def __getattr__(self, name):
         return getattr(DatabaseManager, name).__get__(self, type(self))
@@ -198,10 +295,19 @@ class DatabaseManager:
     _instance: Optional[Any] = None
     _lock = threading.Lock()
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, allow_unresolved_reconciliation: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
+        self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+        if self._allow_unresolved_reconciliation:
+            with self._migration_lock():
+                self._ensure_migration_ledger()
+            return
+        try:
+            self._run_migration_coordinator()
+        except Exception as exc:
+            self._record_migration_failure(exc)
+            raise
 
     @classmethod
     def get_instance(cls) -> DatabaseManager:
@@ -214,6 +320,742 @@ class DatabaseManager:
                     else:
                         cls._instance = cls()
         return cls._instance
+
+    @contextmanager
+    def _migration_lock(self):
+        """Serialize schema coordination across processes for SQLite."""
+        lock_path = self.db_path.with_name(self.db_path.name + ".migration.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")
+        try:
+            handle.seek(0)
+            if not handle.read(1):
+                handle.seek(0)
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+    def _run_migration_coordinator(self) -> None:
+        """Apply and verify each registered migration as an isolated outcome."""
+        with self._migration_lock():
+            self._ensure_migration_ledger()
+            with self._connection_scope() as conn:
+                self._verify_resolved_reconciliation_artifacts(conn)
+                unresolved = conn.execute("""SELECT 1 FROM schema_migration_events required
+                    WHERE required.event_type = 'RECONCILIATION_REQUIRED' AND required.rollback_status = 'UNKNOWN'
+                      AND NOT EXISTS (SELECT 1 FROM schema_migration_events resolved
+                        WHERE resolved.attempt_id = required.attempt_id
+                          AND resolved.event_type = 'RECONCILIATION_RESOLVED') LIMIT 1""").fetchone()
+                if unresolved and not getattr(self, "_allow_unresolved_reconciliation", False):
+                    raise RuntimeError("migration reconciliation required: unresolved migration attempt is blocking startup")
+                has_schema = conn.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'"
+                ).fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+                ).fetchone()
+                applied = {int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations").fetchall()} if has_schema else set()
+                known_versions = {spec.version for spec in MIGRATION_REGISTRY}
+                unknown_versions = applied - known_versions
+                if unknown_versions:
+                    raise RuntimeError(f"schema migration versions {sorted(unknown_versions)} are not registered; operator reconciliation required")
+                if applied and applied != set(range(1, max(applied) + 1)):
+                    raise RuntimeError("schema migration versions are not contiguous; operator reconciliation required")
+                completed = {
+                    int(row["migration_version"]): row for row in conn.execute(
+                        "SELECT migration_version, migration_id, registry_revision, migration_checksum, "
+                        "event_type FROM schema_migration_events WHERE event_type = 'SUCCEEDED'"
+                    ).fetchall()
+                }
+                if applied and any(version not in completed for version in applied):
+                    raise RuntimeError("legacy aggregate migration history requires explicit operator reconciliation before startup")
+                for spec in MIGRATION_REGISTRY:
+                    success = completed.get(spec.version)
+                    if success is not None and (
+                        success["migration_id"] != spec.migration_id
+                        or success["registry_revision"] != spec.registry_revision
+                        or success["migration_checksum"] != spec.checksum
+                    ):
+                        raise RuntimeError(f"migration v{spec.version} success identity does not match the registry")
+            for spec in MIGRATION_REGISTRY:
+                if spec.version in applied:
+                    if spec.version not in completed:
+                        raise RuntimeError(f"migration v{spec.version} is applied without a durable SUCCEEDED event")
+                    continue
+                self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
+                self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
+                self._migration_spec = spec
+                backend_key = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+                self._migration_transaction_id = f"txp-{uuid.uuid4().hex}-{spec.apply_artifact[backend_key].split(':', 1)[1]}"
+                self._migration_started_durable = False
+                self._migration_coordinator_active = True
+                try:
+                    self._record_migration_event(spec, "STARTED", 1, "PENDING")
+                    self._migration_started_durable = True
+                    if spec.apply is None:
+                        raise RuntimeError(f"migration v{spec.version} has no registered apply operation")
+                    self._verify_forward_apply_artifact(spec)
+                    spec.apply(self)
+                    with self._connection_scope() as conn:
+                        if spec.verify is None:
+                            raise RuntimeError(f"migration v{spec.version} has no registered verifier")
+                        spec.verify(self, conn)
+                    self._record_migration_event(spec, "SUCCEEDED", 2, "NOT_APPLICABLE")
+                    applied.add(spec.version)
+                except Exception:
+                    raise
+                finally:
+                    self._migration_coordinator_active = False
+                    self._migration_started_durable = False
+            self._migration_attempt_id = None
+            self._migration_transaction_id = None
+            self._migration_spec = None
+
+    def _verify_forward_apply_artifact(self, spec) -> None:
+        """Bind execution to the reviewed forward-apply implementation."""
+        implementation = getattr(DatabaseManager, "_init_db", None)
+        if implementation is None:
+            raise RuntimeError("migration forward-apply implementation is unavailable")
+        backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        dispatcher = getattr(DatabaseManager, "_apply_migration_version", None)
+        if dispatcher is None:
+            raise RuntimeError("migration version dispatcher is unavailable")
+        material = "\n".join((
+            inspect.getsource(implementation),
+            inspect.getsource(dispatcher),
+            FORWARD_APPLY_ARTIFACT_REVISION,
+            json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
+            backend,
+        )).encode("utf-8")
+        actual = "sha256:" + hashlib.sha256(material).hexdigest()
+        expected = spec.apply_artifact.get(backend) if isinstance(spec.apply_artifact, dict) else None
+        if actual != expected or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version, {}).get(backend):
+            raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
+
+    def _validate_migration_event_provenance(self, row, spec, context: dict) -> None:
+        """Validate the immutable provenance format bound to a ledger event."""
+        transaction_context_id = str(row["transaction_context_id"])
+        backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        selected_artifact = spec.apply_artifact.get(backend)
+        if transaction_context_id.startswith("txp-"):
+            match = re.fullmatch(r"txp-([0-9a-f]{32})-([0-9a-f]{64})", transaction_context_id)
+            if match is None or match.group(2) != selected_artifact.split(":", 1)[1]:
+                raise RuntimeError("migration ledger transaction provenance identity is invalid")
+            if (
+                context.get("coordinator") != "registry"
+                or
+                context.get("provenance_format") != "registry-coordinator-v2"
+                or context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
+                or context.get("apply_artifact") != selected_artifact
+                or context.get("apply_artifacts") != spec.apply_artifact
+                or context.get("apply_manifest") != spec.apply_manifest
+                or context.get("backend_policy") != spec.backend_policy
+            ):
+                raise RuntimeError("migration ledger row forward-apply provenance drifted")
+            return
+        if re.fullmatch(r"tx-[0-9a-f]{32}", transaction_context_id) is None:
+            raise RuntimeError("migration ledger transaction context format is invalid")
+        new_claim_keys = {"provenance_format", "apply_artifact_revision", "apply_artifact", "apply_artifacts", "apply_manifest", "backend_policy"}
+        if new_claim_keys & set(context):
+            raise RuntimeError("legacy migration event contains partial forward-apply provenance")
+
+    def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
+        error_class = type(exc).__name__ if exc else None
+        error_message = str(exc)[:500] if exc else None
+        with self._connection_scope() as conn:
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 error_class,error_message,context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, spec.version,
+                spec.migration_id, spec.name, spec.registry_revision, sequence, event_type,
+                utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                self._migration_schema_name, spec.previous_version, spec.target_version, spec.checksum,
+                "database-startup", self._migration_transaction_id, error_class, error_message,
+                json.dumps({
+                    "coordinator": "registry",
+                    "provenance_format": "registry-coordinator-v2",
+                    "migration_version": spec.version,
+                    "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
+                    "apply_artifact": spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"),
+                    "apply_artifacts": spec.apply_artifact,
+                    "apply_manifest": spec.apply_manifest,
+                    "backend_policy": spec.backend_policy,
+                }, sort_keys=True, separators=(",", ":")),
+                rollback_status))
+
+    def _ensure_migration_ledger(self) -> None:
+        """Bootstrap the independent migration-event ledger before schema work."""
+        with self._connection_scope() as conn:
+            if isinstance(self, PostgresDatabaseManager):
+                ledger_exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchone() is not None
+            else:
+                ledger_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone() is not None
+            conn.execute("""CREATE TABLE IF NOT EXISTS schema_migration_events (
+                event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
+                migration_id TEXT NOT NULL, migration_name TEXT NOT NULL, registry_revision TEXT NOT NULL,
+                event_sequence INTEGER NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED','RECONCILIATION_RESOLVED')),
+                event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
+                schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
+                migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
+                error_code TEXT, error_class TEXT, error_message TEXT, context_json TEXT NOT NULL DEFAULT '{}',
+                rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
+                UNIQUE (attempt_id, event_type), UNIQUE (attempt_id, event_sequence)
+            )""")
+            if ledger_exists:
+                existing = {r["column_name"] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchall()} if isinstance(self, PostgresDatabaseManager) else {r["name"] for r in conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()}
+                if not {"migration_id", "registry_revision", "event_sequence"}.issubset(existing) or self._migration_ledger_requires_integrity_upgrade(conn):
+                    self._upgrade_migration_ledger_identity(conn, existing)
+                if not isinstance(self, PostgresDatabaseManager):
+                    legacy_index = conn.execute("SELECT 1 FROM pragma_index_list('schema_migration_events') WHERE name='uq_schema_migration_attempt_event'").fetchone()
+                    if legacy_index:
+                        cols = conn.execute("PRAGMA index_info('uq_schema_migration_attempt_event')").fetchall()
+                        if [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] != ["attempt_id", "event_type"]:
+                            raise RuntimeError("migration ledger legacy index identity is ambiguous; reconciliation required")
+                        conn.execute("DROP INDEX uq_schema_migration_attempt_event")
+                self._verify_migration_ledger(conn)
+                self._reconcile_orphaned_attempts(conn)
+                self._verify_migration_ledger(conn)
+                return
+            if isinstance(self, PostgresDatabaseManager):
+                conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
+                    LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
+                conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update_delete ON schema_migration_events")
+                conn.execute("""CREATE TRIGGER schema_migration_events_no_update_delete
+                    BEFORE UPDATE OR DELETE ON schema_migration_events FOR EACH ROW
+                    EXECUTE FUNCTION schema_migration_events_immutable()""")
+            else:
+                conn.executescript("""CREATE TRIGGER IF NOT EXISTS schema_migration_events_no_update
+                    BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;
+                    CREATE TRIGGER IF NOT EXISTS schema_migration_events_no_delete
+                    BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END;""")
+            self._verify_migration_ledger(conn)
+
+    def _upgrade_migration_ledger_identity(self, conn, existing_columns: set[str]) -> None:
+        """Add registry identity to a legacy ledger without losing its history.
+
+        The identity is derived only from the immutable numeric migration version
+        and the checked-in registry.  Unknown versions fail closed.  SQLite uses
+        a transactional table rebuild because it cannot add a NOT NULL column to
+        a populated table; PostgreSQL uses the equivalent constrained alteration.
+        """
+        specs_by_version = {spec.version: spec for spec in MIGRATION_REGISTRY}
+        rows = conn.execute("SELECT * FROM schema_migration_events ORDER BY event_id").fetchall()
+        identities = {}
+        sequence_by_event_id = {}
+        rows_by_attempt = {}
+        for row in rows:
+            version = int(row["migration_version"])
+            spec = specs_by_version.get(version)
+            if spec is None:
+                raise RuntimeError(f"migration ledger contains unknown migration version {version}; operator reconciliation required")
+            expected_backend = "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE"
+            if (
+                row["migration_name"] != spec.name
+                or row["migration_checksum"] != spec.checksum
+                or row["target_schema_version"] != spec.target_version
+                or row["previous_schema_version"] != spec.previous_version
+                or row["backend"] != expected_backend
+            ):
+                raise RuntimeError(
+                    f"migration ledger identity mismatch for version {version}; operator reconciliation required"
+                )
+            identities[row["event_id"]] = (spec.migration_id, spec.registry_revision)
+            rows_by_attempt.setdefault(row["attempt_id"], []).append(row)
+        event_order = {"STARTED": 1, "FAILED": 2, "SUCCEEDED": 2, "ROLLED_BACK": 3, "ROLLBACK_FAILED": 3}
+        for attempt_rows in rows_by_attempt.values():
+            ordered = sorted(attempt_rows, key=lambda row: (row["event_at"], event_order.get(row["event_type"], 99), row["event_id"]))
+            for sequence, row in enumerate(ordered, start=1):
+                sequence_by_event_id[row["event_id"]] = sequence
+
+        if isinstance(self, PostgresDatabaseManager):
+            if "migration_id" not in existing_columns:
+                conn.execute("ALTER TABLE schema_migration_events ADD COLUMN migration_id TEXT")
+            if "registry_revision" not in existing_columns:
+                conn.execute("ALTER TABLE schema_migration_events ADD COLUMN registry_revision TEXT")
+            if "event_sequence" not in existing_columns:
+                conn.execute("ALTER TABLE schema_migration_events ADD COLUMN event_sequence INTEGER")
+            conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update_delete ON schema_migration_events")
+            conn.execute("""CREATE OR REPLACE FUNCTION schema_migration_events_immutable() RETURNS trigger
+                LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'schema_migration_events is append-only'; END; $$""")
+            event_check = conn.execute("""SELECT conname FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events'
+                  AND c.contype = 'c' AND pg_get_constraintdef(c.oid) ILIKE '%EVENT_TYPE%'""").fetchall()
+            for row in event_check:
+                conn.execute(f"ALTER TABLE schema_migration_events DROP CONSTRAINT {_quote_postgres_identifier(row['conname'])}")
+            conn.execute("""ALTER TABLE schema_migration_events ADD CONSTRAINT ck_schema_migration_event_type
+                CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED','RECONCILIATION_RESOLVED'))""")
+            for event_id, (migration_id, registry_revision) in identities.items():
+                conn.execute("UPDATE schema_migration_events SET migration_id = ?, registry_revision = ?, event_sequence = ? WHERE event_id = ?", (migration_id, registry_revision, sequence_by_event_id[event_id], event_id))
+            conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN migration_id SET NOT NULL")
+            conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN registry_revision SET NOT NULL")
+            conn.execute("ALTER TABLE schema_migration_events ALTER COLUMN event_sequence SET NOT NULL")
+            if not self._migration_ledger_has_sequence_unique(conn):
+                conn.execute("ALTER TABLE schema_migration_events ADD CONSTRAINT uq_schema_migration_attempt_sequence UNIQUE (attempt_id, event_sequence)")
+            conn.execute("""CREATE TRIGGER schema_migration_events_no_update_delete
+                BEFORE UPDATE OR DELETE ON schema_migration_events FOR EACH ROW
+                EXECUTE FUNCTION schema_migration_events_immutable()""")
+            return
+
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_update")
+        conn.execute("DROP TRIGGER IF EXISTS schema_migration_events_no_delete")
+        conn.execute("ALTER TABLE schema_migration_events RENAME TO schema_migration_events_legacy_identity")
+        conn.execute("""CREATE TABLE schema_migration_events (
+            event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, migration_version INTEGER NOT NULL,
+            migration_id TEXT NOT NULL, migration_name TEXT NOT NULL, registry_revision TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL, event_type TEXT NOT NULL CHECK (event_type IN ('STARTED','SUCCEEDED','FAILED','ROLLED_BACK','ROLLBACK_FAILED','RECONCILIATION_REQUIRED','RECONCILIATION_RESOLVED')),
+            event_at TEXT NOT NULL, backend TEXT NOT NULL CHECK (backend IN ('SQLITE','POSTGRESQL')),
+            schema_name TEXT NOT NULL, previous_schema_version INTEGER, target_schema_version INTEGER NOT NULL,
+            migration_checksum TEXT NOT NULL, runner_identity TEXT NOT NULL, transaction_context_id TEXT NOT NULL,
+            error_code TEXT, error_class TEXT, error_message TEXT, context_json TEXT NOT NULL DEFAULT '{}',
+            rollback_status TEXT NOT NULL CHECK (rollback_status IN ('NOT_APPLICABLE','PENDING','CONFIRMED','FAILED','UNKNOWN')),
+            UNIQUE (attempt_id, event_type), UNIQUE (attempt_id, event_sequence)
+        )""")
+        columns = ["event_id", "attempt_id", "migration_version", "migration_id", "migration_name", "registry_revision", "event_sequence", "event_type", "event_at", "backend", "schema_name", "previous_schema_version", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "error_code", "error_class", "error_message", "context_json", "rollback_status"]
+        placeholders = ",".join("?" for _ in columns)
+        for row in rows:
+            values = [row[name] for name in columns if name not in {"migration_id", "registry_revision", "event_sequence"}]
+            migration_id, registry_revision = identities[row["event_id"]]
+            values = values[:3] + [migration_id] + values[3:4] + [registry_revision, sequence_by_event_id[row["event_id"]]] + values[4:]
+            conn.execute(f"INSERT INTO schema_migration_events ({','.join(columns)}) VALUES ({placeholders})", tuple(values))
+        conn.execute("DROP TABLE schema_migration_events_legacy_identity")
+        conn.execute("""CREATE TRIGGER schema_migration_events_no_update
+            BEFORE UPDATE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
+        conn.execute("""CREATE TRIGGER schema_migration_events_no_delete
+            BEFORE DELETE ON schema_migration_events BEGIN SELECT RAISE(ABORT, 'schema_migration_events is append-only'); END""")
+
+    def _migration_ledger_has_sequence_unique(self, conn) -> bool:
+        if isinstance(self, PostgresDatabaseManager):
+            row = conn.execute("""SELECT 1 FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events'
+                  AND c.contype = 'u' AND pg_get_constraintdef(c.oid) ILIKE '%(attempt_id, event_sequence)%'""").fetchone()
+            return row is not None
+        for index in conn.execute("PRAGMA index_list(schema_migration_events)").fetchall():
+            if index["unique"]:
+                columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["attempt_id", "event_sequence"]:
+                    return True
+        return False
+
+    def _migration_ledger_requires_integrity_upgrade(self, conn) -> bool:
+        """Detect post-column ledger constraint drift requiring a schema upgrade."""
+        if isinstance(self, PostgresDatabaseManager):
+            checks = conn.execute("""SELECT pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() AND t.relname = 'schema_migration_events' AND c.contype = 'c'""").fetchall()
+            event_sql = " ".join(str(row["definition"]) for row in checks)
+            event_check = "RECONCILIATION_REQUIRED" in event_sql and "RECONCILIATION_RESOLVED" in event_sql
+            return not event_check or not self._migration_ledger_has_sequence_unique(conn)
+        sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"]).upper()
+        return "RECONCILIATION_REQUIRED" not in sql or "RECONCILIATION_RESOLVED" not in sql or not self._migration_ledger_has_sequence_unique(conn)
+
+    def _reconcile_orphaned_attempts(self, conn) -> None:
+        """Persist an explicit terminal state for attempts left open by a crash."""
+        rows = conn.execute("SELECT * FROM schema_migration_events ORDER BY attempt_id, event_sequence").fetchall()
+        attempts = {}
+        for row in rows:
+            attempts.setdefault(row["attempt_id"], []).append(row)
+        backend = "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE"
+        for attempt_id, attempt_rows in attempts.items():
+            event_types = {row["event_type"] for row in attempt_rows}
+            if "STARTED" not in event_types or event_types & {"SUCCEEDED", "FAILED", "ROLLED_BACK", "ROLLBACK_FAILED", "RECONCILIATION_REQUIRED"}:
+                continue
+            started = next(row for row in attempt_rows if row["event_type"] == "STARTED")
+            next_sequence = max(int(row["event_sequence"]) for row in attempt_rows) + 1
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 error_code,error_class,error_message,context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", attempt_id, started["migration_version"], started["migration_id"],
+                started["migration_name"], started["registry_revision"], next_sequence, "RECONCILIATION_REQUIRED",
+                utc_now().isoformat(), backend, started["schema_name"], started["previous_schema_version"],
+                started["target_schema_version"], started["migration_checksum"], "database-startup",
+                started["transaction_context_id"], "MIGRATION_ATTEMPT_ORPHANED", "MigrationReconciliationRequired",
+                "migration attempt was left without a terminal outcome", '{"action":"operator_reconciliation_required"}', "UNKNOWN"))
+
+    def _begin_migration_attempt(self) -> None:
+        with self._connection_scope() as conn:
+            self._verify_resolved_reconciliation_artifacts(conn)
+            unresolved = conn.execute("""SELECT 1 FROM schema_migration_events required
+                WHERE required.event_type = 'RECONCILIATION_REQUIRED' AND required.rollback_status = 'UNKNOWN'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM schema_migration_events resolved
+                    WHERE resolved.attempt_id = required.attempt_id
+                      AND resolved.event_type = 'RECONCILIATION_RESOLVED'
+                  ) LIMIT 1""").fetchone()
+            if unresolved and not getattr(self, "_allow_unresolved_reconciliation", False):
+                raise RuntimeError("migration reconciliation required: unresolved migration attempt is blocking startup")
+            version_row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone() if (conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'").fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()) else None
+            if version_row and version_row["version"] is not None and int(version_row["version"]) >= 8:
+                terminal = conn.execute("SELECT 1 FROM schema_migration_events WHERE migration_version = ? AND event_type = 'SUCCEEDED' LIMIT 1", (int(version_row["version"]),)).fetchone()
+                if not terminal:
+                    raise RuntimeError("migration outcome reconciliation required: applied schema version has no durable SUCCEEDED event")
+                self._migration_attempt_id = None
+                self._migration_transaction_id = None
+                return
+        self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
+        self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
+        self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
+        self._migration_spec = MIGRATION_REGISTRY[-1]
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
+                self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
+                1, "STARTED", now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                self._migration_schema_name, self._migration_spec.previous_version, self._migration_spec.target_version,
+                self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "PENDING"))
+
+    def resolve_migration_reconciliation(
+        self,
+        attempt_id: str,
+        access_token: str,
+        resolution: str,
+        evidence: Dict[str, Any],
+        correlation_id: str,
+    ) -> None:
+        """Append an authorized operator resolution for one blocked attempt.
+
+        This method is available only on an explicitly opened reconciliation
+        manager.  Normal application startup cannot bypass unresolved markers.
+        The operator must record whether the migration was verified or aborted,
+        together with non-secret evidence suitable for later review.
+        """
+        if not getattr(self, "_allow_unresolved_reconciliation", False):
+            raise PermissionError("migration reconciliation requires explicit maintenance mode")
+        from app.core.auth import decode_access_token
+        try:
+            authorization_context = decode_access_token(access_token, revocation_store=self)
+        except Exception as exc:
+            raise PermissionError("migration reconciliation requires a valid signed administrator session") from exc
+        operator_id = str(authorization_context.get("sub", ""))
+        session_jti = str(authorization_context.get("jti", ""))
+        if (
+            not operator_id.strip()
+            or not session_jti.strip()
+            or authorization_context.get("iss") != "CyberAssess-Control-Plane"
+            or authorization_context.get("aud") != "CyberAssess-Platform"
+            or int(authorization_context.get("exp", 0)) <= int(time.time())
+            or int(authorization_context.get("nbf", 0)) > int(time.time())
+        ):
+            raise PermissionError("migration reconciliation requires an authenticated administrator session")
+        if resolution != "VERIFIED":
+            raise ValueError("migration reconciliation cannot unblock startup without independent verification")
+        if not isinstance(evidence, dict) or not evidence or len(evidence) > 20:
+            raise ValueError("migration reconciliation requires bounded structured evidence")
+        if not correlation_id.strip() or len(correlation_id) > 128:
+            raise ValueError("migration reconciliation requires a bounded correlation id")
+        if not evidence.get("ticket_id") or evidence.get("schema_verification") != "PASSED":
+            raise ValueError("verified reconciliation requires ticket_id and schema_verification=PASSED")
+        if len(json.dumps(evidence, ensure_ascii=True)) > 8192:
+            raise ValueError("migration reconciliation evidence exceeds the maximum size")
+        with self._connection_scope() as conn:
+            operator = conn.execute("SELECT role, is_active FROM users WHERE id = ?", (operator_id,)).fetchone()
+            if operator is None or operator["role"] != "ADMIN" or not operator["is_active"]:
+                raise PermissionError("migration reconciliation requires an active administrator")
+            if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (session_jti,)).fetchone() is not None:
+                raise PermissionError("migration reconciliation session is revoked")
+            schema_digest = self._verify_authoritative_schema_state(conn)
+            applied = [int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
+            if applied != list(range(1, len(MIGRATION_REGISTRY) + 1)):
+                raise RuntimeError("migration reconciliation requires independently verified contiguous schema versions")
+            required = conn.execute("""SELECT * FROM schema_migration_events
+                WHERE attempt_id = ? AND event_type = 'RECONCILIATION_REQUIRED'
+                  AND rollback_status = 'UNKNOWN'""", (attempt_id,)).fetchone()
+            if required is None:
+                raise ValueError("unresolved migration attempt was not found")
+            resolved = conn.execute("""SELECT 1 FROM schema_migration_events
+                WHERE attempt_id = ? AND event_type = 'RECONCILIATION_RESOLVED'""", (attempt_id,)).fetchone()
+            if resolved is not None:
+                raise ValueError("migration attempt has already been resolved")
+            next_sequence = conn.execute("SELECT MAX(event_sequence) AS sequence FROM schema_migration_events WHERE attempt_id = ?", (attempt_id,)).fetchone()["sequence"] + 1
+            context = json.dumps({"resolution": resolution, "correlation_id": correlation_id, "session_jti": session_jti, "attempt_id": attempt_id, "migration_version": required["migration_version"], "migration_id": required["migration_id"], "registry_revision": required["registry_revision"], "verifier_revision": MIGRATION_POSTCONDITION_REVISION, "schema_digest": schema_digest, "schema_version_vector": applied, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 error_code,error_class,error_message,context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", attempt_id, required["migration_version"], required["migration_id"],
+                required["migration_name"], required["registry_revision"], next_sequence, "RECONCILIATION_RESOLVED",
+                utc_now().isoformat(), required["backend"], required["schema_name"], required["previous_schema_version"],
+                required["target_schema_version"], required["migration_checksum"], operator_id, required["transaction_context_id"],
+                f"MIGRATION_RECONCILIATION_{resolution}", "MigrationReconciliationResolved", "operator reconciliation recorded",
+                context, "NOT_APPLICABLE"))
+
+    def _verify_authoritative_schema_state(self, conn) -> str:
+        """Verify required migration-owned structures before unblocking startup."""
+        required_tables = {"schema_migrations", "schema_migration_events", "users", "organizations", "execution_requests", "execution_runs", "execution_decisions", "execution_dispatch_intents"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()").fetchall()
+            actual_tables = {row["table_name"] for row in rows}
+        else:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            actual_tables = {row["name"] for row in rows}
+        if not required_tables.issubset(actual_tables):
+            raise RuntimeError("migration reconciliation requires independently verified application schema structures")
+        self._verify_migration_ledger(conn)
+        for spec in MIGRATION_REGISTRY:
+            if spec.verify is None:
+                raise RuntimeError(f"migration registry verifier is missing for version {spec.version}")
+            self._verify_forward_apply_artifact(spec)
+            method_name = f"_verify_migration_v{spec.version}_postconditions"
+            implementation = getattr(self, method_name, None)
+            if implementation is None or "sha256:" + hashlib.sha256(inspect.getsource(implementation).encode("utf-8")).hexdigest() != POSTCONDITION_SOURCE_SHA256.get(method_name):
+                raise RuntimeError(f"migration verifier artifact drifted for version {spec.version}")
+            spec.verify(self, conn)
+        return self._schema_postcondition_digest(conn)
+
+    def _schema_postcondition_digest(self, conn) -> str:
+        """Return a deterministic digest of the verified migration-owned schema."""
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("""SELECT table_name, column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns WHERE table_schema = current_schema()
+                ORDER BY table_name, ordinal_position""").fetchall()
+            objects = [tuple(row.values()) for row in rows]
+            constraints = conn.execute("""SELECT t.relname, c.conname, c.contype, pg_get_constraintdef(c.oid)
+                FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = current_schema() ORDER BY t.relname, c.conname""").fetchall()
+            objects.extend(tuple(row.values()) for row in constraints)
+            indexes = conn.execute("""SELECT tablename, indexname, indexdef FROM pg_indexes
+                WHERE schemaname = current_schema() ORDER BY tablename, indexname, indexdef""").fetchall()
+            objects.extend(tuple(row.values()) for row in indexes)
+            triggers = conn.execute("""SELECT t.relname, tg.tgname, pg_get_triggerdef(tg.oid),
+                    pg_get_functiondef(p.oid)
+                FROM pg_trigger tg JOIN pg_class t ON t.oid = tg.tgrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_proc p ON p.oid = tg.tgfoid
+                WHERE n.nspname = current_schema() AND NOT tg.tgisinternal
+                ORDER BY t.relname, tg.tgname""").fetchall()
+            objects.extend(tuple(row.values()) for row in triggers)
+            sequences = conn.execute("""SELECT sequence_name, data_type, start_value, minimum_value,
+                    maximum_value, increment FROM information_schema.sequences
+                WHERE sequence_schema = current_schema() ORDER BY sequence_name""").fetchall()
+            objects.extend(tuple(row.values()) for row in sequences)
+        else:
+            rows = conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name").fetchall()
+            objects = [tuple(row) for row in rows]
+            for table in sorted({row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}):
+                escaped_table = table.replace("'", "''")
+                table_info = conn.execute(f"PRAGMA table_info('{escaped_table}')").fetchall()
+                objects.extend((table, "column", row["name"], row["type"], row["notnull"], row["dflt_value"], row["pk"]) for row in table_info)
+        migration_rows = conn.execute("SELECT version, applied_at FROM schema_migrations ORDER BY version").fetchall()
+        applied_versions = [tuple(row) if not isinstance(self, PostgresDatabaseManager) else tuple(row.values()) for row in migration_rows]
+        ledger_rows = conn.execute("""SELECT event_id, attempt_id, migration_version, migration_id, migration_name,
+                registry_revision, event_sequence, event_type, event_at, backend, schema_name,
+                previous_schema_version, target_schema_version, migration_checksum, runner_identity,
+                transaction_context_id, error_code, error_class, error_message, rollback_status
+            FROM schema_migration_events
+            WHERE event_type NOT IN ('RECONCILIATION_REQUIRED', 'RECONCILIATION_RESOLVED')
+            ORDER BY attempt_id, event_sequence, event_id""").fetchall()
+        historical_events = [tuple(row) if not isinstance(self, PostgresDatabaseManager) else tuple(row.values()) for row in ledger_rows]
+        material = json.dumps({"revision": MIGRATION_POSTCONDITION_REVISION, "objects": objects, "applied_versions": applied_versions, "historical_events": historical_events}, sort_keys=True, default=str, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _verify_resolved_reconciliation_artifacts(self, conn) -> None:
+        resolved = conn.execute("SELECT * FROM schema_migration_events WHERE event_type = 'RECONCILIATION_RESOLVED'").fetchall()
+        for row in resolved:
+            try:
+                context = json.loads(row["context_json"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("migration reconciliation artifact context is invalid") from exc
+            if context.get("verifier_revision") != MIGRATION_POSTCONDITION_REVISION or not isinstance(context.get("schema_digest"), str):
+                raise RuntimeError("migration reconciliation artifact is missing verifier identity")
+            if context.get("attempt_id") != row["attempt_id"] or context.get("migration_version") != row["migration_version"] or context.get("migration_id") != row["migration_id"] or context.get("registry_revision") != row["registry_revision"]:
+                raise RuntimeError("migration reconciliation artifact identity does not match its ledger attempt")
+            applied = [int(item["version"]) for item in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
+            if context.get("schema_version_vector") != applied:
+                raise RuntimeError("migration reconciliation artifact schema version vector no longer matches")
+            if context["schema_digest"] != self._schema_postcondition_digest(conn):
+                raise RuntimeError("migration reconciliation schema digest no longer matches live schema")
+
+    def _record_migration_failure(self, exc: Exception) -> None:
+        if not getattr(self, "_migration_attempt_id", None) or not getattr(self, "_migration_started_durable", False):
+            return
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            spec = self._migration_spec
+            for event_type, rollback_status, sequence in (("FAILED", "FAILED", 2), ("ROLLBACK_FAILED", "FAILED", 3)):
+                conn.execute("""INSERT INTO schema_migration_events
+                    (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                     previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                     error_class,error_message,context_json,rollback_status)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                    f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
+                    self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
+                    sequence, event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                    self._migration_schema_name, spec.previous_version, spec.target_version,
+                    spec.checksum, "database-startup", self._migration_transaction_id,
+                    type(exc).__name__, str(exc)[:500], '{"coordinator":"registry","rollback":"not independently confirmed"}', rollback_status))
+
+    def _verify_migration_ledger(self, conn) -> None:
+        """Reject any existing migration ledger that cannot be trusted."""
+        required = {"event_id", "attempt_id", "migration_version", "migration_id", "migration_name", "registry_revision", "event_sequence", "event_type", "event_at", "backend", "schema_name", "previous_schema_version", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "error_code", "error_class", "error_message", "context_json", "rollback_status"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='schema_migration_events'").fetchall()
+            actual = {r["column_name"] for r in rows}
+            if actual != required:
+                raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
+            definitions = {r["column_name"]: (str(r["data_type"]).lower(), r["is_nullable"], r["column_default"]) for r in rows}
+            required_not_null = {"event_id", "attempt_id", "migration_version", "migration_id", "migration_name", "registry_revision", "event_sequence", "event_type", "event_at", "backend", "schema_name", "target_schema_version", "migration_checksum", "runner_identity", "transaction_context_id", "context_json", "rollback_status"}
+            for name in required:
+                expected_type = "integer" if name in {"migration_version", "event_sequence", "previous_schema_version", "target_schema_version"} else "text"
+                expected_default = "'{}'::text" if name == "context_json" else None
+                if definitions[name][0] != expected_type or ("NO" if name in required_not_null else "YES") != definitions[name][1] or definitions[name][2] != expected_default:
+                    raise RuntimeError("migration ledger column definitions drifted")
+            constraints = conn.execute("SELECT contype, convalidated FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'").fetchall()
+            if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "u") != 2 or sum(1 for r in constraints if r["contype"] == "c") != 3 or any(not r["convalidated"] for r in constraints):
+                raise RuntimeError("migration ledger constraints are not exact or validated")
+            identity = conn.execute("""SELECT c.contype, c.conkey, c.confkey, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'""").fetchall()
+            pk = [r for r in identity if r["contype"] == "p"]
+            uq = [r for r in identity if r["contype"] == "u"]
+            checks = {str(r["definition"]).upper().replace(" ", "") for r in identity if r["contype"] == "c"}
+            expected_checks = {
+                "CHECK((EVENT_TYPE=ANY(ARRAY['STARTED'::TEXT,'SUCCEEDED'::TEXT,'FAILED'::TEXT,'ROLLED_BACK'::TEXT,'ROLLBACK_FAILED'::TEXT,'RECONCILIATION_REQUIRED'::TEXT,'RECONCILIATION_RESOLVED'::TEXT])))",
+                "CHECK((BACKEND=ANY(ARRAY['SQLITE'::TEXT,'POSTGRESQL'::TEXT])))",
+                "CHECK((ROLLBACK_STATUS=ANY(ARRAY['NOT_APPLICABLE'::TEXT,'PENDING'::TEXT,'CONFIRMED'::TEXT,'FAILED'::TEXT,'UNKNOWN'::TEXT])))",
+            }
+            if len(pk) != 1 or len(uq) != 2 or not any("PRIMARYKEY(EVENT_ID)" == str(r["definition"]).upper().replace(" ", "") for r in pk) or not any("UNIQUE(ATTEMPT_ID,EVENT_TYPE)" == str(r["definition"]).upper().replace(" ", "") for r in uq) or not any("UNIQUE(ATTEMPT_ID,EVENT_SEQUENCE)" == str(r["definition"]).upper().replace(" ", "") for r in uq) or checks != expected_checks:
+                raise RuntimeError("migration ledger constraint identities drifted")
+            trigger = conn.execute("""SELECT tg.tgenabled, pg_get_triggerdef(tg.oid) AS trigger_def,
+                    pg_get_functiondef(p.oid) AS function_def
+                FROM pg_trigger tg JOIN pg_class t ON t.oid=tg.tgrelid
+                JOIN pg_proc p ON p.oid=tg.tgfoid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='schema_migration_events'
+                  AND NOT tg.tgisinternal AND tg.tgname='schema_migration_events_no_update_delete'""").fetchall()
+            if len(trigger) != 1 or trigger[0]["tgenabled"] != "O":
+                raise RuntimeError("migration ledger append-only trigger is absent or disabled")
+            trigger_def = "".join(str(trigger[0]["trigger_def"]).upper().split())
+            function_def = "".join(str(trigger[0]["function_def"]).upper().split())
+            if "BEFOREDELETEORUPDATEON" not in trigger_def or "SCHEMA_MIGRATION_EVENTS" not in trigger_def or "FOREACHROW" not in trigger_def or "EXECUTEFUNCTION" not in trigger_def or "SCHEMA_MIGRATION_EVENTS_IMMUTABLE" not in trigger_def or "AS$FUNCTION$BEGINRAISEEXCEPTION" not in function_def or "APPEND-ONLY" not in function_def or "TG_OP" in function_def or "RETURNOLD" in function_def or "RETURNNEW" in function_def:
+                raise RuntimeError("migration ledger append-only trigger definition drifted")
+        else:
+            rows = conn.execute("PRAGMA table_info(schema_migration_events)").fetchall()
+            if {r["name"] for r in rows} != required:
+                raise RuntimeError("migration ledger schema drifted; operator reconciliation required")
+            expected = {"event_id": ("text", False, None), "attempt_id": ("text", True, None), "migration_version": ("integer", True, None), "migration_id": ("text", True, None), "migration_name": ("text", True, None), "registry_revision": ("text", True, None), "event_sequence": ("integer", True, None), "event_type": ("text", True, None), "event_at": ("text", True, None), "backend": ("text", True, None), "schema_name": ("text", True, None), "previous_schema_version": ("integer", False, None), "target_schema_version": ("integer", True, None), "migration_checksum": ("text", True, None), "runner_identity": ("text", True, None), "transaction_context_id": ("text", True, None), "error_code": ("text", False, None), "error_class": ("text", False, None), "error_message": ("text", False, None), "context_json": ("text", True, "'{}'"), "rollback_status": ("text", True, None)}
+            actual = {r["name"]: (str(r["type"]).strip().lower(), bool(r["notnull"]), r["dflt_value"]) for r in rows}
+            if any(actual[n] != expected[n] for n in required):
+                raise RuntimeError("migration ledger column definitions drifted")
+            if sum(1 for r in rows if r["pk"] == 1) != 1 or next((r["name"] for r in rows if r["pk"] == 1), None) != "event_id":
+                raise RuntimeError("migration ledger primary key drifted")
+            unique = []
+            for index in conn.execute("PRAGMA index_list(schema_migration_events)").fetchall():
+                if index["unique"]:
+                    cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                    unique.append([c["name"] for c in sorted(cols, key=lambda c: c["seqno"])])
+            if unique.count(["attempt_id", "event_type"]) != 1 or unique.count(["attempt_id", "event_sequence"]) != 1 or unique.count(["event_id"]) != 1 or len(unique) != 3:
+                raise RuntimeError("migration ledger attempt/event uniqueness drifted")
+            sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schema_migration_events'").fetchone()["sql"].upper()
+            allowed_values = ("'STARTED'", "'SUCCEEDED'", "'FAILED'", "'ROLLED_BACK'", "'ROLLBACK_FAILED'", "'RECONCILIATION_REQUIRED'", "'RECONCILIATION_RESOLVED'", "'SQLITE'", "'POSTGRESQL'", "'NOT_APPLICABLE'", "'PENDING'", "'CONFIRMED'", "'UNKNOWN'")
+            if sql.count("CHECK (") != 3 or any(token not in sql for token in ("CHECK (EVENT_TYPE IN", "CHECK (BACKEND IN", "CHECK (ROLLBACK_STATUS IN")) or any(token not in sql for token in allowed_values):
+                raise RuntimeError("migration ledger CHECK constraints drifted")
+            triggers = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
+            if triggers != {"schema_migration_events_no_update", "schema_migration_events_no_delete"}:
+                raise RuntimeError("migration ledger append-only protection is absent")
+            trigger_sql = {r["name"]: "".join(str(r["sql"]).upper().split()) for r in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='schema_migration_events'").fetchall()}
+            for name, operation in (("schema_migration_events_no_update", "UPDATE"), ("schema_migration_events_no_delete", "DELETE")):
+                if trigger_sql.get(name) != f"CREATETRIGGER{name.upper()}BEFORE{operation}ONSCHEMA_MIGRATION_EVENTSBEGINSELECTRAISE(ABORT,'SCHEMA_MIGRATION_EVENTSISAPPEND-ONLY');END":
+                    raise RuntimeError("migration ledger append-only trigger definition drifted")
+        self._verify_migration_ledger_rows(conn)
+
+    def _verify_migration_ledger_rows(self, conn) -> None:
+        """Verify stored event identity and the allowable attempt state shape."""
+        specs_by_version = {spec.version: spec for spec in MIGRATION_REGISTRY}
+        expected_backend = "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE"
+        rows = conn.execute("SELECT * FROM schema_migration_events ORDER BY event_at, event_id").fetchall()
+        attempts = {}
+        for row in rows:
+            spec = specs_by_version.get(int(row["migration_version"]))
+            if spec is None:
+                raise RuntimeError("migration ledger contains an unknown migration version")
+            if (
+                row["migration_id"] != spec.migration_id
+                or row["registry_revision"] != spec.registry_revision
+                or row["migration_name"] != spec.name
+                or row["migration_checksum"] != spec.checksum
+                or row["previous_schema_version"] != spec.previous_version
+                or row["target_schema_version"] != spec.target_version
+                or row["backend"] != expected_backend
+                or row["event_sequence"] is None
+                or int(row["event_sequence"]) < 1
+                or not row["attempt_id"]
+                or not row["event_type"]
+                or not row["event_at"]
+                or not row["runner_identity"]
+                or not row["transaction_context_id"]
+            ):
+                raise RuntimeError("migration ledger row identity or provenance drifted")
+            try:
+                context = json.loads(row["context_json"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("migration ledger row context is not valid JSON") from exc
+            self._validate_migration_event_provenance(row, spec, context)
+            attempts.setdefault(row["attempt_id"], []).append(row)
+
+        for attempt_id, attempt_rows in attempts.items():
+            ordered_rows = sorted(attempt_rows, key=lambda row: int(row["event_sequence"]))
+            if [int(row["event_sequence"]) for row in ordered_rows] != list(range(1, len(ordered_rows) + 1)):
+                raise RuntimeError(f"migration attempt {attempt_id} has a non-contiguous event sequence")
+            first = ordered_rows[0]
+            if any(
+                row["migration_version"] != first["migration_version"]
+                or row["migration_id"] != first["migration_id"]
+                or row["registry_revision"] != first["registry_revision"]
+                or row["migration_name"] != first["migration_name"]
+                or row["migration_checksum"] != first["migration_checksum"]
+                or row["previous_schema_version"] != first["previous_schema_version"]
+                or row["target_schema_version"] != first["target_schema_version"]
+                or row["backend"] != first["backend"]
+                or row["schema_name"] != first["schema_name"]
+                or row["transaction_context_id"] != first["transaction_context_id"]
+                for row in ordered_rows[1:]
+            ):
+                raise RuntimeError(f"migration attempt {attempt_id} mixes migration identity or transaction context")
+            event_types = [row["event_type"] for row in ordered_rows]
+            if event_types.count("STARTED") != 1:
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid STARTED event count")
+            terminal_types = [event_type for event_type in event_types if event_type != "STARTED"]
+            if not terminal_types:
+                continue
+            if terminal_types not in (["SUCCEEDED"], ["FAILED"], ["FAILED", "ROLLED_BACK"], ["FAILED", "ROLLBACK_FAILED"], ["RECONCILIATION_REQUIRED"], ["RECONCILIATION_REQUIRED", "RECONCILIATION_RESOLVED"]):
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid terminal event sequence")
+            started = next(row for row in ordered_rows if row["event_type"] == "STARTED")
+            terminal = next(row for row in reversed(ordered_rows) if row["event_type"] != "STARTED")
+            if started["rollback_status"] != "PENDING":
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid STARTED rollback state")
+            expected_rollback = "NOT_APPLICABLE" if terminal["event_type"] in {"SUCCEEDED", "RECONCILIATION_RESOLVED"} else "UNKNOWN" if terminal["event_type"] == "RECONCILIATION_REQUIRED" else "CONFIRMED" if terminal["event_type"] == "ROLLED_BACK" else "FAILED" if terminal["event_type"] == "ROLLBACK_FAILED" else "CONFIRMED"
+            if terminal["rollback_status"] != expected_rollback:
+                raise RuntimeError(f"migration attempt {attempt_id} has an invalid terminal rollback state")
 
     def _get_connection(self) -> sqlite3.Connection:
         try:
@@ -252,7 +1094,517 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def _init_db(self) -> None:
+    def _verify_migration_v1_postconditions(self, conn) -> None:
+        self._verify_execution_run_tenant_binding_schema(conn)
+
+    def _verify_migration_v2_postconditions(self, conn) -> None:
+        self._verify_execution_run_tenant_binding_schema(conn)
+
+    def _verify_migration_v3_postconditions(self, conn) -> None:
+        self._verify_execution_snapshot_schema(conn)
+
+    def _verify_migration_v4_postconditions(self, conn) -> None:
+        self._verify_execution_authority_binding_schema(conn)
+
+    def _verify_migration_v5_postconditions(self, conn) -> None:
+        self._verify_execution_run_tenant_binding_schema(conn)
+
+    def _verify_migration_v6_postconditions(self, conn) -> None:
+        self._verify_execution_compatibility_schema(conn)
+
+    def _verify_migration_v7_postconditions(self, conn) -> None:
+        self._verify_execution_dispatch_base_schema(conn)
+
+    def _verify_migration_v8_postconditions(self, conn) -> None:
+        self._verify_execution_dispatch_schema(conn)
+
+    def _verify_migration_v9_postconditions(self, conn) -> None:
+        """Verify the one-time cleanup of the known duplicate parent index."""
+        self._verify_execution_run_tenant_binding_schema(conn)
+        if isinstance(self, PostgresDatabaseManager):
+            duplicate = conn.execute("SELECT 1 FROM pg_class i JOIN pg_namespace n ON n.oid=i.relnamespace WHERE n.nspname=current_schema() AND i.relname='uq_execution_requests_id_org' AND i.relkind='i'").fetchone()
+        else:
+            duplicate = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name='uq_execution_requests_id_org'").fetchone()
+        if duplicate:
+            raise RuntimeError("execution parent index repair did not remove the migration-owned duplicate")
+
+    def _verify_migration_v10_postconditions(self, conn) -> None:
+        """Verify the durable process-ownership and recovery foundation."""
+        ownership_required = {
+            "execution_id", "organization_id", "ownership_state", "container_type",
+            "container_identity", "root_process_id", "root_process_start_token",
+            "process_group_id", "session_id", "worker_generation", "launch_commit_state",
+            "no_process_proof", "identity_attestation", "correlation_id", "created_at",
+            "launched_at", "last_verified_at", "terminalized_at", "updated_at",
+        }
+        attempts_required = {
+            "attempt_id", "execution_id", "organization_id", "worker_identity",
+            "worker_generation", "attempt_number", "status", "cancellation_status",
+            "reason_code", "correlation_id", "requested_at", "started_at", "completed_at",
+            "next_retry_at", "error_code", "escalation_level", "health_reference",
+        }
+        state_required = {
+            "execution_id", "organization_id", "status", "owner", "lease_token",
+            "lease_expires_at", "worker_generation", "attempt_number", "last_outcome", "last_error",
+            "next_retry_at", "escalation_level", "updated_at",
+        }
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("""SELECT table_name, column_name FROM information_schema.columns
+                WHERE table_schema=current_schema() AND table_name IN
+                ('execution_process_ownership','execution_recovery_attempts','execution_recovery_state')""").fetchall()
+            by_table = {}
+            for row in rows:
+                by_table.setdefault(row["table_name"], set()).add(row["column_name"])
+        else:
+            by_table = {}
+            for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):
+                if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    raise RuntimeError(f"execution lifecycle migration v10 missing table {table}")
+                by_table[table] = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):
+                pk = [row["name"] for row in sorted(conn.execute(f"PRAGMA table_info({table})").fetchall(), key=lambda row: row["pk"]) if row["pk"]]
+                if table != "execution_recovery_attempts" and pk != ["execution_id", "organization_id"]:
+                    raise RuntimeError(f"execution lifecycle migration v10 {table} must use a tenant-bound composite key")
+        if not ownership_required.issubset(by_table.get("execution_process_ownership", set())):
+            raise RuntimeError("execution lifecycle migration v10 ownership schema is incomplete")
+        if not attempts_required.issubset(by_table.get("execution_recovery_attempts", set())):
+            raise RuntimeError("execution lifecycle migration v10 recovery-attempt schema is incomplete")
+        if not state_required.issubset(by_table.get("execution_recovery_state", set())):
+            raise RuntimeError("execution lifecycle migration v10 recovery-state schema is incomplete")
+        allowed_ownership = {"UNKNOWN", "NO_EXTERNAL_PROCESS", "EXTERNAL_PROCESS_GOVERNED", "LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED", "TERMINAL"}
+        allowed_launch = {"NOT_ATTEMPTED", "COMMITTED", "UNCERTAIN"}
+        allowed_status = {"REQUESTED", "IN_PROGRESS", "CONFIRMED_TERMINATED", "DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
+        for table, column, allowed in (
+            ("execution_process_ownership", "ownership_state", allowed_ownership),
+            ("execution_process_ownership", "launch_commit_state", allowed_launch),
+            ("execution_recovery_attempts", "status", allowed_status),
+            ("execution_recovery_state", "status", allowed_status),
+        ):
+            if isinstance(self, PostgresDatabaseManager):
+                invalid = conn.execute(f"SELECT 1 FROM {table} WHERE {column} IS NULL OR {column} NOT IN ({','.join('?' for _ in allowed)}) LIMIT 1", tuple(sorted(allowed))).fetchone()
+            else:
+                invalid = conn.execute(f"SELECT 1 FROM {table} WHERE {column} IS NULL OR {column} NOT IN ({','.join('?' for _ in allowed)}) LIMIT 1", tuple(sorted(allowed))).fetchone()
+            if invalid:
+                raise RuntimeError(f"execution lifecycle migration v10 found invalid {table}.{column} value")
+        if not isinstance(self, PostgresDatabaseManager):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='execution_recovery_attempts_immutable_update'").fetchone() is None:
+                raise RuntimeError("execution lifecycle migration v10 recovery-attempt immutability trigger is absent")
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='execution_recovery_attempts_immutable_delete'").fetchone() is None:
+                raise RuntimeError("execution lifecycle migration v10 recovery-attempt delete trigger is absent")
+            for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):
+                groups = {}
+                for row in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall():
+                    groups.setdefault(row["id"], []).append(row)
+                if not any(
+                    len(rows) == 2
+                    and sorted((item["seq"], item["from"], item["to"]) for item in rows)
+                    == [(0, "execution_id", "execution_id"), (1, "organization_id", "organization_id")]
+                    and all(item["table"] == "execution_runs" for item in rows)
+                    for rows in groups.values()
+                ):
+                    raise RuntimeError(f"execution lifecycle migration v10 {table} tenant foreign key is absent")
+        else:
+            constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+                WHERE t.relname IN ('execution_process_ownership','execution_recovery_attempts','execution_recovery_state')""").fetchall()
+            if any(not row["convalidated"] for row in constraints):
+                raise RuntimeError("execution lifecycle migration v10 contains an unvalidated constraint")
+            for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):
+                key = conn.execute("""SELECT array_agg(a.attname::text ORDER BY u.ordinality) AS columns
+                    FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+                    JOIN pg_namespace n ON n.oid=t.relnamespace
+                    JOIN unnest(i.indkey) WITH ORDINALITY u(attnum, ordinality) ON TRUE
+                    JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=u.attnum
+                    WHERE n.nspname=current_schema() AND t.relname=? AND i.indisprimary
+                    GROUP BY i.indexrelid""", (table,)).fetchall()
+                expected_key = ["attempt_id"] if table == "execution_recovery_attempts" else ["execution_id", "organization_id"]
+                if not any(list(row["columns"] or []) == expected_key for row in key):
+                    raise RuntimeError(f"execution lifecycle migration v10 {table} primary key is not tenant-bound as required")
+
+    def _verify_execution_dispatch_base_schema(self, conn) -> None:
+        """Verify only the pre-lease dispatch shape created by migration v7."""
+        required = {"execution_id", "organization_id", "state", "attempt_count", "created_at",
+                    "claimed_at", "completed_at", "last_error"}
+        forbidden = {"claimed_by", "claim_token", "lease_expires_at", "correlation_id"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("""SELECT column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'""").fetchall()
+            expected = {
+                "execution_id": ("text", "NO", None), "organization_id": ("text", "NO", None),
+                "state": ("text", "NO", "'PENDING'::text"), "attempt_count": ("integer", "NO", "0"),
+                "created_at": ("text", "NO", None), "claimed_at": ("text", "YES", None),
+                "completed_at": ("text", "YES", None), "last_error": ("text", "YES", None),
+            }
+            actual = {row["column_name"]: (str(row["data_type"]).lower(), row["is_nullable"], row["column_default"]) for row in rows}
+            if actual != expected:
+                raise RuntimeError("execution dispatch v7 column definitions drifted")
+            columns = set(actual)
+        else:
+            rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
+            expected = {
+                "execution_id": ("text", True, None), "organization_id": ("text", True, None),
+                "state": ("text", True, "'PENDING'"), "attempt_count": ("integer", True, "0"),
+                "created_at": ("text", True, None), "claimed_at": ("text", False, None),
+                "completed_at": ("text", False, None), "last_error": ("text", False, None),
+            }
+            actual = {row["name"]: (str(row["type"]).strip().lower(), bool(row["notnull"]), row["dflt_value"]) for row in rows}
+            if actual != expected:
+                raise RuntimeError("execution dispatch v7 column definitions drifted")
+            columns = set(actual)
+        if columns != required or columns & forbidden:
+            raise RuntimeError("execution dispatch v7 schema does not match its pre-lease target")
+        self._verify_execution_dispatch_constraints(conn, include_lease_columns=False)
+
+    def _verify_execution_dispatch_constraints(self, conn, include_lease_columns: bool) -> None:
+        """Verify dispatch keys/checks shared by v7 and v8."""
+        if isinstance(self, PostgresDatabaseManager):
+            constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents'""").fetchall()
+            definitions = {str(row["definition"]).upper().replace(" ", "") for row in constraints}
+            required_definitions = {
+                "PRIMARYKEY(EXECUTION_ID)",
+                "FOREIGNKEY(EXECUTION_ID,ORGANIZATION_ID)REFERENCESEXECUTION_RUNS(EXECUTION_ID,ORGANIZATION_ID)",
+                "FOREIGNKEY(ORGANIZATION_ID)REFERENCESORGANIZATIONS(ID)",
+                "CHECK((STATE=ANY(ARRAY['PENDING'::TEXT,'CLAIMED'::TEXT,'COMPLETED'::TEXT,'FAILED'::TEXT,'BLOCKED'::TEXT])))",
+                "CHECK((ATTEMPT_COUNT>=0))",
+            }
+            if any(not row["convalidated"] for row in constraints) or not required_definitions.issubset(definitions):
+                raise RuntimeError("execution dispatch schema contains an unvalidated constraint")
+            if sum(1 for row in constraints if row["contype"] == "p") != 1 or sum(1 for row in constraints if row["contype"] == "f") != 2 or sum(1 for row in constraints if row["contype"] == "c") != 2:
+                raise RuntimeError("execution dispatch schema constraint set drifted")
+        else:
+            sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"]).upper()
+            foreign_keys = {}
+            for row in conn.execute("PRAGMA foreign_key_list(execution_dispatch_intents)").fetchall():
+                foreign_keys.setdefault(row["id"], []).append(row)
+            exact_run = any(len(rows) == 2 and sorted((r["seq"], r["from"], r["to"]) for r in rows) == [(0, "execution_id", "execution_id"), (1, "organization_id", "organization_id")] and all(r["table"] == "execution_runs" for r in rows) for rows in foreign_keys.values())
+            exact_org = any(len(rows) == 1 and rows[0]["table"] == "organizations" and rows[0]["from"] == "organization_id" and rows[0]["to"] == "id" for rows in foreign_keys.values())
+            if sum(1 for row in conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall() if row["pk"] == 1) != 1 or not exact_run or not exact_org or "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
+                raise RuntimeError("execution dispatch v7 keys or checks drifted")
+
+    def _verify_execution_run_tenant_binding_schema(self, conn) -> None:
+        """Verify the v1/v2/v5 execution-run tenant binding postcondition."""
+        required_tables = {"execution_runs", "execution_requests", "organizations"}
+        if isinstance(self, PostgresDatabaseManager):
+            actual = {row["table_name"] for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()").fetchall()}
+            if not required_tables.issubset(actual):
+                raise RuntimeError("execution tenant-binding postcondition requires core tables")
+            parent = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                WHERE n.nspname = current_schema() AND t.relname = 'execution_requests'
+                  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord) = ARRAY['id','organization_id']::text[]""").fetchall()
+            binding = conn.execute("""SELECT COUNT(DISTINCT c.oid) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_class p ON p.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace JOIN pg_namespace pn ON pn.oid = p.relnamespace
+                JOIN unnest(c.conkey) WITH ORDINALITY local_cols(attnum, ord) ON TRUE
+                JOIN unnest(c.confkey) WITH ORDINALITY parent_cols(attnum, ord) ON parent_cols.ord = local_cols.ord
+                JOIN pg_attribute la ON la.attrelid = t.oid AND la.attnum = local_cols.attnum
+                JOIN pg_attribute pa ON pa.attrelid = p.oid AND pa.attnum = parent_cols.attnum
+                WHERE n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND t.relname = 'execution_runs' AND p.relname = 'execution_requests'
+                  AND c.contype = 'f' AND c.convalidated
+                GROUP BY c.oid HAVING array_agg(la.attname::text ORDER BY local_cols.ord) = ARRAY['request_id','organization_id']::text[]
+                  AND array_agg(pa.attname::text ORDER BY parent_cols.ord) = ARRAY['id','organization_id']::text[]""").fetchone()
+            run_unique = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                WHERE n.nspname = current_schema() AND t.relname = 'execution_runs'
+                  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord) = ARRAY['request_id','organization_id']::text[]""").fetchall()
+            if len(parent) != 1 or len(run_unique) != 1 or not binding or int(binding["count"]) != 1:
+                raise RuntimeError("execution tenant-binding postcondition is not exact")
+            return
+        parent = 0
+        for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
+            if index["unique"]:
+                cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                parent += [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["id", "organization_id"]
+        run_unique = 0
+        for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
+            if index["unique"]:
+                cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                run_unique += [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["request_id", "organization_id"]
+        groups = {}
+        for row in conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall():
+            groups.setdefault(row["id"], []).append(row)
+        binding = any(len(rows) == 2 and sorted((row["seq"], row["from"], row["to"]) for row in rows) == [(0, "request_id", "id"), (1, "organization_id", "organization_id")] and all(row["table"] == "execution_requests" for row in rows) for rows in groups.values())
+        if parent != 1 or run_unique != 1 or not binding:
+            raise RuntimeError("execution tenant-binding postcondition is not exact")
+
+    def _verify_execution_snapshot_schema(self, conn) -> None:
+        """Verify the immutable execution snapshot schema on every startup.
+
+        Migration history is evidence of an attempted change, not proof that
+        the live database still has the required definitions.  This check is
+        intentionally strict and fails closed when a column is missing or has
+        drifted in type, nullability, or default value.
+        """
+        expected = {
+            "approved_decision_id": ("text", False, None),
+            "target_policy_version": ("text", False, None),
+            "operation_policy_revision": ("text", False, None),
+            "request_fingerprint": ("text", False, None),
+            "operation_options_json": ("text", True, "'{}'"),
+            "resource_budget_json": ("text", True, "'{}'"),
+            "account_impact_budget_json": ("text", True, "'{}'"),
+            "credential_scope_json": ("text", True, "'{}'"),
+            "snapshot_completeness": ("text", True, "'LEGACY_SNAPSHOT_UNAVAILABLE'"),
+        }
+
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute(
+                """
+                SELECT a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS data_type,
+                       a.attnotnull AS not_null,
+                       pg_get_expr(d.adbin, d.adrelid) AS default_value
+                FROM pg_attribute a
+                JOIN pg_class t ON t.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                WHERE n.nspname = current_schema() AND t.relname = 'execution_runs'
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                """
+            ).fetchall()
+            actual = {
+                row["column_name"]: (
+                    str(row["data_type"]).lower(),
+                    bool(row["not_null"]),
+                    str(row["default_value"]).strip() if row["default_value"] is not None else None,
+                )
+                for row in rows
+            }
+            normalized_expected = {
+                name: (data_type, not_null, (f"{default}::text" if default else None))
+                for name, (data_type, not_null, default) in expected.items()
+            }
+        else:
+            rows = conn.execute("PRAGMA table_info('execution_runs')").fetchall()
+            actual = {
+                row["name"]: (
+                    str(row["type"]).strip().lower(),
+                    bool(row["notnull"]),
+                    str(row["dflt_value"]).strip() if row["dflt_value"] is not None else None,
+                )
+                for row in rows
+            }
+            normalized_expected = expected
+
+        missing = sorted(set(expected) - set(actual))
+        mismatched = {
+            name: {"expected": normalized_expected[name], "actual": actual.get(name)}
+            for name in expected
+            if name in actual and actual[name] != normalized_expected[name]
+        }
+        if missing or mismatched:
+            raise RuntimeError(
+                "execution_runs snapshot schema verification failed: "
+                f"missing={missing!r}, mismatched={mismatched!r}"
+            )
+
+    def _verify_execution_authority_binding_schema(self, conn) -> None:
+        """Require exactly one validated tenant-scoped decision relationship."""
+        if isinstance(self, PostgresDatabaseManager):
+            parent = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
+                  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid
+                HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
+            """).fetchall()
+            binding = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_class pt ON pt.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_decisions'
+                  AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND c.contype = 'f' AND c.convalidated
+                  AND c.conkey = ARRAY[
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'approved_decision_id'),
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'organization_id')]
+                  AND c.confkey = ARRAY[
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'id'),
+                      (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'organization_id')]
+            """).fetchall()
+            parent_count = len(parent)
+            binding_count = int(binding[0]["count"]) if binding else 0
+        else:
+            parent_count = 0
+            for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
+                if index["unique"] and not index["partial"]:
+                    columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                    if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                        parent_count += 1
+            grouped = {}
+            for row in conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall():
+                grouped.setdefault(row["id"], []).append(row)
+            binding_count = sum(
+                1 for rows in grouped.values()
+                if len(rows) == 2
+                and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                == [(0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")]
+                and all(row["table"] == "execution_decisions" for row in rows)
+            )
+        if parent_count != 1 or binding_count != 1:
+            raise RuntimeError(
+                "execution authority schema verification failed: "
+                f"expected one parent key and one decision binding, got {parent_count} and {binding_count}"
+            )
+
+    def _verify_execution_compatibility_schema(self, conn) -> None:
+        """Verify the v6 execution-plane columns on every startup."""
+        expected = {
+            "execution_decisions": {"consumed_at", "claim_owner", "claim_expires_at", "started_at", "claim_token"},
+            "execution_requests": {"approval_idempotency_key"},
+        }
+        missing = []
+        wrong_type = []
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute(
+                "SELECT table_name, column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns WHERE table_schema = current_schema() "
+                "AND table_name IN ('execution_decisions', 'execution_requests')"
+            ).fetchall()
+            actual = {(row["table_name"], row["column_name"]): row for row in rows}
+            for table, columns in expected.items():
+                for column in columns:
+                    row = actual.get((table, column))
+                    if not row:
+                        missing.append(f"{table}.{column}")
+                    elif str(row["data_type"]).lower() != "text" or row["is_nullable"] != "YES" or row["column_default"] is not None:
+                        wrong_type.append(f"{table}.{column}")
+        else:
+            for table, columns in expected.items():
+                rows = conn.execute(f"PRAGMA table_info('{table}')").fetchall()
+                actual = {row["name"]: row for row in rows}
+                for column in columns:
+                    row = actual.get(column)
+                    if not row:
+                        missing.append(f"{table}.{column}")
+                    elif str(row["type"]).strip().lower() != "text" or bool(row["notnull"]) or row["dflt_value"] is not None:
+                        wrong_type.append(f"{table}.{column}")
+        if missing or wrong_type:
+            raise RuntimeError(
+                "execution compatibility schema verification failed: "
+                f"missing={sorted(missing)!r}, mismatched={sorted(wrong_type)!r}"
+            )
+
+    def _verify_execution_dispatch_schema(self, conn) -> None:
+        """Fail closed if dispatch intents are not tenant-bound and lease-capable."""
+        required = {"execution_id", "organization_id", "state", "attempt_count", "created_at",
+                    "claimed_at", "completed_at", "last_error", "claimed_by", "claim_token",
+                    "lease_expires_at", "correlation_id"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("""SELECT column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'""").fetchall()
+            actual = {r["column_name"]: (str(r["data_type"]).lower(), r["is_nullable"], r["column_default"]) for r in rows}
+            expected = {name: ("integer" if name == "attempt_count" else "text", "NO" if name in {"execution_id", "organization_id", "state", "attempt_count", "created_at"} else "YES", "'PENDING'::text" if name == "state" else "0" if name == "attempt_count" else None) for name in required}
+            if set(actual) != required or any(actual[n] != expected[n] for n in required):
+                raise RuntimeError("execution dispatch schema columns drifted")
+            fk = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
+                  AND c.contype='f' AND c.convalidated
+                  AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='organization_id')]
+                  AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='organization_id')]""").fetchone()
+            if not fk or int(fk["count"]) != 1:
+                raise RuntimeError("execution dispatch schema requires exactly one tenant-bound foreign key")
+            legacy = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
+                  AND c.contype='f' AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='execution_id')]""").fetchone()
+            if legacy and int(legacy["count"]) != 0:
+                raise RuntimeError("execution dispatch schema contains a legacy single-column run foreign key")
+            parent = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON TRUE
+                JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
+                WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
+            if len(parent) != 1:
+                raise RuntimeError("execution dispatch schema lacks exact parent execution key")
+            constraints = conn.execute("""SELECT c.contype, c.convalidated, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents'""").fetchall()
+            if any(not r["definition"] or not r["contype"] for r in constraints):
+                raise RuntimeError("execution dispatch schema contains unreadable constraints")
+            if any(r["contype"] in {"p", "f", "c"} and not r["convalidated"] for r in constraints):
+                raise RuntimeError("execution dispatch schema contains an unvalidated constraint")
+            if sum(1 for r in constraints if r["contype"] == "p") != 1 or sum(1 for r in constraints if r["contype"] == "f") != 2 or sum(1 for r in constraints if r["contype"] == "c") != 2:
+                raise RuntimeError("execution dispatch schema constraint set drifted")
+            org_fk = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace JOIN pg_namespace pn ON pn.oid=p.relnamespace
+                WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+                  AND t.relname='execution_dispatch_intents' AND p.relname='organizations'
+                  AND c.contype='f' AND c.convalidated
+                  AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='organization_id')]
+                  AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='id')]""").fetchone()
+            if not org_fk or int(org_fk["count"]) != 1:
+                raise RuntimeError("execution dispatch schema lacks exact organization foreign key")
+            defs = [str(r["definition"]).upper().replace(' ', '') for r in constraints]
+            if sum(1 for r in constraints if r["contype"] == "p") != 1 or not any("PRIMARYKEY(EXECUTION_ID)" in d for d in defs):
+                raise RuntimeError("execution dispatch schema primary key drifted")
+            state_check = "CHECK((STATE=ANY(ARRAY['PENDING'::TEXT,'CLAIMED'::TEXT,'COMPLETED'::TEXT,'FAILED'::TEXT,'BLOCKED'::TEXT])))"
+            if sum(1 for d in defs if d == state_check) != 1:
+                raise RuntimeError("execution dispatch schema state constraint drifted")
+            if sum(1 for d in defs if d == "CHECK((ATTEMPT_COUNT>=0))") != 1:
+                raise RuntimeError("execution dispatch schema attempt constraint drifted")
+        else:
+            rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
+            expected = {
+                "execution_id": ("text", True, None), "organization_id": ("text", True, None),
+                "state": ("text", True, "'PENDING'"), "attempt_count": ("integer", True, "0"),
+                "created_at": ("text", True, None), "claimed_at": ("text", False, None),
+                "completed_at": ("text", False, None), "last_error": ("text", False, None),
+                "claimed_by": ("text", False, None), "claim_token": ("text", False, None),
+                "lease_expires_at": ("text", False, None), "correlation_id": ("text", False, None),
+            }
+            actual = {r["name"]: (str(r["type"]).strip().lower(), bool(r["notnull"]), r["dflt_value"]) for r in rows}
+            if set(actual) != required or any(actual[name] != expected[name] for name in required):
+                raise RuntimeError("execution dispatch schema columns drifted")
+            if sum(1 for r in rows if r["pk"] == 1) != 1 or next((r["name"] for r in rows if r["pk"] == 1), None) != "execution_id":
+                raise RuntimeError("execution dispatch schema primary key drifted")
+            sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"].upper()
+            if "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql or " OR " in sql:
+                raise RuntimeError("execution dispatch schema lacks state/attempt constraints")
+            parent_keys = []
+            for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
+                if index["unique"] and not index["partial"]:
+                    cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                    if [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["execution_id", "organization_id"]:
+                        parent_keys.append(index)
+            if len(parent_keys) != 1:
+                raise RuntimeError("execution dispatch schema lacks exact parent execution key")
+        grouped = {}
+        for row in conn.execute("PRAGMA foreign_key_list(execution_dispatch_intents)").fetchall() if not isinstance(self, PostgresDatabaseManager) else []:
+            grouped.setdefault(row["id"], []).append(row)
+        if not isinstance(self, PostgresDatabaseManager):
+            valid = any(len(v) == 2 and sorted((x["seq"], x["from"], x["to"]) for x in v) == [(0, "execution_id", "execution_id"), (1, "organization_id", "organization_id")] and all(x["table"] == "execution_runs" for x in v) for v in grouped.values())
+            org = any(len(v) == 1 and v[0]["from"] == "organization_id" and v[0]["to"] == "id" and v[0]["table"] == "organizations" for v in grouped.values())
+            if not valid or not org or len(grouped) != 2:
+                raise RuntimeError("execution dispatch schema contains unexpected foreign keys")
+
+    def _apply_migration_version(self, version: int) -> None:
+        if version not in {spec.version for spec in MIGRATION_REGISTRY}:
+            raise ValueError(f"unknown registered migration version {version}")
+        self._init_db(max_migration_version=version)
+
+    def _init_db(self, max_migration_version: Optional[int] = None) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
         with self._connection_scope() as conn:
             # 1. Ensure all tables exist
@@ -322,6 +1674,118 @@ class DatabaseManager:
                 token_hash TEXT,
                 revoked_at TEXT NOT NULL,
                 expires_at TEXT
+            );
+
+            -- Durable execution authorization decisions. Credential material
+            -- is never stored here; only its approved scope is recorded.
+            CREATE TABLE IF NOT EXISTS execution_decisions (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                project_id TEXT,
+                asset_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                authorization_decision_id TEXT NOT NULL,
+                target_policy_version TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                operation_family TEXT NOT NULL,
+                operation_options_json TEXT NOT NULL DEFAULT '{}',
+                operation_policy_revision TEXT NOT NULL,
+                approval_state TEXT NOT NULL,
+                approver_user_id TEXT NOT NULL,
+                session_jti TEXT NOT NULL,
+                worker_identity TEXT NOT NULL,
+                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                consumed_at TEXT,
+                claim_owner TEXT,
+                claim_expires_at TEXT,
+                started_at TEXT,
+                claim_token TEXT,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
+                FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
+                FOREIGN KEY (approver_user_id, organization_id) REFERENCES users(id, organization_id),
+                UNIQUE (id, organization_id)
+            );
+
+            -- Immutable request recorded before administrator approval.
+            CREATE TABLE IF NOT EXISTS execution_requests (
+                id TEXT PRIMARY KEY,
+                idempotency_key TEXT NOT NULL,
+                request_fingerprint TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                project_id TEXT,
+                asset_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                authorization_decision_id TEXT NOT NULL,
+                target_policy_version TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                operation_family TEXT NOT NULL,
+                operation_options_json TEXT NOT NULL DEFAULT '{}',
+                operation_policy_revision TEXT NOT NULL,
+                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                requested_by_user_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'REQUESTED',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                approved_decision_id TEXT,
+                approval_idempotency_key TEXT,
+                UNIQUE (organization_id, idempotency_key),
+                UNIQUE (id, organization_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (asset_id, organization_id) REFERENCES assets(id, organization_id),
+                FOREIGN KEY (project_id, organization_id) REFERENCES projects(id, organization_id),
+                FOREIGN KEY (requested_by_user_id, organization_id) REFERENCES users(id, organization_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_runs (
+                execution_id TEXT NOT NULL PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                approved_decision_id TEXT,
+                target_policy_version TEXT,
+                operation_policy_revision TEXT,
+                request_fingerprint TEXT,
+                operation_options_json TEXT NOT NULL DEFAULT '{}',
+                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE',
+                state TEXT NOT NULL,
+                worker_identity TEXT,
+                process_id INTEGER,
+                process_group_id TEXT,
+                assurance_state TEXT NOT NULL,
+                coverage_state TEXT NOT NULL,
+                reason_code TEXT,
+                evidence_ref TEXT,
+                correlation_id TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                UNIQUE (execution_id, organization_id),
+                FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
+                FOREIGN KEY (approved_decision_id, organization_id) REFERENCES execution_decisions(id, organization_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_dispatch_intents (
+                execution_id TEXT NOT NULL PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED', 'BLOCKED')),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                created_at TEXT NOT NULL,
+                claimed_at TEXT,
+                completed_at TEXT,
+                last_error TEXT,
+                FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
 
             -- Attack Surface Assets Inventory Table
@@ -456,6 +1920,13 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
             CREATE INDEX IF NOT EXISTS idx_occurrences_canonical ON finding_occurrences(canonical_finding_id);
             CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit_events(organization_id, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_execution_decisions_scope ON execution_decisions(organization_id, asset_id, tool_id, operation_family);
+            CREATE INDEX IF NOT EXISTS idx_execution_decisions_session ON execution_decisions(session_jti, revoked_at, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_execution_requests_scope ON execution_requests(organization_id, state, created_at);
+            CREATE INDEX IF NOT EXISTS idx_execution_runs_scope ON execution_runs(organization_id, state, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_id_org ON assets(id, organization_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -485,6 +1956,967 @@ class DatabaseManager:
                         raise
                     if "duplicate column name" not in str(exc).lower() and "already exists" not in str(exc).lower():
                         raise
+
+            # Versioned execution-run migration.  The execution plane uses one
+            # authorized request for one run; retries require a new request and
+            # approval.  Legacy SQLite tables are rebuilt only after a
+            # duplicate/orphan preflight so an upgrade cannot silently choose a
+            # winner or weaken tenant referential integrity.
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+            migration_version = 1
+            already_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (migration_version,)).fetchone()
+            if not already_applied:
+                duplicate = conn.execute("SELECT request_id, organization_id, COUNT(*) AS count FROM execution_runs GROUP BY request_id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                if duplicate:
+                    raise ValueError("execution_runs migration blocked: duplicate runs for one request require audited reconciliation before upgrade")
+                inconsistent = conn.execute("""
+                    SELECT r.execution_id
+                    FROM execution_runs r
+                    LEFT JOIN execution_requests q
+                      ON q.id = r.request_id AND q.organization_id = r.organization_id
+                    WHERE q.id IS NULL
+                    LIMIT 1
+                """).fetchone()
+                if inconsistent:
+                    raise ValueError("execution_runs migration blocked: orphaned or cross-tenant request reference requires audited reconciliation before upgrade")
+                if isinstance(self, PostgresDatabaseManager):
+                    duplicate = conn.execute("SELECT request_id, organization_id, COUNT(*) AS count FROM execution_runs GROUP BY request_id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                    if duplicate:
+                        raise ValueError("execution_runs PostgreSQL migration blocked: duplicate runs require audited reconciliation before upgrade")
+                    inconsistent = conn.execute("""
+                        SELECT r.execution_id
+                        FROM execution_runs r
+                        LEFT JOIN execution_requests q
+                          ON q.id = r.request_id AND q.organization_id = r.organization_id
+                        LEFT JOIN organizations o ON o.id = r.organization_id
+                        WHERE q.id IS NULL OR o.id IS NULL
+                        LIMIT 1
+                    """).fetchone()
+                    if inconsistent:
+                        raise ValueError("execution_runs PostgreSQL migration blocked: orphaned or cross-tenant reference requires audited reconciliation before upgrade")
+                    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                    constraints = conn.execute("""
+                        SELECT c.conname,
+                               array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                               array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                        JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                          ON parent_cols.ordinality = local_cols.ordinality
+                        JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+                        WHERE t.relname = 'execution_runs'
+                          AND pt.relname = 'execution_requests'
+                          AND n.nspname = current_schema()
+                          AND pn.nspname = current_schema()
+                          AND c.contype = 'f'
+                        GROUP BY c.conname
+                    """).fetchall()
+                    desired_columns = ["request_id", "organization_id"]
+                    desired_parent_columns = ["id", "organization_id"]
+                    has_desired = False
+                    for constraint in constraints:
+                        local_columns = list(constraint["local_columns"] or [])
+                        parent_columns = list(constraint["parent_columns"] or [])
+                        if local_columns == desired_columns and parent_columns == desired_parent_columns:
+                            has_desired = True
+                        elif local_columns == ["request_id"] and parent_columns == ["id"]:
+                            safe_name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
+                            conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    if not has_desired:
+                        conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
+                else:
+                    parent_indexes = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                    has_parent_unique = False
+                    for index in parent_indexes:
+                        if not index["unique"]:
+                            continue
+                        columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                        if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                            has_parent_unique = True
+                            break
+                    if not has_parent_unique:
+                        duplicate_parent = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_requests GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                        if duplicate_parent:
+                            raise ValueError("execution_runs migration blocked: execution_requests lacks a unique tenant parent key and contains duplicates")
+                    foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    grouped_foreign_keys = {}
+                    for row in foreign_key_rows:
+                        grouped_foreign_keys.setdefault(row["id"], []).append(row)
+                    has_composite_fk = any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_requests" for row in rows)
+                        for rows in grouped_foreign_keys.values()
+                    )
+                if not isinstance(self, PostgresDatabaseManager) and not has_composite_fk:
+                    conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy")
+                    conn.execute("""
+                        CREATE TABLE execution_runs (
+                            execution_id TEXT PRIMARY KEY,
+                            request_id TEXT NOT NULL,
+                            organization_id TEXT NOT NULL,
+                            approved_decision_id TEXT,
+                            target_policy_version TEXT,
+                            operation_policy_revision TEXT,
+                            request_fingerprint TEXT,
+                            operation_options_json TEXT NOT NULL DEFAULT '{}',
+                            resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                            account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                            credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                            snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE',
+                            state TEXT NOT NULL,
+                            worker_identity TEXT,
+                            process_id INTEGER,
+                            process_group_id TEXT,
+                            assurance_state TEXT NOT NULL,
+                            coverage_state TEXT NOT NULL,
+                            reason_code TEXT,
+                            evidence_ref TEXT,
+                            correlation_id TEXT,
+                            created_at TEXT NOT NULL,
+                            started_at TEXT,
+                            finished_at TEXT,
+                            FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
+                            FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                        )
+                    """)
+                    conn.execute("""
+                        INSERT INTO execution_runs (
+                            execution_id, request_id, organization_id, approved_decision_id,
+                            target_policy_version, operation_policy_revision, request_fingerprint,
+                            operation_options_json, resource_budget_json, account_impact_budget_json,
+                            credential_scope_json, snapshot_completeness, state,
+                            worker_identity, process_id, process_group_id,
+                            assurance_state, coverage_state, reason_code,
+                            evidence_ref, correlation_id, created_at, started_at,
+                            finished_at
+                        )
+                        SELECT execution_id, request_id, organization_id, NULL, NULL, NULL, NULL,
+                               '{}', '{}', '{}', '{}', 'LEGACY_SNAPSHOT_UNAVAILABLE', state,
+                               worker_identity, process_id, process_group_id,
+                               assurance_state, coverage_state, reason_code,
+                               evidence_ref, correlation_id, created_at, started_at,
+                               finished_at
+                        FROM execution_runs_legacy
+                    """)
+                    conn.execute("DROP TABLE execution_runs_legacy")
+                if not isinstance(self, PostgresDatabaseManager):
+                    postcondition_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    postcondition_groups = {}
+                    for row in postcondition_rows:
+                        postcondition_groups.setdefault(row["id"], []).append(row)
+                    if not any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_requests" for row in rows)
+                        for rows in postcondition_groups.values()
+                    ):
+                        raise ValueError("execution_runs migration failed postcondition: composite tenant foreign key is absent")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (migration_version, utc_now().isoformat()))
+            if max_migration_version == migration_version:
+                return
+
+            # Version 2 is an immutable remediation for databases that already
+            # recorded version 1 before PostgreSQL constraint reconciliation was
+            # idempotent.  It is intentionally separate from version 1 so an
+            # applied migration definition is never changed in place.
+            remediation_version = 2
+            remediation_applied = conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (remediation_version,)).fetchone()
+            if not remediation_applied:
+                if isinstance(self, PostgresDatabaseManager):
+                    duplicate_parent = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_requests GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                    if duplicate_parent:
+                        raise ValueError("execution_runs remediation blocked: duplicate execution request parent keys require audited reconciliation")
+                    constraints = conn.execute("""
+                        SELECT c.conname,
+                               array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                               array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                        JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                          ON parent_cols.ordinality = local_cols.ordinality
+                        JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+                        WHERE t.relname = 'execution_runs'
+                          AND pt.relname = 'execution_requests'
+                          AND n.nspname = current_schema()
+                          AND pn.nspname = current_schema()
+                          AND c.contype = 'f'
+                        GROUP BY c.conname
+                    """).fetchall()
+                    desired = []
+                    for constraint in constraints:
+                        local_columns = list(constraint["local_columns"] or [])
+                        parent_columns = list(constraint["parent_columns"] or [])
+                        if local_columns == ["request_id", "organization_id"] and parent_columns == ["id", "organization_id"]:
+                            desired.append(constraint)
+                        elif local_columns == ["request_id"] and parent_columns == ["id"]:
+                            safe_name = '"' + str(constraint["conname"]).replace('"', '""') + '"'
+                            conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    for duplicate_constraint in desired[1:]:
+                        safe_name = '"' + str(duplicate_constraint["conname"]).replace('"', '""') + '"'
+                        conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT IF EXISTS {safe_name}")
+                    if not desired:
+                        conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_request_tenant_fk FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id)")
+                    final_count = conn.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                          AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                          AND c.contype = 'f'
+                          AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id, organization_id)%'
+                    """).fetchone()
+                    if not final_count or final_count["count"] != 1:
+                        raise ValueError("execution_runs remediation failed postcondition: expected exactly one composite tenant foreign key")
+                else:
+                    foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    grouped_foreign_keys = {}
+                    for row in foreign_key_rows:
+                        grouped_foreign_keys.setdefault(row["id"], []).append(row)
+                    if not any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_requests" for row in rows)
+                        for rows in grouped_foreign_keys.values()
+                    ):
+                        raise ValueError("execution_runs remediation failed postcondition: version-1 schema has no exact composite tenant foreign key")
+                    parent_indexes = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                    has_parent_unique = False
+                    for index in parent_indexes:
+                        if not index["unique"]:
+                            continue
+                        index_name = str(index["name"]).replace("'", "''")
+                        columns = conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()
+                        if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                            has_parent_unique = True
+                            break
+                    if not has_parent_unique:
+                        raise ValueError("execution_runs remediation failed postcondition: tenant parent key is not unique")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (remediation_version, utc_now().isoformat()))
+            if max_migration_version == remediation_version:
+                return
+
+            # Version 3 binds each execution run to an immutable authority
+            # snapshot.  These fields are deliberately versioned with the
+            # execution schema; they are not part of the generic compatibility
+            # column loop above.
+            snapshot_migration_version = 3
+            snapshot_applied = conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (snapshot_migration_version,),
+            ).fetchone()
+            if not snapshot_applied:
+                snapshot_columns = [
+                    ("approved_decision_id", "TEXT"),
+                    ("target_policy_version", "TEXT"),
+                    ("operation_policy_revision", "TEXT"),
+                    ("request_fingerprint", "TEXT"),
+                    ("operation_options_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("resource_budget_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("account_impact_budget_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("credential_scope_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("snapshot_completeness", "TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE'"),
+                ]
+                for column, definition in snapshot_columns:
+                    savepoint = f"execution_snapshot_{column}"
+                    try:
+                        conn.execute(f"SAVEPOINT {savepoint}")
+                        conn.execute(f"ALTER TABLE execution_runs ADD COLUMN {column} {definition}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    except Exception as exc:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                        if "duplicate column name" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                            raise ValueError(f"execution snapshot migration failed for {column}") from exc
+                if isinstance(self, PostgresDatabaseManager):
+                    snapshot_count = conn.execute(
+                        "SELECT COUNT(*) AS count FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND table_name = 'execution_runs' "
+                        "AND column_name IN ('approved_decision_id', 'target_policy_version', 'operation_policy_revision', 'request_fingerprint', 'operation_options_json', 'resource_budget_json', 'account_impact_budget_json', 'credential_scope_json', 'snapshot_completeness')"
+                    ).fetchone()
+                else:
+                    snapshot_count = conn.execute(
+                        "SELECT COUNT(*) AS count FROM pragma_table_info('execution_runs') "
+                        "WHERE name IN ('approved_decision_id', 'target_policy_version', 'operation_policy_revision', 'request_fingerprint', 'operation_options_json', 'resource_budget_json', 'account_impact_budget_json', 'credential_scope_json', 'snapshot_completeness')"
+                    ).fetchone()
+                if not snapshot_count or snapshot_count["count"] != len(snapshot_columns):
+                    raise ValueError("execution snapshot migration failed postcondition: required columns are absent")
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (snapshot_migration_version, utc_now().isoformat()),
+                )
+            if max_migration_version == snapshot_migration_version:
+                return
+
+            # Version 4 binds an execution run's approved decision to the
+            # same tenant.  A nullable decision reference is retained for
+            # historical runs, but any populated reference must be valid.
+            authority_binding_version = 4
+            if not conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (authority_binding_version,),
+            ).fetchone():
+                orphan = conn.execute(
+                    """
+                    SELECT r.execution_id
+                    FROM execution_runs r
+                    LEFT JOIN execution_decisions d
+                      ON d.id = r.approved_decision_id
+                     AND d.organization_id = r.organization_id
+                    WHERE r.approved_decision_id IS NOT NULL AND d.id IS NULL
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if orphan:
+                    raise ValueError("execution authority migration blocked: orphaned or cross-tenant approved decision reference")
+                if not isinstance(self, PostgresDatabaseManager):
+                    interrupted = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs_legacy_binding'"
+                    ).fetchone()
+                    if interrupted:
+                        replacement = conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_runs'"
+                        ).fetchone()
+                        if not replacement:
+                            raise ValueError("execution authority migration recovery blocked: replacement execution_runs table is absent")
+                        self._verify_execution_snapshot_schema(conn)
+                        recovery_columns = (
+                            "execution_id", "request_id", "organization_id", "approved_decision_id",
+                            "target_policy_version", "operation_policy_revision", "request_fingerprint",
+                            "operation_options_json", "resource_budget_json", "account_impact_budget_json",
+                            "credential_scope_json", "snapshot_completeness", "state", "worker_identity",
+                            "process_id", "process_group_id", "assurance_state", "coverage_state", "reason_code",
+                            "evidence_ref", "correlation_id", "created_at", "started_at", "finished_at",
+                        )
+                        column_sql = ", ".join(recovery_columns)
+                        replacement_rows = conn.execute(
+                            f"SELECT {column_sql} FROM execution_runs ORDER BY execution_id"
+                        ).fetchall()
+                        backup_rows = conn.execute(
+                            f"SELECT {column_sql} FROM execution_runs_legacy_binding ORDER BY execution_id"
+                        ).fetchall()
+                        if [tuple(row) for row in replacement_rows] != [tuple(row) for row in backup_rows]:
+                            raise ValueError("execution authority migration recovery blocked: replacement rows differ from backup")
+                        conn.execute("DROP INDEX IF EXISTS uq_execution_runs_request")
+                        conn.execute("DROP INDEX IF EXISTS idx_execution_runs_scope")
+                        conn.execute("DROP TABLE execution_runs_legacy_binding")
+                if isinstance(self, PostgresDatabaseManager):
+                    parent_keys = conn.execute("""
+                        SELECT i.indexrelid
+                        FROM pg_index i
+                        JOIN pg_class t ON t.oid = i.indrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
+                          AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                        GROUP BY i.indexrelid
+                        HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
+                    """).fetchall()
+                    if not parent_keys:
+                        duplicate = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_decisions GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                        if duplicate:
+                            raise ValueError("execution authority migration blocked: duplicate decision parent tuples require audited reconciliation")
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                    elif len(parent_keys) > 1:
+                        raise ValueError("execution authority migration blocked: duplicate decision parent keys require audited reconciliation")
+                else:
+                    parent_keys = []
+                    for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
+                        if index["unique"] and not index["partial"]:
+                            columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                            if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                                parent_keys.append(index["name"])
+                    if len(parent_keys) > 1 and "uq_execution_decisions_id_org" in parent_keys:
+                        conn.execute("DROP INDEX uq_execution_decisions_id_org")
+                        parent_keys.remove("uq_execution_decisions_id_org")
+                    if not parent_keys:
+                        duplicate = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_decisions GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
+                        if duplicate:
+                            raise ValueError("execution authority migration blocked: duplicate decision parent tuples require audited reconciliation")
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                    elif len(parent_keys) > 1:
+                        raise ValueError("execution authority migration blocked: duplicate decision parent keys require audited reconciliation")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                if isinstance(self, PostgresDatabaseManager):
+                    existing = conn.execute("""
+                        SELECT COUNT(*) AS count
+                        FROM pg_constraint c
+                        JOIN pg_class t ON t.oid = c.conrelid
+                        JOIN pg_class pt ON pt.oid = c.confrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                        WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_decisions'
+                          AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                          AND c.contype = 'f' AND c.convalidated
+                          AND c.conkey = ARRAY[
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'approved_decision_id'),
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = t.oid AND attname = 'organization_id')]
+                          AND c.confkey = ARRAY[
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'id'),
+                              (SELECT attnum FROM pg_attribute WHERE attrelid = pt.oid AND attname = 'organization_id')]
+                    """).fetchone()
+                    if not existing or existing["count"] == 0:
+                        conn.execute(
+                            "ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_decision_tenant_fk "
+                            "FOREIGN KEY (approved_decision_id, organization_id) "
+                            "REFERENCES execution_decisions(id, organization_id)"
+                        )
+                    elif existing["count"] != 1:
+                        raise ValueError("execution authority migration blocked: duplicate decision tenant foreign keys")
+                else:
+                    foreign_keys = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                    grouped = {}
+                    for row in foreign_keys:
+                        grouped.setdefault(row["id"], []).append(row)
+                    has_binding = any(
+                        len(rows) == 2
+                        and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                        == [(0, "approved_decision_id", "id"), (1, "organization_id", "organization_id")]
+                        and all(row["table"] == "execution_decisions" for row in rows)
+                        for rows in grouped.values()
+                    )
+                    if not has_binding:
+                        conn.execute("ALTER TABLE execution_runs RENAME TO execution_runs_legacy_binding")
+                        conn.execute("""
+                            CREATE TABLE execution_runs (
+                                execution_id TEXT PRIMARY KEY, request_id TEXT NOT NULL,
+                                organization_id TEXT NOT NULL, approved_decision_id TEXT,
+                                target_policy_version TEXT, operation_policy_revision TEXT,
+                                request_fingerprint TEXT, operation_options_json TEXT NOT NULL DEFAULT '{}',
+                                resource_budget_json TEXT NOT NULL DEFAULT '{}',
+                                account_impact_budget_json TEXT NOT NULL DEFAULT '{}',
+                                credential_scope_json TEXT NOT NULL DEFAULT '{}',
+                                snapshot_completeness TEXT NOT NULL DEFAULT 'LEGACY_SNAPSHOT_UNAVAILABLE',
+                                state TEXT NOT NULL, worker_identity TEXT, process_id INTEGER,
+                                process_group_id TEXT, assurance_state TEXT NOT NULL,
+                                coverage_state TEXT NOT NULL, reason_code TEXT, evidence_ref TEXT,
+                                correlation_id TEXT, created_at TEXT NOT NULL, started_at TEXT,
+                                finished_at TEXT,
+                                FOREIGN KEY (request_id, organization_id) REFERENCES execution_requests(id, organization_id),
+                                FOREIGN KEY (approved_decision_id, organization_id) REFERENCES execution_decisions(id, organization_id),
+                                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                            )
+                        """)
+                        recovery_columns = (
+                            "execution_id", "request_id", "organization_id", "approved_decision_id",
+                            "target_policy_version", "operation_policy_revision", "request_fingerprint",
+                            "operation_options_json", "resource_budget_json", "account_impact_budget_json",
+                            "credential_scope_json", "snapshot_completeness", "state", "worker_identity",
+                            "process_id", "process_group_id", "assurance_state", "coverage_state", "reason_code",
+                            "evidence_ref", "correlation_id", "created_at", "started_at", "finished_at",
+                        )
+                        copy_columns = ", ".join(recovery_columns)
+                        conn.execute(
+                            f"INSERT INTO execution_runs ({copy_columns}) SELECT {copy_columns} FROM execution_runs_legacy_binding"
+                        )
+                        conn.execute("DROP TABLE execution_runs_legacy_binding")
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, organization_id)")
+                        conn.execute("CREATE INDEX idx_execution_runs_scope ON execution_runs(organization_id, state, created_at)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_execution_runs_scope ON execution_runs(organization_id, state, created_at)"
+                )
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (authority_binding_version, utc_now().isoformat()),
+                )
+            if max_migration_version == authority_binding_version:
+                return
+
+            # Version 5 removes only migration-owned objects from the
+            # superseded duplicate-producing v4 implementation.
+            cleanup_version = 5
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (cleanup_version,)).fetchone():
+                if isinstance(self, PostgresDatabaseManager):
+                    duplicate_parent = conn.execute("""
+                        SELECT COUNT(*) AS count FROM pg_index i
+                        JOIN pg_class t ON t.oid = i.indrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE t.relname = 'execution_decisions' AND n.nspname = current_schema()
+                          AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                        GROUP BY i.indexrelid
+                        HAVING array_agg(a.attname::text ORDER BY k.ordinality) = ARRAY['id', 'organization_id']::text[]
+                    """).fetchall()
+                    if len(duplicate_parent) > 1:
+                        conn.execute("DROP INDEX IF EXISTS uq_execution_decisions_id_org")
+                    duplicate_fk = conn.execute("SELECT COUNT(*) AS count FROM pg_constraint WHERE conrelid = 'execution_runs'::regclass AND confrelid = 'execution_decisions'::regclass AND conname = 'execution_runs_decision_tenant_fk'").fetchone()
+                    if duplicate_fk and duplicate_fk["count"] and len(duplicate_parent) > 1:
+                        conn.execute("ALTER TABLE execution_runs DROP CONSTRAINT execution_runs_decision_tenant_fk")
+                else:
+                    parent_keys = []
+                    for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
+                        if index["unique"] and not index["partial"]:
+                            columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                            if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                                parent_keys.append(index["name"])
+                    if len(parent_keys) > 1 and "uq_execution_decisions_id_org" in parent_keys:
+                        conn.execute("DROP INDEX uq_execution_decisions_id_org")
+                        parent_keys.remove("uq_execution_decisions_id_org")
+                    if not parent_keys:
+                        conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
+                    elif len(parent_keys) > 1:
+                        raise ValueError("execution authority cleanup blocked: unknown duplicate decision parent keys require audited reconciliation")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (cleanup_version, utc_now().isoformat()))
+            if max_migration_version == cleanup_version:
+                return
+
+            # Version 6 records the formerly generic execution-plane column
+            # upgrades as one auditable, idempotent migration.
+            execution_columns_version = 6
+            execution_columns = {
+                "execution_decisions": {
+                    "consumed_at": "TEXT",
+                    "claim_owner": "TEXT",
+                    "claim_expires_at": "TEXT",
+                    "started_at": "TEXT",
+                    "claim_token": "TEXT",
+                },
+                "execution_requests": {"approval_idempotency_key": "TEXT"},
+            }
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (execution_columns_version,)).fetchone():
+                for table, columns in execution_columns.items():
+                    for column, definition in columns.items():
+                        if isinstance(self, PostgresDatabaseManager):
+                            exists = conn.execute(
+                                "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+                                (table, column),
+                            ).fetchone()
+                        else:
+                            exists = conn.execute(
+                                f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?", (column,)
+                            ).fetchone()
+                        if not exists:
+                            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                        if isinstance(self, PostgresDatabaseManager):
+                            verified = conn.execute(
+                                "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+                                (table, column),
+                            ).fetchone()
+                        else:
+                            verified = conn.execute(
+                                f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?", (column,)
+                            ).fetchone()
+                        if not verified:
+                            raise RuntimeError(f"execution schema migration v6 failed postcondition for {table}.{column}")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (execution_columns_version, utc_now().isoformat()))
+            if max_migration_version == execution_columns_version:
+                return
+
+            dispatch_version = 7
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_version,)).fetchone():
+                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_dispatch_intents'").fetchone() if not isinstance(self, PostgresDatabaseManager) else conn.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'execution_dispatch_intents'").fetchone()
+                if not exists:
+                    conn.execute("""CREATE TABLE execution_dispatch_intents (
+                        execution_id TEXT NOT NULL PRIMARY KEY, organization_id TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED', 'BLOCKED')),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                        created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
+                        FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                        FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                    )""")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_version, utc_now().isoformat()))
+            if max_migration_version == dispatch_version:
+                return
+
+            dispatch_binding_version = 8
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_binding_version,)).fetchone():
+                # The composite parent key is required before SQLite will validate
+                # the tenant-bound foreign key during the compatibility rebuild.
+                if isinstance(self, PostgresDatabaseManager):
+                    parent_key = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+                        JOIN pg_namespace n ON n.oid=t.relnamespace JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
+                        WHERE n.nspname=current_schema() AND t.relname='execution_runs' AND i.indisunique AND i.indpred IS NULL AND i.indisvalid AND i.indisready
+                        GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord)=ARRAY['execution_id','organization_id']::text[]""").fetchall()
+                    if not parent_key:
+                        conn.execute("CREATE UNIQUE INDEX execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
+                else:
+                    parent_key = []
+                    for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
+                        if index["unique"] and not index["partial"]:
+                            columns = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                            if [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] == ["execution_id", "organization_id"]:
+                                parent_key.append(index)
+                    if not parent_key:
+                        conn.execute("CREATE UNIQUE INDEX execution_runs_execution_org_uq ON execution_runs(execution_id, organization_id)")
+                bad = conn.execute("""SELECT i.execution_id FROM execution_dispatch_intents i
+                    LEFT JOIN execution_runs r ON r.execution_id=i.execution_id AND r.organization_id=i.organization_id
+                    WHERE r.execution_id IS NULL LIMIT 1""").fetchone()
+                if bad:
+                    raise RuntimeError("dispatch migration v8 refused orphan or cross-tenant intent")
+                if isinstance(self, PostgresDatabaseManager):
+                    for column in ("claimed_by", "claim_token", "lease_expires_at", "correlation_id"):
+                        if not conn.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents' AND column_name=?", (column,)).fetchone():
+                            conn.execute(f"ALTER TABLE execution_dispatch_intents ADD COLUMN {column} TEXT")
+                    fk_count = conn.execute("""SELECT COUNT(DISTINCT c.oid) AS count FROM pg_constraint c
+                        JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
+                        JOIN pg_namespace n ON n.oid=t.relnamespace
+                        WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
+                        AND c.contype='f' AND c.convalidated AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=t.oid AND attname='organization_id')]
+                        AND c.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='execution_id'),(SELECT attnum FROM pg_attribute WHERE attrelid=p.oid AND attname='organization_id')]""").fetchone()
+                    if int(fk_count["count"]) == 0:
+                        conn.execute("ALTER TABLE execution_dispatch_intents ADD CONSTRAINT execution_dispatch_intents_run_org_fkey FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id)")
+                    elif int(fk_count["count"]) > 1:
+                        raise RuntimeError("dispatch migration v8 found duplicate tenant-bound foreign keys")
+                else:
+                    # Never delete an ambiguous recovery artifact.  A prior
+                    # interrupted migration must be reconciled explicitly.
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents_v8'").fetchone():
+                        raise RuntimeError("dispatch migration v8 found an existing recovery artifact; manual reconciliation required")
+                    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()}
+                    partial_columns = existing_columns & {"claimed_by", "claim_token", "lease_expires_at", "correlation_id"}
+                    if partial_columns:
+                        raise RuntimeError(f"dispatch migration v8 found partial lease columns: {sorted(partial_columns)!r}")
+                    conn.execute("""CREATE TABLE execution_dispatch_intents_v8 (
+                        execution_id TEXT NOT NULL PRIMARY KEY, organization_id TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING','CLAIMED','COMPLETED','FAILED','BLOCKED')),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                        created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, last_error TEXT,
+                        claimed_by TEXT, claim_token TEXT, lease_expires_at TEXT, correlation_id TEXT,
+                        FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                        FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                    )""")
+                    conn.execute("""INSERT INTO execution_dispatch_intents_v8
+                        (execution_id,organization_id,state,attempt_count,created_at,claimed_at,completed_at,last_error)
+                        SELECT execution_id,organization_id,state,attempt_count,created_at,claimed_at,completed_at,last_error
+                        FROM execution_dispatch_intents""")
+                    conn.execute("DROP TABLE execution_dispatch_intents")
+                    conn.execute("ALTER TABLE execution_dispatch_intents_v8 RENAME TO execution_dispatch_intents")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_binding_version, utc_now().isoformat()))
+            if max_migration_version == dispatch_binding_version:
+                return
+
+            # Version 9 is an immutable repair for deployments that already
+            # recorded v5 before the duplicate parent-index cleanup existed.
+            repair_version = 9
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (repair_version,)).fetchone():
+                if isinstance(self, PostgresDatabaseManager):
+                    legacy_index = conn.execute("""SELECT i.relname, x.indisunique, x.indpred,
+                        x.indisvalid, x.indisready, x.indnkeyatts, x.indnatts,
+                        array_agg(a.attname ORDER BY key_cols.ordinality) AS columns,
+                        EXISTS (SELECT 1 FROM pg_constraint pc WHERE pc.conindid = i.oid) AS constraint_backed
+                        FROM pg_class i
+                        JOIN pg_index x ON x.indexrelid = i.oid
+                        JOIN pg_class t ON t.oid = x.indrelid
+                        JOIN pg_namespace n ON n.oid = t.relnamespace
+                        JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
+                        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
+                        WHERE n.nspname = current_schema() AND t.relname = 'execution_requests'
+                          AND i.relname = 'uq_execution_requests_id_org'
+                        GROUP BY i.oid, x.indisunique, x.indpred, x.indisvalid,
+                                 x.indisready, x.indnkeyatts, x.indnatts""").fetchone()
+                    if legacy_index is not None:
+                        if (
+                            not legacy_index["indisunique"] or legacy_index["indpred"] is not None
+                            or not legacy_index["indisvalid"] or not legacy_index["indisready"]
+                            or legacy_index["indnkeyatts"] != 2 or legacy_index["indnatts"] != 2
+                            or list(legacy_index["columns"]) != ["id", "organization_id"]
+                            or legacy_index["constraint_backed"]
+                        ):
+                            raise ValueError("execution request parent index repair found an ambiguous PostgreSQL artifact")
+                        conn.execute("DROP INDEX uq_execution_requests_id_org")
+                else:
+                    legacy_request_index = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone()
+                    if legacy_request_index:
+                        metadata = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                        known = next(row for row in metadata if row["name"] == "uq_execution_requests_id_org")
+                        columns = conn.execute("PRAGMA index_info('uq_execution_requests_id_org')").fetchall()
+                        if not known["unique"] or known["partial"] or [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] != ["id", "organization_id"]:
+                            raise ValueError("execution request parent index repair found an ambiguous migration-owned artifact")
+                        conn.execute("DROP INDEX uq_execution_requests_id_org")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (repair_version, utc_now().isoformat()))
+            if max_migration_version == repair_version:
+                return
+
+            process_lifecycle_version = 10
+            lifecycle_tables = (
+                "execution_process_ownership",
+                "execution_recovery_attempts",
+                "execution_recovery_state",
+            )
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (process_lifecycle_version,)).fetchone():
+                existing = []
+                for table in lifecycle_tables:
+                    exists = conn.execute(
+                        "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?"
+                        if isinstance(self, PostgresDatabaseManager)
+                        else "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                        (table,),
+                    ).fetchone()
+                    if exists:
+                        existing.append(table)
+                if existing:
+                    raise RuntimeError(
+                        f"execution lifecycle migration v10 found pre-existing lifecycle artifacts {existing!r}; manual reconciliation required"
+                    )
+                conn.execute("""CREATE TABLE execution_process_ownership (
+                    execution_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    ownership_state TEXT NOT NULL CHECK (ownership_state IN ('UNKNOWN','NO_EXTERNAL_PROCESS','EXTERNAL_PROCESS_GOVERNED','LAUNCH_UNCERTAIN','RECOVERY_BLOCKED','TERMINAL')),
+                    container_type TEXT NOT NULL CHECK (container_type IN ('NONE','POSIX_SESSION','WINDOWS_JOB','PROCESS_SET')),
+                    container_identity TEXT,
+                    root_process_id INTEGER,
+                    root_process_start_token TEXT,
+                    process_group_id TEXT,
+                    session_id TEXT,
+                    worker_generation TEXT,
+                    launch_commit_state TEXT NOT NULL CHECK (launch_commit_state IN ('NOT_ATTEMPTED','COMMITTED','UNCERTAIN')),
+                    no_process_proof TEXT,
+                    identity_attestation TEXT,
+                    correlation_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    launched_at TEXT,
+                    last_verified_at TEXT,
+                    terminalized_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, organization_id),
+                    FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                )""")
+                conn.execute("""CREATE TABLE execution_recovery_attempts (
+                    attempt_id TEXT NOT NULL PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    worker_identity TEXT NOT NULL,
+                    worker_generation TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+                    status TEXT NOT NULL CHECK (status IN ('REQUESTED','IN_PROGRESS','CONFIRMED_TERMINATED','DEFERRED','FAILED','ESCALATED','EXHAUSTED')),
+                    cancellation_status TEXT,
+                    reason_code TEXT NOT NULL,
+                    correlation_id TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    next_retry_at TEXT,
+                    error_code TEXT,
+                    escalation_level INTEGER NOT NULL DEFAULT 0 CHECK (escalation_level >= 0),
+                    health_reference TEXT,
+                    FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                )""")
+                conn.execute("""CREATE TABLE execution_recovery_state (
+                    execution_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('REQUESTED','IN_PROGRESS','CONFIRMED_TERMINATED','DEFERRED','FAILED','ESCALATED','EXHAUSTED')),
+                    owner TEXT,
+                    lease_token TEXT,
+                    lease_expires_at TEXT,
+                    worker_generation TEXT,
+                    attempt_number INTEGER NOT NULL DEFAULT 0 CHECK (attempt_number >= 0),
+                    last_outcome TEXT,
+                    last_error TEXT,
+                    next_retry_at TEXT,
+                    escalation_level INTEGER NOT NULL DEFAULT 0 CHECK (escalation_level >= 0),
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, organization_id),
+                    FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                )""")
+                conn.execute("CREATE INDEX execution_process_ownership_state_idx ON execution_process_ownership(organization_id, ownership_state, updated_at)")
+                conn.execute("CREATE INDEX execution_recovery_state_retry_idx ON execution_recovery_state(organization_id, status, next_retry_at)")
+                conn.execute("""INSERT INTO execution_process_ownership
+                    (execution_id, organization_id, ownership_state, container_type,
+                     launch_commit_state, correlation_id, created_at, updated_at)
+                    SELECT r.execution_id, r.organization_id, 'UNKNOWN', 'NONE',
+                           'NOT_ATTEMPTED', COALESCE(r.correlation_id, 'corr-reconciliation-' || r.execution_id),
+                           r.created_at, r.created_at
+                    FROM execution_runs r
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM execution_process_ownership p
+                        WHERE p.execution_id = r.execution_id AND p.organization_id = r.organization_id
+                    )""")
+                conn.execute("""INSERT INTO execution_recovery_state
+                    (execution_id, organization_id, status, attempt_number, escalation_level, updated_at)
+                    SELECT r.execution_id, r.organization_id, 'REQUESTED', 0, 0, r.created_at
+                    FROM execution_runs r
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM execution_recovery_state s
+                        WHERE s.execution_id = r.execution_id AND s.organization_id = r.organization_id
+                    )""")
+                if isinstance(self, PostgresDatabaseManager):
+                    conn.execute("""CREATE OR REPLACE FUNCTION execution_recovery_attempts_immutable() RETURNS trigger
+                        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'execution_recovery_attempts is append-only'; END; $$""")
+                    conn.execute("DROP TRIGGER IF EXISTS execution_recovery_attempts_immutable_update ON execution_recovery_attempts")
+                    conn.execute("""CREATE TRIGGER execution_recovery_attempts_immutable_update
+                        BEFORE UPDATE OR DELETE ON execution_recovery_attempts FOR EACH ROW
+                        EXECUTE FUNCTION execution_recovery_attempts_immutable()""")
+                else:
+                    conn.executescript("""CREATE TRIGGER execution_recovery_attempts_immutable_update
+                        BEFORE UPDATE ON execution_recovery_attempts BEGIN SELECT RAISE(ABORT, 'execution_recovery_attempts is append-only'); END;
+                        CREATE TRIGGER execution_recovery_attempts_immutable_delete
+                        BEFORE DELETE ON execution_recovery_attempts BEGIN SELECT RAISE(ABORT, 'execution_recovery_attempts is append-only'); END;""")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (process_lifecycle_version, utc_now().isoformat()))
+            if max_migration_version == process_lifecycle_version:
+                return
+
+            self._verify_execution_snapshot_schema(conn)
+            self._verify_execution_authority_binding_schema(conn)
+            self._verify_execution_compatibility_schema(conn)
+            self._verify_execution_dispatch_schema(conn)
+            self._verify_migration_v10_postconditions(conn)
+
+            # Migration rows prove history, not present-day schema integrity.
+            # Recheck the safety-critical execution invariants on every startup
+            # so post-migration drift fails closed instead of being accepted.
+            if isinstance(self, PostgresDatabaseManager):
+                run_index = conn.execute("""
+                    SELECT array_agg(a.attname ORDER BY key_cols.ordinality) AS columns,
+                           am.amname AS access_method,
+                           x.indnkeyatts,
+                           x.indnatts
+                    FROM pg_class i
+                    JOIN pg_index x ON x.indexrelid = i.oid
+                    JOIN pg_class t ON t.oid = x.indrelid
+                    JOIN pg_am am ON am.oid = i.relam
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
+                    WHERE i.relname = 'uq_execution_runs_request'
+                      AND t.relname = 'execution_runs' AND n.nspname = current_schema()
+                      AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
+                    GROUP BY i.oid, am.amname, x.indnkeyatts, x.indnatts
+                """).fetchall()
+                if not any(
+                    list(row["columns"] or []) == ["request_id", "organization_id"]
+                    and row["access_method"] == "btree"
+                    and row["indnkeyatts"] == 2
+                    and row["indnatts"] == 2
+                    for row in run_index
+                ):
+                    raise ValueError("execution schema health check failed: unique execution-run request index is absent")
+                parent_index = conn.execute("""
+                    SELECT array_agg(a.attname ORDER BY key_cols.ordinality) AS columns,
+                           am.amname AS access_method,
+                           x.indnkeyatts,
+                           x.indnatts
+                    FROM pg_class i
+                    JOIN pg_index x ON x.indexrelid = i.oid
+                    JOIN pg_class t ON t.oid = x.indrelid
+                    JOIN pg_am am ON am.oid = i.relam
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
+                    WHERE t.relname = 'execution_requests' AND n.nspname = current_schema()
+                      AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
+                    GROUP BY i.oid, am.amname, x.indnkeyatts, x.indnatts
+                """).fetchall()
+                if not any(
+                    list(row["columns"] or []) == ["id", "organization_id"]
+                    and row["access_method"] == "btree"
+                    and row["indnkeyatts"] == 2
+                    and row["indnatts"] == 2
+                    for row in parent_index
+                ):
+                    raise ValueError("execution schema health check failed: tenant parent unique key is absent")
+                final_constraints = conn.execute("""
+                    SELECT array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                           array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns,
+                           c.convalidated
+                    FROM pg_constraint c
+                    JOIN pg_class t ON t.oid = c.conrelid
+                    JOIN pg_class pt ON pt.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                    JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                    JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                      ON parent_cols.ordinality = local_cols.ordinality
+                    JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+                    WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                      AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                      AND c.contype = 'f'
+                    GROUP BY c.conname, c.convalidated
+                """).fetchall()
+                exact = [
+                    row for row in final_constraints
+                    if list(row["local_columns"] or []) == ["request_id", "organization_id"]
+                    and list(row["parent_columns"] or []) == ["id", "organization_id"]
+                    and row["convalidated"]
+                ]
+                if len(exact) != 1:
+                    raise ValueError("execution schema health check failed: expected exactly one composite tenant foreign key")
+                legacy_constraints = conn.execute("""
+                    SELECT COUNT(*) AS count
+                    FROM pg_constraint c
+                    JOIN pg_class t ON t.oid = c.conrelid
+                    JOIN pg_class pt ON pt.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                    JOIN unnest(c.conkey) AS local_cols(attnum) ON TRUE
+                    JOIN unnest(c.confkey) AS parent_cols(attnum) ON TRUE
+                    WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                      AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                      AND c.contype = 'f'
+                      AND array_length(c.conkey, 1) = 1 AND array_length(c.confkey, 1) = 1
+                      AND (SELECT attname FROM pg_attribute WHERE attrelid = t.oid AND attnum = local_cols.attnum) = 'request_id'
+                      AND (SELECT attname FROM pg_attribute WHERE attrelid = pt.oid AND attnum = parent_cols.attnum) = 'id'
+                """).fetchone()
+                if legacy_constraints and legacy_constraints["count"]:
+                    raise ValueError("execution schema health check failed: legacy request-only foreign key remains")
+            else:
+                run_indexes = conn.execute("PRAGMA index_list(execution_runs)").fetchall()
+                run_index_valid = False
+                for index in run_indexes:
+                    if index["unique"] and index["name"] == "uq_execution_runs_request" and not index["partial"]:
+                        index_name = str(index["name"]).replace("'", "''")
+                        columns = conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()
+                        run_index_valid = [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["request_id", "organization_id"]
+                        break
+                if not run_index_valid:
+                    raise ValueError("execution schema health check failed: unique execution-run request index is absent")
+                parent_index_valid = False
+                for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
+                    if index["unique"] and not index["partial"]:
+                        index_name = str(index["name"]).replace("'", "''")
+                        columns = conn.execute(f"PRAGMA index_info('{index_name}')").fetchall()
+                        if [column["name"] for column in sorted(columns, key=lambda value: value["seqno"])] == ["id", "organization_id"]:
+                            parent_index_valid = True
+                            break
+                if not parent_index_valid:
+                    raise ValueError("execution schema health check failed: tenant parent unique key is absent")
+                health_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
+                health_groups = {}
+                for row in health_rows:
+                    health_groups.setdefault(row["id"], []).append(row)
+                if not any(
+                    len(rows) == 2
+                    and sorted((row["seq"], row["from"], row["to"]) for row in rows)
+                    == [(0, "request_id", "id"), (1, "organization_id", "organization_id")]
+                    and all(row["table"] == "execution_requests" for row in rows)
+                    for rows in health_groups.values()
+                ):
+                    raise ValueError("execution schema health check failed: composite tenant foreign key is absent")
+
+            if getattr(self, "_migration_attempt_id", None) and not getattr(self, "_migration_coordinator_active", False):
+                conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
+                self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
+                2, "SUCCEEDED", utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                self._migration_schema_name, 7, 8,
+                self._migration_spec.checksum, "database-startup", self._migration_transaction_id, "{}", "NOT_APPLICABLE"))
 
     # ========================================================================
     # 1. System Bootstrap & Authentication Operations
@@ -678,6 +3110,16 @@ class DatabaseManager:
     def revoke_token(self, jti: str, token_hash: Optional[str] = None, expires_at: Optional[str] = None) -> None:
         """Revokes a JWT token by jti identifier."""
         with self._connection_scope() as conn:
+            revoked_at = utc_now().isoformat()
+            affected = conn.execute(
+                """SELECT d.id AS decision_id, d.organization_id, r.execution_id,
+                           r.state AS run_state
+                   FROM execution_decisions d
+                   LEFT JOIN execution_runs r ON r.approved_decision_id = d.id
+                     AND r.organization_id = d.organization_id
+                  WHERE d.session_jti = ? AND d.revoked_at IS NULL""",
+                (jti,),
+            ).fetchall()
             conn.execute(
                 """
                 INSERT INTO revoked_tokens (jti, token_hash, revoked_at, expires_at)
@@ -687,8 +3129,86 @@ class DatabaseManager:
                     revoked_at = excluded.revoked_at,
                     expires_at = excluded.expires_at
                 """,
-                (jti, token_hash, utc_now().isoformat(), expires_at),
+                (jti, token_hash, revoked_at, expires_at),
             )
+            conn.execute(
+                "UPDATE execution_decisions SET revoked_at = COALESCE(revoked_at, ?) WHERE session_jti = ? AND revoked_at IS NULL",
+                (revoked_at, jti),
+            )
+            # Keep pending work from being claimed after logout while leaving
+            # an already-claimed dispatch visible to the exact process
+            # cancellation/reaper path.
+            conn.execute(
+                """UPDATE execution_requests SET state = 'REVOKED'
+                   WHERE approved_decision_id IN (SELECT id FROM execution_decisions WHERE session_jti = ?)
+                     AND state = 'AUTHORIZED'""",
+                (jti,),
+            )
+            for item in affected:
+                correlation_id = self._execution_correlation_id_conn(
+                    conn, item["execution_id"], item["organization_id"],
+                ) if item["execution_id"] else f"corr-decision-{item['decision_id']}"
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
+                    organization_id=item["organization_id"],
+                    action=AuditAction.EXECUTION_DECISION_REVOKED,
+                    object_type="execution_decision", object_id=item["decision_id"],
+                    result="SUCCESS", correlation_id=correlation_id,
+                    details={"reason_code": "EXECUTION_CANCELLED", "source": "SESSION_REVOCATION"},
+                ))
+                if item["execution_id"] and item["run_state"] in {"REQUESTED", "STARTING", "RUNNING"}:
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
+                        organization_id=item["organization_id"],
+                        action=AuditAction.EXECUTION_CANCEL_REQUESTED,
+                        object_type="execution_run", object_id=item["execution_id"],
+                        result="SUCCESS", correlation_id=correlation_id,
+                        details={"reason_code": "EXECUTION_CANCELLED", "source": "SESSION_REVOCATION"},
+                    ))
+
+    def list_execution_recovery_candidates(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return active executions whose durable authority is no longer valid."""
+        if not isinstance(limit, int) or limit <= 0 or limit > 1000:
+            raise ValueError("recovery candidate limit is outside the approved bound")
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            rows = conn.execute(
+                """SELECT r.execution_id, r.organization_id, r.process_id,
+                           r.state AS run_state,
+                           r.process_group_id, r.correlation_id,
+                           CASE
+                             WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                               THEN 'CANCELLED'
+                             WHEN q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
+                               THEN 'EXECUTION_BLOCKED'
+                             ELSE 'TIMED_OUT'
+                           END AS terminal_state,
+                           CASE
+                             WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                               THEN 'EXECUTION_CANCELLED'
+                             WHEN q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
+                               THEN 'EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED'
+                             ELSE 'EXECUTION_AUTHORITY_EXPIRED'
+                           END AS reason_code
+                      FROM execution_runs r
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                      JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                     WHERE r.state IN ('REQUESTED', 'STARTING', 'RUNNING')
+                       AND (
+                            q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
+                            OR d.revoked_at IS NOT NULL
+                            OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                            OR q.expires_at <= ? OR d.expires_at <= ?
+                            OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))
+                       )
+                     ORDER BY r.created_at
+                     LIMIT ?""",
+                (now, now, now, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def is_token_revoked(self, jti: str) -> bool:
         """Checks if a JWT token has been revoked in the database."""
@@ -696,6 +3216,1150 @@ class DatabaseManager:
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,))
             return bool(cur.fetchone())
+
+    def create_execution_request(self, request: ExecutionRequestRecord) -> Optional[ExecutionRequestRecord]:
+        """Persist an idempotent REQUESTED execution record with tenant checks."""
+        with self._connection_scope() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM execution_requests WHERE organization_id = ? AND idempotency_key = ?", (request.organization_id, request.idempotency_key))
+            existing_row = cur.fetchone()
+            existing = self.get_execution_request(existing_row["id"], organization_id=request.organization_id) if existing_row else None
+            if existing:
+                if existing.idempotency_key == request.idempotency_key and existing.request_fingerprint == request.request_fingerprint:
+                    return existing
+                raise ValueError("execution request idempotency conflict")
+            if request.state != "REQUESTED" or not is_canonical_operation_policy_revision(request.operation_policy_revision):
+                raise ValueError("execution request state or policy revision is invalid")
+            policy = get_operation_policy(request.tool_id, request.operation_family)
+            if policy is None or any(request.operation_options.get(k) != v for k, v in policy.get("required_options", {}).items()):
+                raise ValueError("execution request does not conform to the canonical policy row")
+            if any(not isinstance(value, int) or value <= 0 for value in request.resource_budget.values()):
+                raise ValueError("execution request resource budget is invalid")
+            if any(not isinstance(value, int) or value < 0 for value in request.account_impact_budget.values()):
+                raise ValueError("execution request account-impact budget is invalid")
+            if request.credential_scope.get("provider") != request.operation_options.get("provider"):
+                raise ValueError("execution request credential scope is not policy-bound")
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM organizations WHERE id = ? AND is_active = 1", (request.organization_id,))
+            if not cur.fetchone():
+                raise ValueError("execution request organization is invalid")
+            cur.execute("SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))", (request.asset_id, request.organization_id, request.project_id, request.project_id))
+            if not cur.fetchone():
+                raise ValueError("execution request asset is not tenant-bound")
+            cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND is_active = 1", (request.requested_by_user_id, request.organization_id))
+            if not cur.fetchone():
+                raise ValueError("execution request principal is invalid")
+            conn.execute(
+                """INSERT INTO execution_requests (
+                    id, idempotency_key, request_fingerprint, organization_id, project_id,
+                    asset_id, target_id, authorization_decision_id, target_policy_version,
+                    tool_id, operation_family, operation_options_json, operation_policy_revision,
+                    resource_budget_json, account_impact_budget_json, credential_scope_json,
+                    requested_by_user_id, state, created_at, expires_at, approved_decision_id, approval_idempotency_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (request.id, request.idempotency_key, request.request_fingerprint, request.organization_id, request.project_id,
+                 request.asset_id, request.target_id, request.authorization_decision_id, request.target_policy_version,
+                 request.tool_id, request.operation_family, json.dumps(request.operation_options, sort_keys=True, separators=(",", ":")),
+                 request.operation_policy_revision, json.dumps(request.resource_budget, sort_keys=True, separators=(",", ":")),
+                 json.dumps(request.account_impact_budget, sort_keys=True, separators=(",", ":")), json.dumps(request.credential_scope, sort_keys=True, separators=(",", ":")),
+                 request.requested_by_user_id, request.state, request.created_at.isoformat(), request.expires_at.isoformat(), None, None),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=request.requested_by_user_id,
+                organization_id=request.organization_id, action=AuditAction.EXECUTION_REQUESTED,
+                object_type="execution_request", object_id=request.id, result="SUCCESS",
+                details={"tool_id": request.tool_id, "operation_family": request.operation_family, "request_fingerprint": request.request_fingerprint},
+            ))
+            return request
+
+    def get_execution_request(self, request_id: str, organization_id: Optional[str] = None) -> Optional[ExecutionRequestRecord]:
+        with self._connection_scope() as conn:
+            query = "SELECT * FROM execution_requests WHERE id = ?"
+            params: List[Any] = [request_id]
+            if organization_id is not None:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+            cur = conn.cursor(); cur.execute(query, params); row = cur.fetchone()
+            if not row:
+                return None
+            return ExecutionRequestRecord(
+                id=row["id"], idempotency_key=row["idempotency_key"], request_fingerprint=row["request_fingerprint"],
+                organization_id=row["organization_id"], project_id=row["project_id"], asset_id=row["asset_id"],
+                target_id=row["target_id"], authorization_decision_id=row["authorization_decision_id"],
+                target_policy_version=row["target_policy_version"], tool_id=row["tool_id"], operation_family=row["operation_family"],
+                operation_options=json.loads(row["operation_options_json"]), operation_policy_revision=row["operation_policy_revision"],
+                resource_budget=json.loads(row["resource_budget_json"]), account_impact_budget=json.loads(row["account_impact_budget_json"]),
+                credential_scope=json.loads(row["credential_scope_json"]), requested_by_user_id=row["requested_by_user_id"],
+                state=row["state"], created_at=datetime.fromisoformat(row["created_at"]), expires_at=datetime.fromisoformat(row["expires_at"]),
+                approved_decision_id=row["approved_decision_id"],
+                approval_idempotency_key=row["approval_idempotency_key"] if "approval_idempotency_key" in row.keys() else None,
+            )
+
+    def approve_execution_request(
+        self, request_id: str, organization_id: str, request_fingerprint: str, approval_idempotency_key: str,
+        approver_user_id: str, session_jti: str, worker_identity: str,
+    ) -> tuple[str, Optional[str], Optional[str]]:
+        """Atomically authorize a request or return an idempotent/conflict result."""
+        correlation_id = get_correlation_id()
+        if not correlation_id:
+            # This is an infrastructure precondition failure, not evidence
+            # that the supplied approver identity was authenticated.  The
+            # fixed system actor deliberately preserves that distinction.
+            rejection_correlation_id = f"corr-{uuid.uuid4().hex}"
+            with self._connection_scope() as conn:
+                request_row = conn.execute(
+                    "SELECT id FROM execution_requests WHERE id = ? AND organization_id = ?",
+                    (request_id, organization_id),
+                ).fetchone()
+                if request_row:
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
+                        organization_id=organization_id,
+                        action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED,
+                        object_type="execution_request", object_id=request_id, result="FAILURE",
+                        correlation_id=rejection_correlation_id,
+                        details={"reason_code": "CORRELATION_REQUIRED"},
+                    ))
+            return "CORRELATION_REQUIRED", None, None
+        with self._connection_scope() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (request_id, organization_id))
+            row = cur.fetchone()
+            if not row:
+                return "NOT_FOUND", None, None
+            if row["request_fingerprint"] != request_fingerprint:
+                return "CONFLICT", None, None
+            if row["state"] == "AUTHORIZED":
+                if row["approval_idempotency_key"] != approval_idempotency_key:
+                    return "CONFLICT", None, None
+                run = cur.execute(
+                    "SELECT execution_id FROM execution_runs WHERE request_id = ? AND organization_id = ?",
+                    (request_id, organization_id),
+                ).fetchone()
+                if not run:
+                    raise ValueError("authorized execution request has no durable execution run")
+                return "REPLAY", row["approved_decision_id"], run["execution_id"]
+            if row["state"] != "REQUESTED":
+                return "CONFLICT", None, None
+            now = utc_now()
+            if datetime.fromisoformat(row["expires_at"]) <= now:
+                return "EXPIRED", None, None
+            cur.execute(
+                """SELECT id FROM assets WHERE id = ? AND organization_id = ?
+                   AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
+                   AND active_probing_granted = 1""",
+                (row["asset_id"], organization_id, row["project_id"], row["project_id"]),
+            )
+            if not cur.fetchone():
+                return "DENIED", None, None
+            cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1", (approver_user_id, organization_id))
+            if not cur.fetchone() or not session_jti or not worker_identity:
+                return "DENIED", None, None
+            decision_id = f"dec-{uuid.uuid4().hex[:16]}"
+            cur.execute(
+                """UPDATE execution_requests SET state = 'AUTHORIZED', approved_decision_id = ?, approval_idempotency_key = ?
+                   WHERE id = ? AND organization_id = ? AND state = 'REQUESTED'""",
+                (decision_id, approval_idempotency_key, request_id, organization_id),
+            )
+            if cur.rowcount != 1:
+                return "CONFLICT", None, None
+            conn.execute(
+                """INSERT INTO execution_decisions (
+                    id, organization_id, project_id, asset_id, target_id, authorization_decision_id,
+                    target_policy_version, tool_id, operation_family, operation_options_json,
+                    operation_policy_revision, approval_state, approver_user_id, session_jti,
+                    worker_identity, resource_budget_json, account_impact_budget_json,
+                    credential_scope_json, created_at, expires_at, revoked_at, consumed_at
+                ) SELECT ?, organization_id, project_id, asset_id, target_id, authorization_decision_id,
+                    target_policy_version, tool_id, operation_family, operation_options_json,
+                    operation_policy_revision, 'APPROVED', ?, ?, ?, resource_budget_json,
+                    account_impact_budget_json, credential_scope_json, ?, expires_at, NULL, NULL
+                    FROM execution_requests WHERE id = ? AND organization_id = ?""",
+                (decision_id, approver_user_id, session_jti, worker_identity, now.isoformat(), request_id, organization_id),
+            )
+            execution_id = f"run-{uuid.uuid4().hex[:16]}"
+            conn.execute(
+                """INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, approved_decision_id,
+                    target_policy_version, operation_policy_revision, request_fingerprint,
+                    operation_options_json, resource_budget_json, account_impact_budget_json,
+                    credential_scope_json, snapshot_completeness, state, worker_identity, assurance_state,
+                    coverage_state, correlation_id, created_at
+                ) SELECT ?, id, organization_id, ?, target_policy_version,
+                    operation_policy_revision, request_fingerprint, operation_options_json,
+                    resource_budget_json, account_impact_budget_json, credential_scope_json,
+                    'COMPLETE', 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
+                    FROM execution_requests WHERE id = ? AND organization_id = ?""",
+                    (execution_id, decision_id, worker_identity, correlation_id, now.isoformat(), request_id, organization_id),
+            )
+            conn.execute(
+                "INSERT INTO execution_dispatch_intents (execution_id, organization_id, state, attempt_count, created_at) VALUES (?, ?, 'PENDING', 0, ?)",
+                (execution_id, organization_id, now.isoformat()),
+            )
+            conn.execute(
+                """INSERT INTO execution_process_ownership
+                (execution_id, organization_id, ownership_state, container_type,
+                 launch_commit_state, correlation_id, created_at, updated_at)
+                VALUES (?, ?, 'UNKNOWN', 'NONE', 'NOT_ATTEMPTED', ?, ?, ?)""",
+                (execution_id, organization_id, correlation_id, now.isoformat(), now.isoformat()),
+            )
+            conn.execute(
+                "INSERT INTO execution_recovery_state (execution_id, organization_id, status, attempt_number, escalation_level, updated_at) VALUES (?, ?, 'REQUESTED', 0, 0, ?)",
+                (execution_id, organization_id, now.isoformat()),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
+                organization_id=organization_id, action=AuditAction.EXECUTION_AUTHORIZED,
+                object_type="execution_request", object_id=request_id, result="SUCCESS",
+                details={"decision_id": decision_id, "request_fingerprint": request_fingerprint},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
+                organization_id=organization_id, action=AuditAction.EXECUTION_RUN_CREATED,
+                object_type="execution_run", object_id=execution_id, result="SUCCESS",
+                correlation_id=correlation_id,
+                details={"request_id": request_id, "state": "REQUESTED"},
+            ))
+            return "AUTHORIZED", decision_id, execution_id
+
+    def get_execution_run_for_request(self, request_id: str, organization_id: str) -> Optional[dict[str, Any]]:
+        """Return one tenant-scoped durable run snapshot for an execution request."""
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
+                "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
+                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, "
+                "operation_options_json, resource_budget_json, account_impact_budget_json, credential_scope_json, "
+                "snapshot_completeness, correlation_id, created_at, started_at, finished_at FROM execution_runs "
+                "WHERE request_id = ? AND organization_id = ?",
+                (request_id, organization_id),
+            ).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            for field in ("operation_options_json", "resource_budget_json", "account_impact_budget_json", "credential_scope_json"):
+                result[field.removesuffix("_json")] = json.loads(result.pop(field) or "{}")
+            return result
+
+    def get_execution_run(self, execution_id: str, organization_id: str) -> Optional[dict[str, Any]]:
+        """Return one exact tenant-scoped execution-run snapshot."""
+        if not isinstance(execution_id, str) or not execution_id.strip() or not isinstance(organization_id, str) or not organization_id.strip():
+            return None
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
+                "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
+                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, "
+                "operation_options_json, resource_budget_json, account_impact_budget_json, credential_scope_json, "
+                "snapshot_completeness, correlation_id, created_at, started_at, finished_at FROM execution_runs "
+                "WHERE execution_id = ? AND organization_id = ?",
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            for field in ("operation_options_json", "resource_budget_json", "account_impact_budget_json", "credential_scope_json"):
+                result[field.removesuffix("_json")] = json.loads(result.pop(field) or "{}")
+            return result
+
+    def get_process_ownership(self, execution_id: str, organization_id: str) -> Optional[dict[str, Any]]:
+        """Return the authoritative tenant-scoped process ownership dimension."""
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_process_ownership WHERE execution_id = ? AND organization_id = ?",
+                (execution_id, organization_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def transition_process_ownership(
+        self, record: ExecutionProcessOwnershipRecord, expected_state: ProcessOwnershipState,
+        *, actor: str = "system", reason_code: str = "PROCESS_OWNERSHIP_TRANSITION",
+    ) -> bool:
+        """Atomically create/transition ownership state with tenant and evidence binding.
+
+        UNKNOWN is a migration/reconciliation marker only.  It cannot be supplied as
+        an operational destination, and terminal records are immutable.
+        """
+        if record.ownership_state == ProcessOwnershipState.UNKNOWN:
+            raise ValueError("UNKNOWN process ownership is migration-only")
+        allowed = PROCESS_OWNERSHIP_TRANSITIONS.get(expected_state, frozenset())
+        if record.ownership_state not in allowed and record.ownership_state != expected_state:
+            raise ValueError(f"illegal process ownership transition {expected_state.value}->{record.ownership_state.value}")
+        if record.ownership_state == ProcessOwnershipState.NO_EXTERNAL_PROCESS and not record.no_process_proof:
+            raise ValueError("NO_EXTERNAL_PROCESS requires explicit no-process proof")
+        if record.ownership_state == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED and not record.identity_attestation:
+            raise ValueError("governed process ownership requires identity attestation")
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            lock_suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            authority = conn.execute(
+                """SELECT r.execution_id, r.organization_id, r.state AS run_state,
+                    q.state AS request_state, d.approval_state, d.revoked_at,
+                    i.state AS dispatch_state
+                    FROM execution_runs r
+                    JOIN execution_requests q ON q.id=r.request_id AND q.organization_id=r.organization_id
+                    LEFT JOIN execution_decisions d ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                    LEFT JOIN execution_dispatch_intents i ON i.execution_id=r.execution_id AND i.organization_id=r.organization_id
+                    WHERE r.execution_id=? AND r.organization_id=?""" + lock_suffix,
+                (record.execution_id, record.organization_id),
+            ).fetchone()
+            if not authority or authority["organization_id"] != record.organization_id:
+                return False
+            if expected_state != ProcessOwnershipState.UNKNOWN and (
+                authority["request_state"] != "AUTHORIZED"
+                or authority["approval_state"] != "APPROVED"
+                or authority["revoked_at"] is not None
+                or authority["dispatch_state"] not in {"CLAIMED", "COMPLETED"}
+            ):
+                return False
+            existing = conn.execute(
+                "SELECT * FROM execution_process_ownership WHERE execution_id = ? AND organization_id = ?" + lock_suffix,
+                (record.execution_id, record.organization_id),
+            ).fetchone()
+            if existing is None:
+                return False
+            else:
+                current = ProcessOwnershipState(existing["ownership_state"])
+                if current == ProcessOwnershipState.TERMINAL:
+                    return current == record.ownership_state
+                if current != expected_state:
+                    return False
+                updated = conn.execute(
+                    """UPDATE execution_process_ownership SET ownership_state=?, container_type=?,
+                    container_identity=?, root_process_id=?, root_process_start_token=?, process_group_id=?,
+                    session_id=?, worker_generation=?, launch_commit_state=?, no_process_proof=?,
+                    identity_attestation=?, last_verified_at=?, terminalized_at=?, updated_at=?
+                    WHERE execution_id=? AND organization_id=? AND ownership_state=?""",
+                    (record.ownership_state.value, record.container_type.value, record.container_identity,
+                     record.root_process_id, record.root_process_start_token, record.process_group_id,
+                     record.session_id, record.worker_generation, record.launch_commit_state.value,
+                     record.no_process_proof, record.identity_attestation,
+                     record.last_verified_at.isoformat() if record.last_verified_at else None,
+                     record.terminalized_at.isoformat() if record.terminalized_at else None,
+                     record.updated_at.isoformat(), record.execution_id, record.organization_id,
+                     expected_state.value),
+                )
+                if updated.rowcount != 1:
+                    return False
+            self._insert_audit_event_conn(conn, AuditEvent(
+                actor=actor, organization_id=record.organization_id,
+                action=AuditAction.EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED,
+                object_type="execution_process_ownership", object_id=record.execution_id,
+                correlation_id=record.correlation_id, result="SUCCESS",
+                details={"from": expected_state.value, "to": record.ownership_state.value, "reason_code": reason_code},
+            ))
+            return True
+
+    def record_recovery_attempt(self, attempt: ExecutionRecoveryAttemptRecord, *, actor: str = "system") -> None:
+        """Append one immutable recovery fact and advance only the mutable projection."""
+        with self._connection_scope() as conn:
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
+                 attempt_number, status, cancellation_status, reason_code, correlation_id,
+                 requested_at, started_at, completed_at, next_retry_at, error_code,
+                 escalation_level, health_reference) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (attempt.attempt_id, attempt.execution_id, attempt.organization_id, attempt.worker_identity,
+                 attempt.worker_generation, attempt.attempt_number, attempt.status,
+                 attempt.cancellation_status, attempt.reason_code, attempt.correlation_id,
+                 attempt.requested_at.isoformat(), attempt.started_at.isoformat() if attempt.started_at else None,
+                 attempt.completed_at.isoformat() if attempt.completed_at else None,
+                 attempt.next_retry_at.isoformat() if attempt.next_retry_at else None, attempt.error_code,
+                 attempt.escalation_level, attempt.health_reference),
+            )
+            conn.execute(
+                """INSERT INTO execution_recovery_state
+                (execution_id, organization_id, status, worker_generation, attempt_number, last_outcome, last_error,
+                 next_retry_at, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(execution_id, organization_id) DO UPDATE SET
+                status=excluded.status, worker_generation=excluded.worker_generation, attempt_number=excluded.attempt_number, last_outcome=excluded.last_outcome,
+                last_error=excluded.last_error, next_retry_at=excluded.next_retry_at,
+                escalation_level=excluded.escalation_level, updated_at=excluded.updated_at
+                WHERE execution_recovery_state.organization_id=excluded.organization_id""",
+                (attempt.execution_id, attempt.organization_id, attempt.status, attempt.worker_generation, attempt.attempt_number,
+                 attempt.cancellation_status, attempt.error_code,
+                 attempt.next_retry_at.isoformat() if attempt.next_retry_at else None,
+                 attempt.escalation_level, utc_now().isoformat()),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                actor=actor, organization_id=attempt.organization_id,
+                action=AuditAction.EXECUTION_RECOVERY_ATTEMPT_RECORDED,
+                object_type="execution_recovery_attempt", object_id=attempt.attempt_id,
+                correlation_id=attempt.correlation_id, result="SUCCESS",
+                details={"execution_id": attempt.execution_id, "attempt_number": attempt.attempt_number,
+                         "status": attempt.status},
+            ))
+
+    def claim_recovery(self, execution_id: str, organization_id: str, owner: str, worker_generation: str, *, lease_seconds: int = 30) -> Optional[dict[str, Any]]:
+        """Claim one recovery lease; expired leases are safely reclaimable."""
+        if not all(isinstance(value, str) and value.strip() for value in (execution_id, organization_id, owner, worker_generation)) or lease_seconds <= 0:
+            return None
+        now = utc_now()
+        expiry = now + timedelta(seconds=lease_seconds)
+        token = f"recovery-{uuid.uuid4().hex}"
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            ownership = conn.execute(
+                "SELECT ownership_state FROM execution_process_ownership WHERE execution_id=? AND organization_id=?" + suffix,
+                (execution_id, organization_id),
+            ).fetchone()
+            if not ownership or ownership["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
+                return None
+            state = conn.execute(
+                "SELECT * FROM execution_recovery_state WHERE execution_id=? AND organization_id=?" + suffix,
+                (execution_id, organization_id),
+            ).fetchone()
+            if state and state["lease_expires_at"] and datetime.fromisoformat(state["lease_expires_at"]) > now:
+                return None
+            attempt_number = (int(state["attempt_number"]) if state else 0) + 1
+            if state:
+                changed = conn.execute(
+                    """UPDATE execution_recovery_state SET status='IN_PROGRESS', owner=?, lease_token=?,
+                    lease_expires_at=?, worker_generation=?, attempt_number=?, updated_at=?
+                    WHERE execution_id=? AND organization_id=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
+                    (owner, token, expiry.isoformat(), worker_generation, attempt_number, now.isoformat(), execution_id, organization_id, now.isoformat()),
+                )
+                if changed.rowcount != 1:
+                    return None
+            else:
+                conn.execute(
+                    """INSERT INTO execution_recovery_state
+                    (execution_id, organization_id, status, owner, lease_token, lease_expires_at,
+                     worker_generation, attempt_number, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (execution_id, organization_id, "IN_PROGRESS", owner, token, expiry.isoformat(), worker_generation, attempt_number, 0, now.isoformat()),
+                )
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
+                 attempt_number, status, reason_code, correlation_id, requested_at, started_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (token, execution_id, organization_id, owner, worker_generation,
+                 attempt_number, "IN_PROGRESS", "RECOVERY_CLAIMED",
+                 f"corr-recovery-{execution_id}", now.isoformat(), now.isoformat()),
+            )
+            return {"execution_id": execution_id, "organization_id": organization_id, "owner": owner,
+                    "worker_generation": worker_generation, "lease_token": token,
+                    "lease_expires_at": expiry.isoformat(), "attempt_number": attempt_number}
+
+    def renew_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, lease_seconds: int = 30) -> bool:
+        if lease_seconds <= 0:
+            return False
+        expiry = utc_now() + timedelta(seconds=lease_seconds)
+        with self._connection_scope() as conn:
+            return conn.execute(
+                """UPDATE execution_recovery_state SET lease_expires_at=?, updated_at=?
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=?
+                AND status='IN_PROGRESS' AND lease_expires_at > ?""",
+                (expiry.isoformat(), utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation, utc_now().isoformat()),
+            ).rowcount == 1
+
+    def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, status: str, outcome: str, error: Optional[str] = None) -> bool:
+        allowed = {"CONFIRMED_TERMINATED", "DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
+        if status not in allowed:
+            return False
+        with self._connection_scope() as conn:
+            changed = conn.execute(
+                """UPDATE execution_recovery_state SET status=?, last_outcome=?, last_error=?,
+                owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=? AND status='IN_PROGRESS'""",
+                (status, outcome, error, utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation),
+            )
+            if changed.rowcount == 1:
+                now = utc_now()
+                conn.execute(
+                    """INSERT INTO execution_recovery_attempts
+                    (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
+                     attempt_number, status, cancellation_status, reason_code, correlation_id,
+                     requested_at, completed_at, error_code, escalation_level)
+                    SELECT ?, execution_id, organization_id, ?, worker_generation,
+                           attempt_number, ?, ?, 'RECOVERY_COMPLETED', ?,
+                           ?, ?, ?, escalation_level
+                    FROM execution_recovery_state
+                    WHERE execution_id=? AND organization_id=?""",
+                    (f"{lease_token}-completed", owner, status, outcome, f"corr-recovery-{execution_id}",
+                     now.isoformat(), now.isoformat(), error, execution_id, organization_id),
+                )
+            return changed.rowcount == 1
+
+    def recovery_health(self, organization_id: str) -> list[dict[str, Any]]:
+        """Tenant-scoped operator health view; no process identity is exposed as authority."""
+        with self._connection_scope() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT execution_id, organization_id, status, owner, lease_expires_at,
+                attempt_number, last_outcome, last_error, next_retry_at, escalation_level, updated_at
+                FROM execution_recovery_state WHERE organization_id=? ORDER BY updated_at DESC""", (organization_id,)
+            ).fetchall()]
+
+    def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
+        """Persist one immutable authorization decision transactionally."""
+        with self._connection_scope() as conn:
+            if decision.approval_state != "APPROVED":
+                raise ValueError("only an approved execution decision may be persisted")
+            if not is_canonical_operation_policy_revision(decision.operation_policy_revision):
+                raise ValueError("execution decision policy revision is not canonical")
+            policy = get_operation_policy(decision.tool_id, decision.operation_family)
+            if policy is None or any(
+                decision.operation_options.get(key) != value
+                for key, value in policy.get("required_options", {}).items()
+            ):
+                raise ValueError("execution decision does not conform to the canonical policy row")
+            if any(not isinstance(value, int) or value <= 0 for value in decision.resource_budget.values()):
+                raise ValueError("execution decision resource budget is invalid")
+            if any(not isinstance(value, int) or value < 0 for value in decision.account_impact_budget.values()):
+                raise ValueError("execution decision account-impact budget is invalid")
+            if decision.credential_scope.get("provider") != decision.operation_options.get("provider"):
+                raise ValueError("execution decision credential scope is not policy-bound")
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM organizations WHERE id = ? AND is_active = 1", (decision.organization_id,))
+            if not cur.fetchone():
+                raise ValueError("execution decision organization does not exist or is inactive")
+            cur.execute(
+                "SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))",
+                (decision.asset_id, decision.organization_id, decision.project_id, decision.project_id),
+            )
+            if not cur.fetchone():
+                raise ValueError("execution decision asset is not bound to the authorized tenant/project")
+            cur.execute(
+                "SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1",
+                (decision.approver_user_id, decision.organization_id),
+            )
+            if not cur.fetchone():
+                raise ValueError("execution decision approver is not an active tenant administrator")
+            conn.execute(
+                """
+                INSERT INTO execution_decisions (
+                    id, organization_id, project_id, asset_id, target_id,
+                    authorization_decision_id, target_policy_version, tool_id,
+                    operation_family, operation_options_json, operation_policy_revision,
+                    approval_state, approver_user_id, session_jti, worker_identity,
+                    resource_budget_json, account_impact_budget_json, credential_scope_json,
+                    created_at, expires_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.id,
+                    decision.organization_id,
+                    decision.project_id,
+                    decision.asset_id,
+                    decision.target_id,
+                    decision.authorization_decision_id,
+                    decision.target_policy_version,
+                    decision.tool_id,
+                    decision.operation_family,
+                    json.dumps(decision.operation_options, sort_keys=True, separators=(",", ":")),
+                    decision.operation_policy_revision,
+                    decision.approval_state,
+                    decision.approver_user_id,
+                    decision.session_jti,
+                    decision.worker_identity,
+                    json.dumps(decision.resource_budget, sort_keys=True, separators=(",", ":")),
+                    json.dumps(decision.account_impact_budget, sort_keys=True, separators=(",", ":")),
+                    json.dumps(decision.credential_scope, sort_keys=True, separators=(",", ":")),
+                    decision.created_at.isoformat(),
+                    decision.expires_at.isoformat(),
+                    decision.revoked_at.isoformat() if decision.revoked_at else None,
+                ),
+            )
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=decision.approver_user_id,
+                    organization_id=decision.organization_id,
+                    action=AuditAction.EXECUTION_DECISION_CREATED,
+                    object_type="execution_decision", object_id=decision.id,
+                    result="SUCCESS",
+                    details={"tool_id": decision.tool_id, "operation_family": decision.operation_family,
+                             "asset_id": decision.asset_id, "approval_state": decision.approval_state},
+                ),
+            )
+
+    def get_execution_decision(self, decision_id: str, organization_id: Optional[str] = None) -> Optional[ExecutionDecisionRecord]:
+        """Load an execution decision with an optional mandatory tenant filter."""
+        with self._connection_scope() as conn:
+            query = "SELECT * FROM execution_decisions WHERE id = ?"
+            params: List[Any] = [decision_id]
+            if organization_id is not None:
+                query += " AND organization_id = ?"
+                params.append(organization_id)
+            cur = conn.cursor()
+            cur.execute(query, params)
+            row = cur.fetchone()
+            if not row:
+                return None
+            return ExecutionDecisionRecord(
+                id=row["id"], organization_id=row["organization_id"], project_id=row["project_id"],
+                asset_id=row["asset_id"], target_id=row["target_id"],
+                authorization_decision_id=row["authorization_decision_id"],
+                target_policy_version=row["target_policy_version"], tool_id=row["tool_id"],
+                operation_family=row["operation_family"], operation_options=json.loads(row["operation_options_json"]),
+                operation_policy_revision=row["operation_policy_revision"], approval_state=row["approval_state"],
+                approver_user_id=row["approver_user_id"], session_jti=row["session_jti"],
+                worker_identity=row["worker_identity"], resource_budget=json.loads(row["resource_budget_json"]),
+                account_impact_budget=json.loads(row["account_impact_budget_json"]),
+                credential_scope=json.loads(row["credential_scope_json"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                expires_at=datetime.fromisoformat(row["expires_at"]),
+                revoked_at=datetime.fromisoformat(row["revoked_at"]) if row["revoked_at"] else None,
+                consumed_at=datetime.fromisoformat(row["consumed_at"]) if row["consumed_at"] else None,
+                claim_owner=row["claim_owner"] if "claim_owner" in row.keys() else None,
+                claim_expires_at=datetime.fromisoformat(row["claim_expires_at"]) if "claim_expires_at" in row.keys() and row["claim_expires_at"] else None,
+                started_at=datetime.fromisoformat(row["started_at"]) if "started_at" in row.keys() and row["started_at"] else None,
+                claim_token=row["claim_token"] if "claim_token" in row.keys() else None,
+            )
+
+    def claim_execution_decision(
+        self,
+        decision_id: str,
+        organization_id: str,
+        session_jti: str,
+        worker_identity: str,
+        policy_revision: str,
+        now: Optional[datetime] = None,
+    ) -> Optional[ExecutionLeaseClaim]:
+        """Atomically reserve one approved decision and return its typed fence."""
+        now = now or utc_now()
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                """
+                UPDATE execution_decisions
+                SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
+                WHERE id = ? AND organization_id = ? AND session_jti = ?
+                  AND worker_identity = ? AND operation_policy_revision = ?
+                   AND approval_state = 'APPROVED'
+                   AND revoked_at IS NULL AND consumed_at IS NULL
+                   AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
+                   AND expires_at > ?
+                   AND EXISTS (
+                         SELECT 1
+                           FROM execution_runs r
+                           JOIN execution_requests q ON q.id = r.request_id
+                             AND q.organization_id = r.organization_id
+                           JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id
+                             AND i.organization_id = r.organization_id
+                          WHERE r.approved_decision_id = execution_decisions.id
+                            AND r.organization_id = execution_decisions.organization_id
+                            AND q.state = 'AUTHORIZED' AND q.expires_at > ?
+                            AND i.state IN ('PENDING', 'CLAIMED')
+                            AND (i.state = 'PENDING' OR i.claimed_by = ?)
+                            AND (SELECT COUNT(*) FROM execution_runs r2
+                                   JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                                   JOIN execution_dispatch_intents i2 ON i2.execution_id = r2.execution_id AND i2.organization_id = r2.organization_id
+                                  WHERE r2.approved_decision_id = execution_decisions.id AND r2.organization_id = execution_decisions.organization_id) = 1
+                   )
+                 """,
+                 (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat(), now.isoformat(), worker_identity),
+            )
+            if cur.rowcount != 1:
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
+                    organization_id=organization_id or "unknown",
+                    action=AuditAction.EXECUTION_DECISION_CLAIM_REJECTED,
+                    object_type="execution_decision", object_id=decision_id or "unknown", result="REJECTED",
+                    correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                    details={"reason_code": "EXECUTION_DECISION_CLAIM_REJECTED"},
+                ))
+                return None
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity,
+                    organization_id=organization_id,
+                    action=AuditAction.EXECUTION_DECISION_CLAIMED,
+                    object_type="execution_decision", object_id=decision_id,
+                    result="SUCCESS", details={"worker_identity": worker_identity},
+                ),
+            )
+            claim_row = cur.connection.execute("SELECT claim_token, claim_expires_at FROM execution_decisions WHERE id = ? AND organization_id = ?", (decision_id, organization_id)).fetchone()
+            return ExecutionLeaseClaim(token=claim_row[0], owner=worker_identity, expires_at=datetime.fromisoformat(claim_row[1])) if claim_row else None
+
+    def claim_execution_authority(
+        self, decision_id: str, organization_id: str, session_jti: str,
+        worker_identity: str, policy_revision: str,
+        dispatch_claim_token: Optional[str] = None, now: Optional[datetime] = None,
+        lease_seconds: int = 30,
+    ) -> Optional[ExecutionAuthorityLease]:
+        """Atomically bind one decision to its exact durable dispatch tuple."""
+        if not decision_id or not organization_id or not session_jti or not worker_identity or lease_seconds <= 0:
+            return None
+        now = now or utc_now()
+        decision_token = uuid.uuid4().hex
+        dispatch_token = dispatch_claim_token or uuid.uuid4().hex
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            rows = conn.execute(
+                f"""SELECT d.id AS decision_id, r.execution_id, r.state AS run_state, r.worker_identity AS run_worker_identity, r.correlation_id,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           i.state AS dispatch_state, i.claimed_by, i.claim_token AS existing_dispatch_token,
+                           i.lease_expires_at, i.attempt_count
+                      FROM execution_decisions d
+                      JOIN execution_runs r ON r.approved_decision_id = d.id AND r.organization_id = d.organization_id
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                     WHERE d.id = ? AND d.organization_id = ? AND d.session_jti = ?
+                       AND d.worker_identity = ? AND d.operation_policy_revision = ?
+                       AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.consumed_at IS NULL
+                       AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
+                       AND d.expires_at > ? AND q.state = 'AUTHORIZED' AND q.expires_at > ?
+                       AND r.state IN ('REQUESTED', 'STARTING')
+                       AND ((i.state = 'PENDING') OR
+                            (i.state = 'CLAIMED' AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?))
+                     ORDER BY r.execution_id{lock}""",
+                (decision_id, organization_id, session_jti, worker_identity, policy_revision,
+                 now.isoformat(), now.isoformat(), worker_identity, dispatch_claim_token, now.isoformat()),
+            ).fetchall()
+            if len(rows) != 1:
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                    action=AuditAction.EXECUTION_DECISION_CLAIM_REJECTED, object_type="execution_decision",
+                    object_id=decision_id, result="REJECTED", correlation_id=f"corr-decision-{decision_id}",
+                    details={"reason_code": "EXECUTION_AUTHORITY_TUPLE_NOT_EXACTLY_ONE", "candidate_count": len(rows)},
+                ))
+                return None
+            row = rows[0]
+            if row["dispatch_state"] == "PENDING":
+                updated = conn.execute(
+                    """UPDATE execution_dispatch_intents SET state = 'CLAIMED', attempt_count = attempt_count + 1,
+                              claimed_at = ?, claimed_by = ?, claim_token = ?, lease_expires_at = ?
+                        WHERE execution_id = ? AND organization_id = ? AND state = 'PENDING'""",
+                    (now.isoformat(), worker_identity, dispatch_token, lease_expires_at.isoformat(), row["execution_id"], organization_id),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("execution authority dispatch claim lost its transaction fence")
+            else:
+                dispatch_token = row["existing_dispatch_token"]
+                lease_expires_at = datetime.fromisoformat(row["lease_expires_at"])
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = 'STARTING', worker_identity = ?
+                      WHERE execution_id = ? AND organization_id = ? AND state = 'REQUESTED'
+                        AND worker_identity = ?""",
+                (worker_identity, row["execution_id"], organization_id, worker_identity),
+            )
+            if run_update.rowcount != 1 and not (
+                row["run_state"] == "STARTING" and row["run_worker_identity"] == worker_identity
+            ):
+                raise RuntimeError("execution authority start transition lost its transaction fence")
+            updated = conn.execute(
+                """UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
+                      WHERE id = ? AND organization_id = ?
+                        AND approval_state = 'APPROVED' AND revoked_at IS NULL AND consumed_at IS NULL
+                        AND expires_at > ?
+                        AND (claim_owner IS NULL OR (claim_expires_at IS NOT NULL AND claim_expires_at <= ?))""",
+                (worker_identity, lease_expires_at.isoformat(), decision_token, decision_id, organization_id, now.isoformat(), now.isoformat()),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("execution authority decision claim lost its transaction fence")
+            correlation_id = row["correlation_id"] or f"corr-execution-{row['execution_id']}"
+            attempt_count = int(row["attempt_count"]) + (1 if row["dispatch_state"] == "PENDING" else 0)
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DECISION_CLAIMED, object_type="execution_decision",
+                object_id=decision_id, result="SUCCESS", correlation_id=correlation_id,
+                details={"execution_id": row["execution_id"], "claim_token": decision_token, "dispatch_claim_token": dispatch_token},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
+                object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"attempt_count": attempt_count, "claim_token": dispatch_token},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run",
+                object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"from": "REQUESTED", "to": "STARTING", "decision_id": decision_id},
+            ))
+            return ExecutionAuthorityLease(
+                decision=ExecutionLeaseClaim(token=decision_token, owner=worker_identity, expires_at=lease_expires_at),
+                dispatch=ExecutionDispatchLease(execution_id=row["execution_id"], organization_id=organization_id,
+                                                 owner=worker_identity, token=dispatch_token, expires_at=lease_expires_at,
+                                                 attempt_count=attempt_count),
+                execution_id=row["execution_id"], correlation_id=correlation_id,
+            )
+
+    def release_execution_authority(
+        self, decision_id: str, organization_id: str, worker_identity: str,
+        decision_claim_token: str, dispatch_claim_token: str,
+    ) -> bool:
+        """Atomically release both sides of an unstarted shared launch fence."""
+        if not decision_id or not organization_id or not worker_identity or not decision_claim_token or not dispatch_claim_token:
+            return False
+        with self._connection_scope() as conn:
+            decision = conn.execute(
+                "SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL",
+                (decision_id, organization_id, worker_identity, decision_claim_token),
+            ).fetchone()
+            if not decision:
+                return False
+            run = conn.execute(
+                """SELECT i.execution_id, r.correlation_id FROM execution_dispatch_intents i
+                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    WHERE i.organization_id = ? AND i.claimed_by = ? AND i.claim_token = ?
+                      AND i.state = 'CLAIMED' AND r.approved_decision_id = ?
+                      AND r.state IN ('REQUESTED', 'STARTING')""",
+                (organization_id, worker_identity, dispatch_claim_token, decision_id),
+            ).fetchone()
+            if not run:
+                return False
+            decision_update = conn.execute(
+                "UPDATE execution_decisions SET claim_owner = NULL, claim_expires_at = NULL, claim_token = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL",
+                (decision_id, organization_id, worker_identity, decision_claim_token),
+            )
+            dispatch_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = 'PENDING', claimed_by = NULL,
+                              claim_token = NULL, lease_expires_at = NULL, claimed_at = NULL
+                        WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                          AND claimed_by = ? AND claim_token = ?""",
+                (run["execution_id"], organization_id, worker_identity, dispatch_claim_token),
+            )
+            if decision_update.rowcount != 1 or dispatch_update.rowcount != 1:
+                raise RuntimeError("execution authority release lost its transaction fence")
+            correlation_id = run["correlation_id"] or f"corr-execution-{run['execution_id']}"
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DECISION_LEASE_RELEASED, object_type="execution_decision",
+                object_id=decision_id, result="SUCCESS", correlation_id=correlation_id,
+                details={"execution_id": run["execution_id"]},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_AUTHORITY_RELEASED, object_type="execution_dispatch_intent",
+                object_id=run["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"reason_code": "EXECUTION_AUTHORITY_RELEASED"},
+            ))
+            return True
+
+    def abort_execution_start(
+        self, decision_id: str, organization_id: str, worker_identity: str,
+        decision_claim_token: str, dispatch_claim_token: str, *,
+        terminal_state: str, reason_code: str,
+        process_id: Optional[int] = None, process_group_id: Optional[str] = None,
+    ) -> bool:
+        """Atomically terminalize a fenced STARTING run after launch failure."""
+        safe_states = {"FAILED", "CANCELLED", "TIMED_OUT", "EXECUTION_BLOCKED"}
+        if terminal_state not in safe_states or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
+            raise ValueError("execution start abort requires a safe terminal state and reason")
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                """SELECT i.execution_id, r.state AS run_state, r.correlation_id
+                     FROM execution_dispatch_intents i
+                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                     JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.organization_id = ? AND i.state = 'CLAIMED' AND i.claimed_by = ?
+                      AND i.claim_token = ? AND r.approved_decision_id = ?
+                      AND r.state = 'STARTING' AND d.claim_owner = ? AND d.claim_token = ?""",
+                (organization_id, worker_identity, dispatch_claim_token, decision_id, worker_identity, decision_claim_token),
+            ).fetchone()
+            if not row:
+                return False
+            dispatch_state = "BLOCKED" if terminal_state in {"CANCELLED", "EXECUTION_BLOCKED"} else "FAILED"
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = ?, reason_code = ?, process_id = COALESCE(?, process_id),
+                              process_group_id = COALESCE(?, process_group_id), finished_at = ?
+                        WHERE execution_id = ? AND organization_id = ? AND state = 'STARTING'""",
+                (terminal_state, reason_code, process_id, process_group_id, now, row["execution_id"], organization_id),
+            )
+            dispatch_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
+                              claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                        WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                          AND claimed_by = ? AND claim_token = ?""",
+                (dispatch_state, now, reason_code, row["execution_id"], organization_id, worker_identity, dispatch_claim_token),
+            )
+            decision_update = conn.execute(
+                """UPDATE execution_decisions SET claim_owner = NULL, claim_expires_at = NULL, claim_token = NULL
+                        WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL""",
+                (decision_id, organization_id, worker_identity, decision_claim_token),
+            )
+            if run_update.rowcount != 1 or dispatch_update.rowcount != 1 or decision_update.rowcount != 1:
+                raise RuntimeError("execution start abort lost its transaction fence")
+            correlation_id = row["correlation_id"] or f"corr-execution-{row['execution_id']}"
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_AUTHORITY_RELEASED, object_type="execution_run",
+                object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"to": terminal_state, "reason_code": reason_code, "dispatch_state": dispatch_state},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run",
+                object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"from": "STARTING", "to": terminal_state, "reason_code": reason_code},
+            ))
+            return True
+
+    def finish_execution(
+        self, execution_id: str, organization_id: str, worker_identity: str,
+        dispatch_claim_token: str, *, terminal_state: str,
+        reason_code: Optional[str] = None, process_id: Optional[int] = None,
+        process_group_id: Optional[str] = None,
+    ) -> bool:
+        """Atomically settle a running execution and its dispatch lease."""
+        allowed = {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
+        if terminal_state not in allowed or not execution_id or not organization_id or not worker_identity or not dispatch_claim_token:
+            return False
+        if not is_valid_execution_terminal_outcome(terminal_state, reason_code):
+            return False
+        now = utc_now().isoformat()
+        dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if terminal_state == "CANCELLED" else "FAILED")
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                """SELECT i.state AS dispatch_state, i.last_error, i.claimed_by, i.claim_token, i.lease_expires_at,
+                           r.state AS run_state, r.reason_code AS run_reason_code,
+                           r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at AS decision_expires_at,
+                           d.session_jti
+                     FROM execution_dispatch_intents i
+                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                     JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                     JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?
+                    FOR UPDATE""" if isinstance(self, PostgresDatabaseManager) else """SELECT i.state AS dispatch_state, i.last_error, i.claimed_by, i.claim_token, i.lease_expires_at,
+                           r.state AS run_state, r.reason_code AS run_reason_code,
+                           r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at AS decision_expires_at,
+                           d.session_jti
+                      FROM execution_dispatch_intents i
+                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                     WHERE i.execution_id = ? AND i.organization_id = ?""",
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row:
+                return False
+            # Capture the fence timestamp only after the PostgreSQL row lock
+            # has been acquired; a pre-lock timestamp could outlive authority
+            # while the transaction waits.
+            now = utc_now().isoformat()
+            if row["run_state"] in EXECUTION_RUN_TERMINAL_STATES:
+                expected_dispatch_state = "COMPLETED" if row["run_state"] in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if row["run_state"] == "CANCELLED" else "FAILED")
+                if (
+                    terminal_state == row["run_state"]
+                    and row["dispatch_state"] == expected_dispatch_state
+                    and row["run_reason_code"] == reason_code
+                    and row["last_error"] == reason_code
+                    and row["worker_identity"] == worker_identity
+                    and (process_id is None or row["process_id"] == process_id)
+                    and (process_group_id is None or row["process_group_id"] == process_group_id)
+                ):
+                    return True
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_FAILED, "EXECUTION_TERMINAL_OUTCOME_CONFLICT",
+                )
+                return False
+            if row["dispatch_state"] != "CLAIMED" or row["claimed_by"] != worker_identity or row["claim_token"] != dispatch_claim_token:
+                return False
+            if row["lease_expires_at"] is None or datetime.fromisoformat(row["lease_expires_at"]) <= utc_now():
+                return False
+            if row["run_state"] != "RUNNING" or row["worker_identity"] != worker_identity:
+                return False
+            if row["request_state"] != "AUTHORIZED" or row["approval_state"] != "APPROVED" or row["revoked_at"] is not None:
+                return False
+            if datetime.fromisoformat(row["request_expires_at"]) <= utc_now() or datetime.fromisoformat(row["decision_expires_at"]) <= utc_now():
+                return False
+            if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (row["session_jti"],)).fetchone():
+                return False
+            if process_id is not None and row["process_id"] != process_id:
+                return False
+            if process_group_id is not None and row["process_group_id"] != process_group_id:
+                return False
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = ?, reason_code = ?, process_id = COALESCE(?, process_id),
+                              process_group_id = COALESCE(?, process_group_id), finished_at = ?
+                    WHERE execution_id = ? AND organization_id = ? AND state = 'RUNNING'
+                      AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))
+                      AND (process_group_id = ? OR (? IS NULL AND process_group_id IS NULL))
+                      AND EXISTS (
+                          SELECT 1 FROM execution_runs r2
+                          JOIN execution_requests q2 ON q2.id = r2.request_id
+                             AND q2.organization_id = r2.organization_id
+                          JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id
+                             AND d2.organization_id = r2.organization_id
+                          WHERE r2.execution_id = execution_runs.execution_id
+                            AND r2.organization_id = execution_runs.organization_id
+                            AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                            AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL
+                            AND d2.expires_at > ?
+                            AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d2.session_jti)
+                      )""",
+                (terminal_state, reason_code, process_id, process_group_id, now, execution_id, organization_id, worker_identity, process_id, process_id, process_group_id, process_group_id, now, now),
+            )
+            dispatch_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
+                          claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                    WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                      AND claimed_by = ? AND claim_token = ?
+                      AND EXISTS (
+                          SELECT 1 FROM execution_runs r2
+                          JOIN execution_requests q2 ON q2.id = r2.request_id
+                             AND q2.organization_id = r2.organization_id
+                          JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id
+                             AND d2.organization_id = r2.organization_id
+                          WHERE r2.execution_id = execution_dispatch_intents.execution_id
+                            AND r2.organization_id = execution_dispatch_intents.organization_id
+                            AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                            AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL
+                            AND d2.expires_at > ?
+                            AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d2.session_jti)
+                      )""",
+                (dispatch_state, now, reason_code, execution_id, organization_id, worker_identity, dispatch_claim_token, now, now),
+            )
+            if run_update.rowcount != 1 or dispatch_update.rowcount != 1:
+                raise RuntimeError("execution finish lost its transaction fence")
+            correlation_id = row["correlation_id"] or f"corr-execution-{execution_id}"
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_COMPLETED if dispatch_state == "COMPLETED" else AuditAction.EXECUTION_DISPATCH_FAILED,
+                object_type="execution_dispatch_intent", object_id=execution_id, result="SUCCESS",
+                correlation_id=correlation_id, details={"terminal_state": terminal_state, "reason_code": reason_code},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", correlation_id=correlation_id,
+                details={"from": "RUNNING", "to": terminal_state, "reason_code": reason_code},
+            ))
+            return True
+
+    def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, dispatch_claim_token: Optional[str] = None, process_id: Optional[int] = None, process_group_id: Optional[str] = None, now: Optional[datetime] = None) -> bool:
+        now = now or utc_now()
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                """UPDATE execution_decisions SET started_at = ?, consumed_at = ?, claim_expires_at = NULL
+                   WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ?
+                     AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND claim_expires_at > ?
+                     AND EXISTS (
+                            SELECT 1
+                              FROM execution_runs r
+                              JOIN execution_requests q ON q.id = r.request_id
+                                AND q.organization_id = r.organization_id
+                              JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id
+                                AND i.organization_id = r.organization_id
+                             WHERE r.approved_decision_id = execution_decisions.id
+                               AND r.organization_id = execution_decisions.organization_id
+                               AND q.state = 'AUTHORIZED' AND q.expires_at > ?
+                                AND i.state = 'CLAIMED' AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?
+                                AND r.state = 'STARTING'
+                                AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = execution_decisions.session_jti)
+                               AND (SELECT COUNT(*) FROM execution_runs r2
+                                      JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                                      JOIN execution_dispatch_intents i2 ON i2.execution_id = r2.execution_id AND i2.organization_id = r2.organization_id
+                                     WHERE r2.approved_decision_id = execution_decisions.id AND r2.organization_id = execution_decisions.organization_id) = 1
+                         )""",
+                (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat(), worker_identity, dispatch_claim_token, now.isoformat()),
+            )
+            if cur.rowcount == 1:
+                run_update = conn.execute(
+                    """UPDATE execution_runs SET state = 'RUNNING', process_id = ?, process_group_id = ?,
+                              started_at = COALESCE(started_at, ?)
+                        WHERE approved_decision_id = ? AND organization_id = ? AND state = 'STARTING'
+                          AND worker_identity = ?""",
+                    (process_id, process_group_id, now.isoformat(), decision_id, organization_id, worker_identity),
+                )
+                if run_update.rowcount != 1:
+                    raise RuntimeError("execution run could not commit RUNNING after process creation")
+                correlation_id = self._execution_correlation_id_conn(conn, organization_id=organization_id, decision_id=decision_id)
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_STARTED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_CONSUMED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", correlation_id=correlation_id, details={"claim_token": claim_token}))
+            return cur.rowcount == 1
+
+    def release_execution_decision_claim(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str) -> bool:
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                "UPDATE execution_decisions SET claim_owner = NULL, claim_expires_at = NULL, claim_token = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL",
+                (decision_id, organization_id, worker_identity, claim_token),
+            )
+            if cur.rowcount == 1:
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id, action=AuditAction.EXECUTION_DECISION_LEASE_RELEASED, object_type="execution_decision", object_id=decision_id, result="SUCCESS", details={"claim_token": claim_token}))
+            return cur.rowcount == 1
+
+    def revoke_execution_decision(self, decision_id: str, organization_id: str, actor: str) -> bool:
+        """Revoke a decision without deleting its audit-relevant record."""
+        with self._connection_scope() as conn:
+            if not organization_id or not actor:
+                raise ValueError("tenant scope and revoking actor are required")
+            now = utc_now().isoformat()
+            query = "UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL"
+            params: List[Any] = [now, decision_id, organization_id]
+            cur = conn.execute(query, params)
+            changed = cur.rowcount > 0
+            if changed:
+                linked_runs = conn.execute(
+                    """SELECT r.execution_id, r.request_id, r.state, i.state AS dispatch_state
+                         FROM execution_runs r
+                         LEFT JOIN execution_dispatch_intents i
+                           ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                        WHERE r.approved_decision_id = ? AND r.organization_id = ?""",
+                    (decision_id, organization_id),
+                ).fetchall()
+                inconsistent_runs = [
+                    row["execution_id"] for row in linked_runs
+                    if row["dispatch_state"] is None
+                ]
+                if inconsistent_runs:
+                    conn.rollback()
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                        action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED, object_type="execution_decision",
+                        object_id=decision_id, result="FAILURE", correlation_id=f"corr-decision-{decision_id}",
+                        details={"reason_code": "LINKED_DISPATCH_INTENT_MISSING", "execution_ids": inconsistent_runs},
+                    ))
+                    conn.commit()
+                    raise ValueError("execution decision has a linked run without a dispatch intent")
+                conn.execute(
+                    "UPDATE execution_requests SET state = 'REVOKED' WHERE approved_decision_id = ? AND organization_id = ? AND state = 'AUTHORIZED'",
+                    (decision_id, organization_id),
+                )
+                blocked = conn.execute(
+                    """UPDATE execution_dispatch_intents SET state = 'BLOCKED', completed_at = ?,
+                           last_error = 'EXECUTION_CANCELLED_BEFORE_DISPATCH'
+                       WHERE execution_id IN (SELECT execution_id FROM execution_runs WHERE approved_decision_id = ? AND organization_id = ?)
+                         AND organization_id = ? AND state = 'PENDING'""",
+                    (now, decision_id, organization_id, organization_id),
+                )
+                if blocked.rowcount:
+                    run_update = conn.execute(
+                        """UPDATE execution_runs SET state = 'CANCELLED', reason_code = ?, finished_at = ?
+                           WHERE approved_decision_id = ? AND organization_id = ? AND state = 'REQUESTED'""",
+                        ("EXECUTION_CANCELLED_BEFORE_DISPATCH", now, decision_id, organization_id),
+                    )
+                    if run_update.rowcount:
+                        for linked_run in linked_runs:
+                            if linked_run["state"] == "REQUESTED":
+                                self._insert_audit_event_conn(conn, AuditEvent(
+                                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                                    organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                                    object_type="execution_run", object_id=linked_run["execution_id"], result="SUCCESS",
+                                    correlation_id=self._execution_correlation_id_conn(conn, linked_run["execution_id"], organization_id),
+                                    details={"from": "REQUESTED", "to": "CANCELLED", "reason_code": "EXECUTION_CANCELLED_BEFORE_DISPATCH"},
+                                ))
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                    organization_id=organization_id, action=AuditAction.EXECUTION_CANCEL_REQUESTED,
+                    object_type="execution_decision", object_id=decision_id, result="SUCCESS",
+                    correlation_id=self._execution_correlation_id_conn(conn, linked_runs[0]["execution_id"], organization_id) if linked_runs else f"corr-decision-{decision_id}",
+                    details={"propagated_execution_ids": [row["execution_id"] for row in linked_runs]},
+                ))
+                self._insert_audit_event_conn(
+                    conn,
+                    AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                        organization_id=organization_id,
+                        action=AuditAction.EXECUTION_DECISION_REVOKED,
+                        object_type="execution_decision", object_id=decision_id,
+                        result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, organization_id=organization_id, decision_id=decision_id),
+                        details={"decision_id": decision_id},
+                    ),
+                )
+            return changed
 
     # ========================================================================
     # 2. Immutable Audit Logging with Cryptographic Chained Hashes
@@ -706,7 +4370,7 @@ class DatabaseManager:
         already holds a write transaction to avoid a second-connection deadlock on SQLite."""
         if event.correlation_id is None:
             from app.core.correlation import get_correlation_id
-            event.correlation_id = get_correlation_id()
+            event.correlation_id = get_correlation_id() or f"corr-{uuid.uuid4().hex}"
 
         # The chain predecessor and sequence number must be read and written
         # as one serialized operation.  SQLite needs an immediate write lock
@@ -758,7 +4422,7 @@ class DatabaseManager:
         """Appends an immutable security audit event to the relational audit log with chained cryptographic hash."""
         if event.correlation_id is None:
             from app.core.correlation import get_correlation_id
-            event.correlation_id = get_correlation_id()
+            event.correlation_id = get_correlation_id() or f"corr-{uuid.uuid4().hex}"
         with self._connection_scope() as conn:
             self._insert_audit_event_conn(conn, event)
 
@@ -950,6 +4614,675 @@ class DatabaseManager:
             else:
                 cur.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
             return cur.rowcount > 0
+
+    def revoke_execution_request(self, request_id: str, organization_id: str, actor: str) -> bool:
+        """Atomically revoke a tenant-scoped request and its linked decision."""
+        if not organization_id or not actor:
+            return False
+        with self._connection_scope() as conn:
+            cur = conn.cursor()
+            authority_lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            # Keep request -> decision lock order identical to run creation.
+            cur.execute(f"SELECT state, approved_decision_id FROM execution_requests WHERE id = ? AND organization_id = ?{authority_lock}", (request_id, organization_id))
+            row = cur.fetchone()
+            if not row:
+                return False
+            if row["approved_decision_id"]:
+                # Acquire the decision lock before any audit-chain lock or
+                # mutation, preserving the global request -> decision order.
+                cur.execute(f"SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ?{authority_lock}", (row["approved_decision_id"], organization_id))
+                decision_row = cur.fetchone()
+                if not decision_row:
+                    # Roll back the state transaction before recording the
+                    # invariant failure.  The connection scope will commit
+                    # this sanitized event while leaving request state intact.
+                    conn.rollback()
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                        action=AuditAction.EXECUTION_AUTHORITY_INVARIANT_FAILED, object_type="execution_request", object_id=request_id,
+                        result="FAILURE", details={"reason_code": "APPROVED_DECISION_REFERENCE_MISSING"},
+                    ))
+                    conn.commit()
+                    raise ValueError("execution request has an invalid approved decision reference")
+            now = utc_now().isoformat()
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                action=AuditAction.EXECUTION_CANCEL_REQUESTED, object_type="execution_request", object_id=request_id,
+                result="SUCCESS", details={"decision_id": row["approved_decision_id"]},
+            ))
+            if row["approved_decision_id"]:
+                cur.execute("UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL", (now, row["approved_decision_id"], organization_id))
+            cur.execute("UPDATE execution_requests SET state = 'REVOKED' WHERE id = ? AND organization_id = ? AND state != 'REVOKED'", (request_id, organization_id))
+            changed = cur.rowcount > 0
+            execution_row = cur.execute(
+                "SELECT execution_id FROM execution_runs WHERE request_id = ? AND organization_id = ?",
+                (request_id, organization_id),
+            ).fetchone()
+            if execution_row:
+                dispatch_row = cur.execute(
+                    "SELECT state FROM execution_dispatch_intents WHERE execution_id = ? AND organization_id = ?",
+                    (execution_row["execution_id"], organization_id),
+                ).fetchone()
+                if dispatch_row and dispatch_row["state"] == "PENDING":
+                    blocked = cur.execute(
+                        "UPDATE execution_dispatch_intents SET state = 'BLOCKED', completed_at = ?, last_error = ? WHERE execution_id = ? AND organization_id = ? AND state = 'PENDING'",
+                        (now, "EXECUTION_CANCELLED_BEFORE_DISPATCH", execution_row["execution_id"], organization_id),
+                    )
+                    if blocked.rowcount == 1:
+                        run_update = cur.execute(
+                            "UPDATE execution_runs SET state = 'CANCELLED', reason_code = ?, finished_at = ? WHERE execution_id = ? AND organization_id = ? AND state = 'REQUESTED'",
+                            ("EXECUTION_CANCELLED_BEFORE_DISPATCH", now, execution_row["execution_id"], organization_id),
+                        )
+                        if run_update.rowcount == 1:
+                            self._insert_audit_event_conn(conn, AuditEvent(
+                                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                                organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                                object_type="execution_run", object_id=execution_row["execution_id"], result="SUCCESS",
+                                correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                                details={"from": "REQUESTED", "to": "CANCELLED", "reason_code": "EXECUTION_CANCELLED_BEFORE_DISPATCH"},
+                            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DECISION_REVOKED, object_type="execution_request", object_id=request_id,
+                result="SUCCESS" if changed else "REPLAY", details={"decision_id": row["approved_decision_id"]},
+            ))
+            return changed or row["state"] == "REVOKED"
+
+    def _record_dispatch_rejection_conn(
+        self,
+        conn,
+        execution_id: str,
+        organization_id: str,
+        actor: str,
+        action: AuditAction,
+        reason_code: str,
+    ) -> None:
+        """Record a sanitized dispatch-control rejection inside its transaction."""
+        self._insert_audit_event_conn(conn, AuditEvent(
+            id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor or "system",
+            organization_id=organization_id or "unknown",
+            action=action, object_type="execution_dispatch_intent", object_id=execution_id or "unknown",
+            result="REJECTED", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+            details={"reason_code": reason_code},
+        ))
+
+    def _execution_correlation_id_conn(self, conn, execution_id: Optional[str] = None, organization_id: Optional[str] = None, decision_id: Optional[str] = None) -> str:
+        """Return the stable durable lifecycle correlation for one execution."""
+        if not organization_id:
+            raise ValueError("organization_id is required for lifecycle correlation")
+        if decision_id and not execution_id:
+            row = conn.execute(
+                "SELECT correlation_id FROM execution_runs WHERE approved_decision_id = ? AND organization_id = ? ORDER BY created_at, execution_id LIMIT 1",
+                (decision_id, organization_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT correlation_id FROM execution_runs WHERE execution_id = ? AND organization_id = ?",
+                (execution_id, organization_id),
+            ).fetchone()
+        if row and row["correlation_id"]:
+            return str(row["correlation_id"])
+        current = get_correlation_id()
+        if current:
+            return current
+        durable_key = decision_id or execution_id or "unknown"
+        return "corr-execution-" + hashlib.sha256(f"{organization_id}:{durable_key}".encode()).hexdigest()[:32]
+
+    def claim_execution_dispatch_intent(
+        self,
+        execution_id: str,
+        organization_id: str,
+        worker_identity: str,
+        lease_seconds: int = 30,
+        now: Optional[datetime] = None,
+    ) -> Optional[ExecutionDispatchLease]:
+        """Atomically claim one authorized dispatch intent for a worker."""
+        if not execution_id or not organization_id or not worker_identity or lease_seconds <= 0:
+            raise ValueError("dispatch lease identity and duration are required")
+        now = now or utc_now()
+        expires_at = now + timedelta(seconds=lease_seconds)
+        token = uuid.uuid4().hex
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                f"""SELECT i.state, i.attempt_count, i.lease_expires_at, r.request_id,
+                    q.state AS request_state, q.expires_at AS request_expires_at,
+                    d.approval_state, d.revoked_at, d.expires_at,
+                    d.worker_identity
+                    FROM execution_dispatch_intents i
+                    JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                    LEFT JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?{lock}""",
+                (execution_id, organization_id),
+            ).fetchone()
+            if (
+                not row
+                or row["request_state"] != "AUTHORIZED"
+                or row["approval_state"] != "APPROVED"
+                or row["worker_identity"] != worker_identity
+            ):
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_CLAIMED, "DISPATCH_AUTHORITY_INVALID",
+                )
+                return None
+            if (
+                row["revoked_at"] is not None
+                or datetime.fromisoformat(row["expires_at"]) <= now
+                or datetime.fromisoformat(row["request_expires_at"]) <= now
+            ):
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_CLAIMED, "DISPATCH_AUTHORITY_REVOKED_OR_EXPIRED",
+                )
+                return None
+            lease_expired = row["lease_expires_at"] is None or datetime.fromisoformat(row["lease_expires_at"]) <= now
+            if row["state"] == "CLAIMED" and not lease_expired:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_CLAIMED, "DISPATCH_LEASE_ALREADY_HELD",
+                )
+                return None
+            if row["state"] != "PENDING" and not (row["state"] == "CLAIMED" and lease_expired):
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_CLAIMED, "DISPATCH_STATE_NOT_CLAIMABLE",
+                )
+                return None
+            updated = conn.execute(
+                """UPDATE execution_dispatch_intents
+                   SET state = 'CLAIMED', attempt_count = attempt_count + 1,
+                       claimed_at = ?, claimed_by = ?, claim_token = ?, lease_expires_at = ?
+                   WHERE execution_id = ? AND organization_id = ?
+                     AND ((state = 'PENDING') OR (state = 'CLAIMED' AND lease_expires_at <= ?))""",
+                (now.isoformat(), worker_identity, token, expires_at.isoformat(), execution_id, organization_id, now.isoformat()),
+            )
+            if updated.rowcount != 1:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_CLAIMED, "DISPATCH_CLAIM_RACE_LOST",
+                )
+                return None
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"attempt_count": int(row["attempt_count"]) + 1},
+            ))
+            return ExecutionDispatchLease(
+                execution_id=execution_id, organization_id=organization_id, owner=worker_identity,
+                token=token, expires_at=expires_at, attempt_count=int(row["attempt_count"]) + 1,
+            )
+
+    def renew_execution_dispatch_lease(
+        self,
+        execution_id: str,
+        organization_id: str,
+        worker_identity: str,
+        claim_token: str,
+        lease_seconds: int = 30,
+        now: Optional[datetime] = None,
+    ) -> Optional[datetime]:
+        """Renew only the currently held dispatch lease before it expires."""
+        if not execution_id or not organization_id or not worker_identity or not claim_token or lease_seconds <= 0:
+            return None
+        now = now or utc_now()
+        expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            authority = conn.execute(
+                f"""SELECT q.expires_at AS request_expires_at, d.expires_at AS decision_expires_at,
+                           d.session_jti
+                      FROM execution_dispatch_intents i
+                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                     WHERE i.execution_id = ? AND i.organization_id = ? AND i.state = 'CLAIMED'
+                       AND i.claimed_by = ? AND i.claim_token = ?{lock}""",
+                (execution_id, organization_id, worker_identity, claim_token),
+            ).fetchone()
+            if not authority or conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (authority["session_jti"],)).fetchone():
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, "DISPATCH_AUTHORITY_REVOKED",
+                )
+                return None
+            expires_at = min(
+                expires_at,
+                datetime.fromisoformat(authority["request_expires_at"]),
+                datetime.fromisoformat(authority["decision_expires_at"]),
+            )
+            cur = conn.execute(
+                """UPDATE execution_dispatch_intents SET lease_expires_at = ?
+                   WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                     AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
+                       AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'AUTHORIZED' AND q.expires_at > ? AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ? AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti))""",
+                 (expires_at.isoformat(), execution_id, organization_id, worker_identity, claim_token, now.isoformat(), execution_id, organization_id, now.isoformat(), now.isoformat(), worker_identity),
+            )
+            if cur.rowcount != 1:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, "DISPATCH_LEASE_RENEWAL_REJECTED",
+                )
+                return None
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={},
+            ))
+            return expires_at
+
+    def acknowledge_execution_cancellation(
+        self, execution_id: str, organization_id: str, worker_identity: str, claim_token: str,
+    ) -> bool:
+        """Durably acknowledge cancellation and close a worker-held dispatch lease."""
+        if not execution_id or not organization_id or not worker_identity or not claim_token:
+            return False
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = 'BLOCKED', completed_at = ?,
+                       last_error = 'EXECUTION_CANCELLED_ACKNOWLEDGED', claimed_by = NULL,
+                       claim_token = NULL, lease_expires_at = NULL
+                   WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                     AND claimed_by = ? AND claim_token = ?
+                     AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND d.worker_identity = ? AND (q.state = 'REVOKED' OR d.revoked_at IS NOT NULL))""",
+                (now, execution_id, organization_id, worker_identity, claim_token, execution_id, organization_id, worker_identity),
+            )
+            if cur.rowcount != 1:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED, "DISPATCH_CANCELLATION_ACK_REJECTED",
+                )
+                return False
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = 'CANCELLED',
+                       reason_code = 'EXECUTION_CANCELLED_ACKNOWLEDGED', finished_at = ?
+                   WHERE execution_id = ? AND organization_id = ?
+                     AND state IN ('REQUESTED', 'STARTING', 'RUNNING')""",
+                (now, execution_id, organization_id),
+            )
+            if run_update.rowcount != 1:
+                raise RuntimeError("cancellation acknowledgement could not terminalize its execution run")
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", details={"from": "ACTIVE", "to": "CANCELLED", "reason_code": "EXECUTION_CANCELLED_ACKNOWLEDGED"},
+            ))
+            return True
+
+    def reap_execution_dispatch(
+        self,
+        execution_id: str,
+        organization_id: str,
+        *,
+        terminal_state: str,
+        reason_code: str,
+        actor: str = "execution-reaper",
+    ) -> bool:
+        """Fail closed after lease/authority loss without permitting success."""
+        safe_states = {"CANCELLED", "TIMED_OUT", "FAILED", "EXECUTION_BLOCKED"}
+        if terminal_state not in safe_states or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
+            raise ValueError("reaper requires a reason-coded safe terminal state")
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                f"""SELECT i.state, i.lease_expires_at, r.state AS run_state,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at, d.session_jti
+                    FROM execution_dispatch_intents i
+                    JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                    JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?{lock}""",
+                (execution_id, organization_id),
+            ).fetchone()
+            # The terminal timestamp is captured after the authority lock/read
+            # so audit and SLA data cannot predate a long lock wait.
+            now = utc_now().isoformat()
+            now_dt = datetime.fromisoformat(now)
+            expired_or_revoked = (
+                row
+                and (
+                    row["request_state"] == "REVOKED"
+                    or row["approval_state"] != "APPROVED"
+                    or row["revoked_at"] is not None
+                    or row["request_expires_at"] is None
+                    or datetime.fromisoformat(row["request_expires_at"]) <= now_dt
+                    or row["expires_at"] is None
+                    or datetime.fromisoformat(row["expires_at"]) <= now_dt
+                    or conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (row["session_jti"],)).fetchone()
+                    or (
+                        row["state"] == "CLAIMED"
+                        and (
+                            row["lease_expires_at"] is None
+                            or datetime.fromisoformat(row["lease_expires_at"]) <= now_dt
+                        )
+                    )
+                )
+            )
+            if not expired_or_revoked or row["run_state"] in EXECUTION_RUN_TERMINAL_STATES:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, actor,
+                    AuditAction.EXECUTION_DISPATCH_FAILED, "DISPATCH_REAPER_NOT_ELIGIBLE",
+                )
+                return False
+            dispatch_state = "BLOCKED" if terminal_state in {"CANCELLED", "EXECUTION_BLOCKED"} else "FAILED"
+            intent_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
+                       claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                   WHERE execution_id = ? AND organization_id = ? AND state IN ('PENDING', 'CLAIMED')""",
+                (dispatch_state, now, reason_code, execution_id, organization_id),
+            )
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = ?, reason_code = ?, finished_at = ?
+                   WHERE execution_id = ? AND organization_id = ?
+                     AND state NOT IN ('SUCCEEDED', 'PARTIAL_RESULTS_WITH_WARNING', 'FAILED', 'TIMED_OUT', 'CANCELLED', 'EXECUTION_BLOCKED')""",
+                (terminal_state, reason_code, now, execution_id, organization_id),
+            )
+            if intent_update.rowcount != 1 or run_update.rowcount != 1:
+                raise RuntimeError("execution reaper could not atomically settle run and dispatch intent")
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_FAILED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={"reason_code": reason_code, "state": dispatch_state},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"to": terminal_state, "reason_code": reason_code},
+            ))
+            return True
+
+    def settle_execution_dispatch_intent(
+        self, execution_id: str, organization_id: str, worker_identity: str, claim_token: str,
+        *, success: bool, error_code: Optional[str] = None,
+    ) -> bool:
+        """Atomically settle a claimed dispatch and its linked execution run."""
+        if not execution_id or not organization_id or not worker_identity or not claim_token:
+            return False
+        if success and error_code:
+            raise ValueError("successful dispatch cannot carry an error code")
+        now = utc_now().isoformat()
+        new_state = "COMPLETED" if success else "FAILED"
+        message = None if success else (error_code or "EXECUTION_DISPATCH_FAILED")
+        if not is_valid_execution_terminal_outcome("SUCCEEDED" if success else "FAILED", message):
+            raise ValueError("dispatch settlement reason is not a valid terminal outcome")
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                f"""SELECT i.state, i.claimed_by, i.claim_token, i.lease_expires_at, r.state AS run_state,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at, d.session_jti,
+                           d.worker_identity
+                    FROM execution_dispatch_intents i
+                    JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                    JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?{lock}""",
+                (execution_id, organization_id),
+            ).fetchone()
+            now = utc_now().isoformat()
+            current = (
+                row
+                and row["state"] == "CLAIMED"
+                and row["claimed_by"] == worker_identity
+                and row["claim_token"] == claim_token
+                and row["lease_expires_at"] is not None
+                and datetime.fromisoformat(row["lease_expires_at"]) > utc_now()
+                and row["run_state"] in {"REQUESTED", "STARTING", "RUNNING"}
+                and row["request_state"] == "AUTHORIZED"
+                and row["approval_state"] == "APPROVED"
+                and row["revoked_at"] is None
+                and not conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (row["session_jti"],)).fetchone()
+                and row["expires_at"] is not None
+                and datetime.fromisoformat(row["expires_at"]) > utc_now()
+                and row["request_expires_at"] is not None
+                and datetime.fromisoformat(row["request_expires_at"]) > utc_now()
+                and row["worker_identity"] == worker_identity
+            )
+            if not current or not success and not message:
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_COMPLETED if success else AuditAction.EXECUTION_DISPATCH_FAILED,
+                    "DISPATCH_SETTLEMENT_REJECTED",
+                )
+                return False
+            run_state = "SUCCEEDED" if success else "FAILED"
+            dispatch_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
+                       claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                   WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                     AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
+                     AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)
+                     AND EXISTS (SELECT 1 FROM execution_runs r2
+                         JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                         JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id AND d2.organization_id = r2.organization_id
+                         WHERE r2.execution_id = ? AND r2.organization_id = ?
+                           AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                           AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)""",
+                (new_state, now, message, execution_id, organization_id, worker_identity, claim_token, now, row["session_jti"], execution_id, organization_id, now, now),
+            )
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), finished_at = ?
+                   WHERE execution_id = ? AND organization_id = ? AND state IN ('REQUESTED','STARTING','RUNNING')
+                     AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)
+                     AND EXISTS (SELECT 1 FROM execution_requests q2
+                         JOIN execution_decisions d2 ON d2.id = (SELECT approved_decision_id FROM execution_runs r2 WHERE r2.execution_id = execution_runs.execution_id AND r2.organization_id = execution_runs.organization_id)
+                         WHERE q2.id = (SELECT request_id FROM execution_runs r3 WHERE r3.execution_id = execution_runs.execution_id AND r3.organization_id = execution_runs.organization_id)
+                           AND q2.organization_id = execution_runs.organization_id
+                           AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                           AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)""",
+                (run_state, message, now, execution_id, organization_id, row["session_jti"], now, now),
+            )
+            if dispatch_update.rowcount != 1 or run_update.rowcount != 1:
+                raise RuntimeError("execution dispatch settlement could not atomically settle its run")
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_COMPLETED if success else AuditAction.EXECUTION_DISPATCH_FAILED,
+                object_type="execution_dispatch_intent", object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"error_code": message} if message else {},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                details={"to": run_state, "reason_code": message},
+            ))
+            return True
+
+    def create_execution_run(self, run: ExecutionRunRecord) -> ExecutionRunRecord:
+        with self._connection_scope() as conn:
+            if run.state not in EXECUTION_RUN_STATES or not run.request_id or not run.organization_id:
+                raise ValueError("execution run state or identity is invalid")
+            if run.state != "REQUESTED":
+                raise ValueError("execution run must be created in REQUESTED state")
+            # Lock authority rows for the entire request-to-run transaction on
+            # PostgreSQL so revoke/expiry cannot race validation and insertion.
+            authority_lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            request_row = conn.execute(f"SELECT state, approved_decision_id, expires_at FROM execution_requests WHERE id = ? AND organization_id = ?{authority_lock}", (run.request_id, run.organization_id)).fetchone()
+            if not request_row or request_row["state"] != "AUTHORIZED" or not request_row["approved_decision_id"]:
+                raise ValueError("execution run request is not tenant-bound")
+            decision_row = conn.execute(f"SELECT * FROM execution_decisions WHERE id = ? AND organization_id = ? AND approval_state = 'APPROVED' AND revoked_at IS NULL{authority_lock}", (request_row["approved_decision_id"], run.organization_id)).fetchone()
+            if not decision_row:
+                raise ValueError("execution run has no current approved decision")
+            # Capture time only after both row locks have been acquired; a
+            # blocked lock wait must not make expired authority appear valid.
+            now = utc_now()
+            if datetime.fromisoformat(request_row["expires_at"]) <= now or datetime.fromisoformat(decision_row["expires_at"]) <= now:
+                raise ValueError("execution run request is expired")
+            request_full = conn.execute("SELECT * FROM execution_requests WHERE id = ? AND organization_id = ?", (run.request_id, run.organization_id)).fetchone()
+            if any([
+                request_full["project_id"] != decision_row["project_id"], request_full["asset_id"] != decision_row["asset_id"],
+                request_full["target_id"] != decision_row["target_id"], request_full["authorization_decision_id"] != decision_row["authorization_decision_id"],
+                request_full["target_policy_version"] != decision_row["target_policy_version"], request_full["tool_id"] != decision_row["tool_id"],
+                request_full["operation_family"] != decision_row["operation_family"], request_full["operation_options_json"] != decision_row["operation_options_json"],
+                request_full["operation_policy_revision"] != decision_row["operation_policy_revision"], request_full["resource_budget_json"] != decision_row["resource_budget_json"],
+                request_full["account_impact_budget_json"] != decision_row["account_impact_budget_json"], request_full["credential_scope_json"] != decision_row["credential_scope_json"],
+            ]):
+                raise ValueError("execution request and approved decision authority binding does not match")
+            conn.execute(
+                """INSERT INTO execution_runs (
+                    execution_id, request_id, organization_id, approved_decision_id,
+                    target_policy_version, operation_policy_revision, request_fingerprint,
+                    operation_options_json, resource_budget_json, account_impact_budget_json,
+                    credential_scope_json, snapshot_completeness, state, worker_identity, process_id, process_group_id,
+                    assurance_state, coverage_state, reason_code, evidence_ref, correlation_id,
+                    created_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run.execution_id, run.request_id, run.organization_id, decision_row["id"],
+                 decision_row["target_policy_version"], decision_row["operation_policy_revision"],
+                 request_full["request_fingerprint"], decision_row["operation_options_json"],
+                 decision_row["resource_budget_json"], decision_row["account_impact_budget_json"],
+                 decision_row["credential_scope_json"], "COMPLETE", run.state, run.worker_identity,
+                 run.process_id, run.process_group_id, run.assurance_state, run.coverage_state,
+                 run.reason_code, run.evidence_ref, run.correlation_id,
+                run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None,
+                 run.finished_at.isoformat() if run.finished_at else None),
+            )
+            conn.execute(
+                """INSERT INTO execution_process_ownership
+                (execution_id, organization_id, ownership_state, container_type,
+                 launch_commit_state, correlation_id, created_at, updated_at)
+                VALUES (?, ?, 'UNKNOWN', 'NONE', 'NOT_ATTEMPTED', ?, ?, ?)""",
+                (run.execution_id, run.organization_id, run.correlation_id or f"corr-execution-{run.execution_id}",
+                 run.created_at.isoformat(), run.created_at.isoformat()),
+            )
+            conn.execute(
+                "INSERT INTO execution_recovery_state (execution_id, organization_id, status, attempt_number, escalation_level, updated_at) VALUES (?, ?, 'REQUESTED', 0, 0, ?)",
+                (run.execution_id, run.organization_id, run.created_at.isoformat()),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=run.worker_identity or "system", organization_id=run.organization_id, action=AuditAction.EXECUTION_RUN_CREATED, object_type="execution_run", object_id=run.execution_id, result="SUCCESS", details={"request_id": run.request_id, "state": run.state}))
+            return run
+
+    def transition_execution_run(self, execution_id: str, organization_id: str, expected_state: str, new_state: str, *, reason_code: Optional[str] = None, process_id: Optional[int] = None, worker_identity: Optional[str] = None, dispatch_claim_token: Optional[str] = None) -> bool:
+        with self._connection_scope() as conn:
+            if expected_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_TRANSITIONS.get(expected_state, frozenset()):
+                return False
+            if new_state in EXECUTION_RUN_TERMINAL_STATES and not is_valid_execution_terminal_outcome(new_state, reason_code):
+                return False
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            now = utc_now().isoformat()
+            authority = conn.execute(
+                ("""SELECT q.state AS request_state, q.expires_at AS request_expires_at,
+                          d.approval_state, d.revoked_at, d.expires_at,
+                          i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
+                          d.worker_identity AS approved_worker_identity, d.session_jti
+                   FROM execution_runs r
+                   JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                   JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                   JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                   WHERE r.execution_id = ? AND r.organization_id = ?"""
+                + (" FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else "")),
+                (execution_id, organization_id),
+            ).fetchone()
+            now = utc_now().isoformat()
+            if not authority:
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
+                    organization_id=organization_id or "unknown", action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                    object_type="execution_run", object_id=execution_id or "unknown", result="REJECTED",
+                    correlation_id=get_correlation_id() or f"corr-execution-{execution_id}",
+                    details={"reason_code": "EXECUTION_AUTHORITY_RECORD_MISSING", "from": expected_state, "to": new_state},
+                ))
+                return False
+            now_dt = datetime.fromisoformat(now)
+            authority_current = (
+                authority["request_state"] == "AUTHORIZED"
+                and authority["approval_state"] == "APPROVED"
+                and authority["revoked_at"] is None
+                and not conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (authority["session_jti"],)).fetchone()
+                and authority["expires_at"] is not None
+                and datetime.fromisoformat(authority["expires_at"]) > now_dt
+                and authority["request_expires_at"] is not None
+                and datetime.fromisoformat(authority["request_expires_at"]) > now_dt
+            )
+            dispatch_fence = (
+                authority["dispatch_state"] == "CLAIMED"
+                and authority["claimed_by"] == worker_identity
+                and authority["claim_token"] == dispatch_claim_token
+                and authority["lease_expires_at"] is not None
+                and datetime.fromisoformat(authority["lease_expires_at"]) > now_dt
+                and authority["approved_worker_identity"] == worker_identity
+            )
+            safe_abort_after_expiry = (
+                new_state in {"CANCELLED", "TIMED_OUT", "FAILED", "EXECUTION_BLOCKED"}
+                and bool(reason_code and reason_code.strip())
+                and not authority_current
+            )
+            allowed = dispatch_fence and (
+                authority_current
+                or safe_abort_after_expiry
+            )
+            if not allowed:
+                reason_code_for_rejection = (
+                    "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED"
+                    if new_state != "CANCELLED" and not authority_current
+                    else "EXECUTION_DISPATCH_FENCE_REQUIRED"
+                )
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
+                    organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                    object_type="execution_run", object_id=execution_id, result="REJECTED",
+                    correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                    details={"reason_code": reason_code_for_rejection, "from": expected_state, "to": new_state},
+                ))
+                return False
+            terminal_dispatch_state = {
+                "SUCCEEDED": "COMPLETED",
+                "PARTIAL_RESULTS_WITH_WARNING": "COMPLETED",
+                "FAILED": "FAILED",
+                "TIMED_OUT": "FAILED",
+                "CANCELLED": "BLOCKED",
+                "EXECUTION_BLOCKED": "BLOCKED",
+            }.get(new_state)
+            if terminal_dispatch_state is not None:
+                dispatch_update = conn.execute(
+                    """UPDATE execution_dispatch_intents
+                       SET state = ?, completed_at = ?,
+                           last_error = CASE WHEN ? IN ('FAILED', 'BLOCKED') THEN COALESCE(?, last_error) ELSE last_error END,
+                           claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                       WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                         AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
+                         AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)
+                         AND EXISTS (SELECT 1 FROM execution_runs r2
+                             JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                             JOIN execution_decisions d2 ON d2.id = r2.approved_decision_id AND d2.organization_id = r2.organization_id
+                             WHERE r2.execution_id = ? AND r2.organization_id = ?
+                               AND q2.state = 'AUTHORIZED' AND q2.expires_at > ?
+                               AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)""",
+                    (terminal_dispatch_state, now, terminal_dispatch_state, reason_code,
+                     execution_id, organization_id, worker_identity, dispatch_claim_token, now,
+                     authority["session_jti"], execution_id, organization_id, now, now),
+                )
+                if dispatch_update.rowcount != 1:
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
+                        organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                        object_type="execution_run", object_id=execution_id, result="REJECTED",
+                        correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
+                        details={"reason_code": "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED", "from": expected_state, "to": new_state},
+                    ))
+                    return False
+            cur = conn.execute(
+                "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','PARTIAL_RESULTS_WITH_WARNING','FAILED','TIMED_OUT','CANCELLED','EXECUTION_BLOCKED') THEN COALESCE(finished_at, ?) ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ? AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?) AND EXISTS (SELECT 1 FROM execution_requests q2 JOIN execution_decisions d2 ON d2.id = (SELECT approved_decision_id FROM execution_runs r2 WHERE r2.execution_id = execution_runs.execution_id AND r2.organization_id = execution_runs.organization_id) WHERE q2.id = (SELECT request_id FROM execution_runs r3 WHERE r3.execution_id = execution_runs.execution_id AND r3.organization_id = execution_runs.organization_id) AND q2.organization_id = execution_runs.organization_id AND q2.state = 'AUTHORIZED' AND q2.expires_at > ? AND d2.approval_state = 'APPROVED' AND d2.revoked_at IS NULL AND d2.expires_at > ?)",
+                (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state, authority["session_jti"], now, now),
+            )
+            if cur.rowcount == 1:
+                self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system", organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id, result="SUCCESS", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id), details={"from": expected_state, "to": new_state, "reason_code": reason_code}))
+                return True
+            if terminal_dispatch_state is not None:
+                raise RuntimeError("execution run transition could not commit with its dispatch settlement")
+            return False
 
     def _row_to_asset(self, row: sqlite3.Row) -> Asset:
         return Asset(

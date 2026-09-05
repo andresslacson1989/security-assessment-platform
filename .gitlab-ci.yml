@@ -1,0 +1,89 @@
+stages:
+  - syntax
+  - focused
+  - verify
+  - integration
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+default:
+  image: python:3.11-slim
+  interruptible: true
+  before_script:
+    - python --version
+    - python -m pip install --require-hashes --requirement backend/requirements.lock
+    - mkdir -p "$CI_PROJECT_DIR/.ci"
+    - test "$CYBERASSESS_DB_PATH" = "$CI_PROJECT_DIR/.ci/cyberassess.db"
+    - test "$CI_PROJECT_DIR/data/cyberassess.db" != "$CYBERASSESS_DB_PATH"
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_CACHE_DIR: "1"
+  OPERATING_MODE: TEST
+  CYBERASSESS_DB_PATH: "$CI_PROJECT_DIR/.ci/cyberassess.db"
+
+compile-backend:
+  stage: syntax
+  script:
+    - python -m compileall -q backend
+
+focused-contract-verification:
+  stage: focused
+  script:
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/focused-contract.xml tests/security/test_contract_fleet_consistency.py
+  artifacts:
+    when: always
+    reports:
+      junit: reports/focused-contract.xml
+    paths:
+      - reports/focused-contract.xml
+    expire_in: 14 days
+
+full-repository-verification:
+  stage: verify
+  timeout: 15 minutes
+  script:
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/full-suite.xml
+  artifacts:
+    when: always
+    reports:
+      junit: reports/full-suite.xml
+    paths:
+      - reports/full-suite.xml
+    expire_in: 14 days
+
+postgres-schema-assurance:
+  stage: verify
+  image: python:3.11-slim
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    POSTGRES_USER: cyberassess_ci
+    POSTGRES_PASSWORD: cyberassess_ci_only
+    POSTGRES_DB: cyberassess_ci
+    CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@postgres:5432/cyberassess_ci
+    CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
+  before_script:
+    - python --version
+    - python -m pip install --require-hashes --requirement backend/requirements.lock
+    - mkdir -p "$CI_PROJECT_DIR/.ci"
+    - test "$CYBERASSESS_DB_PATH" = "$CI_PROJECT_DIR/.ci/cyberassess.db"
+    - test "$CI_PROJECT_DIR/data/cyberassess.db" != "$CYBERASSESS_DB_PATH"
+    - >-
+      ready=0; for i in $(seq 1 60); do python -c "import socket; socket.create_connection(('postgres', 5432), 1).close()" && ready=1 && break || sleep 1; done; test "$ready" = 1
+  script:
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/postgres-suite.xml tests/security/test_postgres_integration.py
+  artifacts:
+    when: always
+    reports:
+      junit: reports/postgres-suite.xml
+    paths:
+      - reports/postgres-suite.xml
+    expire_in: 14 days
