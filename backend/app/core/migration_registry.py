@@ -9,11 +9,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 from app.core.version import CONTRACT_VERSION, SCHEMA_VERSION
 
 REGISTRY_REVISION = "migration-registry-v1"
+
+
+class MigrationManagerProtocol(Protocol):
+    def _verify_migration_v1_postconditions(self, conn) -> None: ...
+    def _verify_migration_v2_postconditions(self, conn) -> None: ...
+    def _verify_migration_v3_postconditions(self, conn) -> None: ...
+    def _verify_migration_v4_postconditions(self, conn) -> None: ...
+    def _verify_migration_v5_postconditions(self, conn) -> None: ...
+    def _verify_migration_v6_postconditions(self, conn) -> None: ...
+    def _verify_migration_v7_postconditions(self, conn) -> None: ...
+    def _verify_migration_v8_postconditions(self, conn) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,41 @@ _DESCRIPTORS = (
 )
 
 
+def _verify_v1(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v1_postconditions(conn)
+
+
+def _verify_v2(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v2_postconditions(conn)
+
+
+def _verify_v3(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v3_postconditions(conn)
+
+
+def _verify_v4(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v4_postconditions(conn)
+
+
+def _verify_v5(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v5_postconditions(conn)
+
+
+def _verify_v6(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v6_postconditions(conn)
+
+
+def _verify_v7(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v7_postconditions(conn)
+
+
+def _verify_v8(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v8_postconditions(conn)
+
+
+_VERIFIERS = (_verify_v1, _verify_v2, _verify_v3, _verify_v4, _verify_v5, _verify_v6, _verify_v7, _verify_v8)
+
+
 def _make_spec(version: int, migration_id: str, name: str, previous: Optional[int], manifest: str) -> MigrationSpec:
     material = {
         "version": version,
@@ -61,13 +107,14 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         "contract_version": CONTRACT_VERSION,
         "registry_revision": REGISTRY_REVISION,
         "canonical_manifest": manifest,
-        "postcondition_manifest_revision": "execution-postconditions-v1",
+        "postcondition_manifest_revision": "execution-postconditions-v2",
     }
     return MigrationSpec(
         version=version, migration_id=migration_id, name=name,
         previous_version=previous, target_version=version,
         contract_schema_version=SCHEMA_VERSION, contract_version=CONTRACT_VERSION,
         registry_revision=REGISTRY_REVISION, checksum=_checksum(material),
+        verify=_VERIFIERS[version - 1],
     )
 
 

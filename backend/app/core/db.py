@@ -611,10 +611,10 @@ class DatabaseManager:
         if not required_tables.issubset(actual_tables):
             raise RuntimeError("migration reconciliation requires independently verified application schema structures")
         self._verify_migration_ledger(conn)
-        self._verify_execution_snapshot_schema(conn)
-        self._verify_execution_authority_binding_schema(conn)
-        self._verify_execution_compatibility_schema(conn)
-        self._verify_execution_dispatch_schema(conn)
+        for spec in MIGRATION_REGISTRY:
+            if spec.verify is None:
+                raise RuntimeError(f"migration registry verifier is missing for version {spec.version}")
+            spec.verify(self, conn)
         return self._schema_postcondition_digest(conn)
 
     def _schema_postcondition_digest(self, conn) -> str:
@@ -872,6 +872,78 @@ class DatabaseManager:
             raise
         finally:
             conn.close()
+
+    def _verify_migration_v1_postconditions(self, conn) -> None:
+        self._verify_execution_run_tenant_binding_schema(conn)
+
+    def _verify_migration_v2_postconditions(self, conn) -> None:
+        self._verify_execution_run_tenant_binding_schema(conn)
+
+    def _verify_migration_v3_postconditions(self, conn) -> None:
+        self._verify_execution_snapshot_schema(conn)
+
+    def _verify_migration_v4_postconditions(self, conn) -> None:
+        self._verify_execution_authority_binding_schema(conn)
+
+    def _verify_migration_v5_postconditions(self, conn) -> None:
+        self._verify_execution_run_tenant_binding_schema(conn)
+
+    def _verify_migration_v6_postconditions(self, conn) -> None:
+        self._verify_execution_compatibility_schema(conn)
+
+    def _verify_migration_v7_postconditions(self, conn) -> None:
+        self._verify_execution_dispatch_schema(conn)
+
+    def _verify_migration_v8_postconditions(self, conn) -> None:
+        self._verify_execution_dispatch_schema(conn)
+
+    def _verify_execution_run_tenant_binding_schema(self, conn) -> None:
+        """Verify the v1/v2/v5 execution-run tenant binding postcondition."""
+        required_tables = {"execution_runs", "execution_requests", "organizations"}
+        if isinstance(self, PostgresDatabaseManager):
+            actual = {row["table_name"] for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()").fetchall()}
+            if not required_tables.issubset(actual):
+                raise RuntimeError("execution tenant-binding postcondition requires core tables")
+            parent = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                WHERE n.nspname = current_schema() AND t.relname = 'execution_requests'
+                  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord) = ARRAY['id','organization_id']::text[]""").fetchall()
+            binding = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_class p ON p.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace JOIN pg_namespace pn ON pn.oid = p.relnamespace
+                WHERE n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND t.relname = 'execution_runs' AND p.relname = 'execution_requests'
+                  AND c.contype = 'f' AND c.convalidated
+                  AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id, organization_id)%'""").fetchone()
+            run_unique = conn.execute("""SELECT COUNT(*) AS count FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                WHERE n.nspname = current_schema() AND t.relname = 'execution_runs'
+                  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indpred IS NULL
+                GROUP BY i.indexrelid HAVING array_agg(a.attname::text ORDER BY k.ord) = ARRAY['request_id','organization_id']::text[]""").fetchall()
+            if len(parent) != 1 or len(run_unique) != 1 or not binding or int(binding["count"]) != 1:
+                raise RuntimeError("execution tenant-binding postcondition is not exact")
+            return
+        parent = 0
+        for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
+            if index["unique"]:
+                cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                parent += [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["id", "organization_id"]
+        run_unique = 0
+        for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
+            if index["unique"]:
+                cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
+                run_unique += [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["request_id", "organization_id"]
+        groups = {}
+        for row in conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall():
+            groups.setdefault(row["id"], []).append(row)
+        binding = any(len(rows) == 2 and sorted((row["seq"], row["from"], row["to"]) for row in rows) == [(0, "request_id", "id"), (1, "organization_id", "organization_id")] and all(row["table"] == "execution_requests" for row in rows) for rows in groups.values())
+        if parent != 1 or run_unique != 1 or not binding:
+            raise RuntimeError("execution tenant-binding postcondition is not exact")
 
     def _verify_execution_snapshot_schema(self, conn) -> None:
         """Verify the immutable execution snapshot schema on every startup.
