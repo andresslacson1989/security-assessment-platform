@@ -643,12 +643,28 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
             "UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ? WHERE id = ? AND organization_id = ?",
             ("crashed-worker", expired_claim, decision_id, "org-a"),
         )
-    recovered = database.claim_execution_authority(
+        conn.execute(
+            "UPDATE execution_dispatch_intents SET lease_expires_at = ? WHERE execution_id = ? AND organization_id = ?",
+            (expired_claim, execution_id, "org-a"),
+        )
+    reclaimed_dispatch = database.claim_execution_dispatch_intent(
+        execution_id, "org-a", "worker-a",
+    )
+    assert reclaimed_dispatch is not None
+    assert reclaimed_dispatch.token != stale.dispatch.token
+    assert database.claim_execution_authority(
         decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
         dispatch_claim_token=stale.dispatch.token,
+    ) is None
+    recovered = database.claim_execution_authority(
+        decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
+        dispatch_claim_token=reclaimed_dispatch.token,
     )
     assert recovered is not None
     assert recovered.decision.token != stale.decision.token
+    assert not database.release_execution_authority(
+        decision_id, "org-a", "crashed-worker", stale.decision.token, stale.dispatch.token,
+    )
     assert database.release_execution_authority(
         decision_id, "org-a", "worker-a", recovered.decision.token, recovered.dispatch.token,
     )
