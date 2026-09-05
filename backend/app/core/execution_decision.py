@@ -42,6 +42,7 @@ class ExecutionDecisionCapability:
     database: Any
     claim_token: Optional[str] = None
     dispatch_claim_token: Optional[str] = None
+    execution_id: Optional[str] = None
 
     def assert_valid_for_launch(
         self,
@@ -111,6 +112,7 @@ class ExecutionDecisionCapability:
             raise ExecutionDecisionError("execution decision could not be atomically claimed")
         object.__setattr__(self, "claim_token", authority.decision.token)
         object.__setattr__(self, "dispatch_claim_token", authority.dispatch.token)
+        object.__setattr__(self, "execution_id", authority.execution_id)
 
     def mark_started(self, *, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> None:
         marker = getattr(self.database, "mark_execution_decision_started", None)
@@ -139,6 +141,16 @@ class ExecutionDecisionCapability:
             self.decision.id, self.decision.organization_id, self.worker_identity,
             self.claim_token, self.dispatch_claim_token, terminal_state=terminal_state,
             reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
+        ))
+
+    def finish(self, *, terminal_state: str, reason_code: Optional[str] = None, process_id: Optional[int] = None) -> bool:
+        finisher = getattr(self.database, "finish_execution", None)
+        if finisher is None or not self.execution_id or not self.dispatch_claim_token:
+            return False
+        return bool(finisher(
+            self.execution_id, self.decision.organization_id, self.worker_identity,
+            self.dispatch_claim_token, terminal_state=terminal_state,
+            reason_code=reason_code, process_id=process_id,
         ))
 
 

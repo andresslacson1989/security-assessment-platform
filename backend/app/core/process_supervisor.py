@@ -569,6 +569,20 @@ class ProcessSupervisor:
         def _run_sync() -> ProcessExecutionResult:
             nonlocal proc_ref
             proc = None
+            launch_committed = False
+
+            def _finish_durable(terminal_state: str, reason_code: Optional[str] = None) -> Optional[ProcessExecutionResult]:
+                if execution_capability is None:
+                    return None
+                if execution_id != execution_capability.execution_id:
+                    return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_REJECTED_SECURITY: execution identity mismatch")
+                if not execution_capability.finish(
+                    terminal_state=terminal_state, reason_code=reason_code,
+                    process_id=proc.pid if proc else None,
+                ):
+                    return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable terminal state was not committed")
+                return None
+
             try:
                 if pre_launch_check is not None and not pre_launch_check():
                     return ProcessExecutionResult(
@@ -591,6 +605,9 @@ class ProcessSupervisor:
                             timeout=timeout,
                             max_output_bytes=max_output_bytes,
                         )
+                        if not execution_id or execution_id != execution_capability.execution_id:
+                            execution_capability.abort_start(terminal_state="EXECUTION_BLOCKED", reason_code="EXECUTION_IDENTITY_MISMATCH")
+                            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch")
                         if cancellation_requested.is_set():
                             execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
                             return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
@@ -648,13 +665,26 @@ class ProcessSupervisor:
                         process_id=proc.pid,
                         process_group_id=str(proc.pid) if start_new_session else None,
                     )
+                    launch_committed = True
                 self._register_execution(proc.pid, execution_id=execution_id)
 
                 stdout, stderr, bounded_failure = _bounded_communicate(proc)
                 if "Output exceeded maximum" in stderr:
+                    finalization = _finish_durable("PARTIAL_RESULTS_WITH_WARNING", "OUTPUT_LIMIT_EXCEEDED")
+                    if finalization:
+                        return finalization
                     return ProcessExecutionResult(-1, stdout, stderr)
                 if bounded_failure and "Execution timed out" in stderr:
+                    finalization = _finish_durable("TIMED_OUT", "EXECUTION_TIMEOUT")
+                    if finalization:
+                        return finalization
                     return ProcessExecutionResult(-1, stdout, stderr)
+                finalization = _finish_durable(
+                    "SUCCEEDED" if proc.returncode == 0 else "FAILED",
+                    None if proc.returncode == 0 else "PROCESS_EXIT_NONZERO",
+                )
+                if finalization:
+                    return finalization
                 return ProcessExecutionResult(proc.returncode, stdout, stderr)
             except FileNotFoundError as e:
                 if execution_capability is not None:
@@ -666,7 +696,10 @@ class ProcessSupervisor:
                 return ProcessExecutionResult(126, "", f"Permission denied: {e}")
             except Exception as e:
                 if execution_capability is not None:
-                    execution_capability.abort_start(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION")
+                    if launch_committed:
+                        execution_capability.finish(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None)
+                    else:
+                        execution_capability.abort_start(terminal_state="FAILED", reason_code="PROCESS_EXECUTION_EXCEPTION")
                 if proc and proc.pid:
                     self.kill_process_tree(proc.pid)
                 return ProcessExecutionResult(-1, "", str(e))
@@ -680,6 +713,11 @@ class ProcessSupervisor:
             cancellation_requested.set()
             if proc_ref[0] and proc_ref[0].pid:
                 self.kill_process_tree(proc_ref[0].pid)
+                if execution_capability is not None:
+                    execution_capability.finish(
+                        terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED",
+                        process_id=proc_ref[0].pid,
+                    )
             elif execution_capability is not None:
                 execution_capability.abort_start(terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
             raise

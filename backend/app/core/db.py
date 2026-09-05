@@ -3521,6 +3521,64 @@ class DatabaseManager:
             ))
             return True
 
+    def finish_execution(
+        self, execution_id: str, organization_id: str, worker_identity: str,
+        dispatch_claim_token: str, *, terminal_state: str,
+        reason_code: Optional[str] = None, process_id: Optional[int] = None,
+    ) -> bool:
+        """Atomically settle a running execution and its dispatch lease."""
+        allowed = {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
+        if terminal_state not in allowed or not execution_id or not organization_id or not worker_identity or not dispatch_claim_token:
+            return False
+        now = utc_now().isoformat()
+        dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else "FAILED"
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                """SELECT i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
+                           r.state AS run_state, r.process_id, r.correlation_id, r.worker_identity
+                     FROM execution_dispatch_intents i
+                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?""",
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row or row["dispatch_state"] != "CLAIMED" or row["claimed_by"] != worker_identity or row["claim_token"] != dispatch_claim_token:
+                return False
+            if row["lease_expires_at"] is None or datetime.fromisoformat(row["lease_expires_at"]) <= utc_now():
+                return False
+            if row["run_state"] != "RUNNING" or row["worker_identity"] != worker_identity:
+                return False
+            if process_id is not None and row["process_id"] != process_id:
+                return False
+            run_update = conn.execute(
+                """UPDATE execution_runs SET state = ?, reason_code = ?, process_id = COALESCE(?, process_id), finished_at = ?
+                    WHERE execution_id = ? AND organization_id = ? AND state = 'RUNNING'
+                      AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))""",
+                (terminal_state, reason_code, process_id, now, execution_id, organization_id, worker_identity, process_id, process_id),
+            )
+            dispatch_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
+                          claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                    WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                      AND claimed_by = ? AND claim_token = ?""",
+                (dispatch_state, now, reason_code, execution_id, organization_id, worker_identity, dispatch_claim_token),
+            )
+            if run_update.rowcount != 1 or dispatch_update.rowcount != 1:
+                raise RuntimeError("execution finish lost its transaction fence")
+            correlation_id = row["correlation_id"] or f"corr-execution-{execution_id}"
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_COMPLETED if dispatch_state == "COMPLETED" else AuditAction.EXECUTION_DISPATCH_FAILED,
+                object_type="execution_dispatch_intent", object_id=execution_id, result="SUCCESS",
+                correlation_id=correlation_id, details={"terminal_state": terminal_state, "reason_code": reason_code},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", correlation_id=correlation_id,
+                details={"from": "RUNNING", "to": terminal_state, "reason_code": reason_code},
+            ))
+            return True
+
     def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, dispatch_claim_token: Optional[str] = None, process_id: Optional[int] = None, process_group_id: Optional[str] = None, now: Optional[datetime] = None) -> bool:
         now = now or utc_now()
         with self._connection_scope() as conn:
