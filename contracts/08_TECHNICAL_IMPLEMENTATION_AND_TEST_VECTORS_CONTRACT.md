@@ -162,6 +162,7 @@ To achieve deterministic CI verification across environments without requiring e
 - `revoke_token` MUST propagate session revocation to the linked durable execution authority in the same transaction. PostgreSQL tests MUST cover revoke-versus-finish commit ordering, near-expiry finish after lock acquisition, and verify that no successful settlement occurs after authority loss.
 - Reaper eligibility MUST include session-token revocation and MUST close an otherwise active run with a canonical safe outcome while preserving tenant, correlation, and audit invariants.
 - The production observation lifecycle MUST invoke the authority reaper on a bounded cadence without authentication, cancel by exact `execution_id`, and atomically close recovered runs. Tests MUST prove startup registration, graceful shutdown/await, exact process identity targeting, and recovery after session revocation or lease expiry.
+- Recovery MUST be failure-isolated: bounded database/supervisor calls, per-candidate error handling, retryable backlog for unconfirmed termination, and a persistent/observable recovery error state. Tests MUST prove that `NOT_FOUND`/`FAILED` cancellation does not terminalize a run, one bad candidate does not stop later candidates, and a transient database failure does not kill the lifecycle task.
 
 ### 6.1.3 Historical Persistence and Retention Vectors
 

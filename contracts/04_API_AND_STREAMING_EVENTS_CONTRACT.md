@@ -182,7 +182,11 @@ cancel only the process group bound to each `execution_id`, then atomically
 settle the dispatch and run with a canonical safe outcome. Recovery attempts,
 successes, failures, and exhausted retries MUST be auditable and observable;
 the loop MUST use bounded batch size, cadence, and retry behavior and MUST be
-awaited during graceful shutdown.
+awaited during graceful shutdown. Process cancellation MUST return a typed
+result (`KILLED`, `ALREADY_EXITED`, `NOT_FOUND`, or `FAILED`); durable recovery
+MUST proceed only for `KILLED`/`ALREADY_EXITED`, or for a run with no process
+ever created. `NOT_FOUND` and `FAILED` MUST remain recoverable backlog and MUST
+surface an operator-visible health signal rather than being declared closed.
 
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 

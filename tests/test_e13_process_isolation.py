@@ -13,7 +13,7 @@ import os
 import sys
 import pytest
 
-from app.core.process_supervisor import ProcessSupervisor, process_supervisor, ProcessExecutionResult
+from app.core.process_supervisor import ProcessSupervisor, process_supervisor, ProcessExecutionResult, ProcessCancellationStatus
 from app.core.orchestrator import orchestrator
 from app.core.models import (
     ScanJob,
@@ -50,9 +50,11 @@ async def test_self_and_parent_process_termination_protection():
 
 @pytest.mark.asyncio
 async def test_cancel_nonexistent_execution_fails_cleanly():
-    """Cancelling a non-existent execution ID returns False without side effects."""
+    """A missing execution mapping is explicitly not proof of process exit."""
     supervisor = ProcessSupervisor.get_instance()
-    assert supervisor.cancel_execution("non-existent-exec-id") is False
+    result = supervisor.cancel_execution("non-existent-exec-id")
+    assert result.status is ProcessCancellationStatus.NOT_FOUND
+    assert result.confirmed is False
     assert supervisor.cancel_pid(99999999) is False
 
 
@@ -80,7 +82,7 @@ async def test_concurrent_sibling_execution_isolation():
 
     # Cancel execution A only
     cancelled_a = supervisor.cancel_execution("exec-sibling-a")
-    assert cancelled_a is True
+    assert cancelled_a.confirmed is True
 
     # Execution B must complete cleanly on its own
     res_b = await exec_b_task

@@ -38,6 +38,33 @@ class ProcessExecutionStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class ProcessCancellationStatus(str, Enum):
+    """Verified result of terminating one execution's process tree."""
+
+    KILLED = "KILLED"
+    ALREADY_EXITED = "ALREADY_EXITED"
+    NOT_FOUND = "NOT_FOUND"
+    FAILED = "FAILED"
+    INVALID_REQUEST = "INVALID_REQUEST"
+
+
+@dataclass(frozen=True)
+class ProcessCancellationResult:
+    execution_id: str
+    status: ProcessCancellationStatus
+    pid: Optional[int] = None
+
+    @property
+    def confirmed(self) -> bool:
+        return self.status in {
+            ProcessCancellationStatus.KILLED,
+            ProcessCancellationStatus.ALREADY_EXITED,
+        }
+
+    def __bool__(self) -> bool:
+        return self.confirmed
+
+
 class ProcessExecutionResult(NamedTuple):
     """Three-value-compatible process result with a typed execution status."""
 
@@ -185,21 +212,29 @@ class ProcessSupervisor:
     def _unregister_pid(self, pid: int) -> None:
         self._unregister_execution(pid)
 
-    def cancel_execution(self, execution_id: str) -> bool:
+    def cancel_execution(self, execution_id: str) -> ProcessCancellationResult:
         """
         Safely cancels a specific execution by execution_id without affecting sibling executions.
-        Returns True if the execution was actively tracked and terminated, False otherwise.
+        Returns a typed result.  Durable callers may close an execution only
+        when ``confirmed`` is true; NOT_FOUND is not proof of process exit.
         """
         if not execution_id or not isinstance(execution_id, str):
-            return False
+            return ProcessCancellationResult(str(execution_id or ""), ProcessCancellationStatus.INVALID_REQUEST)
         with self._lock:
-            pid = self._execution_pids.pop(execution_id, None)
-            if pid:
-                self._active_pids.discard(pid)
-        if pid:
-            self.kill_process_tree(pid)
-            return True
-        return False
+            pid = self._execution_pids.get(execution_id)
+        if pid is None:
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
+        if self._pid_exists(pid):
+            terminated = self.kill_process_tree(pid)
+            status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
+        else:
+            status = ProcessCancellationStatus.ALREADY_EXITED
+        if status in {ProcessCancellationStatus.KILLED, ProcessCancellationStatus.ALREADY_EXITED}:
+            with self._lock:
+                if self._execution_pids.get(execution_id) == pid:
+                    self._execution_pids.pop(execution_id, None)
+                    self._active_pids.discard(pid)
+        return ProcessCancellationResult(execution_id, status, pid)
 
     def cancel_pid(self, pid: int) -> bool:
         """
@@ -282,19 +317,33 @@ class ProcessSupervisor:
                 ctypes.windll.kernel32.CloseHandle(process)
 
     @staticmethod
-    def kill_process_tree(pid: int) -> None:
+    def _pid_exists(pid: int) -> bool:
+        if not pid or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def kill_process_tree(pid: int) -> bool:
         """
         Recursively terminates a process and all its child/grandchild descendants.
         Guarantees isolation: never signals the host, server process, or sibling processes.
         """
         if not pid or pid <= 0:
-            return
+            return False
 
         current_pid = os.getpid()
         parent_pid = os.getppid() if hasattr(os, "getppid") else None
         if pid == current_pid or (parent_pid is not None and pid == parent_pid) or pid <= 1:
             logger.error("Security invariant: Refusing to terminate current/parent PID=%s", pid)
-            return
+            return False
 
         if sys.platform == "win32":
             try:
@@ -334,6 +383,12 @@ class ProcessSupervisor:
                     os.kill(pid, signal.SIGKILL)
                 except Exception as fallback_exc:
                     logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if not ProcessSupervisor._pid_exists(pid):
+                return True
+            time.sleep(0.02)
+        return not ProcessSupervisor._pid_exists(pid)
 
     # Complete reviewed baseline inherited from the worker process. Credentials,
     # proxy configuration, loader hooks, interpreter/module injection,

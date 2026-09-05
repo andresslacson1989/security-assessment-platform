@@ -2954,16 +2954,21 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             rows = conn.execute(
                 """SELECT r.execution_id, r.organization_id, r.process_id,
+                           r.process_group_id, r.correlation_id,
                            CASE
                              WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
                                OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                                THEN 'CANCELLED'
+                             WHEN q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
+                               THEN 'EXECUTION_BLOCKED'
                              ELSE 'TIMED_OUT'
                            END AS terminal_state,
                            CASE
                              WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
                                OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                                THEN 'EXECUTION_CANCELLED'
+                             WHEN q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
+                               THEN 'EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED'
                              ELSE 'EXECUTION_AUTHORITY_EXPIRED'
                            END AS reason_code
                       FROM execution_runs r
@@ -2972,7 +2977,8 @@ class DatabaseManager:
                       JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
                      WHERE r.state IN ('REQUESTED', 'STARTING', 'RUNNING')
                        AND (
-                            q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
+                            q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
+                            OR d.revoked_at IS NOT NULL
                             OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                             OR q.expires_at <= ? OR d.expires_at <= ?
                             OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))

@@ -40,6 +40,8 @@ class ObservationState:
     last_started_at: Optional[datetime] = None
     last_completed_at: Optional[datetime] = None
     last_error: Optional[str] = None
+    last_recovery_error: Optional[str] = None
+    last_recovered_count: int = 0
 
 
 class BackendObservationService:
@@ -116,23 +118,73 @@ class BackendObservationService:
         from app.core.db import db_manager
         from app.core.process_supervisor import process_supervisor
 
-        candidates = await asyncio.to_thread(db_manager.list_execution_recovery_candidates)
+        try:
+            candidates = await asyncio.wait_for(
+                asyncio.to_thread(db_manager.list_execution_recovery_candidates),
+                timeout=self.refresh_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"[:512]
+            self._state = ObservationState(
+                last_started_at=self._state.last_started_at,
+                last_completed_at=self._state.last_completed_at,
+                last_error=self._state.last_error,
+                last_recovery_error=message,
+                last_recovered_count=0,
+            )
+            logger.warning("Execution authority recovery enumeration failed: error=%s", message)
+            return 0
         reaped = 0
         for candidate in candidates:
             execution_id = candidate["execution_id"]
             # The supervisor registry is keyed by the durable execution ID;
             # cancellation cannot target an arbitrary PID or a sibling job.
-            process_supervisor.cancel_execution(execution_id)
-            closed = await asyncio.to_thread(
-                db_manager.reap_execution_dispatch,
-                execution_id,
-                candidate["organization_id"],
-                terminal_state=candidate["terminal_state"],
-                reason_code=candidate["reason_code"],
-                actor="execution-reaper",
-            )
-            if closed:
-                reaped += 1
+            try:
+                cancellation = process_supervisor.cancel_execution(execution_id)
+                confirmed = getattr(cancellation, "confirmed", bool(cancellation))
+                if candidate.get("process_id") is not None and not confirmed:
+                    logger.warning(
+                        "Execution recovery deferred: termination not confirmed execution_id=%s status=%s",
+                        execution_id, getattr(cancellation, "status", "UNKNOWN"),
+                    )
+                    continue
+                closed = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        db_manager.reap_execution_dispatch,
+                        execution_id,
+                        candidate["organization_id"],
+                        terminal_state=candidate["terminal_state"],
+                        reason_code=candidate["reason_code"],
+                        actor="execution-reaper",
+                    ),
+                    timeout=self.refresh_timeout_seconds,
+                )
+                if closed:
+                    reaped += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"[:512]
+                logger.warning(
+                    "Execution authority recovery candidate failed: execution_id=%s error=%s",
+                    execution_id, message,
+                )
+                self._state = ObservationState(
+                    last_started_at=self._state.last_started_at,
+                    last_completed_at=self._state.last_completed_at,
+                    last_error=self._state.last_error,
+                    last_recovery_error=message,
+                    last_recovered_count=reaped,
+                )
+        self._state = ObservationState(
+            last_started_at=self._state.last_started_at,
+            last_completed_at=self._state.last_completed_at,
+            last_error=self._state.last_error,
+            last_recovery_error=self._state.last_recovery_error,
+            last_recovered_count=reaped,
+        )
         return reaped
 
     async def _run(self) -> None:

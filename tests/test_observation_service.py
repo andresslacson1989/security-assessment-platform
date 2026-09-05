@@ -114,6 +114,55 @@ async def test_reaper_terminates_and_closes_exact_execution_identity(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_reaper_keeps_process_backlog_open_when_termination_is_unconfirmed(monkeypatch):
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+
+    closed = []
+
+    class FakeDatabase:
+        def list_execution_recovery_candidates(self):
+            return [{
+                "execution_id": "run-orphan",
+                "organization_id": "org-a",
+                "process_id": 9876,
+                "terminal_state": "CANCELLED",
+                "reason_code": "EXECUTION_CANCELLED",
+            }]
+
+        def reap_execution_dispatch(self, *args, **kwargs):
+            closed.append((args, kwargs))
+            return True
+
+    class FakeSupervisor:
+        def cancel_execution(self, execution_id):
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND, 9876)
+
+    monkeypatch.setattr(db_module, "db_manager", FakeDatabase())
+    monkeypatch.setattr(supervisor_module, "process_supervisor", FakeSupervisor())
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 0
+    assert closed == []
+
+
+@pytest.mark.asyncio
+async def test_reaper_enumeration_failure_isolated_in_observation_state(monkeypatch):
+    from app.core import db as db_module
+
+    class FailingDatabase:
+        def list_execution_recovery_candidates(self):
+            raise RuntimeError("temporary database outage")
+
+    monkeypatch.setattr(db_module, "db_manager", FailingDatabase())
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 0
+    assert "temporary database outage" in service.state.last_recovery_error
+
+
+@pytest.mark.asyncio
 async def test_application_lifespan_owns_observation_service(monkeypatch):
     from app import main
 
