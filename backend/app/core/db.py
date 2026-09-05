@@ -586,7 +586,7 @@ class DatabaseManager:
             if resolved is not None:
                 raise ValueError("migration attempt has already been resolved")
             next_sequence = conn.execute("SELECT MAX(event_sequence) AS sequence FROM schema_migration_events WHERE attempt_id = ?", (attempt_id,)).fetchone()["sequence"] + 1
-            context = json.dumps({"resolution": resolution, "correlation_id": correlation_id, "session_jti": session_jti, "verifier_revision": MIGRATION_POSTCONDITION_REVISION, "schema_digest": schema_digest, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
+            context = json.dumps({"resolution": resolution, "correlation_id": correlation_id, "session_jti": session_jti, "attempt_id": attempt_id, "migration_version": required["migration_version"], "migration_id": required["migration_id"], "registry_revision": required["registry_revision"], "verifier_revision": MIGRATION_POSTCONDITION_REVISION, "schema_digest": schema_digest, "schema_version_vector": applied, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
             conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
@@ -624,11 +624,26 @@ class DatabaseManager:
                 FROM information_schema.columns WHERE table_schema = current_schema()
                 ORDER BY table_name, ordinal_position""").fetchall()
             objects = [tuple(row.values()) for row in rows]
-            constraints = conn.execute("""SELECT t.relname, c.contype, pg_get_constraintdef(c.oid)
+            constraints = conn.execute("""SELECT t.relname, c.conname, c.contype, pg_get_constraintdef(c.oid)
                 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
                 JOIN pg_namespace n ON n.oid = t.relnamespace
-                WHERE n.nspname = current_schema() ORDER BY t.relname, c.contype, c.oid""").fetchall()
+                WHERE n.nspname = current_schema() ORDER BY t.relname, c.conname""").fetchall()
             objects.extend(tuple(row.values()) for row in constraints)
+            indexes = conn.execute("""SELECT tablename, indexname, indexdef FROM pg_indexes
+                WHERE schemaname = current_schema() ORDER BY tablename, indexname, indexdef""").fetchall()
+            objects.extend(tuple(row.values()) for row in indexes)
+            triggers = conn.execute("""SELECT t.relname, tg.tgname, pg_get_triggerdef(tg.oid),
+                    pg_get_functiondef(p.oid)
+                FROM pg_trigger tg JOIN pg_class t ON t.oid = tg.tgrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_proc p ON p.oid = tg.tgfoid
+                WHERE n.nspname = current_schema() AND NOT tg.tgisinternal
+                ORDER BY t.relname, tg.tgname""").fetchall()
+            objects.extend(tuple(row.values()) for row in triggers)
+            sequences = conn.execute("""SELECT sequence_name, data_type, start_value, minimum_value,
+                    maximum_value, increment FROM information_schema.sequences
+                WHERE sequence_schema = current_schema() ORDER BY sequence_name""").fetchall()
+            objects.extend(tuple(row.values()) for row in sequences)
         else:
             rows = conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name").fetchall()
             objects = [tuple(row) for row in rows]
@@ -636,7 +651,17 @@ class DatabaseManager:
                 escaped_table = table.replace("'", "''")
                 table_info = conn.execute(f"PRAGMA table_info('{escaped_table}')").fetchall()
                 objects.extend((table, "column", row["name"], row["type"], row["notnull"], row["dflt_value"], row["pk"]) for row in table_info)
-        material = json.dumps({"revision": MIGRATION_POSTCONDITION_REVISION, "objects": objects}, sort_keys=True, default=str, separators=(",", ":"))
+        migration_rows = conn.execute("SELECT version, applied_at FROM schema_migrations ORDER BY version").fetchall()
+        applied_versions = [tuple(row) if not isinstance(self, PostgresDatabaseManager) else tuple(row.values()) for row in migration_rows]
+        ledger_rows = conn.execute("""SELECT event_id, attempt_id, migration_version, migration_id, migration_name,
+                registry_revision, event_sequence, event_type, event_at, backend, schema_name,
+                previous_schema_version, target_schema_version, migration_checksum, runner_identity,
+                transaction_context_id, error_code, error_class, error_message, rollback_status
+            FROM schema_migration_events
+            WHERE event_type NOT IN ('RECONCILIATION_REQUIRED', 'RECONCILIATION_RESOLVED')
+            ORDER BY attempt_id, event_sequence, event_id""").fetchall()
+        historical_events = [tuple(row) if not isinstance(self, PostgresDatabaseManager) else tuple(row.values()) for row in ledger_rows]
+        material = json.dumps({"revision": MIGRATION_POSTCONDITION_REVISION, "objects": objects, "applied_versions": applied_versions, "historical_events": historical_events}, sort_keys=True, default=str, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     def _verify_resolved_reconciliation_artifacts(self, conn) -> None:
@@ -648,6 +673,11 @@ class DatabaseManager:
                 raise RuntimeError("migration reconciliation artifact context is invalid") from exc
             if context.get("verifier_revision") != MIGRATION_POSTCONDITION_REVISION or not isinstance(context.get("schema_digest"), str):
                 raise RuntimeError("migration reconciliation artifact is missing verifier identity")
+            if context.get("attempt_id") != row["attempt_id"] or context.get("migration_version") != row["migration_version"] or context.get("migration_id") != row["migration_id"] or context.get("registry_revision") != row["registry_revision"]:
+                raise RuntimeError("migration reconciliation artifact identity does not match its ledger attempt")
+            applied = [int(item["version"]) for item in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
+            if context.get("schema_version_vector") != applied:
+                raise RuntimeError("migration reconciliation artifact schema version vector no longer matches")
             if context["schema_digest"] != self._schema_postcondition_digest(conn):
                 raise RuntimeError("migration reconciliation schema digest no longer matches live schema")
 
