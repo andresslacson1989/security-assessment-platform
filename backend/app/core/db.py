@@ -3918,52 +3918,84 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             if expected_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_TRANSITIONS.get(expected_state, frozenset()):
                 return False
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             now = utc_now().isoformat()
             authority = conn.execute(
-                """SELECT q.state AS request_state, d.approval_state, d.revoked_at, d.expires_at
+                ("""SELECT q.state AS request_state, d.approval_state, d.revoked_at, d.expires_at,
+                          i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
+                          d.worker_identity AS approved_worker_identity
                    FROM execution_runs r
                    JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
-                   LEFT JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
-                   WHERE r.execution_id = ? AND r.organization_id = ?""",
+                   JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                   JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                   WHERE r.execution_id = ? AND r.organization_id = ?"""
+                + (" FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else "")),
                 (execution_id, organization_id),
             ).fetchone()
             if not authority:
                 return False
-            authority_revoked = (
-                authority["request_state"] == "REVOKED"
-                or authority["approval_state"] != "APPROVED"
-                or authority["revoked_at"] is not None
-                or authority["expires_at"] is None
-                or datetime.fromisoformat(authority["expires_at"]) <= utc_now()
+            now_dt = utc_now()
+            authority_current = (
+                authority["request_state"] == "AUTHORIZED"
+                and authority["approval_state"] == "APPROVED"
+                and authority["revoked_at"] is None
+                and authority["expires_at"] is not None
+                and datetime.fromisoformat(authority["expires_at"]) > now_dt
             )
-            if authority_revoked and new_state != "CANCELLED":
+            dispatch_fence = (
+                authority["dispatch_state"] == "CLAIMED"
+                and authority["claimed_by"] == worker_identity
+                and authority["claim_token"] == dispatch_claim_token
+                and authority["lease_expires_at"] is not None
+                and datetime.fromisoformat(authority["lease_expires_at"]) > now_dt
+                and authority["approved_worker_identity"] == worker_identity
+            )
+            allowed = dispatch_fence and (
+                authority_current
+                if new_state != "CANCELLED"
+                else authority["request_state"] == "REVOKED" or authority["revoked_at"] is not None
+            )
+            if not allowed:
+                reason_code_for_rejection = (
+                    "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED"
+                    if new_state != "CANCELLED" and not authority_current
+                    else "EXECUTION_DISPATCH_FENCE_REQUIRED"
+                )
                 self._insert_audit_event_conn(conn, AuditEvent(
                     id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
                     organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                     object_type="execution_run", object_id=execution_id, result="REJECTED",
                     correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
-                    details={"reason_code": "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED", "from": expected_state, "to": new_state},
+                    details={"reason_code": reason_code_for_rejection, "from": expected_state, "to": new_state},
                 ))
                 return False
-            if new_state != "CANCELLED":
-                dispatch = conn.execute(
-                    """SELECT 1 FROM execution_dispatch_intents i
-                       JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
-                       JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
-                       JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
-                       WHERE i.execution_id = ? AND i.organization_id = ? AND i.state = 'CLAIMED'
-                         AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?
-                         AND q.state = 'AUTHORIZED' AND d.approval_state = 'APPROVED'
-                         AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ?""",
-                    (execution_id, organization_id, worker_identity, dispatch_claim_token, now, now, worker_identity),
-                ).fetchone()
-                if not dispatch:
+            terminal_dispatch_state = {
+                "SUCCEEDED": "COMPLETED",
+                "PARTIAL_RESULTS_WITH_WARNING": "COMPLETED",
+                "FAILED": "FAILED",
+                "TIMED_OUT": "FAILED",
+                "CANCELLED": "BLOCKED",
+                "EXECUTION_BLOCKED": "BLOCKED",
+            }.get(new_state)
+            if terminal_dispatch_state is not None:
+                dispatch_update = conn.execute(
+                    """UPDATE execution_dispatch_intents
+                       SET state = ?, completed_at = ?,
+                           last_error = CASE WHEN ? IN ('FAILED', 'BLOCKED') THEN COALESCE(?, last_error) ELSE last_error END,
+                           claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                       WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                         AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?""",
+                    (terminal_dispatch_state, now, terminal_dispatch_state, reason_code,
+                     execution_id, organization_id, worker_identity, dispatch_claim_token, now),
+                )
+                if dispatch_update.rowcount != 1:
                     self._insert_audit_event_conn(conn, AuditEvent(
                         id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
                         organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                         object_type="execution_run", object_id=execution_id, result="REJECTED",
                         correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
-                        details={"reason_code": "EXECUTION_DISPATCH_FENCE_REQUIRED", "from": expected_state, "to": new_state},
+                        details={"reason_code": "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED", "from": expected_state, "to": new_state},
                     ))
                     return False
             cur = conn.execute(
@@ -3973,6 +4005,8 @@ class DatabaseManager:
             if cur.rowcount == 1:
                 self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system", organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED, object_type="execution_run", object_id=execution_id, result="SUCCESS", details={"from": expected_state, "to": new_state, "reason_code": reason_code}))
                 return True
+            if terminal_dispatch_state is not None:
+                raise RuntimeError("execution run transition could not commit with its dispatch settlement")
             return False
 
     def _row_to_asset(self, row: sqlite3.Row) -> Asset:
