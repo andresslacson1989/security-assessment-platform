@@ -197,6 +197,34 @@ remain in an authority-lost/recovery-blocked state with bounded retry and an
 operator-visible escalation until a verified supervisor owning the process
 group can confirm termination.
 
+The execution lifecycle MUST conform to the closure matrix in
+`docs/EXECUTION_LIFECYCLE_CLOSURE_MATRIX.md`. In particular, the application
+MUST explicitly distinguish `NO_EXTERNAL_PROCESS`,
+`EXTERNAL_PROCESS_GOVERNED`, `LAUNCH_UNCERTAIN`, `RECOVERY_BLOCKED`, and
+`TERMINAL`. A null process ID, a stopped task, a missing in-memory mapping, or
+`NOT_FOUND` from a supervisor MUST NOT be treated as proof of
+`NO_EXTERNAL_PROCESS`. Capability discovery and installer/version probes MUST
+be classified as either part of the same governed execution container or as
+explicitly non-scan operations with a separate non-terminalizing lifecycle;
+they MUST NOT be mixed into scan cancellation by inference.
+
+The governed launch boundary MUST accept a typed execution context bound to
+the durable `execution_id`, organization, worker generation, approved
+decision, target seal, operation-policy revision, and exact command. Ambient
+context and optional string identifiers MAY assist diagnostics but MUST NOT be
+the sole authority. One execution ID MUST own a complete process container or
+complete member set; registering a later process MUST NOT overwrite an earlier
+member or make it unaddressable. A launch whose process creation is not
+atomically bound to that identity MUST enter `LAUNCH_UNCERTAIN` and remain
+non-terminal until a verified cleanup or attachment protocol succeeds.
+
+Cancellation MUST have one coordinator for task shutdown, process/container
+termination, authority revocation, and durable settlement. The coordinator
+MUST use bounded worker and database operations, persist retry/backoff and
+escalation state by execution ID, and expose that state to operators. A
+timed-out background operation MUST be tracked through shutdown and MUST NOT
+perform an unobserved late terminal mutation.
+
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 
 One authorized execution request produces exactly one durable execution run.

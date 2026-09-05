@@ -166,6 +166,31 @@ To achieve deterministic CI verification across environments without requiring e
 - Process-tree confirmation MUST verify the root and every captured descendant/group member. PID-only cancellation MUST return the typed confirmation result and retain tracking on failure. A `RUNNING` candidate without durable process identity MUST remain blocked; only `REQUESTED`/`STARTING` candidates proven never to create a process may close without a process confirmation.
 - Worker-restart tests MUST prove that a missing in-memory mapping yields `NOT_FOUND`, does not close the durable run, and produces an operator-visible recovery condition; a raw persisted PID MUST never be used without an independently bound process-group identity.
 
+- The implementation MUST maintain the requirements and status fields in
+  `docs/EXECUTION_LIFECYCLE_CLOSURE_MATRIX.md`. Test vectors MUST cover the
+  explicit process-ownership states `NO_EXTERNAL_PROCESS`,
+  `EXTERNAL_PROCESS_GOVERNED`, `LAUNCH_UNCERTAIN`, `RECOVERY_BLOCKED`, and
+  `TERMINAL`. `NOT_FOUND`, null process identity, task completion, and missing
+  in-memory mappings MUST each be tested as insufficient proof of
+  `NO_EXTERNAL_PROCESS` unless a durable no-launch record exists.
+- A typed execution context bound to the durable execution run MUST be
+  required at every scan-reachable governed process boundary. Tests and a
+  repository call-site enforcement check MUST cover capability discovery,
+  every adapter family, direct helper launches, and child-task propagation.
+  Installation and observation processes MUST use an explicitly separate
+  non-scan capability and MUST NOT be eligible for scan terminalization.
+- Process ownership tests MUST cover multiple overlapping children under one
+  run, root exit with surviving descendants, PID/PGID reuse, membership races,
+  and restart attachment. Windows coverage MUST use a Job Object or an
+  equivalent kernel-owned process container; POSIX coverage MUST document the
+  precise pidfd/session/group threat model and fail closed when ownership
+  cannot be independently verified.
+- Cancellation tests MUST prove one coordinator owns task shutdown, process
+  termination, authority revocation, and terminal settlement. The coordinator
+  MUST persist bounded retry/backoff/escalation state and expose it through
+  operator health/audit. Database operations that outlive an async timeout
+  MUST be tracked and prevented from causing an unobserved late mutation.
+
 ### 6.1.3 Historical Persistence and Retention Vectors
 
 - Start, progress, success, cancellation, timeout, and failure transitions MUST be persisted to the relational database and remain retrievable after a new application process is initialized.
