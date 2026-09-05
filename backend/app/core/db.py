@@ -1685,7 +1685,6 @@ class DatabaseManager:
             CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_id_org ON assets(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_id_org ON projects(id, organization_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_users_id_org ON users(id, organization_id);
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id);
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
@@ -1802,7 +1801,6 @@ class DatabaseManager:
                         duplicate_parent = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_requests GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
                         if duplicate_parent:
                             raise ValueError("execution_runs migration blocked: execution_requests lacks a unique tenant parent key and contains duplicates")
-                        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
                     foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
                     grouped_foreign_keys = {}
                     for row in foreign_key_rows:
@@ -1895,7 +1893,6 @@ class DatabaseManager:
                     duplicate_parent = conn.execute("SELECT id, organization_id, COUNT(*) AS count FROM execution_requests GROUP BY id, organization_id HAVING COUNT(*) > 1 LIMIT 1").fetchone()
                     if duplicate_parent:
                         raise ValueError("execution_runs remediation blocked: duplicate execution request parent keys require audited reconciliation")
-                    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
                     constraints = conn.execute("""
                         SELECT c.conname,
                                array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
@@ -1946,7 +1943,6 @@ class DatabaseManager:
                     if not final_count or final_count["count"] != 1:
                         raise ValueError("execution_runs remediation failed postcondition: expected exactly one composite tenant foreign key")
                 else:
-                    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_requests_id_org ON execution_requests(id, organization_id)")
                     foreign_key_rows = conn.execute("PRAGMA foreign_key_list(execution_runs)").fetchall()
                     grouped_foreign_keys = {}
                     for row in foreign_key_rows:
@@ -2207,6 +2203,10 @@ class DatabaseManager:
             cleanup_version = 5
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (cleanup_version,)).fetchone():
                 if isinstance(self, PostgresDatabaseManager):
+                    # The parent key is defined by the canonical table
+                    # constraint.  Remove only the migration-owned duplicate
+                    # index; never remove the constraint-backed key.
+                    conn.execute("DROP INDEX IF EXISTS uq_execution_requests_id_org")
                     duplicate_parent = conn.execute("""
                         SELECT COUNT(*) AS count FROM pg_index i
                         JOIN pg_class t ON t.oid = i.indrelid
@@ -2413,8 +2413,7 @@ class DatabaseManager:
                     JOIN pg_namespace n ON n.oid = t.relnamespace
                     JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
                     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
-                    WHERE i.relname = 'uq_execution_requests_id_org'
-                      AND t.relname = 'execution_requests' AND n.nspname = current_schema()
+                    WHERE t.relname = 'execution_requests' AND n.nspname = current_schema()
                       AND x.indisunique AND x.indpred IS NULL AND x.indisvalid AND x.indisready
                     GROUP BY i.oid, am.amname, x.indnkeyatts, x.indnatts
                 """).fetchall()
