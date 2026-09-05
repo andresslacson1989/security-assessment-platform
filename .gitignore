@@ -38,6 +38,9 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 *.db
+data/scans/
+data/workspaces/
+data/*.migration.lock
 
 # Testing & Coverage
 .pytest_cache/
