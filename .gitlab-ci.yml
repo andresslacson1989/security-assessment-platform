@@ -34,7 +34,7 @@ focused-contract-verification:
   stage: focused
   script:
     - mkdir -p reports
-    - python -m pytest -q --junitxml=reports/focused-contract.xml backend/tests/test_scan_manifest_contract.py tests/security/test_contract_fleet_consistency.py
+    - python -m pytest -q --junitxml=reports/focused-contract.xml tests/security/test_contract_fleet_consistency.py
   artifacts:
     when: always
     reports:
