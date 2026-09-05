@@ -31,6 +31,8 @@ from app.adapters import discover_system_capabilities, get_adapter_registry
 
 logger = logging.getLogger("cyberassess.orchestrator")
 
+_CANCELLATION_JOIN_TIMEOUT_SECONDS = 5.0
+
 _TOOL_ID_ALIASES = {
     "retirejs": "retire",
     "osv_scanner": "osv-scanner",
@@ -191,22 +193,53 @@ class ScanOrchestrator:
         # 2. Explicitly terminate any subprocess tracked by process_supervisor for this scan
         from app.core.process_supervisor import process_supervisor
         cancellation = process_supervisor.cancel_execution(scan_id)
-        if not cancellation.confirmed:
-            # A missing or failed supervisor result is not proof that the
-            # process has exited. Keep the durable scan open for the recovery
-            # loop instead of publishing a false terminal cancellation.
-            await self.emit_log(
-                scan_id,
-                LogLevel.WARNING,
-                "orchestrator",
-                f"Scan cancellation is pending verified process termination ({cancellation.status.value}).",
-            )
-            return False
 
-        # 3. Cancel running task if present
+        # 3. Cancel the owning scan task and wait for it to stop. A task
+        # cancellation request alone is not proof that the task or any
+        # supervised child has stopped.
         task = self._tasks.get(scan_id)
         if task and not task.done():
             task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=_CANCELLATION_JOIN_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    "Scan cancellation is pending: the owning task did not stop within the cancellation deadline.",
+                )
+                return False
+            except Exception as exc:
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    f"Scan cancellation is pending: task shutdown failed ({type(exc).__name__}).",
+                )
+                return False
+
+        # A NOT_FOUND result is accepted as a no-process proof only after the
+        # owning task has stopped and a second exact-ID lookup still finds no
+        # supervised execution. External launches are required to register
+        # under this same scan execution ID.
+        if not cancellation.confirmed:
+            no_process_proven = (
+                cancellation.status.value == "NOT_FOUND"
+                and task is not None
+                and task.done()
+                and process_supervisor.cancel_execution(scan_id).status.value == "NOT_FOUND"
+            )
+            if not no_process_proven:
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    f"Scan cancellation is pending verified process termination ({cancellation.status.value}).",
+                )
+                return False
 
         # 4. Mark cancelled state if in cancellable state
         if job.status in {ScanStatus.PENDING, ScanStatus.RUNNING}:
