@@ -1037,10 +1037,41 @@ class DatabaseManager:
         self._verify_execution_compatibility_schema(conn)
 
     def _verify_migration_v7_postconditions(self, conn) -> None:
-        self._verify_execution_dispatch_schema(conn)
+        self._verify_execution_dispatch_base_schema(conn)
 
     def _verify_migration_v8_postconditions(self, conn) -> None:
         self._verify_execution_dispatch_schema(conn)
+
+    def _verify_execution_dispatch_base_schema(self, conn) -> None:
+        """Verify only the pre-lease dispatch shape created by migration v7."""
+        required = {"execution_id", "organization_id", "state", "attempt_count", "created_at",
+                    "claimed_at", "completed_at", "last_error"}
+        forbidden = {"claimed_by", "claim_token", "lease_expires_at", "correlation_id"}
+        if isinstance(self, PostgresDatabaseManager):
+            rows = conn.execute("""SELECT column_name FROM information_schema.columns
+                WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents'""").fetchall()
+            columns = {row["column_name"] for row in rows}
+        else:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()}
+        if columns != required or columns & forbidden:
+            raise RuntimeError("execution dispatch v7 schema does not match its pre-lease target")
+        self._verify_execution_dispatch_constraints(conn, include_lease_columns=False)
+
+    def _verify_execution_dispatch_constraints(self, conn, include_lease_columns: bool) -> None:
+        """Verify dispatch keys/checks shared by v7 and v8."""
+        if isinstance(self, PostgresDatabaseManager):
+            constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents'""").fetchall()
+            if any(not row["convalidated"] for row in constraints):
+                raise RuntimeError("execution dispatch schema contains an unvalidated constraint")
+            if sum(1 for row in constraints if row["contype"] == "p") != 1 or sum(1 for row in constraints if row["contype"] == "f") != 2 or sum(1 for row in constraints if row["contype"] == "c") != 2:
+                raise RuntimeError("execution dispatch schema constraint set drifted")
+        else:
+            rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
+            sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_dispatch_intents'").fetchone()["sql"]).upper()
+            if sum(1 for row in rows if row["pk"] == 1) != 1 or "FOREIGN KEY (EXECUTION_ID, ORGANIZATION_ID)" not in sql or "CHECK (STATE IN" not in sql or "CHECK (ATTEMPT_COUNT >= 0)" not in sql:
+                raise RuntimeError("execution dispatch v7 keys or checks drifted")
 
     def _verify_execution_run_tenant_binding_schema(self, conn) -> None:
         """Verify the v1/v2/v5 execution-run tenant binding postcondition."""
@@ -2224,6 +2255,14 @@ class DatabaseManager:
                     if duplicate_fk and duplicate_fk["count"] and len(duplicate_parent) > 1:
                         conn.execute("ALTER TABLE execution_runs DROP CONSTRAINT execution_runs_decision_tenant_fk")
                 else:
+                    legacy_request_index = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone()
+                    if legacy_request_index:
+                        metadata = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                        known = next(row for row in metadata if row["name"] == "uq_execution_requests_id_org")
+                        columns = conn.execute("PRAGMA index_info('uq_execution_requests_id_org')").fetchall()
+                        if not known["unique"] or known["partial"] or [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] != ["id", "organization_id"]:
+                            raise ValueError("execution request parent index cleanup found an ambiguous migration-owned artifact")
+                        conn.execute("DROP INDEX uq_execution_requests_id_org")
                     parent_keys = []
                     for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
                         if index["unique"] and not index["partial"]:
