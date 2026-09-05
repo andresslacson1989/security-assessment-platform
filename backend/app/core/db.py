@@ -210,6 +210,8 @@ class PostgresDatabaseManager:
                 open=True,
             )
             self._ensure_migration_ledger()
+            if self._allow_unresolved_reconciliation:
+                return
             self._begin_migration_attempt()
             self._init_db()
         except Exception as exc:
@@ -267,6 +269,8 @@ class DatabaseManager:
         self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_migration_ledger()
+        if self._allow_unresolved_reconciliation:
+            return
         self._begin_migration_attempt()
         try:
             self._init_db()
@@ -520,9 +524,10 @@ class DatabaseManager:
         self,
         attempt_id: str,
         operator_id: str,
-        operator_role: str,
+        session_jti: str,
         resolution: str,
         evidence: Dict[str, Any],
+        correlation_id: str,
     ) -> None:
         """Append an authorized operator resolution for one blocked attempt.
 
@@ -533,13 +538,27 @@ class DatabaseManager:
         """
         if not getattr(self, "_allow_unresolved_reconciliation", False):
             raise PermissionError("migration reconciliation requires explicit maintenance mode")
-        if operator_role != "ADMIN" or not operator_id.strip():
-            raise PermissionError("migration reconciliation requires an administrator identity")
-        if resolution not in {"VERIFIED", "ABORTED"}:
-            raise ValueError("migration reconciliation resolution must be VERIFIED or ABORTED")
-        if not isinstance(evidence, dict) or not evidence:
-            raise ValueError("migration reconciliation requires structured evidence")
+        if not operator_id.strip() or not session_jti.strip():
+            raise PermissionError("migration reconciliation requires an authenticated administrator session")
+        if resolution != "VERIFIED":
+            raise ValueError("migration reconciliation cannot unblock startup without independent verification")
+        if not isinstance(evidence, dict) or not evidence or len(evidence) > 20:
+            raise ValueError("migration reconciliation requires bounded structured evidence")
+        if not correlation_id.strip() or len(correlation_id) > 128:
+            raise ValueError("migration reconciliation requires a bounded correlation id")
+        if not evidence.get("ticket_id") or evidence.get("schema_verification") != "PASSED":
+            raise ValueError("verified reconciliation requires ticket_id and schema_verification=PASSED")
+        if len(json.dumps(evidence, ensure_ascii=True)) > 8192:
+            raise ValueError("migration reconciliation evidence exceeds the maximum size")
         with self._connection_scope() as conn:
+            operator = conn.execute("SELECT role, is_active FROM users WHERE id = ?", (operator_id,)).fetchone()
+            if operator is None or operator["role"] != "ADMIN" or not operator["is_active"]:
+                raise PermissionError("migration reconciliation requires an active administrator")
+            if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (session_jti,)).fetchone() is not None:
+                raise PermissionError("migration reconciliation session is revoked")
+            applied = [int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
+            if applied != list(range(1, len(MIGRATION_REGISTRY) + 1)):
+                raise RuntimeError("migration reconciliation requires independently verified contiguous schema versions")
             required = conn.execute("""SELECT * FROM schema_migration_events
                 WHERE attempt_id = ? AND event_type = 'RECONCILIATION_REQUIRED'
                   AND rollback_status = 'UNKNOWN'""", (attempt_id,)).fetchone()
@@ -550,7 +569,7 @@ class DatabaseManager:
             if resolved is not None:
                 raise ValueError("migration attempt has already been resolved")
             next_sequence = conn.execute("SELECT MAX(event_sequence) AS sequence FROM schema_migration_events WHERE attempt_id = ?", (attempt_id,)).fetchone()["sequence"] + 1
-            context = json.dumps({"resolution": resolution, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
+            context = json.dumps({"resolution": resolution, "correlation_id": correlation_id, "session_jti": session_jti, "evidence": sanitize_sensitive_data(evidence)}, sort_keys=True, separators=(",", ":"))
             conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
