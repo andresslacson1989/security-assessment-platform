@@ -99,6 +99,34 @@ def test_forward_apply_artifact_vectors_match_runtime_serialization():
             assert spec.apply_artifact[backend] == actual
 
 
+def test_migration_provenance_rejects_malformed_or_mismatched_transaction_context():
+    manager = DatabaseManager.__new__(DatabaseManager)
+    spec = MIGRATION_REGISTRY[0]
+    digest = spec.apply_artifact["sqlite"].split(":", 1)[1]
+    context = {
+        "provenance_format": "registry-coordinator-v2",
+        "apply_artifact_revision": "execution-migration-apply-v1",
+        "apply_artifact": spec.apply_artifact["sqlite"],
+        "apply_artifacts": spec.apply_artifact,
+        "apply_manifest": spec.apply_manifest,
+        "backend_policy": spec.backend_policy,
+    }
+    row = {"transaction_context_id": f"txp-0123456789abcdef0123456789abcdef-{digest}"}
+    manager._validate_migration_event_provenance(row, spec, context)
+
+    for transaction_context_id in (
+        f"txp-not-a-uuid-{digest}",
+        f"txp-0123456789abcdef0123456789abcdef-{'0' * 64}",
+    ):
+        with pytest.raises(RuntimeError, match="transaction provenance identity"):
+            manager._validate_migration_event_provenance({"transaction_context_id": transaction_context_id}, spec, context)
+
+    with pytest.raises(RuntimeError, match="partial forward-apply provenance"):
+        manager._validate_migration_event_provenance(
+            {"transaction_context_id": "tx-legacy"}, spec, {"apply_artifact": spec.apply_artifact["sqlite"]}
+        )
+
+
 def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row

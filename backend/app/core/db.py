@@ -442,6 +442,31 @@ class DatabaseManager:
         if actual != expected or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version, {}).get(backend):
             raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
 
+    def _validate_migration_event_provenance(self, row, spec, context: dict) -> None:
+        """Validate the immutable provenance format bound to a ledger event."""
+        transaction_context_id = str(row["transaction_context_id"])
+        backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        selected_artifact = spec.apply_artifact.get(backend)
+        if transaction_context_id.startswith("txp-"):
+            match = re.fullmatch(r"txp-([0-9a-f]{32})-([0-9a-f]{64})", transaction_context_id)
+            if match is None or match.group(2) != selected_artifact.split(":", 1)[1]:
+                raise RuntimeError("migration ledger transaction provenance identity is invalid")
+            if (
+                context.get("provenance_format") != "registry-coordinator-v2"
+                or context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
+                or context.get("apply_artifact") != selected_artifact
+                or context.get("apply_artifacts") != spec.apply_artifact
+                or context.get("apply_manifest") != spec.apply_manifest
+                or context.get("backend_policy") != spec.backend_policy
+            ):
+                raise RuntimeError("migration ledger row forward-apply provenance drifted")
+            return
+        if not transaction_context_id.startswith("tx-"):
+            raise RuntimeError("migration ledger transaction context format is invalid")
+        new_claim_keys = {"provenance_format", "apply_artifact_revision", "apply_artifact", "apply_artifacts", "apply_manifest", "backend_policy"}
+        if new_claim_keys & set(context):
+            raise RuntimeError("legacy migration event contains partial forward-apply provenance")
+
     def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
         error_class = type(exc).__name__ if exc else None
         error_message = str(exc)[:500] if exc else None
@@ -986,22 +1011,7 @@ class DatabaseManager:
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("migration ledger row context is not valid JSON") from exc
             if context.get("coordinator") == "registry":
-                # Events written before forward-apply provenance was added are
-                # retained as immutable historical records.  They are valid
-                # identity evidence but explicitly have unavailable apply
-                # provenance; new coordinator events must carry the complete
-                # claim set below.
-                legacy_provenance = not str(row["transaction_context_id"]).startswith("txp-")
-                if not legacy_provenance and (
-                    context.get("provenance_format") != "registry-coordinator-v2"
-                    or
-                    context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
-                    or context.get("apply_artifact") != spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite")
-                    or context.get("apply_artifacts") != spec.apply_artifact
-                    or context.get("apply_manifest") != spec.apply_manifest
-                    or context.get("backend_policy") != spec.backend_policy
-                ):
-                    raise RuntimeError("migration ledger row forward-apply provenance drifted")
+                self._validate_migration_event_provenance(row, spec, context)
             attempts.setdefault(row["attempt_id"], []).append(row)
 
         for attempt_id, attempt_rows in attempts.items():
