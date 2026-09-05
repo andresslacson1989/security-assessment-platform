@@ -359,7 +359,7 @@ def test_orphaned_migration_attempt_is_durably_reconciled(tmp_path):
     with database._connection_scope() as connection:
         connection.execute(
             "INSERT INTO schema_migration_events (event_id, attempt_id, migration_version, migration_id, migration_name, registry_revision, event_sequence, event_type, event_at, backend, schema_name, previous_schema_version, target_schema_version, migration_checksum, runner_identity, transaction_context_id, context_json, rollback_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("orphan-start", "orphan-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", "orphan-tx", "{}", "PENDING"),
+            ("orphan-start", "orphan-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", f"tx-{'4' * 32}", "{}", "PENDING"),
         )
 
     with pytest.raises(RuntimeError, match="unresolved migration attempt"):
