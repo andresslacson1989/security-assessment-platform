@@ -51,6 +51,7 @@ from app.core.models import (
     Evidence,
     ExecutionDecisionRecord,
     ExecutionLeaseClaim,
+    ExecutionDispatchLease,
     ExecutionRunRecord,
     EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
     ExecutionRequestRecord,
@@ -3614,12 +3615,172 @@ class DatabaseManager:
                 cur.execute("UPDATE execution_decisions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at IS NULL", (now, row["approved_decision_id"], organization_id))
             cur.execute("UPDATE execution_requests SET state = 'REVOKED' WHERE id = ? AND organization_id = ? AND state != 'REVOKED'", (request_id, organization_id))
             changed = cur.rowcount > 0
+            execution_row = cur.execute(
+                "SELECT execution_id FROM execution_runs WHERE request_id = ? AND organization_id = ?",
+                (request_id, organization_id),
+            ).fetchone()
+            if execution_row:
+                dispatch_row = cur.execute(
+                    "SELECT state FROM execution_dispatch_intents WHERE execution_id = ? AND organization_id = ?",
+                    (execution_row["execution_id"], organization_id),
+                ).fetchone()
+                if dispatch_row and dispatch_row["state"] == "PENDING":
+                    cur.execute(
+                        "UPDATE execution_dispatch_intents SET state = 'BLOCKED', completed_at = ?, last_error = ? WHERE execution_id = ? AND organization_id = ? AND state = 'PENDING'",
+                        (now, "EXECUTION_CANCELLED_BEFORE_DISPATCH", execution_row["execution_id"], organization_id),
+                    )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DECISION_REVOKED, object_type="execution_request", object_id=request_id,
                 result="SUCCESS" if changed else "REPLAY", details={"decision_id": row["approved_decision_id"]},
             ))
             return changed or row["state"] == "REVOKED"
+
+    def claim_execution_dispatch_intent(
+        self,
+        execution_id: str,
+        organization_id: str,
+        worker_identity: str,
+        lease_seconds: int = 30,
+        now: Optional[datetime] = None,
+    ) -> Optional[ExecutionDispatchLease]:
+        """Atomically claim one authorized dispatch intent for a worker."""
+        if not execution_id or not organization_id or not worker_identity or lease_seconds <= 0:
+            raise ValueError("dispatch lease identity and duration are required")
+        now = now or utc_now()
+        expires_at = now + timedelta(seconds=lease_seconds)
+        token = uuid.uuid4().hex
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                f"""SELECT i.state, i.attempt_count, i.lease_expires_at, r.request_id,
+                    q.state AS request_state, d.approval_state, d.revoked_at, d.expires_at
+                    FROM execution_dispatch_intents i
+                    JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                    LEFT JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?{lock}""",
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row or row["request_state"] != "AUTHORIZED" or row["approval_state"] != "APPROVED":
+                return None
+            if row["revoked_at"] is not None or datetime.fromisoformat(row["expires_at"]) <= now:
+                return None
+            lease_expired = row["lease_expires_at"] is None or datetime.fromisoformat(row["lease_expires_at"]) <= now
+            if row["state"] == "CLAIMED" and not lease_expired:
+                return None
+            if row["state"] != "PENDING" and not (row["state"] == "CLAIMED" and lease_expired):
+                return None
+            updated = conn.execute(
+                """UPDATE execution_dispatch_intents
+                   SET state = 'CLAIMED', attempt_count = attempt_count + 1,
+                       claimed_at = ?, claimed_by = ?, claim_token = ?, lease_expires_at = ?
+                   WHERE execution_id = ? AND organization_id = ?
+                     AND ((state = 'PENDING') OR (state = 'CLAIMED' AND lease_expires_at <= ?))""",
+                (now.isoformat(), worker_identity, token, expires_at.isoformat(), execution_id, organization_id, now.isoformat()),
+            )
+            if updated.rowcount != 1:
+                return None
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", details={"attempt_count": int(row["attempt_count"]) + 1},
+            ))
+            return ExecutionDispatchLease(
+                execution_id=execution_id, organization_id=organization_id, owner=worker_identity,
+                token=token, expires_at=expires_at, attempt_count=int(row["attempt_count"]) + 1,
+            )
+
+    def renew_execution_dispatch_lease(
+        self,
+        execution_id: str,
+        organization_id: str,
+        worker_identity: str,
+        claim_token: str,
+        lease_seconds: int = 30,
+        now: Optional[datetime] = None,
+    ) -> Optional[datetime]:
+        """Renew only the currently held dispatch lease before it expires."""
+        if not execution_id or not organization_id or not worker_identity or not claim_token or lease_seconds <= 0:
+            return None
+        now = now or utc_now()
+        expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                """UPDATE execution_dispatch_intents SET lease_expires_at = ?
+                   WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                     AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
+                     AND NOT EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'REVOKED')""",
+                (expires_at.isoformat(), execution_id, organization_id, worker_identity, claim_token, now.isoformat(), execution_id, organization_id),
+            )
+            if cur.rowcount != 1:
+                return None
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", details={},
+            ))
+            return expires_at
+
+    def acknowledge_execution_cancellation(
+        self, execution_id: str, organization_id: str, worker_identity: str, claim_token: str,
+    ) -> bool:
+        """Durably acknowledge cancellation and close a worker-held dispatch lease."""
+        if not execution_id or not organization_id or not worker_identity or not claim_token:
+            return False
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = 'BLOCKED', completed_at = ?,
+                       last_error = 'EXECUTION_CANCELLED_ACKNOWLEDGED', claimed_by = NULL,
+                       claim_token = NULL, lease_expires_at = NULL
+                   WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                     AND claimed_by = ? AND claim_token = ?
+                     AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'REVOKED')""",
+                (now, execution_id, organization_id, worker_identity, claim_token, execution_id, organization_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED, object_type="execution_dispatch_intent",
+                object_id=execution_id, result="SUCCESS", details={},
+            ))
+            return True
+
+    def settle_execution_dispatch_intent(
+        self, execution_id: str, organization_id: str, worker_identity: str, claim_token: str,
+        *, success: bool, error_code: Optional[str] = None,
+    ) -> bool:
+        """Settle a claimed dispatch only if authority remains valid."""
+        if not execution_id or not organization_id or not worker_identity or not claim_token:
+            return False
+        if success and error_code:
+            raise ValueError("successful dispatch cannot carry an error code")
+        now = utc_now().isoformat()
+        new_state = "COMPLETED" if success else "FAILED"
+        message = None if success else (error_code or "EXECUTION_DISPATCH_FAILED")
+        with self._connection_scope() as conn:
+            cur = conn.execute(
+                f"""UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
+                       claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+                   WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                     AND claimed_by = ? AND claim_token = ?
+                     AND lease_expires_at > ? AND NOT EXISTS (
+                       SELECT 1 FROM execution_requests q JOIN execution_runs r
+                       ON r.request_id = q.id AND r.organization_id = q.organization_id
+                       WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'REVOKED')""",
+                (new_state, now, message, execution_id, organization_id, worker_identity, claim_token, now, execution_id, organization_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_COMPLETED if success else AuditAction.EXECUTION_DISPATCH_FAILED,
+                object_type="execution_dispatch_intent", object_id=execution_id, result="SUCCESS",
+                details={"error_code": message} if message else {},
+            ))
+            return True
 
     def create_execution_run(self, run: ExecutionRunRecord) -> ExecutionRunRecord:
         with self._connection_scope() as conn:

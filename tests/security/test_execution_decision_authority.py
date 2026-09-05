@@ -570,6 +570,37 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert run_events[0]["object_type"] == "execution_run"
     assert run_events[0]["correlation_id"] == "corr-approval-run"
 
+    lease = database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-a", lease_seconds=30)
+    assert lease is not None
+    assert lease.attempt_count == 1
+    renewed = database.renew_execution_dispatch_lease(
+        execution_id, "org-a", "worker-a", lease.token, lease_seconds=45,
+    )
+    assert renewed is not None and renewed > lease.expires_at
+    assert not database.renew_execution_dispatch_lease(
+        execution_id, "org-a", "other-worker", lease.token,
+    )
+    assert database.revoke_execution_request("req-a", "org-a", "admin-a") is True
+    assert database.acknowledge_execution_cancellation(
+        execution_id, "org-a", "worker-a", lease.token,
+    ) is True
+    assert database.settle_execution_dispatch_intent(
+        execution_id, "org-a", "worker-a", lease.token, success=True,
+    ) is False
+    with database._connection_scope() as conn:
+        dispatch = conn.execute(
+            "SELECT state, attempt_count, completed_at, last_error, claimed_by, claim_token, lease_expires_at "
+            "FROM execution_dispatch_intents WHERE execution_id = ? AND organization_id = ?",
+            (execution_id, "org-a"),
+        ).fetchone()
+    assert dispatch["state"] == "BLOCKED"
+    assert dispatch["attempt_count"] == 1
+    assert dispatch["completed_at"]
+    assert dispatch["last_error"] == "EXECUTION_CANCELLED_ACKNOWLEDGED"
+    assert dispatch["claimed_by"] is None
+    assert dispatch["claim_token"] is None
+    assert dispatch["lease_expires_at"] is None
+
 
 def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
     from app.core.db import DatabaseManager

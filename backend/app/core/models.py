@@ -1189,6 +1189,19 @@ class ExecutionLeaseClaim(BaseModel):
     expires_at: datetime
 
 
+class ExecutionDispatchLease(BaseModel):
+    """Typed durable lease for one worker's execution-dispatch attempt."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    execution_id: str
+    organization_id: str
+    owner: str
+    token: str
+    expires_at: datetime
+    attempt_count: int
+
+
 class ExecutionRequestRecord(BaseModel):
     """Durable pre-approval execution request and its immutable fingerprint."""
 
@@ -1451,6 +1464,11 @@ class AuditAction(str, Enum):
     EXECUTION_CANCEL_REQUESTED = "EXECUTION_CANCEL_REQUESTED"
     EXECUTION_RUN_CREATED = "EXECUTION_RUN_CREATED"
     EXECUTION_RUN_TRANSITIONED = "EXECUTION_RUN_TRANSITIONED"
+    EXECUTION_DISPATCH_CLAIMED = "EXECUTION_DISPATCH_CLAIMED"
+    EXECUTION_DISPATCH_LEASE_RENEWED = "EXECUTION_DISPATCH_LEASE_RENEWED"
+    EXECUTION_DISPATCH_COMPLETED = "EXECUTION_DISPATCH_COMPLETED"
+    EXECUTION_DISPATCH_FAILED = "EXECUTION_DISPATCH_FAILED"
+    EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED = "EXECUTION_DISPATCH_CANCEL_ACKNOWLEDGED"
     EXECUTION_REQUESTED = "EXECUTION_REQUESTED"
     EXECUTION_AUTHORIZED = "EXECUTION_AUTHORIZED"
     EXECUTION_AUTHORITY_INVARIANT_FAILED = "EXECUTION_AUTHORITY_INVARIANT_FAILED"
