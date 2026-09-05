@@ -190,7 +190,18 @@ class ScanOrchestrator:
 
         # 2. Explicitly terminate any subprocess tracked by process_supervisor for this scan
         from app.core.process_supervisor import process_supervisor
-        process_supervisor.cancel_execution(scan_id)
+        cancellation = process_supervisor.cancel_execution(scan_id)
+        if not cancellation.confirmed:
+            # A missing or failed supervisor result is not proof that the
+            # process has exited. Keep the durable scan open for the recovery
+            # loop instead of publishing a false terminal cancellation.
+            await self.emit_log(
+                scan_id,
+                LogLevel.WARNING,
+                "orchestrator",
+                f"Scan cancellation is pending verified process termination ({cancellation.status.value}).",
+            )
+            return False
 
         # 3. Cancel running task if present
         task = self._tasks.get(scan_id)

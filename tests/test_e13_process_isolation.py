@@ -13,7 +13,7 @@ import os
 import sys
 import pytest
 
-from app.core.process_supervisor import ProcessSupervisor, process_supervisor, ProcessExecutionResult, ProcessCancellationStatus
+from app.core.process_supervisor import ProcessSupervisor, process_supervisor, ProcessExecutionResult, ProcessCancellationStatus, ProcessCancellationResult
 from app.core.orchestrator import orchestrator
 from app.core.models import (
     ScanJob,
@@ -125,7 +125,7 @@ async def test_asyncio_cancellation_does_not_kill_siblings():
 
 
 @pytest.mark.asyncio
-async def test_tenant_cancellation_isolation_in_orchestrator():
+async def test_tenant_cancellation_isolation_in_orchestrator(monkeypatch):
     """
     Verify orchestrator.cancel_scan respects tenant boundaries:
     A tenant cannot cancel a scan belonging to another organization.
@@ -146,6 +146,14 @@ async def test_tenant_cancellation_isolation_in_orchestrator():
     cancelled_by_beta = await orch.cancel_scan(job.id, organization_id="org-tenant-beta")
     assert cancelled_by_beta is False
     assert orch._active_jobs[job.id].status == ScanStatus.RUNNING
+
+    monkeypatch.setattr(
+        process_supervisor,
+        "cancel_execution",
+        lambda execution_id: ProcessCancellationResult(
+            execution_id, ProcessCancellationStatus.KILLED, 1234,
+        ),
+    )
 
     # Attempt to cancel with Tenant Alpha's organization_id -> MUST SUCCEED
     cancelled_by_alpha = await orch.cancel_scan(job.id, organization_id="org-tenant-alpha")
