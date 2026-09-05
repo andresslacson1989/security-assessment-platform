@@ -3531,24 +3531,49 @@ class DatabaseManager:
         allowed = {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
         if terminal_state not in allowed or not execution_id or not organization_id or not worker_identity or not dispatch_claim_token:
             return False
-        if terminal_state != "SUCCEEDED" and not reason_code:
+        if terminal_state != "SUCCEEDED" and (not reason_code or not reason_code.strip()):
             return False
         now = utc_now().isoformat()
         dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if terminal_state == "CANCELLED" else "FAILED")
         with self._connection_scope() as conn:
             row = conn.execute(
                 """SELECT i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
-                           r.state AS run_state, r.process_id, r.process_group_id, r.correlation_id, r.worker_identity
+                           r.state AS run_state, r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at AS decision_expires_at,
+                           d.session_jti
                      FROM execution_dispatch_intents i
                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
-                    WHERE i.execution_id = ? AND i.organization_id = ?""",
+                     JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                     JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                    WHERE i.execution_id = ? AND i.organization_id = ?
+                    FOR UPDATE""" if isinstance(self, PostgresDatabaseManager) else """SELECT i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
+                           r.state AS run_state, r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
+                           q.state AS request_state, q.expires_at AS request_expires_at,
+                           d.approval_state, d.revoked_at, d.expires_at AS decision_expires_at,
+                           d.session_jti
+                      FROM execution_dispatch_intents i
+                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                     WHERE i.execution_id = ? AND i.organization_id = ?""",
                 (execution_id, organization_id),
             ).fetchone()
-            if not row or row["dispatch_state"] != "CLAIMED" or row["claimed_by"] != worker_identity or row["claim_token"] != dispatch_claim_token:
+            if not row:
+                return False
+            if row["run_state"] in EXECUTION_RUN_TERMINAL_STATES and row["worker_identity"] == worker_identity and (process_id is None or row["process_id"] == process_id) and (process_group_id is None or row["process_group_id"] == process_group_id):
+                return True
+            if row["dispatch_state"] != "CLAIMED" or row["claimed_by"] != worker_identity or row["claim_token"] != dispatch_claim_token:
                 return False
             if row["lease_expires_at"] is None or datetime.fromisoformat(row["lease_expires_at"]) <= utc_now():
                 return False
             if row["run_state"] != "RUNNING" or row["worker_identity"] != worker_identity:
+                return False
+            if row["request_state"] != "AUTHORIZED" or row["approval_state"] != "APPROVED" or row["revoked_at"] is not None:
+                return False
+            if datetime.fromisoformat(row["request_expires_at"]) <= utc_now() or datetime.fromisoformat(row["decision_expires_at"]) <= utc_now():
+                return False
+            if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (row["session_jti"],)).fetchone():
                 return False
             if process_id is not None and row["process_id"] != process_id:
                 return False
@@ -4187,11 +4212,34 @@ class DatabaseManager:
         now = now or utc_now()
         expires_at = now + timedelta(seconds=lease_seconds)
         with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            authority = conn.execute(
+                f"""SELECT q.expires_at AS request_expires_at, d.expires_at AS decision_expires_at,
+                           d.session_jti
+                      FROM execution_dispatch_intents i
+                      JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                     WHERE i.execution_id = ? AND i.organization_id = ? AND i.state = 'CLAIMED'
+                       AND i.claimed_by = ? AND i.claim_token = ?{lock}""",
+                (execution_id, organization_id, worker_identity, claim_token),
+            ).fetchone()
+            if not authority or conn.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (authority["session_jti"],)).fetchone():
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_LEASE_RENEWED, "DISPATCH_AUTHORITY_REVOKED",
+                )
+                return None
+            expires_at = min(
+                expires_at,
+                datetime.fromisoformat(authority["request_expires_at"]),
+                datetime.fromisoformat(authority["decision_expires_at"]),
+            )
             cur = conn.execute(
                 """UPDATE execution_dispatch_intents SET lease_expires_at = ?
                    WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
                      AND claimed_by = ? AND claim_token = ? AND lease_expires_at > ?
-                      AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'AUTHORIZED' AND q.expires_at > ? AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ? )""",
+                       AND EXISTS (SELECT 1 FROM execution_requests q JOIN execution_runs r ON r.request_id = q.id AND r.organization_id = q.organization_id JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id WHERE r.execution_id = ? AND r.organization_id = ? AND q.state = 'AUTHORIZED' AND q.expires_at > ? AND d.approval_state = 'APPROVED' AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ? AND NOT EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti))""",
                  (expires_at.isoformat(), execution_id, organization_id, worker_identity, claim_token, now.isoformat(), execution_id, organization_id, now.isoformat(), now.isoformat(), worker_identity),
             )
             if cur.rowcount != 1:
