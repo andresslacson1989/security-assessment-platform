@@ -55,7 +55,7 @@ async def test_cancel_nonexistent_execution_fails_cleanly():
     result = supervisor.cancel_execution("non-existent-exec-id")
     assert result.status is ProcessCancellationStatus.NOT_FOUND
     assert result.confirmed is False
-    assert supervisor.cancel_pid(99999999) is False
+    assert supervisor.cancel_pid(99999999).status is ProcessCancellationStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio

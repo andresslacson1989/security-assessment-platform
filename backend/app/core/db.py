@@ -2893,11 +2893,12 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             revoked_at = utc_now().isoformat()
             affected = conn.execute(
-                """SELECT d.id AS decision_id, d.organization_id, r.execution_id
+                """SELECT d.id AS decision_id, d.organization_id, r.execution_id,
+                           r.state AS run_state
                    FROM execution_decisions d
                    LEFT JOIN execution_runs r ON r.approved_decision_id = d.id
                      AND r.organization_id = d.organization_id
-                  WHERE d.session_jti = ?""",
+                  WHERE d.session_jti = ? AND d.revoked_at IS NULL""",
                 (jti,),
             ).fetchall()
             conn.execute(
@@ -2936,7 +2937,7 @@ class DatabaseManager:
                     result="SUCCESS", correlation_id=correlation_id,
                     details={"reason_code": "EXECUTION_CANCELLED", "source": "SESSION_REVOCATION"},
                 ))
-                if item["execution_id"]:
+                if item["execution_id"] and item["run_state"] in {"REQUESTED", "STARTING", "RUNNING"}:
                     self._insert_audit_event_conn(conn, AuditEvent(
                         id=f"aud-{uuid.uuid4().hex[:12]}", actor="system",
                         organization_id=item["organization_id"],
@@ -2954,6 +2955,7 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             rows = conn.execute(
                 """SELECT r.execution_id, r.organization_id, r.process_id,
+                           r.state AS run_state,
                            r.process_group_id, r.correlation_id,
                            CASE
                              WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL

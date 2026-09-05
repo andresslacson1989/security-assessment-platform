@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.core.observation_service import BackendObservationService
+from app.core.observation_service import BackendObservationService, ObservationState
 
 
 @pytest.mark.asyncio
@@ -160,6 +160,29 @@ async def test_reaper_enumeration_failure_isolated_in_observation_state(monkeypa
 
     assert await service.reap_execution_authority_once() == 0
     assert "temporary database outage" in service.state.last_recovery_error
+
+
+@pytest.mark.asyncio
+async def test_capability_refresh_preserves_recovery_health_state(monkeypatch):
+    async def successful_refresh(**kwargs):
+        return None
+
+    class FakeManager:
+        @classmethod
+        def get_instance(cls):
+            return cls()
+
+        async def get_all_tools_info(self, **kwargs):
+            return []
+
+    monkeypatch.setattr("app.core.observation_service.get_cached_system_capabilities", successful_refresh)
+    monkeypatch.setattr("app.core.observation_service.ToolInstallationManager", FakeManager)
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+    service._state = ObservationState(last_recovery_error="orphan remains", last_recovered_count=2)
+
+    assert await service.refresh_once() is True
+    assert service.state.last_recovery_error == "orphan remains"
+    assert service.state.last_recovered_count == 2
 
 
 @pytest.mark.asyncio

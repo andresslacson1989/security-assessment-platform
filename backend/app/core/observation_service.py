@@ -64,6 +64,7 @@ class BackendObservationService:
             minimum=1.0,
         )
         self._refresh_lock = asyncio.Lock()
+        self._recovery_lock = asyncio.Lock()
         self._task: Optional[asyncio.Task[None]] = None
         self._state = ObservationState()
 
@@ -85,6 +86,8 @@ class BackendObservationService:
                 last_started_at=started,
                 last_completed_at=self._state.last_completed_at,
                 last_error=None,
+                last_recovery_error=self._state.last_recovery_error,
+                last_recovered_count=self._state.last_recovered_count,
             )
             try:
                 await asyncio.wait_for(
@@ -102,6 +105,8 @@ class BackendObservationService:
                     last_started_at=started,
                     last_completed_at=self._state.last_completed_at,
                     last_error=message,
+                    last_recovery_error=self._state.last_recovery_error,
+                    last_recovered_count=self._state.last_recovered_count,
                 )
                 logger.warning("Backend tool observation failed: error=%s", message)
                 return False
@@ -110,10 +115,18 @@ class BackendObservationService:
                 last_started_at=started,
                 last_completed_at=datetime.now(timezone.utc),
                 last_error=None,
+                last_recovery_error=self._state.last_recovery_error,
+                last_recovered_count=self._state.last_recovered_count,
             )
             return True
 
     async def reap_execution_authority_once(self) -> int:
+        if self._recovery_lock.locked():
+            return 0
+        async with self._recovery_lock:
+            return await self._reap_execution_authority_once()
+
+    async def _reap_execution_authority_once(self) -> int:
         """Terminate and durably close authority-lost executions by exact ID."""
         from app.core.db import db_manager
         from app.core.process_supervisor import process_supervisor
@@ -144,7 +157,10 @@ class BackendObservationService:
             try:
                 cancellation = process_supervisor.cancel_execution(execution_id)
                 confirmed = getattr(cancellation, "confirmed", bool(cancellation))
-                if candidate.get("process_id") is not None and not confirmed:
+                if (
+                    candidate.get("process_id") is not None
+                    or candidate.get("run_state") == "RUNNING"
+                ) and not confirmed:
                     logger.warning(
                         "Execution recovery deferred: termination not confirmed execution_id=%s status=%s",
                         execution_id, getattr(cancellation, "status", "UNKNOWN"),

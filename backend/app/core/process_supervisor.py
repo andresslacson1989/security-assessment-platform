@@ -186,6 +186,7 @@ class ProcessSupervisor:
     def __init__(self):
         self._active_pids: Set[int] = set()
         self._execution_pids: dict[str, int] = {}
+        self._execution_groups: dict[str, int] = {}
         self._lock = threading.Lock()
 
     @classmethod
@@ -194,17 +195,20 @@ class ProcessSupervisor:
             cls._instance = cls()
         return cls._instance
 
-    def _register_execution(self, pid: int, execution_id: Optional[str] = None) -> None:
+    def _register_execution(self, pid: int, execution_id: Optional[str] = None, process_group_id: Optional[str] = None) -> None:
         with self._lock:
             self._active_pids.add(pid)
             if execution_id:
                 self._execution_pids[execution_id] = pid
+                if process_group_id and process_group_id.isdigit():
+                    self._execution_groups[execution_id] = int(process_group_id)
 
     def _unregister_execution(self, pid: int, execution_id: Optional[str] = None) -> None:
         with self._lock:
             self._active_pids.discard(pid)
             if execution_id and self._execution_pids.get(execution_id) == pid:
                 self._execution_pids.pop(execution_id, None)
+                self._execution_groups.pop(execution_id, None)
 
     def _register_pid(self, pid: int) -> None:
         self._register_execution(pid)
@@ -222,10 +226,11 @@ class ProcessSupervisor:
             return ProcessCancellationResult(str(execution_id or ""), ProcessCancellationStatus.INVALID_REQUEST)
         with self._lock:
             pid = self._execution_pids.get(execution_id)
+            group_id = self._execution_groups.get(execution_id)
         if pid is None:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
-        if self._pid_exists(pid):
-            terminated = self.kill_process_tree(pid)
+        if self._pid_exists(pid) or self._process_group_exists(group_id):
+            terminated = self.kill_process_tree(pid, process_group_id=group_id)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
             status = ProcessCancellationStatus.ALREADY_EXITED
@@ -233,24 +238,34 @@ class ProcessSupervisor:
             with self._lock:
                 if self._execution_pids.get(execution_id) == pid:
                     self._execution_pids.pop(execution_id, None)
+                    self._execution_groups.pop(execution_id, None)
                     self._active_pids.discard(pid)
         return ProcessCancellationResult(execution_id, status, pid)
 
-    def cancel_pid(self, pid: int) -> bool:
+    def cancel_pid(self, pid: int) -> ProcessCancellationResult:
         """
-        Safely cancels a specific process by PID if it is tracked by this supervisor.
+        Cancels a tracked PID with the same verified result contract as
+        ``cancel_execution``. New callers should prefer execution identity.
         """
         if not pid or pid <= 0:
-            return False
+            return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.INVALID_REQUEST, pid)
         with self._lock:
             if pid not in self._active_pids:
-                return False
-            self._active_pids.discard(pid)
-            to_remove = [k for k, v in self._execution_pids.items() if v == pid]
-            for k in to_remove:
-                self._execution_pids.pop(k, None)
-        self.kill_process_tree(pid)
-        return True
+                return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.NOT_FOUND, pid)
+            execution_id = next((key for key, value in self._execution_pids.items() if value == pid), f"pid:{pid}")
+            group_id = self._execution_groups.get(execution_id)
+        if self._pid_exists(pid) or self._process_group_exists(group_id):
+            terminated = self.kill_process_tree(pid, process_group_id=group_id)
+            status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
+        else:
+            status = ProcessCancellationStatus.ALREADY_EXITED
+        if status in {ProcessCancellationStatus.KILLED, ProcessCancellationStatus.ALREADY_EXITED}:
+            with self._lock:
+                self._active_pids.discard(pid)
+                for key in [k for k, value in self._execution_pids.items() if value == pid]:
+                    self._execution_pids.pop(key, None)
+                    self._execution_groups.pop(key, None)
+        return ProcessCancellationResult(execution_id, status, pid)
 
     @staticmethod
     def _windows_descendant_pids(root_pid: int) -> list[int]:
@@ -331,7 +346,54 @@ class ProcessSupervisor:
             return False
 
     @staticmethod
-    def kill_process_tree(pid: int) -> bool:
+    def _posix_descendant_pids(root_pid: int) -> list[int]:
+        """Snapshot descendants without trusting an arbitrary caller PID."""
+        if os.name == "nt":
+            return []
+        try:
+            result = subprocess.run(
+                ["ps", "-e", "-o", "pid=", "-o", "ppid="],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=1.0, check=False,
+            )
+            parents: dict[int, list[int]] = {}
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) != 2:
+                    continue
+                try:
+                    child, parent = (int(value) for value in fields)
+                except ValueError:
+                    continue
+                parents.setdefault(parent, []).append(child)
+            descendants: list[int] = []
+            pending = list(parents.get(root_pid, []))
+            while pending:
+                child = pending.pop(0)
+                if child in descendants or child == root_pid:
+                    continue
+                descendants.append(child)
+                pending.extend(parents.get(child, []))
+            return descendants
+        except (OSError, subprocess.SubprocessError):
+            return []
+
+    @staticmethod
+    def _process_group_exists(pgid: Optional[int]) -> bool:
+        if os.name == "nt" or not pgid or pgid <= 1:
+            return False
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def kill_process_tree(pid: int, process_group_id: Optional[int] = None) -> bool:
         """
         Recursively terminates a process and all its child/grandchild descendants.
         Guarantees isolation: never signals the host, server process, or sibling processes.
@@ -345,6 +407,8 @@ class ProcessSupervisor:
             logger.error("Security invariant: Refusing to terminate current/parent PID=%s", pid)
             return False
 
+        descendants: list[int] = []
+        group_id: Optional[int] = process_group_id
         if sys.platform == "win32":
             try:
                 # Capture descendants before terminating the root.
@@ -365,16 +429,21 @@ class ProcessSupervisor:
                 except Exception as exc:
                     logger.debug("Fallback termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
         else:
+            descendants = ProcessSupervisor._posix_descendant_pids(pid)
             try:
                 # POSIX process isolation:
                 # Only signal a process group if the process is its own group leader (pgid == pid),
                 # which was spawned with start_new_session=True, AND pgid != current process group!
                 current_pgrp = os.getpgrp()
-                pgid = os.getpgid(pid)
-                if pgid > 1 and pgid == pid and pgid != current_pgrp:
-                    os.killpg(pgid, signal.SIGKILL)
+                if group_id and group_id != current_pgrp:
+                    os.killpg(group_id, signal.SIGKILL)
                 else:
-                    os.kill(pid, signal.SIGKILL)
+                    pgid = os.getpgid(pid)
+                    group_id = pgid if pgid > 1 and pgid == pid and pgid != current_pgrp else None
+                    if group_id:
+                        os.killpg(group_id, signal.SIGKILL)
+                    else:
+                        os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             except Exception as exc:
@@ -383,12 +452,16 @@ class ProcessSupervisor:
                     os.kill(pid, signal.SIGKILL)
                 except Exception as fallback_exc:
                     logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
+        tracked_pids = [pid, *descendants]
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            if not ProcessSupervisor._pid_exists(pid):
+            if not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids) and not ProcessSupervisor._process_group_exists(group_id):
                 return True
             time.sleep(0.02)
-        return not ProcessSupervisor._pid_exists(pid)
+        return (
+            not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids)
+            and not ProcessSupervisor._process_group_exists(group_id)
+        )
 
     # Complete reviewed baseline inherited from the worker process. Credentials,
     # proxy configuration, loader hooks, interpreter/module injection,
@@ -732,7 +805,11 @@ class ProcessSupervisor:
                         process_group_id=str(proc.pid) if start_new_session else None,
                     )
                     launch_committed = True
-                self._register_execution(proc.pid, execution_id=execution_id)
+                self._register_execution(
+                    proc.pid,
+                    execution_id=execution_id,
+                    process_group_id=str(proc.pid) if start_new_session else None,
+                )
 
                 stdout, stderr, bounded_failure = _bounded_communicate(
                     proc,

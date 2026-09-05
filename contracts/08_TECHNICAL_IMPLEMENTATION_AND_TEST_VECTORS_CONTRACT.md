@@ -163,6 +163,8 @@ To achieve deterministic CI verification across environments without requiring e
 - Reaper eligibility MUST include session-token revocation and MUST close an otherwise active run with a canonical safe outcome while preserving tenant, correlation, and audit invariants.
 - The production observation lifecycle MUST invoke the authority reaper on a bounded cadence without authentication, cancel by exact `execution_id`, and atomically close recovered runs. Tests MUST prove startup registration, graceful shutdown/await, exact process identity targeting, and recovery after session revocation or lease expiry.
 - Recovery MUST be failure-isolated: bounded database/supervisor calls, per-candidate error handling, retryable backlog for unconfirmed termination, and a persistent/observable recovery error state. Tests MUST prove that `NOT_FOUND`/`FAILED` cancellation does not terminalize a run, one bad candidate does not stop later candidates, and a transient database failure does not kill the lifecycle task.
+- Process-tree confirmation MUST verify the root and every captured descendant/group member. PID-only cancellation MUST return the typed confirmation result and retain tracking on failure. A `RUNNING` candidate without durable process identity MUST remain blocked; only `REQUESTED`/`STARTING` candidates proven never to create a process may close without a process confirmation.
+- Worker-restart tests MUST prove that a missing in-memory mapping yields `NOT_FOUND`, does not close the durable run, and produces an operator-visible recovery condition; a raw persisted PID MUST never be used without an independently bound process-group identity.
 
 ### 6.1.3 Historical Persistence and Retention Vectors
 

@@ -187,6 +187,15 @@ result (`KILLED`, `ALREADY_EXITED`, `NOT_FOUND`, or `FAILED`); durable recovery
 MUST proceed only for `KILLED`/`ALREADY_EXITED`, or for a run with no process
 ever created. `NOT_FOUND` and `FAILED` MUST remain recoverable backlog and MUST
 surface an operator-visible health signal rather than being declared closed.
+PID-only cancellation is a compatibility/diagnostic surface and MUST return
+the same typed confirmation result; it MUST NOT discard its tracking entry or
+report success when termination is not confirmed. Governed execution recovery
+MUST use the durable `execution_id` binding.
+If a worker restart removes the in-memory supervisor mapping, a persisted PID
+MUST NOT be treated as safe to terminate by PID reuse. The execution MUST
+remain in an authority-lost/recovery-blocked state with bounded retry and an
+operator-visible escalation until a verified supervisor owning the process
+group can confirm termination.
 
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 
