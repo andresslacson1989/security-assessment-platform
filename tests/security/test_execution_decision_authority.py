@@ -12,7 +12,7 @@ from app.core.execution_decision import ExecutionDecisionError, issue_execution_
 from app.core.db import DatabaseManager
 from app.core.migration_registry import MIGRATION_REGISTRY, _EXPECTED_CHECKSUMS
 from app.core.migration_artifacts import FORWARD_APPLY_ARTIFACT_REVISION
-from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
+from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType, EXECUTION_REASON_CODES, is_canonical_execution_reason_code
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -63,6 +63,15 @@ def test_migration_registry_has_fixed_executable_verifier_vectors():
     assert all(spec.apply_artifact.startswith("sha256:") and len(spec.apply_artifact) == 71 for spec in MIGRATION_REGISTRY)
     assert all(callable(spec.verify) for spec in MIGRATION_REGISTRY)
     assert {spec.version: spec.checksum for spec in MIGRATION_REGISTRY} == _EXPECTED_CHECKSUMS
+
+
+def test_execution_reason_codes_are_bounded_and_allowlisted():
+    assert EXECUTION_REASON_CODES
+    assert all(is_canonical_execution_reason_code(code) for code in EXECUTION_REASON_CODES)
+    assert is_canonical_execution_reason_code("PROCESS_EXIT_NONZERO")
+    assert not is_canonical_execution_reason_code("free-form failure detail")
+    assert not is_canonical_execution_reason_code("PROCESS_EXIT_NONZERO\nINJECTED")
+    assert not is_canonical_execution_reason_code("A" * 65)
 
 
 def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp_path):
@@ -739,6 +748,21 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert run["state"] == "CANCELLED"
     assert run["reason_code"] == "EXECUTION_CANCELLED_ACKNOWLEDGED"
     assert run["finished_at"]
+    # A retry is idempotent only for the exact durable outcome.  A worker must
+    # not be able to rewrite a cancellation as success or as a different
+    # terminal result merely by reusing its old dispatch token.
+    assert database.finish_execution(
+        execution_id, "org-a", "worker-a", lease.token,
+        terminal_state="CANCELLED", reason_code="EXECUTION_CANCELLED_ACKNOWLEDGED",
+    ) is True
+    assert database.finish_execution(
+        execution_id, "org-a", "worker-a", lease.token,
+        terminal_state="FAILED", reason_code="PROCESS_EXIT_NONZERO",
+    ) is False
+    assert database.finish_execution(
+        execution_id, "org-a", "worker-a", lease.token,
+        terminal_state="FAILED", reason_code="unreviewed diagnostic",
+    ) is False
 
 
 def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):

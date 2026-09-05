@@ -155,6 +155,9 @@ To achieve deterministic CI verification across environments without requiring e
 - A successful login MUST establish the token/session even when capability detection is slow, unavailable, or fails. A login failure MUST not trigger a capability or toolbox refresh.
 - Application startup MUST create an autonomous observation task after readiness, with a bounded interval, per-tool/aggregate timeout, single-flight refresh, structured failure state, and graceful cancellation/await during shutdown. The task MUST operate without a browser session or user token.
 - Readiness and authentication latency tests MUST prove that the observation task cannot block either endpoint. Concurrent scheduler ticks MUST not overlap for the same configuration.
+- Execution terminalization MUST accept only the canonical bounded reason-code registry. A non-success terminal write with an unknown, overlong, multiline, or free-form reason MUST be rejected. A success terminal write carrying a reason MUST be rejected.
+- Repeating an identical terminal settlement MAY be idempotently successful only when the durable run state, mapped dispatch state, reason code, worker identity, and supplied process identity agree. A conflicting terminal retry MUST be rejected and MUST leave both durable records unchanged except for its rejection audit event.
+- A revocation committed before terminal update evaluation MUST prevent both the execution-run and dispatch-intent terminal updates. Tests MUST cover a revoked session and verify that no successful outcome is persisted.
 
 ### 6.1.3 Historical Persistence and Retention Vectors
 

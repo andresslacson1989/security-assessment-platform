@@ -55,6 +55,7 @@ from app.core.models import (
     ExecutionAuthorityLease,
     ExecutionRunRecord,
     EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
+    is_canonical_execution_reason_code,
     ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
@@ -3469,7 +3470,7 @@ class DatabaseManager:
     ) -> bool:
         """Atomically terminalize a fenced STARTING run after launch failure."""
         safe_states = {"FAILED", "CANCELLED", "TIMED_OUT", "EXECUTION_BLOCKED"}
-        if terminal_state not in safe_states or not reason_code.strip():
+        if terminal_state not in safe_states or not is_canonical_execution_reason_code(reason_code):
             raise ValueError("execution start abort requires a safe terminal state and reason")
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
@@ -3531,14 +3532,17 @@ class DatabaseManager:
         allowed = {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
         if terminal_state not in allowed or not execution_id or not organization_id or not worker_identity or not dispatch_claim_token:
             return False
-        if terminal_state != "SUCCEEDED" and (not reason_code or not reason_code.strip()):
+        if terminal_state == "SUCCEEDED" and reason_code is not None:
+            return False
+        if terminal_state != "SUCCEEDED" and not is_canonical_execution_reason_code(reason_code):
             return False
         now = utc_now().isoformat()
         dispatch_state = "COMPLETED" if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if terminal_state == "CANCELLED" else "FAILED")
         with self._connection_scope() as conn:
             row = conn.execute(
-                """SELECT i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
-                           r.state AS run_state, r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
+                """SELECT i.state AS dispatch_state, i.last_error, i.claimed_by, i.claim_token, i.lease_expires_at,
+                           r.state AS run_state, r.reason_code AS run_reason_code,
+                           r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
                            q.state AS request_state, q.expires_at AS request_expires_at,
                            d.approval_state, d.revoked_at, d.expires_at AS decision_expires_at,
                            d.session_jti
@@ -3547,8 +3551,9 @@ class DatabaseManager:
                      JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
                      JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
                     WHERE i.execution_id = ? AND i.organization_id = ?
-                    FOR UPDATE""" if isinstance(self, PostgresDatabaseManager) else """SELECT i.state AS dispatch_state, i.claimed_by, i.claim_token, i.lease_expires_at,
-                           r.state AS run_state, r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
+                    FOR UPDATE""" if isinstance(self, PostgresDatabaseManager) else """SELECT i.state AS dispatch_state, i.last_error, i.claimed_by, i.claim_token, i.lease_expires_at,
+                           r.state AS run_state, r.reason_code AS run_reason_code,
+                           r.process_id, r.process_group_id, r.correlation_id, r.worker_identity,
                            q.state AS request_state, q.expires_at AS request_expires_at,
                            d.approval_state, d.revoked_at, d.expires_at AS decision_expires_at,
                            d.session_jti
@@ -3561,8 +3566,22 @@ class DatabaseManager:
             ).fetchone()
             if not row:
                 return False
-            if row["run_state"] in EXECUTION_RUN_TERMINAL_STATES and row["worker_identity"] == worker_identity and (process_id is None or row["process_id"] == process_id) and (process_group_id is None or row["process_group_id"] == process_group_id):
-                return True
+            if row["run_state"] in EXECUTION_RUN_TERMINAL_STATES:
+                expected_dispatch_state = "COMPLETED" if row["run_state"] in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"} else ("BLOCKED" if row["run_state"] == "CANCELLED" else "FAILED")
+                if (
+                    row["dispatch_state"] == expected_dispatch_state
+                    and row["run_reason_code"] == reason_code
+                    and row["last_error"] == reason_code
+                    and row["worker_identity"] == worker_identity
+                    and (process_id is None or row["process_id"] == process_id)
+                    and (process_group_id is None or row["process_group_id"] == process_group_id)
+                ):
+                    return True
+                self._record_dispatch_rejection_conn(
+                    conn, execution_id, organization_id, worker_identity,
+                    AuditAction.EXECUTION_DISPATCH_FAILED, "EXECUTION_TERMINAL_OUTCOME_CONFLICT",
+                )
+                return False
             if row["dispatch_state"] != "CLAIMED" or row["claimed_by"] != worker_identity or row["claim_token"] != dispatch_claim_token:
                 return False
             if row["lease_expires_at"] is None or datetime.fromisoformat(row["lease_expires_at"]) <= utc_now():
@@ -3584,15 +3603,17 @@ class DatabaseManager:
                               process_group_id = COALESCE(?, process_group_id), finished_at = ?
                     WHERE execution_id = ? AND organization_id = ? AND state = 'RUNNING'
                       AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))
-                      AND (process_group_id = ? OR (? IS NULL AND process_group_id IS NULL))""",
-                (terminal_state, reason_code, process_id, process_group_id, now, execution_id, organization_id, worker_identity, process_id, process_id, process_group_id, process_group_id),
+                      AND (process_group_id = ? OR (? IS NULL AND process_group_id IS NULL))
+                      AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)""",
+                (terminal_state, reason_code, process_id, process_group_id, now, execution_id, organization_id, worker_identity, process_id, process_id, process_group_id, process_group_id, row["session_jti"]),
             )
             dispatch_update = conn.execute(
                 """UPDATE execution_dispatch_intents SET state = ?, completed_at = ?, last_error = ?,
                           claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
                     WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
-                      AND claimed_by = ? AND claim_token = ?""",
-                (dispatch_state, now, reason_code, execution_id, organization_id, worker_identity, dispatch_claim_token),
+                      AND claimed_by = ? AND claim_token = ?
+                      AND NOT EXISTS (SELECT 1 FROM revoked_tokens WHERE jti = ?)""",
+                (dispatch_state, now, reason_code, execution_id, organization_id, worker_identity, dispatch_claim_token, row["session_jti"]),
             )
             if run_update.rowcount != 1 or dispatch_update.rowcount != 1:
                 raise RuntimeError("execution finish lost its transaction fence")

@@ -1279,6 +1279,43 @@ EXECUTION_RUN_TRANSITIONS = {
     "RUNNING": frozenset({"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}),
 }
 
+# Contract 04/08: execution outcomes are durable security evidence, not free-form
+# diagnostic text.  Keep this registry deliberately bounded so callers cannot
+# smuggle unreviewed states into the audit trail or make outcome reconciliation
+# ambiguous.  Human-readable detail belongs in sanitized process telemetry.
+EXECUTION_REASON_CODES = frozenset({
+    "EXECUTION_AUTHORITY_EXPIRED",
+    "EXECUTION_AUTHORITY_RELEASED",
+    "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED",
+    "EXECUTION_CANCELLED_ACKNOWLEDGED",
+    "EXECUTION_CANCELLED_BEFORE_DISPATCH",
+    "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+    "EXECUTION_CANCELLED",
+    "EXECUTION_DECISION_CLAIM_REJECTED",
+    "EXECUTION_DISPATCH_FENCE_REQUIRED",
+    "EXECUTION_DISPATCH_SETTLEMENT_REQUIRED",
+    "EXECUTION_IDENTITY_MISMATCH",
+    "EXECUTION_LEASE_RENEWAL_FAILED",
+    "EXECUTION_TIMEOUT",
+    "EXECUTABLE_NOT_FOUND",
+    "EXECUTABLE_PERMISSION_DENIED",
+    "LINKED_DISPATCH_INTENT_MISSING",
+    "OUTPUT_LIMIT_EXCEEDED",
+    "PROCESS_EXECUTION_EXCEPTION",
+    "PROCESS_EXIT_NONZERO",
+    "PROCESS_LAUNCH_REJECTED_SECURITY",
+})
+
+
+def is_canonical_execution_reason_code(value: Optional[str]) -> bool:
+    """Return whether *value* is a reviewed, bounded execution reason code."""
+    return (
+        isinstance(value, str)
+        and len(value) <= 64
+        and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value) is not None
+        and value in EXECUTION_REASON_CODES
+    )
+
 
 class APIKeyRecord(BaseModel):
     key_id: str = Field(default_factory=lambda: f"ca_key_{uuid.uuid4().hex[:12]}")

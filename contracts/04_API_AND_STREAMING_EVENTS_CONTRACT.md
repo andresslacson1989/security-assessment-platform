@@ -127,7 +127,13 @@ emit both fields consistently and MUST NOT represent them as conflicting states.
 Each
 state includes request ID, decision ID where applicable, worker identity,
 `target_policy_version`, `operation_policy_revision`, timestamps, coverage
-information, and a sanitized reason code.
+information, and a canonical, bounded reason code. Terminal persistence is
+idempotent only when the requested terminal state, linked dispatch state,
+worker identity, and supplied process identity are consistent with the already
+stored outcome. A conflicting terminal retry MUST be rejected and audited; it
+MUST NOT be treated as a successful duplicate. Non-success outcomes MUST use a
+reason code from the reviewed execution-reason registry and MUST NOT persist
+free-form diagnostic text. Success MUST persist no failure reason code.
 The API returns `202 Accepted` for an accepted job, `401/403` for authentication
 or authorization failure, `409` for idempotency/replay conflict, and `422` for
 invalid typed options. SSE emits `execution.requested`, `execution.authorized`,
@@ -153,6 +159,10 @@ checks. `GET /api/system/executions/{request_id}` and the execution SSE stream
 are the read/observation interfaces. A decision is stored with the request and
 audit record, is single-use for the exact operation, and is invalidated by
 logout, session expiry, idle timeout, explicit revocation, or request mutation.
+Once revocation is durably committed, terminal settlement MUST re-check the
+revocation predicate as part of both the run and dispatch updates. A worker
+that loses this authority MUST NOT report a successful terminal outcome; a
+durable cancellation/reaper path is responsible for closing the execution.
 
 #### 1.5.1.3 Execution-run cardinality and upgrade safety
 
