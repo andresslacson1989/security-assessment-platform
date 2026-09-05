@@ -1017,10 +1017,18 @@ def test_execution_run_transition_matrix_and_terminal_immutability(tmp_path):
         conn.execute("INSERT INTO execution_requests (id, idempotency_key, request_fingerprint, organization_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, requested_by_user_id, state, created_at, expires_at, approved_decision_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'AUTHORIZED', ?, ?, ?)", ("req-a", "idem-a", "f" * 64, "org-a", "asset-a", "target-a", "auth-a", "v1", "prowler", "cloud_audit", OPERATION_POLICY_REVISION, "user-a", now, (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(), "decision-a"))
         conn.execute("INSERT INTO execution_decisions (id, organization_id, project_id, asset_id, target_id, authorization_decision_id, target_policy_version, tool_id, operation_family, operation_policy_revision, approval_state, approver_user_id, session_jti, worker_identity, created_at, expires_at) VALUES ('decision-a', 'org-a', NULL, 'asset-a', 'target-a', 'auth-a', 'v1', 'prowler', 'cloud_audit', ?, 'APPROVED', 'user-a', 'session-a', 'worker-a', ?, ?)", (OPERATION_POLICY_REVISION, now, (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()))
     database.create_execution_run(ExecutionRunRecord(execution_id="run-a", request_id="req-a", organization_id="org-a"))
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO execution_dispatch_intents (execution_id, organization_id, state, attempt_count, created_at) VALUES (?, ?, 'PENDING', 0, ?)",
+            ("run-a", "org-a", now),
+        )
+    assert not database.transition_execution_run("run-a", "org-a", "REQUESTED", "STARTING")
+    lease = database.claim_execution_dispatch_intent("run-a", "org-a", "worker-a")
+    assert lease is not None
     assert not database.transition_execution_run("run-a", "org-a", "REQUESTED", "SUCCEEDED")
-    assert database.transition_execution_run("run-a", "org-a", "REQUESTED", "STARTING")
-    assert database.transition_execution_run("run-a", "org-a", "STARTING", "RUNNING")
-    assert database.transition_execution_run("run-a", "org-a", "RUNNING", "SUCCEEDED")
+    assert database.transition_execution_run("run-a", "org-a", "REQUESTED", "STARTING", worker_identity="worker-a", dispatch_claim_token=lease.token)
+    assert database.transition_execution_run("run-a", "org-a", "STARTING", "RUNNING", worker_identity="worker-a", dispatch_claim_token=lease.token)
+    assert database.transition_execution_run("run-a", "org-a", "RUNNING", "SUCCEEDED", worker_identity="worker-a", dispatch_claim_token=lease.token)
     assert not database.transition_execution_run("run-a", "org-a", "SUCCEEDED", "RUNNING")
 
 

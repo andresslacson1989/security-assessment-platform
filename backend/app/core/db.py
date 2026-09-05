@@ -3914,7 +3914,7 @@ class DatabaseManager:
             self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=run.worker_identity or "system", organization_id=run.organization_id, action=AuditAction.EXECUTION_RUN_CREATED, object_type="execution_run", object_id=run.execution_id, result="SUCCESS", details={"request_id": run.request_id, "state": run.state}))
             return run
 
-    def transition_execution_run(self, execution_id: str, organization_id: str, expected_state: str, new_state: str, *, reason_code: Optional[str] = None, process_id: Optional[int] = None, worker_identity: Optional[str] = None) -> bool:
+    def transition_execution_run(self, execution_id: str, organization_id: str, expected_state: str, new_state: str, *, reason_code: Optional[str] = None, process_id: Optional[int] = None, worker_identity: Optional[str] = None, dispatch_claim_token: Optional[str] = None) -> bool:
         with self._connection_scope() as conn:
             if expected_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_STATES or new_state not in EXECUTION_RUN_TRANSITIONS.get(expected_state, frozenset()):
                 return False
@@ -3945,6 +3945,27 @@ class DatabaseManager:
                     details={"reason_code": "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED", "from": expected_state, "to": new_state},
                 ))
                 return False
+            if new_state != "CANCELLED":
+                dispatch = conn.execute(
+                    """SELECT 1 FROM execution_dispatch_intents i
+                       JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                       JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
+                       JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
+                       WHERE i.execution_id = ? AND i.organization_id = ? AND i.state = 'CLAIMED'
+                         AND i.claimed_by = ? AND i.claim_token = ? AND i.lease_expires_at > ?
+                         AND q.state = 'AUTHORIZED' AND d.approval_state = 'APPROVED'
+                         AND d.revoked_at IS NULL AND d.expires_at > ? AND d.worker_identity = ?""",
+                    (execution_id, organization_id, worker_identity, dispatch_claim_token, now, now, worker_identity),
+                ).fetchone()
+                if not dispatch:
+                    self._insert_audit_event_conn(conn, AuditEvent(
+                        id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity or "system",
+                        organization_id=organization_id, action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                        object_type="execution_run", object_id=execution_id, result="REJECTED",
+                        correlation_id=get_correlation_id() or f"corr-{uuid.uuid4().hex}",
+                        details={"reason_code": "EXECUTION_DISPATCH_FENCE_REQUIRED", "from": expected_state, "to": new_state},
+                    ))
+                    return False
             cur = conn.execute(
                 "UPDATE execution_runs SET state = ?, reason_code = COALESCE(?, reason_code), process_id = COALESCE(?, process_id), worker_identity = COALESCE(?, worker_identity), started_at = CASE WHEN ? = 'RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END, finished_at = CASE WHEN ? IN ('SUCCEEDED','PARTIAL_RESULTS_WITH_WARNING','FAILED','TIMED_OUT','CANCELLED','EXECUTION_BLOCKED') THEN COALESCE(finished_at, ?) ELSE finished_at END WHERE execution_id = ? AND organization_id = ? AND state = ?",
                 (new_state, reason_code, process_id, worker_identity, new_state, now, new_state, now, execution_id, organization_id, expected_state),
