@@ -13,6 +13,7 @@ import json
 from typing import Callable, Optional, Protocol
 
 from app.core.version import CONTRACT_VERSION, SCHEMA_VERSION
+from app.core.migration_artifacts import POSTCONDITION_ARTIFACT_REVISION, POSTCONDITION_SOURCE_SHA256
 
 REGISTRY_REVISION = "migration-registry-v1"
 
@@ -118,9 +119,9 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         "contract_version": CONTRACT_VERSION,
         "registry_revision": REGISTRY_REVISION,
         "canonical_manifest": manifest,
-        "postcondition_manifest_revision": "execution-postconditions-v2",
+        "postcondition_manifest_revision": POSTCONDITION_ARTIFACT_REVISION,
         "verifier_method": _VERIFIER_METHODS[version - 1],
-        "verifier_artifact": inspect.getsource(_VERIFIERS[version - 1]),
+        "verifier_artifact": POSTCONDITION_SOURCE_SHA256[_VERIFIER_METHODS[version - 1]],
     }
     return MigrationSpec(
         version=version, migration_id=migration_id, name=name,
@@ -134,14 +135,14 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
 MIGRATION_REGISTRY = tuple(_make_spec(*descriptor) for descriptor in _DESCRIPTORS)
 
 _EXPECTED_CHECKSUMS = {
-    1: "sha256:0c36e6c5488b142ccf4f74da0475aa834dcb6e386e10dfb7768e89303ed88654",
-    2: "sha256:1ccecb87f29e43d88d80aaa1b04c0c51b3d6d0c51e470304a7d45b53c0f12f6d",
-    3: "sha256:4a12b127f5094bfdbf6480964afdfa07ad2703c6b5384af1d27a3ceaac50432a",
-    4: "sha256:a16fad4273e77b4befb6ecbb179801b9aeb3ecb31508a121e734d44a8dd87f0a",
-    5: "sha256:71694628c476c7be89ac879be8b42fd6d61d9404cf7c6adc7c785521075e8c01",
-    6: "sha256:cb7d52bea96f013b396eee7f1f25e8a8a7045231518877f9696afa8ebc85569f",
-    7: "sha256:dd0feb2e5160ddd7625628cbabef51a98afbff648652a7bd87c1a0bc1ce1ba70",
-    8: "sha256:6d7c6fcb0af93ddccdd185c8fa486631cde40ab1ca0800e78946c52471ec520f",
+    1: "sha256:1f25654a3b3c0a7af2637953cbc6bc912918998aef4fd2c67e4c431570547d10",
+    2: "sha256:5a634eb831d64615e20b949c20ec3d0d2ab2d1a7af7f9c68a12b5ed2c7d246e8",
+    3: "sha256:cd6e1b03a386049a28e2a9c1d8b33db6ec4f302d0d27e9a438629a63160e14e2",
+    4: "sha256:245a6167393211c34f6963b3f2b1d78098fb5b5c7a47750ef446801e35e5d97a",
+    5: "sha256:4f6eeab458152b47611aea6a7e864796ab1d289a951d207d3c0fa288d7262aa5",
+    6: "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
+    7: "sha256:2a0e8c8469eb13951dabaa134f68c681b7ccbc74827cad77a02a4334941eb549",
+    8: "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
 }
 
 

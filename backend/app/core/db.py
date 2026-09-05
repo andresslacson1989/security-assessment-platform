@@ -7,6 +7,7 @@ API Keys, Assets, Scans, Canonical Findings, Occurrences, and Append-Only Audit 
 
 from __future__ import annotations
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -57,6 +58,7 @@ from app.core.models import (
     utc_now,
 )
 from app.core.migration_registry import MIGRATION_REGISTRY
+from app.core.migration_artifacts import POSTCONDITION_SOURCE_SHA256
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 from app.core.correlation import get_correlation_id
 
@@ -614,6 +616,10 @@ class DatabaseManager:
         for spec in MIGRATION_REGISTRY:
             if spec.verify is None:
                 raise RuntimeError(f"migration registry verifier is missing for version {spec.version}")
+            method_name = f"_verify_migration_v{spec.version}_postconditions"
+            implementation = getattr(self, method_name, None)
+            if implementation is None or "sha256:" + hashlib.sha256(inspect.getsource(implementation).encode("utf-8")).hexdigest() != POSTCONDITION_SOURCE_SHA256.get(method_name):
+                raise RuntimeError(f"migration verifier artifact drifted for version {spec.version}")
             spec.verify(self, conn)
         return self._schema_postcondition_digest(conn)
 
