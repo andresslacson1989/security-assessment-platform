@@ -19,6 +19,7 @@ from app.installers.base_installer import (
     ProgressCallback,
 )
 from app.core.process_supervisor import process_supervisor
+from app.core.execution_context import issue_non_scan_execution_context
 from app.core.package_trust import (
     PackageTrustError,
     build_package_trust_record,
@@ -153,6 +154,7 @@ class PipToolInstaller(BaseToolInstaller):
                     probe = f"import importlib.metadata as m; print(m.version('{pkg}'))"
                     ret, stdout, stderr = await process_supervisor.execute(
                         [str(interpreter), "-c", probe], timeout=5.0, max_output_bytes=1024 * 1024,
+                        non_scan_context=issue_non_scan_execution_context(f"installer:{self._tool_name}:metadata"),
                     )
                     if ret == 0 and stdout:
                         first_line = stdout.strip().splitlines()[0].strip()
@@ -165,6 +167,7 @@ class PipToolInstaller(BaseToolInstaller):
             try:
                 return_code, stdout, stderr = await process_supervisor.execute(
                     [path, "--version"], timeout=5.0, max_output_bytes=1024 * 1024,
+                    non_scan_context=issue_non_scan_execution_context(f"installer:{self._tool_name}:version"),
                 )
                 if return_code == 0:
                     output = (stdout or stderr or "").strip()
@@ -238,6 +241,7 @@ class PipToolInstaller(BaseToolInstaller):
                 [sys.executable, "-m", "venv", "--copies", str(venv_dir)],
                 timeout=120.0,
                 max_output_bytes=10 * 1024 * 1024,
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self._tool_name}:venv"),
             )
             if create_ret != 0:
                 await emit_log(f"Virtual environment creation failed with exit code {create_ret}: {create_err}")
@@ -249,6 +253,7 @@ class PipToolInstaller(BaseToolInstaller):
             [str(venv_python), "-m", "pip", "--version"],
             timeout=10.0,
             max_output_bytes=1024 * 1024,
+            non_scan_context=issue_non_scan_execution_context(f"installer:{self._tool_name}:pip-check"),
         )
         if pip_check_ret != 0:
             await emit_log(f"Bootstrapping pip in isolated environment for '{pkg}'...")
@@ -256,6 +261,7 @@ class PipToolInstaller(BaseToolInstaller):
                 [str(venv_python), "-m", "ensurepip", "--upgrade"],
                 timeout=60.0,
                 max_output_bytes=10 * 1024 * 1024,
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self._tool_name}:ensurepip"),
             )
             if ensure_ret != 0:
                 await emit_log(f"Failed to bootstrap pip in virtual environment: {ensure_err}")
@@ -273,6 +279,7 @@ class PipToolInstaller(BaseToolInstaller):
                 cmd,
                 timeout=600.0,
                 max_output_bytes=10 * 1024 * 1024,
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self._tool_name}:install"),
             )
             output = stdout + (f"\n{stderr}" if stderr else "")
             for line in output.splitlines():

@@ -21,7 +21,7 @@ from app.core.process_supervisor import (
     ProcessExecutionStatus,
     VerifiedEgressProxy,
 )
-from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext, issue_non_scan_execution_context
 
 
 _execution_id_context: ContextVar[Optional[str]] = ContextVar(
@@ -286,6 +286,11 @@ class BaseToolAdapter(ABC):
             return -1, "", "Empty command provided"
 
         effective_execution_id = execution_id or _execution_id_context.get()
+        if effective_execution_id is None and execution_context is None and execution_capability is None and non_scan_context is None:
+            # Capability/version observation is explicitly non-scan work. A
+            # scan invocation always carries an execution identity/context and
+            # therefore cannot silently take this path.
+            non_scan_context = issue_non_scan_execution_context(f"observation:{self.tool_name}:probe")
         if execution_context is not None:
             if type(execution_context) is not GovernedExecutionContext:
                 return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid typed execution context"

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
+import os
+import uuid
 from typing import Any, Dict, Optional, Tuple, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -67,6 +69,8 @@ class PosixProcessAttestation(BaseModel):
             raise ExecutionContextExpiredError("process attestation expiry must follow capture")
         if self.pidfd_verified and not self.pidfd_supported:
             raise ValueError("pidfd verification cannot be asserted when unsupported")
+        if self.digest != canonical_binding_digest(self.model_dump(exclude={"digest"})):
+            raise ValueError("POSIX process attestation digest does not match canonical fields")
         return self
 
 
@@ -88,6 +92,8 @@ class WindowsJobAttestation(BaseModel):
     def _valid_window(self) -> "WindowsJobAttestation":
         if self.captured_at.tzinfo is None or self.expires_at.tzinfo is None or self.expires_at <= self.captured_at:
             raise ExecutionContextExpiredError("Windows job attestation window is invalid")
+        if self.digest != canonical_binding_digest(self.model_dump(exclude={"digest"})):
+            raise ValueError("Windows job attestation digest does not match canonical fields")
         return self
 
 
@@ -97,6 +103,25 @@ def canonical_command_digest(command: Tuple[str, ...]) -> str:
     return hashlib.sha256(
         json.dumps(list(command), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) or not key.strip() for key in value):
+            raise ExecutionContextCommandError("binding-map keys must be nonblank strings")
+        return tuple((key, _freeze_value(value[key])) for key in sorted(value))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    raise ExecutionContextCommandError("binding-map contains unsupported value")
+
+
+def canonical_binding_digest(value: Any) -> str:
+    frozen = _freeze_value(value)
+    return hashlib.sha256(json.dumps(frozen, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 class GovernedExecutionContext(BaseModel):
@@ -116,10 +141,15 @@ class GovernedExecutionContext(BaseModel):
     operation_policy_revision: str
     tool_id: str
     operation_family: str
-    operation_options: Dict[str, Any] = Field(default_factory=dict)
-    resource_budget: Dict[str, int] = Field(default_factory=dict)
-    account_impact_budget: Dict[str, int] = Field(default_factory=dict)
-    credential_scope: Dict[str, str] = Field(default_factory=dict)
+    operation_options: Tuple[Tuple[str, Any], ...] = Field(default_factory=tuple)
+    resource_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    account_impact_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    credential_scope: Tuple[Tuple[str, str], ...] = Field(default_factory=tuple)
+    operation_options_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    resource_budget_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    account_impact_budget_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    credential_scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revocation_check_reference: str
     worker_identity: str
     worker_generation: str
     session_jti: str
@@ -155,15 +185,28 @@ class GovernedExecutionContext(BaseModel):
         expected = canonical_command_digest(tuple(self.exact_command))
         if self.command_digest != expected:
             raise ExecutionContextCommandError("command digest does not match exact command vector")
+        if self.operation_options_digest != canonical_binding_digest(self.operation_options):
+            raise ExecutionContextCommandError("operation options digest does not match immutable binding")
+        if self.resource_budget_digest != canonical_binding_digest(self.resource_budget):
+            raise ExecutionContextCommandError("resource budget digest does not match immutable binding")
+        if self.account_impact_budget_digest != canonical_binding_digest(self.account_impact_budget):
+            raise ExecutionContextCommandError("account impact digest does not match immutable binding")
+        if self.credential_scope_digest != canonical_binding_digest(self.credential_scope):
+            raise ExecutionContextCommandError("credential scope digest does not match immutable binding")
         if self.expires_at <= datetime.now(timezone.utc):
             raise ExecutionContextExpiredError("execution context is expired")
         return self
 
     @classmethod
-    def _issue(cls, issuer: object, **values: Any) -> "GovernedExecutionContext":
-        """Issue only from an internal verifier; callers cannot forge issuer state."""
+    def _from_verified_values(cls, issuer: object, **values: Any) -> "GovernedExecutionContext":
+        """Internal construction hook; only the decision verifier has the handle."""
         if issuer is not _ISSUER:
             raise MissingExecutionContextError("execution context issuer is not authoritative")
+        for field in ("operation_options", "resource_budget", "account_impact_budget", "credential_scope"):
+            values[field] = _freeze_value(values.get(field, {}))
+        for field in ("operation_options", "resource_budget", "account_impact_budget", "credential_scope"):
+            values[f"{field}_digest"] = canonical_binding_digest(values[field])
+        values.setdefault("revocation_check_reference", f"session-jti:{values.get('session_jti', '')}")
         context = cls(**values)
         context._issued_by = _ISSUER
         return context
@@ -199,7 +242,7 @@ class NonScanExecutionContext(BaseModel):
     _issued_by: object = PrivateAttr(default=None)
 
     @classmethod
-    def _issue(cls, issuer: object, **values: Any) -> "NonScanExecutionContext":
+    def _from_verified_values(cls, issuer: object, **values: Any) -> "NonScanExecutionContext":
         if issuer is not _ISSUER:
             raise UnsupportedNonScanContextError("non-scan capability issuer is not authoritative")
         context = cls(**values)
@@ -228,14 +271,27 @@ __all__ = [
     "ExecutionContextExpiredError", "ExecutionContextTenantError", "ExecutionContextCommandError",
     "UnsupportedNonScanContextError", "GovernedExecutionContext", "NonScanExecutionContext",
     "canonical_command_digest",
+    "canonical_binding_digest",
     "PosixProcessAttestation", "WindowsJobAttestation",
+    "issue_non_scan_execution_context",
 ]
-
-# Imported only by trusted verifier modules; callers must not construct a
-# governed context with a public constructor.
-_AUTHORITY_ISSUER = _ISSUER
 
 # Resolve postponed self-references explicitly so the models also work when
 # loaded by migration/test tooling outside the normal package importer.
 GovernedExecutionContext.model_rebuild()
 NonScanExecutionContext.model_rebuild()
+
+
+def _issue_verified_context(**values: Any) -> GovernedExecutionContext:
+    """Private verifier bridge; only the decision verifier calls this path."""
+    return GovernedExecutionContext._from_verified_values(_ISSUER, **values)
+
+
+def issue_non_scan_execution_context(purpose: str, *, ttl_seconds: int = 300) -> NonScanExecutionContext:
+    """Issue a short-lived capability for explicitly classified non-scan work."""
+    now = datetime.now(timezone.utc)
+    return NonScanExecutionContext._from_verified_values(
+        _ISSUER, purpose=purpose, worker_identity=os.environ.get("CYBERASSESS_WORKER_IDENTITY", "local-worker"),
+        worker_generation=os.environ.get("CYBERASSESS_WORKER_GENERATION", "local-generation"),
+        expires_at=now + timedelta(seconds=ttl_seconds), capability_token=f"non-scan-{uuid.uuid4().hex}",
+    )

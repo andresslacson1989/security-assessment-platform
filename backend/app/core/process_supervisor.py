@@ -759,6 +759,8 @@ class ProcessSupervisor:
             return ProcessExecutionResult(-1, "", "Empty command provided")
         if max_output_bytes <= 0:
             return ProcessExecutionResult(-1, "", "Invalid maximum output size")
+        if sys.platform == "win32" and execution_capability is not None:
+            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: Windows Job Object implementation is required for governed execution")
         if execution_capability is not None:
             if execution_context is None or type(execution_context) is not GovernedExecutionContext:
                 return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required")
@@ -779,8 +781,8 @@ class ProcessSupervisor:
                 non_scan_context.assert_issued()
             except Exception as exc:
                 return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context ({type(exc).__name__})")
-        elif execution_id is not None:
-            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required for scan execution")
+        else:
+            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: launch must declare governed or non-scan capability")
 
         # R3.2: Enterprise external-tool execution fails closed unconditionally when
         # enterprise egress enforcement is required until an authoritative network verifier interface exists.
@@ -996,6 +998,24 @@ class ProcessSupervisor:
                         "PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable; governed cleanup refused",
                     )
                 if execution_capability is not None:
+                    try:
+                        from app.core.execution_service import record_posix_launch
+                        if os.name != "nt":
+                            record_posix_launch(
+                                execution_capability,
+                                pid=proc.pid,
+                                process_group_id=process_group_id,
+                                session_id=process_identity.session_id if process_identity.session_id is not None else -1,
+                                start_token=process_identity.start_token,
+                            )
+                    except Exception as exc:
+                        termination_confirmed = self.kill_process_tree(
+                            proc.pid, process_group_id=process_group_id, identity=process_identity,
+                        )
+                        retain_execution_ref[0] = not termination_confirmed
+                        return ProcessExecutionResult(
+                            -1, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: durable process ownership commit failed ({type(exc).__name__})",
+                        )
                     execution_capability.mark_started(
                         process_id=proc.pid,
                         process_group_id=str(process_group_id) if process_group_id else None,

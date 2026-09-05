@@ -42,6 +42,7 @@ from app.installers.base_installer import (
     resolve_allowed_https_redirect,
 )
 from app.core.process_supervisor import process_supervisor
+from app.core.execution_context import issue_non_scan_execution_context
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, calculate_sha256
 
 
@@ -120,6 +121,7 @@ class NmapArtifactInstaller(BaseToolInstaller):
             env=env,
             timeout=5.0,
             max_output_bytes=1024 * 1024,
+            non_scan_context=issue_non_scan_execution_context("installer:nmap:version"),
         )
         output = stdout or stderr
         match = re.search(r"Nmap version\s+([0-9\.]+[a-zA-Z0-9]*)", output or "", re.IGNORECASE)
@@ -388,6 +390,7 @@ class NmapArtifactInstaller(BaseToolInstaller):
                 env=env,
                 timeout=10.0,
                 max_output_bytes=1024 * 1024,
+                non_scan_context=issue_non_scan_execution_context("installer:nmap:verify"),
             )
             output = stdout or stderr
             match = re.search(r"Nmap version\s+([0-9\.]+[a-zA-Z0-9]*)", output or "", re.IGNORECASE)

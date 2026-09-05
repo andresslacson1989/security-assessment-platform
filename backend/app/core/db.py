@@ -1161,6 +1161,10 @@ class DatabaseManager:
                 if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                     raise RuntimeError(f"execution lifecycle migration v10 missing table {table}")
                 by_table[table] = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):
+                pk = [row["name"] for row in sorted(conn.execute(f"PRAGMA table_info({table})").fetchall(), key=lambda row: row["pk"]) if row["pk"]]
+                if table != "execution_recovery_attempts" and pk != ["execution_id", "organization_id"]:
+                    raise RuntimeError(f"execution lifecycle migration v10 {table} must use a tenant-bound composite key")
         if not ownership_required.issubset(by_table.get("execution_process_ownership", set())):
             raise RuntimeError("execution lifecycle migration v10 ownership schema is incomplete")
         if not attempts_required.issubset(by_table.get("execution_recovery_attempts", set())):
@@ -1205,6 +1209,17 @@ class DatabaseManager:
                 WHERE t.relname IN ('execution_process_ownership','execution_recovery_attempts','execution_recovery_state')""").fetchall()
             if any(not row["convalidated"] for row in constraints):
                 raise RuntimeError("execution lifecycle migration v10 contains an unvalidated constraint")
+            for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):
+                key = conn.execute("""SELECT array_agg(a.attname::text ORDER BY u.ordinality) AS columns
+                    FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+                    JOIN pg_namespace n ON n.oid=t.relnamespace
+                    JOIN unnest(i.indkey) WITH ORDINALITY u(attnum, ordinality) ON TRUE
+                    JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=u.attnum
+                    WHERE n.nspname=current_schema() AND t.relname=? AND i.indisprimary
+                    GROUP BY i.indexrelid""", (table,)).fetchall()
+                expected_key = ["attempt_id"] if table == "execution_recovery_attempts" else ["execution_id", "organization_id"]
+                if not any(list(row["columns"] or []) == expected_key for row in key):
+                    raise RuntimeError(f"execution lifecycle migration v10 {table} primary key is not tenant-bound as required")
 
     def _verify_execution_dispatch_base_schema(self, conn) -> None:
         """Verify only the pre-lease dispatch shape created by migration v7."""
@@ -2654,7 +2669,7 @@ class DatabaseManager:
                         f"execution lifecycle migration v10 found pre-existing lifecycle artifacts {existing!r}; manual reconciliation required"
                     )
                 conn.execute("""CREATE TABLE execution_process_ownership (
-                    execution_id TEXT NOT NULL PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
                     organization_id TEXT NOT NULL,
                     ownership_state TEXT NOT NULL CHECK (ownership_state IN ('UNKNOWN','NO_EXTERNAL_PROCESS','EXTERNAL_PROCESS_GOVERNED','LAUNCH_UNCERTAIN','RECOVERY_BLOCKED','TERMINAL')),
                     container_type TEXT NOT NULL CHECK (container_type IN ('NONE','POSIX_SESSION','WINDOWS_JOB','PROCESS_SET')),
@@ -2673,7 +2688,7 @@ class DatabaseManager:
                     last_verified_at TEXT,
                     terminalized_at TEXT,
                     updated_at TEXT NOT NULL,
-                    UNIQUE (execution_id, organization_id),
+                    PRIMARY KEY (execution_id, organization_id),
                     FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
                     FOREIGN KEY (organization_id) REFERENCES organizations(id)
                 )""")
@@ -2699,7 +2714,7 @@ class DatabaseManager:
                     FOREIGN KEY (organization_id) REFERENCES organizations(id)
                 )""")
                 conn.execute("""CREATE TABLE execution_recovery_state (
-                    execution_id TEXT NOT NULL PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
                     organization_id TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('REQUESTED','IN_PROGRESS','CONFIRMED_TERMINATED','DEFERRED','FAILED','ESCALATED','EXHAUSTED')),
                     owner TEXT,
@@ -2711,12 +2726,31 @@ class DatabaseManager:
                     next_retry_at TEXT,
                     escalation_level INTEGER NOT NULL DEFAULT 0 CHECK (escalation_level >= 0),
                     updated_at TEXT NOT NULL,
-                    UNIQUE (execution_id, organization_id),
+                    PRIMARY KEY (execution_id, organization_id),
                     FOREIGN KEY (execution_id, organization_id) REFERENCES execution_runs(execution_id, organization_id),
                     FOREIGN KEY (organization_id) REFERENCES organizations(id)
                 )""")
                 conn.execute("CREATE INDEX execution_process_ownership_state_idx ON execution_process_ownership(organization_id, ownership_state, updated_at)")
                 conn.execute("CREATE INDEX execution_recovery_state_retry_idx ON execution_recovery_state(organization_id, status, next_retry_at)")
+                conn.execute("""INSERT INTO execution_process_ownership
+                    (execution_id, organization_id, ownership_state, container_type,
+                     launch_commit_state, correlation_id, created_at, updated_at)
+                    SELECT r.execution_id, r.organization_id, 'UNKNOWN', 'NONE',
+                           'NOT_ATTEMPTED', COALESCE(r.correlation_id, 'corr-reconciliation-' || r.execution_id),
+                           r.created_at, r.created_at
+                    FROM execution_runs r
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM execution_process_ownership p
+                        WHERE p.execution_id = r.execution_id AND p.organization_id = r.organization_id
+                    )""")
+                conn.execute("""INSERT INTO execution_recovery_state
+                    (execution_id, organization_id, status, attempt_number, escalation_level, updated_at)
+                    SELECT r.execution_id, r.organization_id, 'REQUESTED', 0, 0, r.created_at
+                    FROM execution_runs r
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM execution_recovery_state s
+                        WHERE s.execution_id = r.execution_id AND s.organization_id = r.organization_id
+                    )""")
                 if isinstance(self, PostgresDatabaseManager):
                     conn.execute("""CREATE OR REPLACE FUNCTION execution_recovery_attempts_immutable() RETURNS trigger
                         LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'execution_recovery_attempts is append-only'; END; $$""")
@@ -3361,6 +3395,17 @@ class DatabaseManager:
                 "INSERT INTO execution_dispatch_intents (execution_id, organization_id, state, attempt_count, created_at) VALUES (?, ?, 'PENDING', 0, ?)",
                 (execution_id, organization_id, now.isoformat()),
             )
+            conn.execute(
+                """INSERT INTO execution_process_ownership
+                (execution_id, organization_id, ownership_state, container_type,
+                 launch_commit_state, correlation_id, created_at, updated_at)
+                VALUES (?, ?, 'UNKNOWN', 'NONE', 'NOT_ATTEMPTED', ?, ?, ?)""",
+                (execution_id, organization_id, correlation_id, now.isoformat(), now.isoformat()),
+            )
+            conn.execute(
+                "INSERT INTO execution_recovery_state (execution_id, organization_id, status, attempt_number, escalation_level, updated_at) VALUES (?, ?, 'REQUESTED', 0, 0, ?)",
+                (execution_id, organization_id, now.isoformat()),
+            )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
                 organization_id=organization_id, action=AuditAction.EXECUTION_AUTHORIZED,
@@ -3446,30 +3491,33 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
                 conn.execute("BEGIN IMMEDIATE")
+            lock_suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            authority = conn.execute(
+                """SELECT r.execution_id, r.organization_id, r.state AS run_state,
+                    q.state AS request_state, d.approval_state, d.revoked_at,
+                    i.state AS dispatch_state
+                    FROM execution_runs r
+                    JOIN execution_requests q ON q.id=r.request_id AND q.organization_id=r.organization_id
+                    LEFT JOIN execution_decisions d ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                    LEFT JOIN execution_dispatch_intents i ON i.execution_id=r.execution_id AND i.organization_id=r.organization_id
+                    WHERE r.execution_id=? AND r.organization_id=?""" + lock_suffix,
+                (record.execution_id, record.organization_id),
+            ).fetchone()
+            if not authority or authority["organization_id"] != record.organization_id:
+                return False
+            if expected_state != ProcessOwnershipState.UNKNOWN and (
+                authority["request_state"] != "AUTHORIZED"
+                or authority["approval_state"] != "APPROVED"
+                or authority["revoked_at"] is not None
+                or authority["dispatch_state"] not in {"CLAIMED", "COMPLETED"}
+            ):
+                return False
             existing = conn.execute(
-                "SELECT ownership_state FROM execution_process_ownership WHERE execution_id = ? AND organization_id = ?",
+                "SELECT * FROM execution_process_ownership WHERE execution_id = ? AND organization_id = ?" + lock_suffix,
                 (record.execution_id, record.organization_id),
             ).fetchone()
             if existing is None:
-                if expected_state != ProcessOwnershipState.UNKNOWN:
-                    return False
-                conn.execute(
-                    """INSERT INTO execution_process_ownership
-                    (execution_id, organization_id, ownership_state, container_type, container_identity,
-                     root_process_id, root_process_start_token, process_group_id, session_id, worker_generation,
-                     launch_commit_state, no_process_proof, identity_attestation, correlation_id, created_at,
-                     launched_at, last_verified_at, terminalized_at, updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (record.execution_id, record.organization_id, record.ownership_state.value,
-                     record.container_type.value, record.container_identity, record.root_process_id,
-                     record.root_process_start_token, record.process_group_id, record.session_id,
-                     record.worker_generation, record.launch_commit_state.value, record.no_process_proof,
-                     record.identity_attestation, record.correlation_id, record.created_at.isoformat(),
-                     record.launched_at.isoformat() if record.launched_at else None,
-                     record.last_verified_at.isoformat() if record.last_verified_at else None,
-                     record.terminalized_at.isoformat() if record.terminalized_at else None,
-                     record.updated_at.isoformat()),
-                )
+                return False
             else:
                 current = ProcessOwnershipState(existing["ownership_state"])
                 if current == ProcessOwnershipState.TERMINAL:
@@ -3541,6 +3589,84 @@ class DatabaseManager:
                 details={"execution_id": attempt.execution_id, "attempt_number": attempt.attempt_number,
                          "status": attempt.status},
             ))
+
+    def claim_recovery(self, execution_id: str, organization_id: str, owner: str, worker_generation: str, *, lease_seconds: int = 30) -> Optional[dict[str, Any]]:
+        """Claim one recovery lease; expired leases are safely reclaimable."""
+        if not all(isinstance(value, str) and value.strip() for value in (execution_id, organization_id, owner, worker_generation)) or lease_seconds <= 0:
+            return None
+        now = utc_now()
+        expiry = now + timedelta(seconds=lease_seconds)
+        token = f"recovery-{uuid.uuid4().hex}"
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            ownership = conn.execute(
+                "SELECT ownership_state FROM execution_process_ownership WHERE execution_id=? AND organization_id=?" + suffix,
+                (execution_id, organization_id),
+            ).fetchone()
+            if not ownership or ownership["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
+                return None
+            state = conn.execute(
+                "SELECT * FROM execution_recovery_state WHERE execution_id=? AND organization_id=?" + suffix,
+                (execution_id, organization_id),
+            ).fetchone()
+            if state and state["lease_expires_at"] and datetime.fromisoformat(state["lease_expires_at"]) > now:
+                return None
+            attempt_number = (int(state["attempt_number"]) if state else 0) + 1
+            if state:
+                changed = conn.execute(
+                    """UPDATE execution_recovery_state SET status='IN_PROGRESS', owner=?, lease_token=?,
+                    lease_expires_at=?, attempt_number=?, updated_at=?
+                    WHERE execution_id=? AND organization_id=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
+                    (owner, token, expiry.isoformat(), attempt_number, now.isoformat(), execution_id, organization_id, now.isoformat()),
+                )
+                if changed.rowcount != 1:
+                    return None
+            else:
+                conn.execute(
+                    """INSERT INTO execution_recovery_state
+                    (execution_id, organization_id, status, owner, lease_token, lease_expires_at,
+                     attempt_number, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (execution_id, organization_id, "IN_PROGRESS", owner, token, expiry.isoformat(), attempt_number, 0, now.isoformat()),
+                )
+            return {"execution_id": execution_id, "organization_id": organization_id, "owner": owner,
+                    "worker_generation": worker_generation, "lease_token": token,
+                    "lease_expires_at": expiry.isoformat(), "attempt_number": attempt_number}
+
+    def renew_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, *, lease_seconds: int = 30) -> bool:
+        if lease_seconds <= 0:
+            return False
+        expiry = utc_now() + timedelta(seconds=lease_seconds)
+        with self._connection_scope() as conn:
+            return conn.execute(
+                """UPDATE execution_recovery_state SET lease_expires_at=?, updated_at=?
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=?
+                AND status='IN_PROGRESS' AND lease_expires_at > ?""",
+                (expiry.isoformat(), utc_now().isoformat(), execution_id, organization_id, owner, lease_token, utc_now().isoformat()),
+            ).rowcount == 1
+
+    def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, *, status: str, outcome: str, error: Optional[str] = None) -> bool:
+        allowed = {"CONFIRMED_TERMINATED", "DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
+        if status not in allowed:
+            return False
+        with self._connection_scope() as conn:
+            changed = conn.execute(
+                """UPDATE execution_recovery_state SET status=?, last_outcome=?, last_error=?,
+                owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND status='IN_PROGRESS'""",
+                (status, outcome, error, utc_now().isoformat(), execution_id, organization_id, owner, lease_token),
+            )
+            return changed.rowcount == 1
+
+    def recovery_health(self, organization_id: str) -> list[dict[str, Any]]:
+        """Tenant-scoped operator health view; no process identity is exposed as authority."""
+        with self._connection_scope() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT execution_id, organization_id, status, owner, lease_expires_at,
+                attempt_number, last_outcome, last_error, next_retry_at, escalation_level, updated_at
+                FROM execution_recovery_state WHERE organization_id=? ORDER BY updated_at DESC""", (organization_id,)
+            ).fetchall()]
 
     def create_execution_decision(self, decision: ExecutionDecisionRecord) -> None:
         """Persist one immutable authorization decision transactionally."""
@@ -4994,8 +5120,20 @@ class DatabaseManager:
                  decision_row["credential_scope_json"], "COMPLETE", run.state, run.worker_identity,
                  run.process_id, run.process_group_id, run.assurance_state, run.coverage_state,
                  run.reason_code, run.evidence_ref, run.correlation_id,
-                 run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None,
+                run.created_at.isoformat(), run.started_at.isoformat() if run.started_at else None,
                  run.finished_at.isoformat() if run.finished_at else None),
+            )
+            conn.execute(
+                """INSERT INTO execution_process_ownership
+                (execution_id, organization_id, ownership_state, container_type,
+                 launch_commit_state, correlation_id, created_at, updated_at)
+                VALUES (?, ?, 'UNKNOWN', 'NONE', 'NOT_ATTEMPTED', ?, ?, ?)""",
+                (run.execution_id, run.organization_id, run.correlation_id or f"corr-execution-{run.execution_id}",
+                 run.created_at.isoformat(), run.created_at.isoformat()),
+            )
+            conn.execute(
+                "INSERT INTO execution_recovery_state (execution_id, organization_id, status, attempt_number, escalation_level, updated_at) VALUES (?, ?, 'REQUESTED', 0, 0, ?)",
+                (run.execution_id, run.organization_id, run.created_at.isoformat()),
             )
             self._insert_audit_event_conn(conn, AuditEvent(id=f"aud-{uuid.uuid4().hex[:12]}", actor=run.worker_identity or "system", organization_id=run.organization_id, action=AuditAction.EXECUTION_RUN_CREATED, object_type="execution_run", object_id=run.execution_id, result="SUCCESS", details={"request_id": run.request_id, "state": run.state}))
             return run

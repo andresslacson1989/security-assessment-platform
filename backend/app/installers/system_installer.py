@@ -19,6 +19,7 @@ from app.installers.base_installer import (
     ProgressCallback,
 )
 from app.core.process_supervisor import process_supervisor
+from app.core.execution_context import issue_non_scan_execution_context
 
 
 SYSTEM_TOOL_CONFIGS: Dict[str, dict] = {
@@ -145,6 +146,7 @@ class SystemToolHelper(BaseToolInstaller):
                 cmd,
                 timeout=5.0,
                 max_output_bytes=1024 * 1024,
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:version"),
             )
             if returncode != 0:
                 return None

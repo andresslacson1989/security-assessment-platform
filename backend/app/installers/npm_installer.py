@@ -21,6 +21,7 @@ from app.core.npm_trust import (
     write_npm_trust_record,
 )
 from app.core.process_supervisor import process_supervisor
+from app.core.execution_context import issue_non_scan_execution_context
 from app.core.version import APP_VERSION
 from app.installers.base_installer import BaseToolInstaller, LogCallback, ProgressCallback
 from app.installers.tool_manifest import PINNED_TOOL_MANIFEST, verify_download_integrity
@@ -87,6 +88,7 @@ class NpmToolInstaller(BaseToolInstaller):
         try:
             code, stdout, stderr = await process_supervisor.execute(
                 [path, "--version"], timeout=5.0, max_output_bytes=1024 * 1024,
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:version"),
             )
             if code == 0:
                 output = (stdout or stderr or "").strip()
@@ -149,6 +151,7 @@ class NpmToolInstaller(BaseToolInstaller):
                 timeout=120.0,
                 max_output_bytes=10 * 1024 * 1024,
                 env=self._npm_environment(config_path),
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:package-manager"),
             )
             if pack_code != 0:
                 await emit_log(f"Retire.js npm download failed with exit code {pack_code}: {pack_err}")
@@ -171,6 +174,7 @@ class NpmToolInstaller(BaseToolInstaller):
                 timeout=600.0,
                 max_output_bytes=10 * 1024 * 1024,
                 env=self._npm_environment(config_path),
+                non_scan_context=issue_non_scan_execution_context(f"installer:{self.tool_name}:install"),
             )
             if install_code != 0:
                 await emit_log(f"Retire.js npm installation failed with exit code {install_code}: {install_err}")

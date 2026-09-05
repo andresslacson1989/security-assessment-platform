@@ -20,7 +20,7 @@ from app.core.tool_operation_policy import (
 )
 from app.core.execution_context import (
     GovernedExecutionContext,
-    _AUTHORITY_ISSUER,
+    _issue_verified_context,
     canonical_command_digest,
 )
 
@@ -142,21 +142,30 @@ class ExecutionDecisionCapability:
         aborter = getattr(self.database, "abort_execution_start", None)
         if aborter is None or not self.claim_token or not self.dispatch_claim_token:
             return False
-        return bool(aborter(
+        changed = bool(aborter(
             self.decision.id, self.decision.organization_id, self.worker_identity,
             self.claim_token, self.dispatch_claim_token, terminal_state=terminal_state,
             reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
         ))
+        if changed and process_id is None:
+            from app.core.execution_service import record_no_process
+            record_no_process(self, proof=f"no-process:{self.execution_id}:{reason_code}", reason_code=reason_code)
+        return changed
 
     def finish(self, *, terminal_state: str, reason_code: Optional[str] = None, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
         finisher = getattr(self.database, "finish_execution", None)
         if finisher is None or not self.execution_id or not self.dispatch_claim_token:
             return False
-        return bool(finisher(
+        changed = bool(finisher(
             self.execution_id, self.decision.organization_id, self.worker_identity,
             self.dispatch_claim_token, terminal_state=terminal_state,
             reason_code=reason_code, process_id=process_id, process_group_id=process_group_id,
         ))
+        if changed:
+            from app.core.execution_service import record_terminal
+            if not record_terminal(self, reason_code=reason_code or "PROCESS_TERMINALIZED"):
+                return False
+        return changed
 
     def renew(self, *, lease_seconds: int = 30) -> bool:
         renewer = getattr(self.database, "renew_execution_dispatch_lease", None)
@@ -203,8 +212,7 @@ class ExecutionDecisionCapability:
         }
         if any(run.get(key) != value for key, value in expected.items()):
             raise ExecutionDecisionError("execution run snapshot does not match the approved decision")
-        return GovernedExecutionContext._issue(
-            _AUTHORITY_ISSUER,
+        return _issue_verified_context(
             execution_id=self.execution_id,
             request_id=str(run["request_id"]),
             organization_id=self.decision.organization_id,

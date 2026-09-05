@@ -32,7 +32,7 @@ FORWARD_APPLY_SOURCE_SHA256 = {
     7: {"sqlite": "sha256:4fbb0aee354a999e2dcbf21cb9e9911fcb47e309222fd232427c3f2ff967aa1d", "postgresql": "sha256:f8d888adac03c624409f65d51609337f297e5fca2638528b780fe4960b8563b2"},
     8: {"sqlite": "sha256:6a9321a33a3af3b4cd1350b6fb68bee570f4268e5479541c6b6250656ad89f7e", "postgresql": "sha256:c73057a361645525b0ebb39ebf446cd33492803ea2081c1cae07f62fc5368d1d"},
     9: {"sqlite": "sha256:3f235514ae70e0057e1c3d9550b8f0c0bffed1b353c2cef2e86c92e45d8dc970", "postgresql": "sha256:5d0433293f83f4469a981da2a6683033feb80dbca19c7b9fe9c031ea5564194c"},
-    10: {"sqlite": "sha256:d299554f3f79a2bae2f0182a1f07f5b8e227a77060402d0ad694224b88b830ba", "postgresql": "sha256:79f79e69534edc8541c13873a404248d831f2c56e4113ff99a90f32521df456c"},
+    10: {"sqlite": "sha256:02226630ed9e13093a6780d5a1b197fc0c787b48ab0bb086f7d9f98fd2384214", "postgresql": "sha256:6264f2ef1bb13110326b999909546ab90744ec9e10959595ff64fc67424e8cd1"},
 }
 
 POSTCONDITION_SOURCE_SHA256 = {
@@ -45,5 +45,5 @@ POSTCONDITION_SOURCE_SHA256 = {
     "_verify_migration_v7_postconditions": "sha256:acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
     "_verify_migration_v8_postconditions": "sha256:fa3a73f138323ac681b97bfddfeabe3ed4eb8dd329c8d3f0df522264a6b39462",
     "_verify_migration_v9_postconditions": "sha256:a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e",
-    "_verify_migration_v10_postconditions": "sha256:e0b7836193fea3a70a68d2080476fd4a66aa46189253fe64768429b1a6d2fbe5",
+    "_verify_migration_v10_postconditions": "sha256:0c9dbfd369deee0e3240845793bb61be9bc8e66ac9eeaf2e9612e1dcc00c52f7",
 }
