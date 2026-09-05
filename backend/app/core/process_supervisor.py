@@ -72,6 +72,7 @@ class ProcessIdentity:
     pid: int
     process_group_id: Optional[int]
     start_token: str
+    session_id: Optional[int] = None
 
 
 def _read_posix_start_token(pid: int) -> Optional[str]:
@@ -467,7 +468,39 @@ class ProcessSupervisor:
                     return None
             else:
                 return None
-        return ProcessIdentity(pid, process_group_id, start_token)
+        session_id = None
+        if os.name != "nt":
+            try:
+                session_id = os.getsid(pid)
+            except OSError:
+                return None
+        return ProcessIdentity(pid, process_group_id, start_token, session_id)
+
+    @staticmethod
+    def _process_group_identity_matches(identity: ProcessIdentity) -> bool:
+        """Verify an owned POSIX session/group when its root has exited."""
+        if os.name == "nt" or identity.process_group_id is None or identity.session_id is None:
+            return False
+        try:
+            result = subprocess.run(
+                ["ps", "-e", "-o", "pid=", "-o", "pgid=", "-o", "sid="],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=1.0, check=False,
+            )
+            members = []
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) != 3:
+                    continue
+                try:
+                    member_pid, member_pgid, member_sid = (int(value) for value in fields)
+                except ValueError:
+                    continue
+                if member_pgid == identity.process_group_id:
+                    members.append((member_pid, member_sid))
+            return bool(members) and all(member_sid == identity.session_id for _, member_sid in members)
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     @staticmethod
     def _identity_matches(identity: ProcessIdentity) -> bool:
@@ -503,9 +536,9 @@ class ProcessSupervisor:
             return False
         if identity is not None and identity.pid != pid:
             return False
-        if identity is not None and ProcessSupervisor._identity_matches(identity):
-            pass
-        elif identity is not None and (
+        identity_matches = identity is not None and ProcessSupervisor._identity_matches(identity)
+        group_matches = identity is not None and ProcessSupervisor._process_group_identity_matches(identity)
+        if identity is not None and not identity_matches and not group_matches and (
             ProcessSupervisor._pid_exists(pid) or ProcessSupervisor._process_group_exists(process_group_id)
         ):
             logger.error("Refusing to terminate process with mismatched launch identity PID=%s", pid)
@@ -552,10 +585,9 @@ class ProcessSupervisor:
                 pass
             except Exception as exc:
                 logger.debug("Process-group termination failed for PID=%s: error_type=%s", pid, type(exc).__name__)
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except Exception as fallback_exc:
-                    logger.debug("Fallback process termination failed for PID=%s: error_type=%s", pid, type(fallback_exc).__name__)
+                # A failed group operation is indeterminate. Never fall back to
+                # an unbound PID signal, which could target a reused process.
+                return False
         tracked_pids = [pid, *descendants]
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
@@ -925,21 +957,9 @@ class ProcessSupervisor:
                 process_identity_ref[0] = process_identity
                 process_group_ref[0] = process_group_id
                 if process_identity is None:
-                    terminated = self.kill_process_tree(proc.pid)
-                    if not terminated:
-                        return ProcessExecutionResult(
-                            -1, "",
-                            "PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable and process tree remains active",
-                        )
-                    if execution_capability is not None and terminated:
-                        execution_capability.abort_start(
-                            terminal_state="EXECUTION_BLOCKED",
-                            reason_code="PROCESS_LAUNCH_REJECTED_SECURITY",
-                            process_id=proc.pid,
-                            process_group_id=str(process_group_id) if process_group_id else None,
-                        )
                     return ProcessExecutionResult(
-                        126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: process identity unavailable",
+                        -1, "",
+                        "PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable; governed cleanup refused",
                     )
                 if execution_capability is not None:
                     execution_capability.mark_started(
@@ -998,11 +1018,14 @@ class ProcessSupervisor:
             except Exception as e:
                 termination_confirmed = True
                 if proc and proc.pid:
-                    termination_confirmed = self.kill_process_tree(
-                        proc.pid,
-                        process_group_id=process_group_ref[0],
-                        identity=process_identity_ref[0],
-                    )
+                    if process_identity_ref[0] is None:
+                        termination_confirmed = False
+                    else:
+                        termination_confirmed = self.kill_process_tree(
+                            proc.pid,
+                            process_group_id=process_group_ref[0],
+                            identity=process_identity_ref[0],
+                        )
                 if execution_capability is not None:
                     if launch_committed:
                         if not termination_confirmed:
@@ -1022,6 +1045,8 @@ class ProcessSupervisor:
         except asyncio.CancelledError:
             cancellation_requested.set()
             if proc_ref[0] and proc_ref[0].pid:
+                if process_identity_ref[0] is None:
+                    raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable; governed cleanup refused")
                 termination_confirmed = self.kill_process_tree(
                     proc_ref[0].pid,
                     process_group_id=process_group_ref[0],
