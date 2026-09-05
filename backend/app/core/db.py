@@ -207,14 +207,18 @@ class PostgresDatabaseManager:
         self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
         self._pool = None
         try:
+            pool_max_size = int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10"))
+            if pool_max_size < 2:
+                raise ValueError("POSTGRES_POOL_MAX_SIZE must be at least 2 for serialized migration coordination")
             self._pool = ConnectionPool(
                 conninfo=database_url,
                 min_size=int(os.getenv("POSTGRES_POOL_MIN_SIZE", "1")),
-                max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
+                max_size=pool_max_size,
                 open=True,
             )
-            self._ensure_migration_ledger()
             if self._allow_unresolved_reconciliation:
+                with self._migration_lock():
+                    self._ensure_migration_ledger()
                 return
             self._run_migration_coordinator()
         except Exception as exc:
@@ -284,8 +288,9 @@ class DatabaseManager:
         self.db_path = db_path or DEFAULT_DB_PATH
         self._allow_unresolved_reconciliation = allow_unresolved_reconciliation
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_migration_ledger()
         if self._allow_unresolved_reconciliation:
+            with self._migration_lock():
+                self._ensure_migration_ledger()
             return
         try:
             self._run_migration_coordinator()
@@ -340,6 +345,7 @@ class DatabaseManager:
     def _run_migration_coordinator(self) -> None:
         """Apply and verify each registered migration as an isolated outcome."""
         with self._migration_lock():
+            self._ensure_migration_ledger()
             with self._connection_scope() as conn:
                 self._verify_resolved_reconciliation_artifacts(conn)
                 unresolved = conn.execute("""SELECT 1 FROM schema_migration_events required
@@ -355,13 +361,28 @@ class DatabaseManager:
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
                 ).fetchone()
                 applied = {int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations").fetchall()} if has_schema else set()
+                known_versions = {spec.version for spec in MIGRATION_REGISTRY}
+                unknown_versions = applied - known_versions
+                if unknown_versions:
+                    raise RuntimeError(f"schema migration versions {sorted(unknown_versions)} are not registered; operator reconciliation required")
                 if applied and applied != set(range(1, max(applied) + 1)):
                     raise RuntimeError("schema migration versions are not contiguous; operator reconciliation required")
                 completed = {
                     int(row["migration_version"]): row for row in conn.execute(
-                        "SELECT migration_version, event_type FROM schema_migration_events WHERE event_type = 'SUCCEEDED'"
+                        "SELECT migration_version, migration_id, registry_revision, migration_checksum, "
+                        "event_type FROM schema_migration_events WHERE event_type = 'SUCCEEDED'"
                     ).fetchall()
                 }
+                if applied and any(version not in completed for version in applied):
+                    raise RuntimeError("legacy aggregate migration history requires explicit operator reconciliation before startup")
+                for spec in MIGRATION_REGISTRY:
+                    success = completed.get(spec.version)
+                    if success is not None and (
+                        success["migration_id"] != spec.migration_id
+                        or success["registry_revision"] != spec.registry_revision
+                        or success["migration_checksum"] != spec.checksum
+                    ):
+                        raise RuntimeError(f"migration v{spec.version} success identity does not match the registry")
             for spec in MIGRATION_REGISTRY:
                 if spec.version in applied:
                     if spec.version not in completed:
@@ -371,9 +392,11 @@ class DatabaseManager:
                 self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
                 self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
                 self._migration_spec = spec
+                self._migration_started_durable = False
                 self._migration_coordinator_active = True
                 try:
                     self._record_migration_event(spec, "STARTED", 1, "PENDING")
+                    self._migration_started_durable = True
                     if spec.apply is None:
                         raise RuntimeError(f"migration v{spec.version} has no registered apply operation")
                     spec.apply(self)
@@ -387,6 +410,7 @@ class DatabaseManager:
                     raise
                 finally:
                     self._migration_coordinator_active = False
+                    self._migration_started_durable = False
             self._migration_attempt_id = None
             self._migration_transaction_id = None
             self._migration_spec = None
@@ -802,7 +826,7 @@ class DatabaseManager:
                 raise RuntimeError("migration reconciliation schema digest no longer matches live schema")
 
     def _record_migration_failure(self, exc: Exception) -> None:
-        if not getattr(self, "_migration_attempt_id", None):
+        if not getattr(self, "_migration_attempt_id", None) or not getattr(self, "_migration_started_durable", False):
             return
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
@@ -2305,7 +2329,7 @@ class DatabaseManager:
                     for column in ("claimed_by", "claim_token", "lease_expires_at", "correlation_id"):
                         if not conn.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='execution_dispatch_intents' AND column_name=?", (column,)).fetchone():
                             conn.execute(f"ALTER TABLE execution_dispatch_intents ADD COLUMN {column} TEXT")
-                    fk_count = conn.execute("""SELECT COUNT(*) AS count FROM pg_constraint c
+                    fk_count = conn.execute("""SELECT COUNT(DISTINCT c.oid) AS count FROM pg_constraint c
                         JOIN pg_class t ON t.oid=c.conrelid JOIN pg_class p ON p.oid=c.confrelid
                         JOIN pg_namespace n ON n.oid=t.relnamespace
                         WHERE n.nspname=current_schema() AND t.relname='execution_dispatch_intents' AND p.relname='execution_runs'
