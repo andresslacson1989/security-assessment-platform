@@ -58,7 +58,7 @@ from app.core.models import (
     utc_now,
 )
 from app.core.migration_registry import MIGRATION_REGISTRY
-from app.core.migration_artifacts import POSTCONDITION_SOURCE_SHA256
+from app.core.migration_artifacts import FORWARD_APPLY_SOURCE_SHA256, POSTCONDITION_SOURCE_SHA256
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 from app.core.correlation import get_correlation_id
 
@@ -399,6 +399,7 @@ class DatabaseManager:
                     self._migration_started_durable = True
                     if spec.apply is None:
                         raise RuntimeError(f"migration v{spec.version} has no registered apply operation")
+                    self._verify_forward_apply_artifact(spec)
                     spec.apply(self)
                     with self._connection_scope() as conn:
                         if spec.verify is None:
@@ -414,6 +415,15 @@ class DatabaseManager:
             self._migration_attempt_id = None
             self._migration_transaction_id = None
             self._migration_spec = None
+
+    def _verify_forward_apply_artifact(self, spec) -> None:
+        """Bind execution to the reviewed forward-apply implementation."""
+        implementation = getattr(DatabaseManager, "_init_db", None)
+        if implementation is None:
+            raise RuntimeError("migration forward-apply implementation is unavailable")
+        actual = "sha256:" + hashlib.sha256(inspect.getsource(implementation).encode("utf-8")).hexdigest()
+        if actual != spec.apply_artifact or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version):
+            raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
 
     def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
         error_class = type(exc).__name__ if exc else None
@@ -754,6 +764,7 @@ class DatabaseManager:
         for spec in MIGRATION_REGISTRY:
             if spec.verify is None:
                 raise RuntimeError(f"migration registry verifier is missing for version {spec.version}")
+            self._verify_forward_apply_artifact(spec)
             method_name = f"_verify_migration_v{spec.version}_postconditions"
             implementation = getattr(self, method_name, None)
             if implementation is None or "sha256:" + hashlib.sha256(inspect.getsource(implementation).encode("utf-8")).hexdigest() != POSTCONDITION_SOURCE_SHA256.get(method_name):

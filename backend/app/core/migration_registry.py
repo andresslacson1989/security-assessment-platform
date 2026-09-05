@@ -13,7 +13,12 @@ import json
 from typing import Callable, Optional, Protocol
 
 from app.core.version import CONTRACT_VERSION, SCHEMA_VERSION
-from app.core.migration_artifacts import POSTCONDITION_ARTIFACT_REVISION, POSTCONDITION_SOURCE_SHA256
+from app.core.migration_artifacts import (
+    FORWARD_APPLY_ARTIFACT_REVISION,
+    FORWARD_APPLY_SOURCE_SHA256,
+    POSTCONDITION_ARTIFACT_REVISION,
+    POSTCONDITION_SOURCE_SHA256,
+)
 
 REGISTRY_REVISION = "migration-registry-v1"
 
@@ -42,6 +47,7 @@ class MigrationSpec:
     contract_version: str
     registry_revision: str
     checksum: str
+    apply_artifact: str
     apply: Optional[Callable] = None
     verify: Optional[Callable] = None
     reconcile: Optional[Callable] = None
@@ -143,12 +149,15 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         "postcondition_manifest_revision": POSTCONDITION_ARTIFACT_REVISION,
         "verifier_method": _VERIFIER_METHODS[version - 1],
         "verifier_artifact": POSTCONDITION_SOURCE_SHA256[_VERIFIER_METHODS[version - 1]],
+        "forward_apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
+        "forward_apply_artifact": FORWARD_APPLY_SOURCE_SHA256[version],
     }
     return MigrationSpec(
         version=version, migration_id=migration_id, name=name,
         previous_version=previous, target_version=version,
         contract_schema_version=SCHEMA_VERSION, contract_version=CONTRACT_VERSION,
         registry_revision=REGISTRY_REVISION, checksum=_checksum(material),
+        apply_artifact=FORWARD_APPLY_SOURCE_SHA256[version],
         apply=_apply_version(version), verify=_VERIFIERS[version - 1],
         reconcile=_reconcile_version(version),
     )
@@ -157,15 +166,15 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
 MIGRATION_REGISTRY = tuple(_make_spec(*descriptor) for descriptor in _DESCRIPTORS)
 
 _EXPECTED_CHECKSUMS = {
-    1: "sha256:d67b1f1dd9149120504c946f5d514b155f0b685ff0983b058c97a169bc0ceb1c",
-    2: "sha256:cb581847722adabb6b9fbdfa38f962790e0842dfa10eb0d1cd8c89f58c5eac64",
-    3: "sha256:cd6e1b03a386049a28e2a9c1d8b33db6ec4f302d0d27e9a438629a63160e14e2",
-    4: "sha256:245a6167393211c34f6963b3f2b1d78098fb5b5c7a47750ef446801e35e5d97a",
-    5: "sha256:bdc72fda90958fd58509c0e4afdcfc2079c82689db98abe49aeb0e41d0f8f869",
-    6: "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
-    7: "sha256:fb0be1cafc6be8f45ff0e9237e5b375ea29fa657d2fa9768204fd2174695609f",
-    8: "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
-    9: "sha256:f6967da3ce7cf80ddd1531f0922c7bf3398cccb0d89a0b61909427bbafe42765",
+    1: "sha256:e65ded9b0468bb31c98a76cbe0030e19486ec9c88d612f10e133b120bc8d9df3",
+    2: "sha256:6830c8f003211bd4aa5374c009984bb3ef5450325053a48c73281228a98bbe0f",
+    3: "sha256:eba4efac761fa91507631934da54ae418312c931dc28836bce061c0ca6880053",
+    4: "sha256:d22460620d54cd86d2701e331cd30bcd3bc7440b4b34ffff0bc5199159b4a951",
+    5: "sha256:140e2f61fce0cb87b32bd4f43bb1a88878b3a06dc12d1346263579ac64344d89",
+    6: "sha256:46654fba995de8fea1ad4e76a03f59ac6209c13abcfcede12cefbc0a768e8abb",
+    7: "sha256:0bd2b3d23af189971c6e54e283e4929b3587ac869ba1287ec1a17f46140a0b98",
+    8: "sha256:5b0a9b7d55f73fd3c0701ac0c66f69944e73d7a5d5631dd2c39ab97d707a36f6",
+    9: "sha256:f5cfa4cfd9cf7fad4d8e4ab720dd7273f92e8f9de39a745cb2f053b52d460a25",
 }
 
 
@@ -179,7 +188,7 @@ def validate_registry() -> None:
     for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7, 8]):
         if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71 or spec.checksum != _EXPECTED_CHECKSUMS.get(spec.version):
             raise RuntimeError(f"migration registry linkage/checksum invalid for version {spec.version}")
-        if spec.apply is None or spec.verify is None or spec.reconcile is None:
+        if spec.apply is None or spec.verify is None or spec.reconcile is None or spec.apply_artifact != FORWARD_APPLY_SOURCE_SHA256.get(spec.version):
             raise RuntimeError(f"migration registry operation missing for version {spec.version}")
 
 

@@ -58,6 +58,7 @@ def _target():
 def test_migration_registry_has_fixed_executable_verifier_vectors():
     assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, 10))
     assert all(callable(spec.apply) and callable(spec.reconcile) for spec in MIGRATION_REGISTRY)
+    assert all(spec.apply_artifact.startswith("sha256:") and len(spec.apply_artifact) == 71 for spec in MIGRATION_REGISTRY)
     assert all(callable(spec.verify) for spec in MIGRATION_REGISTRY)
     assert {spec.version: spec.checksum for spec in MIGRATION_REGISTRY} == _EXPECTED_CHECKSUMS
 
