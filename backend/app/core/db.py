@@ -437,7 +437,8 @@ class DatabaseManager:
             backend,
         )).encode("utf-8")
         actual = "sha256:" + hashlib.sha256(material).hexdigest()
-        if actual != spec.apply_artifact or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version):
+        expected = spec.apply_artifact.get(backend) if isinstance(spec.apply_artifact, dict) else None
+        if actual != expected or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version, {}).get(backend):
             raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
 
     def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
@@ -458,7 +459,8 @@ class DatabaseManager:
                     "coordinator": "registry",
                     "migration_version": spec.version,
                     "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
-                    "apply_artifact": spec.apply_artifact,
+                    "apply_artifact": spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"),
+                    "apply_artifacts": spec.apply_artifact,
                     "apply_manifest": spec.apply_manifest,
                     "backend_policy": spec.backend_policy,
                 }, sort_keys=True, separators=(",", ":")),
@@ -981,13 +983,21 @@ class DatabaseManager:
                 context = json.loads(row["context_json"])
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("migration ledger row context is not valid JSON") from exc
-            if context.get("coordinator") == "registry" and (
-                context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
-                or context.get("apply_artifact") != spec.apply_artifact
-                or context.get("apply_manifest") != spec.apply_manifest
-                or context.get("backend_policy") != spec.backend_policy
-            ):
-                raise RuntimeError("migration ledger row forward-apply provenance drifted")
+            if context.get("coordinator") == "registry":
+                # Events written before forward-apply provenance was added are
+                # retained as immutable historical records.  They are valid
+                # identity evidence but explicitly have unavailable apply
+                # provenance; new coordinator events must carry the complete
+                # claim set below.
+                legacy_provenance = "apply_artifact" not in context
+                if not legacy_provenance and (
+                    context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
+                    or context.get("apply_artifact") != spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite")
+                    or context.get("apply_artifacts") != spec.apply_artifact
+                    or context.get("apply_manifest") != spec.apply_manifest
+                    or context.get("backend_policy") != spec.backend_policy
+                ):
+                    raise RuntimeError("migration ledger row forward-apply provenance drifted")
             attempts.setdefault(row["attempt_id"], []).append(row)
 
         for attempt_id, attempt_rows in attempts.items():

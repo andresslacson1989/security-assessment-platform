@@ -47,7 +47,7 @@ class MigrationSpec:
     contract_version: str
     registry_revision: str
     checksum: str
-    apply_artifact: str
+    apply_artifact: dict
     apply_manifest: dict
     apply: Optional[Callable] = None
     verify: Optional[Callable] = None
