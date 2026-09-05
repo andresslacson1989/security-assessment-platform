@@ -1202,6 +1202,17 @@ class ExecutionDispatchLease(BaseModel):
     attempt_count: int
 
 
+class ExecutionAuthorityLease(BaseModel):
+    """Typed shared launch fence for one decision, run, and dispatch attempt."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    decision: ExecutionLeaseClaim
+    dispatch: ExecutionDispatchLease
+    execution_id: str
+    correlation_id: str
+
+
 class ExecutionRequestRecord(BaseModel):
     """Durable pre-approval execution request and its immutable fingerprint."""
 

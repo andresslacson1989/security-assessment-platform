@@ -52,6 +52,7 @@ from app.core.models import (
     ExecutionDecisionRecord,
     ExecutionLeaseClaim,
     ExecutionDispatchLease,
+    ExecutionAuthorityLease,
     ExecutionRunRecord,
     EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
     ExecutionRequestRecord,
@@ -3308,7 +3309,7 @@ class DatabaseManager:
         worker_identity: str, policy_revision: str,
         dispatch_claim_token: Optional[str] = None, now: Optional[datetime] = None,
         lease_seconds: int = 30,
-    ) -> Optional[Tuple[ExecutionLeaseClaim, ExecutionDispatchLease, str]]:
+    ) -> Optional[ExecutionAuthorityLease]:
         """Atomically bind one decision to its exact durable dispatch tuple."""
         if not decision_id or not organization_id or not session_jti or not worker_identity or lease_seconds <= 0:
             return None
@@ -3363,19 +3364,84 @@ class DatabaseManager:
                 """UPDATE execution_decisions SET claim_owner = ?, claim_expires_at = ?, claim_token = ?
                       WHERE id = ? AND organization_id = ? AND claim_owner IS NULL
                         AND approval_state = 'APPROVED' AND revoked_at IS NULL AND consumed_at IS NULL
-                        AND expires_at > ?""",
-                (worker_identity, lease_expires_at.isoformat(), decision_token, decision_id, organization_id, now.isoformat()),
+                        AND expires_at > ?
+                        AND (claim_owner IS NULL OR claim_expires_at <= ?)""",
+                (worker_identity, lease_expires_at.isoformat(), decision_token, decision_id, organization_id, now.isoformat(), now.isoformat()),
             )
             if updated.rowcount != 1:
                 raise RuntimeError("execution authority decision claim lost its transaction fence")
             correlation_id = row["correlation_id"] or f"corr-execution-{row['execution_id']}"
-            return (
-                ExecutionLeaseClaim(token=decision_token, owner=worker_identity, expires_at=lease_expires_at),
-                ExecutionDispatchLease(execution_id=row["execution_id"], organization_id=organization_id,
-                                       owner=worker_identity, token=dispatch_token, expires_at=lease_expires_at,
-                                       attempt_count=int(row["attempt_count"]) + (1 if row["dispatch_state"] == "PENDING" else 0)),
-                correlation_id,
+            attempt_count = int(row["attempt_count"]) + (1 if row["dispatch_state"] == "PENDING" else 0)
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DECISION_CLAIMED, object_type="execution_decision",
+                object_id=decision_id, result="SUCCESS", correlation_id=correlation_id,
+                details={"execution_id": row["execution_id"], "claim_token": decision_token, "dispatch_claim_token": dispatch_token},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
+                object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"attempt_count": attempt_count, "claim_token": dispatch_token},
+            ))
+            return ExecutionAuthorityLease(
+                decision=ExecutionLeaseClaim(token=decision_token, owner=worker_identity, expires_at=lease_expires_at),
+                dispatch=ExecutionDispatchLease(execution_id=row["execution_id"], organization_id=organization_id,
+                                                 owner=worker_identity, token=dispatch_token, expires_at=lease_expires_at,
+                                                 attempt_count=attempt_count),
+                execution_id=row["execution_id"], correlation_id=correlation_id,
             )
+
+    def release_execution_authority(
+        self, decision_id: str, organization_id: str, worker_identity: str,
+        decision_claim_token: str, dispatch_claim_token: str,
+    ) -> bool:
+        """Atomically release both sides of an unstarted shared launch fence."""
+        if not decision_id or not organization_id or not worker_identity or not decision_claim_token or not dispatch_claim_token:
+            return False
+        with self._connection_scope() as conn:
+            decision = conn.execute(
+                "SELECT id FROM execution_decisions WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL",
+                (decision_id, organization_id, worker_identity, decision_claim_token),
+            ).fetchone()
+            if not decision:
+                return False
+            run = conn.execute(
+                """SELECT i.execution_id, r.correlation_id FROM execution_dispatch_intents i
+                     JOIN execution_runs r ON r.execution_id = i.execution_id AND r.organization_id = i.organization_id
+                    WHERE i.organization_id = ? AND i.claimed_by = ? AND i.claim_token = ?
+                      AND r.approved_decision_id = ?""",
+                (organization_id, worker_identity, dispatch_claim_token, decision_id),
+            ).fetchone()
+            if not run:
+                return False
+            decision_update = conn.execute(
+                "UPDATE execution_decisions SET claim_owner = NULL, claim_expires_at = NULL, claim_token = NULL WHERE id = ? AND organization_id = ? AND claim_owner = ? AND claim_token = ? AND consumed_at IS NULL",
+                (decision_id, organization_id, worker_identity, decision_claim_token),
+            )
+            dispatch_update = conn.execute(
+                """UPDATE execution_dispatch_intents SET state = 'PENDING', claimed_by = NULL,
+                              claim_token = NULL, lease_expires_at = NULL, claimed_at = NULL
+                        WHERE execution_id = ? AND organization_id = ? AND state = 'CLAIMED'
+                          AND claimed_by = ? AND claim_token = ?""",
+                (run["execution_id"], organization_id, worker_identity, dispatch_claim_token),
+            )
+            if decision_update.rowcount != 1 or dispatch_update.rowcount != 1:
+                raise RuntimeError("execution authority release lost its transaction fence")
+            correlation_id = run["correlation_id"] or f"corr-execution-{run['execution_id']}"
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DECISION_LEASE_RELEASED, object_type="execution_decision",
+                object_id=decision_id, result="SUCCESS", correlation_id=correlation_id,
+                details={"execution_id": run["execution_id"]},
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
+                action=AuditAction.EXECUTION_DISPATCH_FAILED, object_type="execution_dispatch_intent",
+                object_id=run["execution_id"], result="SUCCESS", correlation_id=correlation_id,
+                details={"reason_code": "EXECUTION_AUTHORITY_RELEASED"},
+            ))
+            return True
 
     def mark_execution_decision_started(self, decision_id: str, organization_id: str, worker_identity: str, claim_token: str, dispatch_claim_token: Optional[str] = None, now: Optional[datetime] = None) -> bool:
         now = now or utc_now()

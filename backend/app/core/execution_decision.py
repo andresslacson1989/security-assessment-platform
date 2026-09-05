@@ -73,6 +73,7 @@ class ExecutionDecisionCapability:
         worker_identity: str,
         timeout: float,
         max_output_bytes: int,
+        dispatch_claim_token: Optional[str] = None,
     ) -> None:
         """Re-read authority and atomically reserve this decision for one launch."""
         self.assert_valid_for_launch(
@@ -99,23 +100,17 @@ class ExecutionDecisionCapability:
         if timeout > float(timeout_limit) or max_output_bytes > int(output_limit):
             raise ExecutionDecisionError("launch request exceeds approved resource budget")
         combined_claim = getattr(self.database, "claim_execution_authority", None)
-        if combined_claim is not None:
-            authority = combined_claim(
-                decision.id, decision.organization_id, decision.session_jti,
-                decision.worker_identity, decision.operation_policy_revision, now=now,
-            )
-            claim = authority[0] if authority else None
-            dispatch_claim = authority[1] if authority else None
-        else:
-            claim = self.database.claim_execution_decision(
-                decision.id, decision.organization_id, decision.session_jti,
-                decision.worker_identity, decision.operation_policy_revision, now=now,
-            )
-            dispatch_claim = None
-        if not claim:
+        if combined_claim is None:
+            raise ExecutionDecisionError("authoritative execution fence is unavailable")
+        authority = combined_claim(
+            decision.id, decision.organization_id, decision.session_jti,
+            decision.worker_identity, decision.operation_policy_revision,
+            dispatch_claim_token=dispatch_claim_token, now=now,
+        )
+        if authority is None:
             raise ExecutionDecisionError("execution decision could not be atomically claimed")
-        object.__setattr__(self, "claim_token", claim.token)
-        object.__setattr__(self, "dispatch_claim_token", dispatch_claim.token if dispatch_claim else None)
+        object.__setattr__(self, "claim_token", authority.decision.token)
+        object.__setattr__(self, "dispatch_claim_token", authority.dispatch.token)
 
     def mark_started(self) -> None:
         marker = getattr(self.database, "mark_execution_decision_started", None)
@@ -125,11 +120,13 @@ class ExecutionDecisionCapability:
             raise ExecutionDecisionError("execution decision launch lease could not be committed")
 
     def release_claim(self) -> None:
-        releaser = getattr(self.database, "release_execution_decision_claim", None)
-        if releaser is not None:
-            if not self.claim_token:
-                return
-            releaser(self.decision.id, self.decision.organization_id, self.worker_identity, self.claim_token)
+        releaser = getattr(self.database, "release_execution_authority", None)
+        if releaser is None or not self.claim_token or not self.dispatch_claim_token:
+            return
+        releaser(
+            self.decision.id, self.decision.organization_id, self.worker_identity,
+            self.claim_token, self.dispatch_claim_token,
+        )
 
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:

@@ -614,6 +614,25 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert run_events[0]["object_type"] == "execution_run"
     assert run_events[0]["correlation_id"] == "corr-approval-run"
 
+    authority = database.claim_execution_authority(
+        decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
+    )
+    assert authority is not None
+    assert authority.execution_id == execution_id
+    assert authority.correlation_id == "corr-approval-run"
+    assert authority.decision.owner == "worker-a"
+    assert authority.dispatch.owner == "worker-a"
+    assert database.release_execution_authority(
+        decision_id, "org-a", "worker-a", authority.decision.token, authority.dispatch.token,
+    )
+    with database._connection_scope() as conn:
+        lifecycle_events = conn.execute(
+            "SELECT action, correlation_id FROM audit_events WHERE organization_id = ? AND object_id IN (?, ?) ORDER BY sequence_number",
+            ("org-a", decision_id, execution_id),
+        ).fetchall()
+    assert lifecycle_events
+    assert {event["correlation_id"] for event in lifecycle_events} == {"corr-approval-run"}
+
     decision_claim = database.claim_execution_decision(
         decision_id, "org-a", "session-a", "worker-a", OPERATION_POLICY_REVISION,
     )
