@@ -1042,6 +1042,16 @@ class DatabaseManager:
     def _verify_migration_v8_postconditions(self, conn) -> None:
         self._verify_execution_dispatch_schema(conn)
 
+    def _verify_migration_v9_postconditions(self, conn) -> None:
+        """Verify the one-time cleanup of the known duplicate parent index."""
+        self._verify_execution_run_tenant_binding_schema(conn)
+        if isinstance(self, PostgresDatabaseManager):
+            duplicate = conn.execute("SELECT 1 FROM pg_class i JOIN pg_namespace n ON n.oid=i.relnamespace WHERE n.nspname=current_schema() AND i.relname='uq_execution_requests_id_org' AND i.relkind='i'").fetchone()
+        else:
+            duplicate = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name='uq_execution_requests_id_org'").fetchone()
+        if duplicate:
+            raise RuntimeError("execution parent index repair did not remove the migration-owned duplicate")
+
     def _verify_execution_dispatch_base_schema(self, conn) -> None:
         """Verify only the pre-lease dispatch shape created by migration v7."""
         required = {"execution_id", "organization_id", "state", "attempt_count", "created_at",
@@ -2266,10 +2276,6 @@ class DatabaseManager:
             cleanup_version = 5
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (cleanup_version,)).fetchone():
                 if isinstance(self, PostgresDatabaseManager):
-                    # The parent key is defined by the canonical table
-                    # constraint.  Remove only the migration-owned duplicate
-                    # index; never remove the constraint-backed key.
-                    conn.execute("DROP INDEX IF EXISTS uq_execution_requests_id_org")
                     duplicate_parent = conn.execute("""
                         SELECT COUNT(*) AS count FROM pg_index i
                         JOIN pg_class t ON t.oid = i.indrelid
@@ -2287,14 +2293,6 @@ class DatabaseManager:
                     if duplicate_fk and duplicate_fk["count"] and len(duplicate_parent) > 1:
                         conn.execute("ALTER TABLE execution_runs DROP CONSTRAINT execution_runs_decision_tenant_fk")
                 else:
-                    legacy_request_index = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone()
-                    if legacy_request_index:
-                        metadata = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
-                        known = next(row for row in metadata if row["name"] == "uq_execution_requests_id_org")
-                        columns = conn.execute("PRAGMA index_info('uq_execution_requests_id_org')").fetchall()
-                        if not known["unique"] or known["partial"] or [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] != ["id", "organization_id"]:
-                            raise ValueError("execution request parent index cleanup found an ambiguous migration-owned artifact")
-                        conn.execute("DROP INDEX uq_execution_requests_id_org")
                     parent_keys = []
                     for index in conn.execute("PRAGMA index_list(execution_decisions)").fetchall():
                         if index["unique"] and not index["partial"]:
@@ -2436,6 +2434,25 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE execution_dispatch_intents_v8 RENAME TO execution_dispatch_intents")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_binding_version, utc_now().isoformat()))
             if max_migration_version == dispatch_binding_version:
+                return
+
+            # Version 9 is an immutable repair for deployments that already
+            # recorded v5 before the duplicate parent-index cleanup existed.
+            repair_version = 9
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (repair_version,)).fetchone():
+                if isinstance(self, PostgresDatabaseManager):
+                    conn.execute("DROP INDEX IF EXISTS uq_execution_requests_id_org")
+                else:
+                    legacy_request_index = conn.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone()
+                    if legacy_request_index:
+                        metadata = conn.execute("PRAGMA index_list(execution_requests)").fetchall()
+                        known = next(row for row in metadata if row["name"] == "uq_execution_requests_id_org")
+                        columns = conn.execute("PRAGMA index_info('uq_execution_requests_id_org')").fetchall()
+                        if not known["unique"] or known["partial"] or [row["name"] for row in sorted(columns, key=lambda value: value["seqno"])] != ["id", "organization_id"]:
+                            raise ValueError("execution request parent index repair found an ambiguous migration-owned artifact")
+                        conn.execute("DROP INDEX uq_execution_requests_id_org")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (repair_version, utc_now().isoformat()))
+            if max_migration_version == repair_version:
                 return
 
             self._verify_execution_snapshot_schema(conn)

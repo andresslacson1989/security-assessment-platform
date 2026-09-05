@@ -28,6 +28,7 @@ class MigrationManagerProtocol(Protocol):
     def _verify_migration_v6_postconditions(self, conn) -> None: ...
     def _verify_migration_v7_postconditions(self, conn) -> None: ...
     def _verify_migration_v8_postconditions(self, conn) -> None: ...
+    def _verify_migration_v9_postconditions(self, conn) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ _DESCRIPTORS = (
     (6, "execution-compatibility-columns", "Execution compatibility columns", 5, "decision/request compatibility columns"),
     (7, "execution-dispatch-intents", "Execution dispatch intents", 6, "durable execution dispatch intent table"),
     (8, "execution-dispatch-tenant-binding", "Execution dispatch tenant binding", 7, "tenant-bound dispatch lease columns and foreign keys"),
+    (9, "execution-parent-index-repair", "Execution parent index repair", 8, "remove only the proven migration-owned duplicate parent index"),
 )
 
 
@@ -109,7 +111,11 @@ def _verify_v8(manager: MigrationManagerProtocol, conn) -> None:
     manager._verify_migration_v8_postconditions(conn)
 
 
-_VERIFIERS = (_verify_v1, _verify_v2, _verify_v3, _verify_v4, _verify_v5, _verify_v6, _verify_v7, _verify_v8)
+def _verify_v9(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v9_postconditions(conn)
+
+
+_VERIFIERS = (_verify_v1, _verify_v2, _verify_v3, _verify_v4, _verify_v5, _verify_v6, _verify_v7, _verify_v8, _verify_v9)
 _VERIFIER_METHODS = (
     "_verify_migration_v1_postconditions",
     "_verify_migration_v2_postconditions",
@@ -119,6 +125,7 @@ _VERIFIER_METHODS = (
     "_verify_migration_v6_postconditions",
     "_verify_migration_v7_postconditions",
     "_verify_migration_v8_postconditions",
+    "_verify_migration_v9_postconditions",
 )
 
 
@@ -158,6 +165,7 @@ _EXPECTED_CHECKSUMS = {
     6: "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
     7: "sha256:fb0be1cafc6be8f45ff0e9237e5b375ea29fa657d2fa9768204fd2174695609f",
     8: "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
+    9: "sha256:f6967da3ce7cf80ddd1531f0922c7bf3398cccb0d89a0b61909427bbafe42765",
 }
 
 
@@ -168,7 +176,7 @@ def validate_registry() -> None:
         raise RuntimeError("migration registry versions are not strictly ordered and unique")
     if len(ids) != len(set(ids)):
         raise RuntimeError("migration registry migration_id values are not unique")
-    for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7]):
+    for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7, 8]):
         if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71 or spec.checksum != _EXPECTED_CHECKSUMS.get(spec.version):
             raise RuntimeError(f"migration registry linkage/checksum invalid for version {spec.version}")
         if spec.apply is None or spec.verify is None or spec.reconcile is None:

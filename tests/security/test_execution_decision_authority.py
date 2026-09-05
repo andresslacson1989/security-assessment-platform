@@ -56,7 +56,7 @@ def _target():
 
 
 def test_migration_registry_has_fixed_executable_verifier_vectors():
-    assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, 9))
+    assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, 10))
     assert all(callable(spec.apply) and callable(spec.reconcile) for spec in MIGRATION_REGISTRY)
     assert all(callable(spec.verify) for spec in MIGRATION_REGISTRY)
     assert {spec.version: spec.checksum for spec in MIGRATION_REGISTRY} == _EXPECTED_CHECKSUMS
@@ -71,7 +71,7 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
         ).fetchall()
 
     assert [(row["migration_version"], row["event_sequence"], row["event_type"]) for row in rows] == [
-        item for version in range(1, 9) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
+        item for version in range(1, 10) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
     ]
 
 
@@ -1017,7 +1017,7 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     DatabaseManager(db_path)
     with database._connection_scope() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions[-3:] == [6, 7, 8]
+        assert versions[-3:] == [7, 8, 9]
 
 
 def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
