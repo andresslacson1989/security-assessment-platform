@@ -3270,10 +3270,15 @@ class DatabaseManager:
                           WHERE r.approved_decision_id = execution_decisions.id
                             AND r.organization_id = execution_decisions.organization_id
                             AND q.state = 'AUTHORIZED' AND q.expires_at > ?
-                            AND i.state = 'PENDING'
+                            AND i.state IN ('PENDING', 'CLAIMED')
+                            AND (i.state = 'PENDING' OR i.claimed_by = ?)
+                            AND (SELECT COUNT(*) FROM execution_runs r2
+                                   JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                                   JOIN execution_dispatch_intents i2 ON i2.execution_id = r2.execution_id AND i2.organization_id = r2.organization_id
+                                  WHERE r2.approved_decision_id = execution_decisions.id AND r2.organization_id = execution_decisions.organization_id) = 1
                    )
                  """,
-                 (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat(), now.isoformat()),
+                 (worker_identity, (now + timedelta(seconds=30)).isoformat(), uuid.uuid4().hex, decision_id, organization_id, session_jti, worker_identity, policy_revision, now.isoformat(), now.isoformat(), now.isoformat(), worker_identity),
             )
             if cur.rowcount != 1:
                 self._insert_audit_event_conn(conn, AuditEvent(
@@ -3316,6 +3321,10 @@ class DatabaseManager:
                                AND r.organization_id = execution_decisions.organization_id
                                AND q.state = 'AUTHORIZED' AND q.expires_at > ?
                                AND i.state IN ('PENDING', 'CLAIMED')
+                               AND (SELECT COUNT(*) FROM execution_runs r2
+                                      JOIN execution_requests q2 ON q2.id = r2.request_id AND q2.organization_id = r2.organization_id
+                                      JOIN execution_dispatch_intents i2 ON i2.execution_id = r2.execution_id AND i2.organization_id = r2.organization_id
+                                     WHERE r2.approved_decision_id = execution_decisions.id AND r2.organization_id = execution_decisions.organization_id) = 1
                          )""",
                 (now.isoformat(), now.isoformat(), decision_id, organization_id, worker_identity, claim_token, now.isoformat(), now.isoformat(), now.isoformat()),
             )
