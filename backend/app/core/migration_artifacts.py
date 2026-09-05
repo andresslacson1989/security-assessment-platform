@@ -22,15 +22,15 @@ FORWARD_APPLY_MANIFESTS = {
     9: {"sqlite": "remove only the proven migration-owned duplicate parent index", "postgresql": "remove only the proven migration-owned duplicate parent index"},
 }
 FORWARD_APPLY_SOURCE_SHA256 = {
-    1: {"sqlite": "sha256:b71e3c53bb026219ec718dde3641bf8179b439f2ea8c2e2cdb9a2d29c323ec3d", "postgresql": "sha256:5cd8e4809c898a96150c0cbe94a53a5600d1a38d931aa1200bd0c99d670ec459"},
-    2: {"sqlite": "sha256:d8c1bd087ff055da6a5b464ff0e261a6050daa7bf3646ddf48119595099f90da", "postgresql": "sha256:b5bbc185499508295b99f04c70528c6d47b5e9fdb4d4ce61b24d01e6720fa405"},
-    3: {"sqlite": "sha256:65bcc49081598767fec261caa65cbf93205e0a511fd7279959c947f5a32c1d48", "postgresql": "sha256:dbfe5972784c09e11bf095b87fe9b49f45038e96bf7a4b8892f29630274b7f70"},
-    4: {"sqlite": "sha256:dc04d71709d0fae6773f74bcec8ee621b6d01490ff133e60daeef01b2ad555d1", "postgresql": "sha256:43633eacd0012e258b44132e4daa12ff81cc1043e61e6fa838acd257db267d8a"},
-    5: {"sqlite": "sha256:e26d23b1dc541c7f6371ba702aece49ac71c17b2f66d7934bd75735cbdb72a0b", "postgresql": "sha256:c70c1c302e9d26285c851b95d3b7f7d15afa496b643d94cd4969aa5dded63bc4"},
-    6: {"sqlite": "sha256:47061dcc51dcd6f4306c58fda94099dacb6d56c5835ffa7494b0340ad9bceff6", "postgresql": "sha256:3dbb563f71dcafd914d87d37139455fd40204fbd61524764d6dfc59f10ecc043"},
-    7: {"sqlite": "sha256:81da3def8a69cfbccd4fc119663bf191fc48242dab0a160932105b0712863cf9", "postgresql": "sha256:75e6b812950e9977ea7bcc833b69a927b00cb57855d016ec11d697fe74e9db7f"},
-    8: {"sqlite": "sha256:14b388f3857dee87052ff244a6f02f76ac8edcb8506e7d5f73a5cff88a0625ff", "postgresql": "sha256:f2d24da67a70ec17dd7e5bb196806e986c1889dd2bc6d9db0a17bb62080184fb"},
-    9: {"sqlite": "sha256:13b228817842d62cd0e8fe2f0e357168e52762a73d444b1cc97b405e0f67d50d", "postgresql": "sha256:36c58745d765027509a67757135e3d68380eb90ab071898ccdd128a07d9e4e1e"},
+    1: {"sqlite": "sha256:01ed6a22623898cd9b4e6cfc17ab5b846b63176d9d07d5514998a48d3989260a", "postgresql": "sha256:4299beddc3f2f9a1a589e447b40cfd741bde7b8f906da9d9d50b53a72562bbfa"},
+    2: {"sqlite": "sha256:e65a919602f96826aa76df53a81e551078f2c25c58f05ec0fe486142dea916fe", "postgresql": "sha256:fd30664838979c8afbcdbe59188bc7d7d1b9346d7e6a480da272e787637e4b4f"},
+    3: {"sqlite": "sha256:e12cbc7cba6c4b3a9d45b2d0de305ebfe25aa881c8ad74ea0e5b5bf4b3e95196", "postgresql": "sha256:68961cae5b171aa5e24d8925955debfc3a04562f008c7870a38e6f2555428777"},
+    4: {"sqlite": "sha256:acc24bdf6a293a658d447713c44a30cec2d25c432453f40d5f3870cc5f91bd06", "postgresql": "sha256:39984b5ad0ca47c31de25d215b8caae2d7068f70de613c35f189e31dd6f995bb"},
+    5: {"sqlite": "sha256:21d634173e51aa8625a722bd9fec5041ad2036fee56c8f02f209c0abec31bde9", "postgresql": "sha256:aed35ffbadab4350ff858dee605af462fa2daa09ff4077dd2d54f222baf0a252"},
+    6: {"sqlite": "sha256:268594886aa3ccc57a664439b192c6bc69c58aa0654fd1b72652a3ef04f23c18", "postgresql": "sha256:1957b10933ebaeb4fd0ab17048923324c19604c09e9d49a2f936c820bbeb2756"},
+    7: {"sqlite": "sha256:3c7d463dc769b3dd9423d0b3ccceebccf8d2b189a36d3ba4dfe50ca7c144f3bb", "postgresql": "sha256:380b68df5b913841b6e56822ad00cbce5b1d171e36932be431339864e40d440b"},
+    8: {"sqlite": "sha256:2357e4ea280aae0d3bb34c9c7253164eb3f511c0ce48cab3932d9e66d78cf25b", "postgresql": "sha256:95382d807705c8b303ae1874c84e1feb739e26a76c683c670abc61b932a20a6e"},
+    9: {"sqlite": "sha256:ebc6937cc64d9439c9a2311f86f76d9acf2202e063cc44900ec434636ba133d1", "postgresql": "sha256:7502424f4defd452ddbbd565a46e0972bacb1fcbc9a80f51ea67eefe4dbcad77"},
 }
 
 POSTCONDITION_SOURCE_SHA256 = {

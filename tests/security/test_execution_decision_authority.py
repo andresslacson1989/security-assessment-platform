@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import inspect
 import json
 import sqlite3
 
@@ -10,6 +11,7 @@ import pytest
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
 from app.core.db import DatabaseManager
 from app.core.migration_registry import MIGRATION_REGISTRY, _EXPECTED_CHECKSUMS
+from app.core.migration_artifacts import FORWARD_APPLY_ARTIFACT_REVISION
 from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
@@ -80,6 +82,20 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
         assert context["apply_artifact_revision"] == "execution-migration-apply-v1"
         assert context["apply_artifact"].startswith("sha256:")
         assert context["apply_manifest"]
+
+
+def test_forward_apply_artifact_vectors_match_runtime_serialization():
+    for spec in MIGRATION_REGISTRY:
+        for backend in ("sqlite", "postgresql"):
+            material = "\n".join((
+                inspect.getsource(DatabaseManager._init_db),
+                inspect.getsource(DatabaseManager._apply_migration_version),
+                FORWARD_APPLY_ARTIFACT_REVISION,
+                json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
+                backend,
+            )).encode("utf-8")
+            actual = "sha256:" + hashlib.sha256(material).hexdigest()
+            assert spec.apply_artifact[backend] == actual
 
 
 def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
