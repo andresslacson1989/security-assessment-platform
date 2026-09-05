@@ -57,8 +57,22 @@ def _target():
 
 def test_migration_registry_has_fixed_executable_verifier_vectors():
     assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, 9))
+    assert all(callable(spec.apply) and callable(spec.reconcile) for spec in MIGRATION_REGISTRY)
     assert all(callable(spec.verify) for spec in MIGRATION_REGISTRY)
     assert {spec.version: spec.checksum for spec in MIGRATION_REGISTRY} == _EXPECTED_CHECKSUMS
+
+
+def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp_path):
+    database = DatabaseManager(tmp_path / "coordinator.sqlite3")
+    with database._connection_scope() as conn:
+        rows = conn.execute(
+            "SELECT migration_version, event_sequence, event_type "
+            "FROM schema_migration_events ORDER BY migration_version, event_sequence"
+        ).fetchall()
+
+    assert [(row["migration_version"], row["event_sequence"], row["event_type"]) for row in rows] == [
+        item for version in range(1, 9) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
+    ]
 
 
 def _decision(target, **changes):
@@ -207,7 +221,7 @@ def test_failure_ledger_sequence_is_causal_when_timestamps_match(tmp_path):
             "SELECT event_type, event_sequence FROM schema_migration_events "
             "WHERE attempt_id = 'failure-attempt' ORDER BY event_sequence"
         ).fetchall()
-    assert rows == [("FAILED", 2), ("ROLLED_BACK", 3)]
+    assert rows == [("FAILED", 2), ("ROLLBACK_FAILED", 3)]
 
     DatabaseManager(path)
 

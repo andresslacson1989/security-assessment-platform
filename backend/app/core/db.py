@@ -216,8 +216,7 @@ class PostgresDatabaseManager:
             self._ensure_migration_ledger()
             if self._allow_unresolved_reconciliation:
                 return
-            self._begin_migration_attempt()
-            self._init_db()
+            self._run_migration_coordinator()
         except Exception as exc:
             # Initialization can fail after the pool has opened (for example,
             # on schema drift).  Never leak those connections on a failed
@@ -251,9 +250,22 @@ class PostgresDatabaseManager:
         finally:
             self._pool.putconn(raw_connection)
 
-    def _init_db(self):
+    def _init_db(self, max_migration_version: Optional[int] = None):
         # Reuse the canonical schema/method implementation from the SQLite DAL.
-        DatabaseManager._init_db(self)
+        DatabaseManager._init_db(self, max_migration_version=max_migration_version)
+
+    @contextmanager
+    def _migration_lock(self):
+        """Hold a database-scoped advisory lock for the full migration run."""
+        raw_connection = self._pool.getconn()
+        try:
+            raw_connection.execute("SELECT pg_advisory_lock(hashtext('cyberassess:schema-migrations'))")
+            yield
+        finally:
+            try:
+                raw_connection.execute("SELECT pg_advisory_unlock(hashtext('cyberassess:schema-migrations'))")
+            finally:
+                self._pool.putconn(raw_connection)
 
     def __getattr__(self, name):
         return getattr(DatabaseManager, name).__get__(self, type(self))
@@ -275,9 +287,8 @@ class DatabaseManager:
         self._ensure_migration_ledger()
         if self._allow_unresolved_reconciliation:
             return
-        self._begin_migration_attempt()
         try:
-            self._init_db()
+            self._run_migration_coordinator()
         except Exception as exc:
             self._record_migration_failure(exc)
             raise
@@ -293,6 +304,109 @@ class DatabaseManager:
                     else:
                         cls._instance = cls()
         return cls._instance
+
+    @contextmanager
+    def _migration_lock(self):
+        """Serialize schema coordination across processes for SQLite."""
+        lock_path = self.db_path.with_name(self.db_path.name + ".migration.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")
+        try:
+            handle.seek(0)
+            if not handle.read(1):
+                handle.seek(0)
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+    def _run_migration_coordinator(self) -> None:
+        """Apply and verify each registered migration as an isolated outcome."""
+        with self._migration_lock():
+            with self._connection_scope() as conn:
+                self._verify_resolved_reconciliation_artifacts(conn)
+                unresolved = conn.execute("""SELECT 1 FROM schema_migration_events required
+                    WHERE required.event_type = 'RECONCILIATION_REQUIRED' AND required.rollback_status = 'UNKNOWN'
+                      AND NOT EXISTS (SELECT 1 FROM schema_migration_events resolved
+                        WHERE resolved.attempt_id = required.attempt_id
+                          AND resolved.event_type = 'RECONCILIATION_RESOLVED') LIMIT 1""").fetchone()
+                if unresolved and not getattr(self, "_allow_unresolved_reconciliation", False):
+                    raise RuntimeError("migration reconciliation required: unresolved migration attempt is blocking startup")
+                has_schema = conn.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'"
+                ).fetchone() if isinstance(self, PostgresDatabaseManager) else conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+                ).fetchone()
+                applied = {int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations").fetchall()} if has_schema else set()
+                if applied and applied != set(range(1, max(applied) + 1)):
+                    raise RuntimeError("schema migration versions are not contiguous; operator reconciliation required")
+                completed = {
+                    int(row["migration_version"]): row for row in conn.execute(
+                        "SELECT migration_version, event_type FROM schema_migration_events WHERE event_type = 'SUCCEEDED'"
+                    ).fetchall()
+                }
+            for spec in MIGRATION_REGISTRY:
+                if spec.version in applied:
+                    if spec.version not in completed:
+                        raise RuntimeError(f"migration v{spec.version} is applied without a durable SUCCEEDED event")
+                    continue
+                self._migration_attempt_id = f"mig-{uuid.uuid4().hex}"
+                self._migration_transaction_id = f"tx-{uuid.uuid4().hex}"
+                self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
+                self._migration_spec = spec
+                self._migration_coordinator_active = True
+                try:
+                    self._record_migration_event(spec, "STARTED", 1, "PENDING")
+                    if spec.apply is None:
+                        raise RuntimeError(f"migration v{spec.version} has no registered apply operation")
+                    spec.apply(self)
+                    with self._connection_scope() as conn:
+                        if spec.verify is None:
+                            raise RuntimeError(f"migration v{spec.version} has no registered verifier")
+                        spec.verify(self, conn)
+                    self._record_migration_event(spec, "SUCCEEDED", 2, "NOT_APPLICABLE")
+                    applied.add(spec.version)
+                except Exception:
+                    raise
+                finally:
+                    self._migration_coordinator_active = False
+            self._migration_attempt_id = None
+            self._migration_transaction_id = None
+            self._migration_spec = None
+
+    def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
+        error_class = type(exc).__name__ if exc else None
+        error_message = str(exc)[:500] if exc else None
+        with self._connection_scope() as conn:
+            conn.execute("""INSERT INTO schema_migration_events
+                (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
+                 previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
+                 error_class,error_message,context_json,rollback_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                f"event-{uuid.uuid4().hex}", self._migration_attempt_id, spec.version,
+                spec.migration_id, spec.name, spec.registry_revision, sequence, event_type,
+                utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                self._migration_schema_name, spec.previous_version, spec.target_version, spec.checksum,
+                "database-startup", self._migration_transaction_id, error_class, error_message,
+                json.dumps({"coordinator": "registry", "migration_version": spec.version}, separators=(",", ":")),
+                rollback_status))
 
     def _ensure_migration_ledger(self) -> None:
         """Bootstrap the independent migration-event ledger before schema work."""
@@ -692,7 +806,8 @@ class DatabaseManager:
             return
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
-            for event_type, rollback_status in (("FAILED", "CONFIRMED"), ("ROLLED_BACK", "CONFIRMED")):
+            spec = self._migration_spec
+            for event_type, rollback_status, sequence in (("FAILED", "FAILED", 2), ("ROLLBACK_FAILED", "FAILED", 3)):
                 conn.execute("""INSERT INTO schema_migration_events
                     (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
                      previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
@@ -700,10 +815,10 @@ class DatabaseManager:
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                     f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
                     self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
-                    2 if event_type == "FAILED" else 3, event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
-                    self._migration_schema_name, 7, 8,
-                    self._migration_spec.checksum, "database-startup", self._migration_transaction_id,
-                    type(exc).__name__, str(exc)[:500], "{}", rollback_status))
+                    sequence, event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
+                    self._migration_schema_name, spec.previous_version, spec.target_version,
+                    spec.checksum, "database-startup", self._migration_transaction_id,
+                    type(exc).__name__, str(exc)[:500], '{"coordinator":"registry","rollback":"not independently confirmed"}', rollback_status))
 
     def _verify_migration_ledger(self, conn) -> None:
         """Reject any existing migration ledger that cannot be trusted."""
@@ -1218,7 +1333,12 @@ class DatabaseManager:
             if not valid or not org or len(grouped) != 2:
                 raise RuntimeError("execution dispatch schema contains unexpected foreign keys")
 
-    def _init_db(self) -> None:
+    def _apply_migration_version(self, version: int) -> None:
+        if version not in {spec.version for spec in MIGRATION_REGISTRY}:
+            raise ValueError(f"unknown registered migration version {version}")
+        self._init_db(max_migration_version=version)
+
+    def _init_db(self, max_migration_version: Optional[int] = None) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
         with self._connection_scope() as conn:
             # 1. Ensure all tables exist
@@ -1737,6 +1857,8 @@ class DatabaseManager:
                         raise ValueError("execution_runs migration failed postcondition: composite tenant foreign key is absent")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_runs_request ON execution_runs(request_id, organization_id)")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (migration_version, utc_now().isoformat()))
+            if max_migration_version == migration_version:
+                return
 
             # Version 2 is an immutable remediation for databases that already
             # recorded version 1 before PostgreSQL constraint reconciliation was
@@ -1826,6 +1948,8 @@ class DatabaseManager:
                     if not has_parent_unique:
                         raise ValueError("execution_runs remediation failed postcondition: tenant parent key is not unique")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (remediation_version, utc_now().isoformat()))
+            if max_migration_version == remediation_version:
+                return
 
             # Version 3 binds each execution run to an immutable authority
             # snapshot.  These fields are deliberately versioned with the
@@ -1876,6 +2000,8 @@ class DatabaseManager:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (snapshot_migration_version, utc_now().isoformat()),
                 )
+            if max_migration_version == snapshot_migration_version:
+                return
 
             # Version 4 binds an execution run's approved decision to the
             # same tenant.  A nullable decision reference is retained for
@@ -2049,6 +2175,8 @@ class DatabaseManager:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (authority_binding_version, utc_now().isoformat()),
                 )
+            if max_migration_version == authority_binding_version:
+                return
 
             # Version 5 removes only migration-owned objects from the
             # superseded duplicate-producing v4 implementation.
@@ -2086,6 +2214,8 @@ class DatabaseManager:
                     elif len(parent_keys) > 1:
                         raise ValueError("execution authority cleanup blocked: unknown duplicate decision parent keys require audited reconciliation")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (cleanup_version, utc_now().isoformat()))
+            if max_migration_version == cleanup_version:
+                return
 
             # Version 6 records the formerly generic execution-plane column
             # upgrades as one auditable, idempotent migration.
@@ -2126,6 +2256,8 @@ class DatabaseManager:
                         if not verified:
                             raise RuntimeError(f"execution schema migration v6 failed postcondition for {table}.{column}")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (execution_columns_version, utc_now().isoformat()))
+            if max_migration_version == execution_columns_version:
+                return
 
             dispatch_version = 7
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_version,)).fetchone():
@@ -2140,6 +2272,8 @@ class DatabaseManager:
                         FOREIGN KEY (organization_id) REFERENCES organizations(id)
                     )""")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_version, utc_now().isoformat()))
+            if max_migration_version == dispatch_version:
+                return
 
             dispatch_binding_version = 8
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (dispatch_binding_version,)).fetchone():
@@ -2206,6 +2340,8 @@ class DatabaseManager:
                     conn.execute("DROP TABLE execution_dispatch_intents")
                     conn.execute("ALTER TABLE execution_dispatch_intents_v8 RENAME TO execution_dispatch_intents")
                 conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (dispatch_binding_version, utc_now().isoformat()))
+            if max_migration_version == dispatch_binding_version:
+                return
 
             self._verify_execution_snapshot_schema(conn)
             self._verify_execution_authority_binding_schema(conn)
@@ -2345,7 +2481,7 @@ class DatabaseManager:
                 ):
                     raise ValueError("execution schema health check failed: composite tenant foreign key is absent")
 
-            if getattr(self, "_migration_attempt_id", None):
+            if getattr(self, "_migration_attempt_id", None) and not getattr(self, "_migration_coordinator_active", False):
                 conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
                  previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,

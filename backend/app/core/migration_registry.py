@@ -19,6 +19,7 @@ REGISTRY_REVISION = "migration-registry-v1"
 
 
 class MigrationManagerProtocol(Protocol):
+    def _apply_migration_version(self, version: int) -> None: ...
     def _verify_migration_v1_postconditions(self, conn) -> None: ...
     def _verify_migration_v2_postconditions(self, conn) -> None: ...
     def _verify_migration_v3_postconditions(self, conn) -> None: ...
@@ -65,6 +66,19 @@ _DESCRIPTORS = (
 
 def _verify_v1(manager: MigrationManagerProtocol, conn) -> None:
     manager._verify_migration_v1_postconditions(conn)
+
+
+def _apply_version(version: int):
+    def apply(manager: MigrationManagerProtocol) -> None:
+        manager._apply_migration_version(version)
+    return apply
+
+
+def _reconcile_version(version: int):
+    def reconcile(manager: MigrationManagerProtocol, conn) -> None:
+        verifier = getattr(manager, f"_verify_migration_v{version}_postconditions")
+        verifier(conn)
+    return reconcile
 
 
 def _verify_v2(manager: MigrationManagerProtocol, conn) -> None:
@@ -128,7 +142,8 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         previous_version=previous, target_version=version,
         contract_schema_version=SCHEMA_VERSION, contract_version=CONTRACT_VERSION,
         registry_revision=REGISTRY_REVISION, checksum=_checksum(material),
-        verify=_VERIFIERS[version - 1],
+        apply=_apply_version(version), verify=_VERIFIERS[version - 1],
+        reconcile=_reconcile_version(version),
     )
 
 
@@ -156,8 +171,8 @@ def validate_registry() -> None:
     for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7]):
         if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71 or spec.checksum != _EXPECTED_CHECKSUMS.get(spec.version):
             raise RuntimeError(f"migration registry linkage/checksum invalid for version {spec.version}")
-        if spec.verify is None:
-            raise RuntimeError(f"migration registry verifier missing for version {spec.version}")
+        if spec.apply is None or spec.verify is None or spec.reconcile is None:
+            raise RuntimeError(f"migration registry operation missing for version {spec.version}")
 
 
 validate_registry()
