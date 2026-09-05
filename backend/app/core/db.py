@@ -994,6 +994,7 @@ class DatabaseManager:
                 legacy_provenance = not str(row["transaction_context_id"]).startswith("txp-")
                 if not legacy_provenance and (
                     context.get("provenance_format") != "registry-coordinator-v2"
+                    or
                     context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
                     or context.get("apply_artifact") != spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite")
                     or context.get("apply_artifacts") != spec.apply_artifact
