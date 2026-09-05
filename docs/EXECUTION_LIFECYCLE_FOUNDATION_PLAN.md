@@ -1,6 +1,6 @@
 # Execution Lifecycle Foundation Plan
 
-Status: DESIGN BASELINE — implementation not yet complete.
+Status: IMPLEMENTATION BASELINE — Goal 1 implementation and independent acceptance remain open.
 
 This plan is the implementation contract for the next coherent lifecycle
 section. It is subordinate to Contracts 01, 03, 04, 08, and 09 and is linked
@@ -8,6 +8,40 @@ to `docs/EXECUTION_LIFECYCLE_CLOSURE_MATRIX.md`. It deliberately does not
 repair, rewrite, or reinterpret an existing migration ledger. Migration v10
 must execute only after the registered v1–v9 history passes its existing
 fail-closed verification.
+
+## Goal 1 implementation contract
+
+The implementation uses separate durable dimensions. The execution run state
+(`REQUESTED`, `STARTING`, `RUNNING`, and terminal outcomes) is not a process
+ownership proof. Process ownership is stored in `execution_process_ownership`;
+launch saga status is stored in its `launch_commit_state`; and recovery uses
+the mutable `execution_recovery_state` projection plus append-only
+`execution_recovery_attempts` evidence. No state is inferred from a missing
+row or an arbitrary PID.
+
+The launch saga is: persist pre-launch ownership and worker generation; create
+the approved process container (or explicitly record unsupported `NONE`);
+launch and attest the process identity; durably commit the identity; then mark
+the run `RUNNING`. Database and OS launch are not one atomic transaction. If
+the process may have started but durable commit fails, the result is
+`LAUNCH_UNCERTAIN` and recovery is required; absence of a recorded PID is not
+`NO_EXTERNAL_PROCESS`.
+
+`UNKNOWN` is migration/reconciliation-only and is forbidden for operational
+launch, cancellation, finish, or terminalization. Operator reconciliation
+requires tenant authorization, immutable audit evidence, and an evidence
+reference. Only canonical versioned POSIX/Windows attestations with bounded
+fields, canonical digest, issuer/worker generation, timestamps, proof type,
+freshness, and verification result can authorize identity. A raw PID, path,
+version string, or caller digest cannot.
+
+`GovernedExecutionContext` is verifier-issued, immutable, tenant/decision/time
+bound, and exact-command bound. Context variables are convenience only;
+child tasks and restart recovery require explicit typed context. Installer and
+observation operations use the separate expiring `NonScanExecutionContext`
+and cannot satisfy scan terminalization. The checked-in AST inventory at
+`backend/tests/test_execution_launch_inventory.py` is a merge gate for these
+classifications.
 
 ## 1. Current evidence and boundary
 

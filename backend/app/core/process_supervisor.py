@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set, Tuple
 from app.core.tool_operation_policy import is_canonical_operation_policy_revision
 from app.core.execution_decision import ExecutionDecisionCapability, ExecutionDecisionError
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
 
 logger = logging.getLogger("cyberassess.process_supervisor")
 
@@ -740,6 +741,8 @@ class ProcessSupervisor:
         max_output_bytes: int = 10 * 1024 * 1024,
         pre_launch_check: Optional[Callable[[], bool]] = None,
         execution_id: Optional[str] = None,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        non_scan_context: Optional[NonScanExecutionContext] = None,
         scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
         credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
         credential_context: Optional[CredentialExecutionContext] = None,
@@ -756,6 +759,28 @@ class ProcessSupervisor:
             return ProcessExecutionResult(-1, "", "Empty command provided")
         if max_output_bytes <= 0:
             return ProcessExecutionResult(-1, "", "Invalid maximum output size")
+        if execution_capability is not None:
+            if execution_context is None or type(execution_context) is not GovernedExecutionContext:
+                return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required")
+            try:
+                execution_context.assert_launch(
+                    execution_id=execution_id or "",
+                    organization_id=execution_capability.decision.organization_id,
+                    command=cmd,
+                )
+            except Exception as exc:
+                return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid execution context ({type(exc).__name__})")
+        elif non_scan_context is not None:
+            if execution_id is not None:
+                return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: non-scan capability cannot carry scan execution identity")
+            if type(non_scan_context) is not NonScanExecutionContext:
+                return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context")
+            try:
+                non_scan_context.assert_issued()
+            except Exception as exc:
+                return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context ({type(exc).__name__})")
+        elif execution_id is not None:
+            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required for scan execution")
 
         # R3.2: Enterprise external-tool execution fails closed unconditionally when
         # enterprise egress enforcement is required until an authoritative network verifier interface exists.

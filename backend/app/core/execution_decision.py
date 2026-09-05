@@ -18,6 +18,11 @@ from app.core.tool_operation_policy import (
     get_operation_policy,
     is_canonical_operation_policy_revision,
 )
+from app.core.execution_context import (
+    GovernedExecutionContext,
+    _AUTHORITY_ISSUER,
+    canonical_command_digest,
+)
 
 
 _CAPABILITY_TOKEN = object()
@@ -161,6 +166,70 @@ class ExecutionDecisionCapability:
             self.execution_id, self.decision.organization_id, self.worker_identity,
             self.dispatch_claim_token, lease_seconds=lease_seconds,
         ) is not None
+
+    def issue_execution_context(
+        self,
+        *,
+        command: list[str],
+        worker_generation: str,
+    ) -> GovernedExecutionContext:
+        """Issue a typed context only after the durable authority is claimed."""
+        if not self.execution_id or not self.dispatch_claim_token or not self.claim_token:
+            raise ExecutionDecisionError("execution authority must be claimed before context issuance")
+        if not isinstance(worker_generation, str) or not worker_generation.strip():
+            raise ExecutionDecisionError("worker generation is required")
+        self.assert_valid_for_launch(
+            tool_id=self.tool_id, operation_family=self.operation_family,
+            operation_options=dict(self.decision.operation_options), command=command,
+            worker_identity=self.worker_identity,
+        )
+        run_getter = getattr(self.database, "get_execution_run", None)
+        if run_getter is None:
+            raise ExecutionDecisionError("durable execution-run lookup is unavailable")
+        run = run_getter(self.execution_id, self.decision.organization_id)
+        if run is None or run.get("approved_decision_id") != self.decision.id:
+            raise ExecutionDecisionError("execution run is not bound to the approved decision")
+        if run.get("organization_id") != self.decision.organization_id:
+            raise ExecutionDecisionError("execution run tenant binding does not match")
+        if run.get("request_fingerprint") is None or run.get("operation_policy_revision") != self.decision.operation_policy_revision:
+            raise ExecutionDecisionError("execution run authority snapshot is incomplete")
+        expected = {
+            "project_id": self.decision.project_id,
+            "target_policy_version": self.decision.target_policy_version,
+            "operation_options": dict(self.decision.operation_options),
+            "resource_budget": dict(self.decision.resource_budget),
+            "account_impact_budget": dict(self.decision.account_impact_budget),
+            "credential_scope": dict(self.decision.credential_scope),
+        }
+        if any(run.get(key) != value for key, value in expected.items()):
+            raise ExecutionDecisionError("execution run snapshot does not match the approved decision")
+        return GovernedExecutionContext._issue(
+            _AUTHORITY_ISSUER,
+            execution_id=self.execution_id,
+            request_id=str(run["request_id"]),
+            organization_id=self.decision.organization_id,
+            project_id=self.decision.project_id,
+            asset_id=self.decision.asset_id,
+            target_id=self.decision.target_id,
+            authorization_decision_id=self.decision.authorization_decision_id,
+            request_fingerprint=str(run["request_fingerprint"]),
+            target_policy_version=self.decision.target_policy_version,
+            operation_policy_revision=self.decision.operation_policy_revision,
+            tool_id=self.tool_id,
+            operation_family=self.operation_family,
+            operation_options=dict(self.decision.operation_options),
+            resource_budget=dict(self.decision.resource_budget),
+            account_impact_budget=dict(self.decision.account_impact_budget),
+            credential_scope=dict(self.decision.credential_scope),
+            worker_identity=self.worker_identity,
+            worker_generation=worker_generation.strip(),
+            session_jti=self.decision.session_jti,
+            expires_at=self.decision.expires_at,
+            correlation_id=str(run.get("correlation_id") or f"corr-execution-{self.execution_id}"),
+            exact_command=tuple(command),
+            command_digest=canonical_command_digest(tuple(command)),
+            authority_token=self.dispatch_claim_token,
+        )
 
 
 def _operation_digest(operation_options: dict[str, Any]) -> str:

@@ -21,6 +21,7 @@ from app.core.process_supervisor import (
     ProcessExecutionStatus,
     VerifiedEgressProxy,
 )
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
 
 
 _execution_id_context: ContextVar[Optional[str]] = ContextVar(
@@ -270,6 +271,8 @@ class BaseToolAdapter(ABC):
         operation_options: Optional[dict] = None,
         tool_id: str = "",
         execution_id: Optional[str] = None,
+        execution_context: Optional[GovernedExecutionContext] = None,
+        non_scan_context: Optional[NonScanExecutionContext] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -283,6 +286,12 @@ class BaseToolAdapter(ABC):
             return -1, "", "Empty command provided"
 
         effective_execution_id = execution_id or _execution_id_context.get()
+        if execution_context is not None:
+            if type(execution_context) is not GovernedExecutionContext:
+                return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid typed execution context"
+            if effective_execution_id and effective_execution_id != execution_context.execution_id:
+                return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch"
+            effective_execution_id = execution_context.execution_id
         result = await self.safe_execute_subprocess(
             cmd=cmd,
             timeout=timeout,
@@ -298,6 +307,8 @@ class BaseToolAdapter(ABC):
             operation_options=operation_options,
             tool_id=tool_id or self.tool_name,
             execution_id=effective_execution_id,
+            execution_context=execution_context,
+            non_scan_context=non_scan_context,
         )
         code, stdout, stderr = result
         process_status = getattr(result, "execution_status", None)

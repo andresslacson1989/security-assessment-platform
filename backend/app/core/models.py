@@ -236,6 +236,62 @@ class ToolInstallStatus(str, Enum):
     UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
 
 
+class ProcessOwnershipState(str, Enum):
+    """Lifecycle dimension for process ownership, separate from run outcome."""
+
+    UNKNOWN = "UNKNOWN"
+    NO_EXTERNAL_PROCESS = "NO_EXTERNAL_PROCESS"
+    EXTERNAL_PROCESS_GOVERNED = "EXTERNAL_PROCESS_GOVERNED"
+    LAUNCH_UNCERTAIN = "LAUNCH_UNCERTAIN"
+    RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
+    TERMINAL = "TERMINAL"
+
+
+class ProcessContainerType(str, Enum):
+    """Platform process-container types; NONE is valid only for no-process runs."""
+
+    NONE = "NONE"
+    POSIX_SESSION = "POSIX_SESSION"
+    WINDOWS_JOB = "WINDOWS_JOB"
+    PROCESS_SET = "PROCESS_SET"
+
+
+class LaunchCommitState(str, Enum):
+    """Durable launch-handshake state."""
+
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    COMMITTED = "COMMITTED"
+    UNCERTAIN = "UNCERTAIN"
+
+
+PROCESS_OWNERSHIP_TRANSITIONS = {
+    ProcessOwnershipState.UNKNOWN: frozenset({
+        ProcessOwnershipState.NO_EXTERNAL_PROCESS,
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        ProcessOwnershipState.LAUNCH_UNCERTAIN,
+    }),
+    ProcessOwnershipState.NO_EXTERNAL_PROCESS: frozenset({ProcessOwnershipState.TERMINAL}),
+    ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED: frozenset({
+        ProcessOwnershipState.RECOVERY_BLOCKED, ProcessOwnershipState.TERMINAL,
+    }),
+    ProcessOwnershipState.LAUNCH_UNCERTAIN: frozenset({
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        ProcessOwnershipState.NO_EXTERNAL_PROCESS,
+        ProcessOwnershipState.RECOVERY_BLOCKED,
+    }),
+    ProcessOwnershipState.RECOVERY_BLOCKED: frozenset({ProcessOwnershipState.TERMINAL}),
+    ProcessOwnershipState.TERMINAL: frozenset(),
+}
+
+
+def is_valid_process_ownership_transition(
+    current: ProcessOwnershipState,
+    requested: ProcessOwnershipState,
+) -> bool:
+    """Return whether a process-ownership transition is contract-legal."""
+    return requested == current or requested in PROCESS_OWNERSHIP_TRANSITIONS.get(current, frozenset())
+
+
 # ============================================================================
 # 2. Configuration Models
 # ============================================================================
@@ -1271,6 +1327,89 @@ class ExecutionRunRecord(BaseModel):
     finished_at: Optional[datetime] = None
 
 
+class ExecutionProcessOwnershipRecord(BaseModel):
+    """Durable process-ownership dimension for one execution run."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    execution_id: str
+    organization_id: str
+    ownership_state: ProcessOwnershipState = ProcessOwnershipState.UNKNOWN
+    container_type: ProcessContainerType = ProcessContainerType.NONE
+    container_identity: Optional[str] = None
+    root_process_id: Optional[int] = None
+    root_process_start_token: Optional[str] = None
+    process_group_id: Optional[str] = None
+    session_id: Optional[str] = None
+    worker_generation: Optional[str] = None
+    launch_commit_state: LaunchCommitState = LaunchCommitState.NOT_ATTEMPTED
+    no_process_proof: Optional[str] = None
+    identity_attestation: Optional[str] = None
+    correlation_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    launched_at: Optional[datetime] = None
+    last_verified_at: Optional[datetime] = None
+    terminalized_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_identity_dimension(self) -> "ExecutionProcessOwnershipRecord":
+        if self.ownership_state == ProcessOwnershipState.NO_EXTERNAL_PROCESS:
+            if self.container_type != ProcessContainerType.NONE or self.root_process_id is not None:
+                raise ValueError("NO_EXTERNAL_PROCESS cannot carry process identity")
+            if not self.no_process_proof:
+                raise ValueError("NO_EXTERNAL_PROCESS requires explicit proof")
+        if self.ownership_state == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED:
+            if self.container_type == ProcessContainerType.NONE or self.root_process_id is None:
+                raise ValueError("governed process ownership requires container and root identity")
+            if not self.identity_attestation:
+                raise ValueError("governed process ownership requires attestation")
+        return self
+
+
+class ExecutionRecoveryAttemptRecord(BaseModel):
+    """Append-only durable evidence for one recovery attempt."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    attempt_id: str
+    execution_id: str
+    organization_id: str
+    worker_identity: str
+    worker_generation: str
+    attempt_number: int = Field(ge=1)
+    status: str
+    cancellation_status: Optional[str] = None
+    reason_code: str
+    correlation_id: str
+    requested_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    next_retry_at: Optional[datetime] = None
+    error_code: Optional[str] = None
+    escalation_level: int = Field(default=0, ge=0)
+    health_reference: Optional[str] = None
+
+
+class ExecutionRecoveryStateRecord(BaseModel):
+    """Mutable current recovery coordination state; evidence is append-only."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    execution_id: str
+    organization_id: str
+    status: str = "REQUESTED"
+    owner: Optional[str] = None
+    lease_token: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
+    attempt_number: int = Field(default=0, ge=0)
+    last_outcome: Optional[str] = None
+    last_error: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    escalation_level: int = Field(default=0, ge=0)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 EXECUTION_RUN_STATES = frozenset({"REQUESTED", "STARTING", "RUNNING", "SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED", "EXECUTION_BLOCKED"})
 EXECUTION_RUN_TERMINAL_STATES = frozenset({"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED", "EXECUTION_BLOCKED"})
 EXECUTION_RUN_TRANSITIONS = {
@@ -1560,6 +1699,9 @@ class AuditAction(str, Enum):
     EXECUTION_REQUESTED = "EXECUTION_REQUESTED"
     EXECUTION_AUTHORIZED = "EXECUTION_AUTHORIZED"
     EXECUTION_AUTHORITY_INVARIANT_FAILED = "EXECUTION_AUTHORITY_INVARIANT_FAILED"
+    EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED = "EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED"
+    EXECUTION_RECOVERY_ATTEMPT_RECORDED = "EXECUTION_RECOVERY_ATTEMPT_RECORDED"
+    EXECUTION_RECOVERY_RECONCILIATION_REQUIRED = "EXECUTION_RECOVERY_RECONCILIATION_REQUIRED"
     FINDING_STATUS_CHANGED = "FINDING_STATUS_CHANGED"
     FINDING_ASSIGNED = "FINDING_ASSIGNED"
     FINDING_COMMENTED = "FINDING_COMMENTED"

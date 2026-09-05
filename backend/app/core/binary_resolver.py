@@ -30,6 +30,7 @@ from app.core.process_supervisor import (
     ProcessExecutionResult,
     VerifiedEgressProxy,
 )
+from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
 
 logger = logging.getLogger("cyberassess.binary_resolver")
 
@@ -246,6 +247,8 @@ async def safe_execute_subprocess(
     max_output_bytes: int = 10 * 1024 * 1024,
     pre_launch_check: Optional[Callable[[], bool]] = None,
     execution_id: Optional[str] = None,
+    execution_context: Optional[GovernedExecutionContext] = None,
+    non_scan_context: Optional[NonScanExecutionContext] = None,
     scanner_egress_proxy: Optional[VerifiedEgressProxy] = None,
     credential_handoff: Optional[CredentialEnvironmentHandoff] = None,
     credential_context: Optional[CredentialExecutionContext] = None,
@@ -271,6 +274,8 @@ async def safe_execute_subprocess(
         max_output_bytes=max_output_bytes,
         pre_launch_check=pre_launch_check,
         execution_id=execution_id,
+        execution_context=execution_context,
+        non_scan_context=non_scan_context,
         scanner_egress_proxy=scanner_egress_proxy,
         credential_handoff=credential_handoff,
         credential_context=credential_context,
