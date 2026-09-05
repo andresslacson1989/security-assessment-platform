@@ -570,6 +570,7 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert run_events[0]["object_type"] == "execution_run"
     assert run_events[0]["correlation_id"] == "corr-approval-run"
 
+    assert database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-b", lease_seconds=30) is None
     lease = database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-a", lease_seconds=30)
     assert lease is not None
     assert lease.attempt_count == 1
@@ -580,6 +581,7 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert not database.renew_execution_dispatch_lease(
         execution_id, "org-a", "other-worker", lease.token,
     )
+    assert database.revoke_execution_decision(decision_id, "org-a", "admin-a") is True
     assert database.revoke_execution_request("req-a", "org-a", "admin-a") is True
     assert database.acknowledge_execution_cancellation(
         execution_id, "org-a", "worker-a", lease.token,
