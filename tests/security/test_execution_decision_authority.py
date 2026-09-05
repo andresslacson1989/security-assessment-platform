@@ -99,6 +99,9 @@ def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
     connection.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claimed_by TEXT")
     with pytest.raises(RuntimeError, match="pre-lease target"):
         manager._verify_migration_v7_postconditions(connection)
+    for column in ("claim_token", "lease_expires_at", "correlation_id"):
+        connection.execute(f"ALTER TABLE execution_dispatch_intents ADD COLUMN {column} TEXT")
+    manager._verify_migration_v8_postconditions(connection)
 
 
 def _decision(target, **changes):

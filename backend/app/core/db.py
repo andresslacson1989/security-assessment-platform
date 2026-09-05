@@ -1388,7 +1388,7 @@ class DatabaseManager:
         else:
             rows = conn.execute("PRAGMA table_info(execution_dispatch_intents)").fetchall()
             expected = {
-                "execution_id": ("text", False, None), "organization_id": ("text", True, None),
+                "execution_id": ("text", True, None), "organization_id": ("text", True, None),
                 "state": ("text", True, "'PENDING'"), "attempt_count": ("integer", True, "0"),
                 "created_at": ("text", True, None), "claimed_at": ("text", False, None),
                 "completed_at": ("text", False, None), "last_error": ("text", False, None),
