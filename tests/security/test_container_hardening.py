@@ -101,6 +101,12 @@ def test_ci_workflow_static_contract_is_complete():
         "postgres-schema-assurance",
         "container",
     }
+    for job_id in ("focused-contract-verification", "full-repository-verification"):
+        checkout_step = next(
+            step for step in workflow["jobs"][job_id]["steps"]
+            if step.get("name") == "Check out source"
+        )
+        assert checkout_step.get("with", {}).get("fetch-depth") == 0
     assert re.search(r"^permissions:\s*$\n\s+contents:\s+read\s*$", workflow_text, re.MULTILINE)
 
     action_refs = re.findall(r"^\s+uses:\s+([^\s#]+)", workflow_text, re.MULTILINE)

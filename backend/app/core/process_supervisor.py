@@ -439,6 +439,24 @@ class ProcessSupervisor:
                     ctypes.windll.kernel32.CloseHandle(handle)
             except (AttributeError, OSError):
                 return False
+        if sys.platform.startswith("linux"):
+            # ``os.kill(pid, 0)`` also reports a zombie as present until its
+            # parent (or the init reaper) collects it. A zombie cannot execute
+            # code, so treating it as live would convert a confirmed process
+            # tree termination into a false termination-uncertain result.
+            # Keep the conservative kill(0) fallback when procfs is not
+            # readable or the process exits between the two observations.
+            try:
+                with open(os.path.join("/proc", str(pid), "stat"), encoding="ascii") as stat_file:
+                    stat_record = stat_file.read()
+                closing_paren = stat_record.rfind(")")
+                fields_after_command = stat_record[closing_paren + 1 :].split()
+                if fields_after_command and fields_after_command[0] in {"Z", "X"}:
+                    return False
+            except FileNotFoundError:
+                return False
+            except (OSError, UnicodeError):
+                pass
         try:
             os.kill(pid, 0)
             return True
@@ -486,6 +504,38 @@ class ProcessSupervisor:
     def _process_group_exists(pgid: Optional[int]) -> bool:
         if os.name == "nt" or not pgid or pgid <= 1:
             return False
+        if sys.platform.startswith("linux"):
+            # ``os.killpg(pgid, 0)`` reports a group containing only zombie
+            # entries as present until those entries are reaped. Inspect the
+            # procfs state so a dead, unreapable child cannot be reported as a
+            # live execution process. If procfs cannot be enumerated, retain
+            # the conservative kill(0) result below.
+            try:
+                proc_entries = os.listdir("/proc")
+                procfs_complete = True
+                for entry in proc_entries:
+                    if not entry.isdigit():
+                        continue
+                    try:
+                        with open(os.path.join("/proc", entry, "stat"), encoding="ascii") as stat_file:
+                            stat_record = stat_file.read()
+                        closing_paren = stat_record.rfind(")")
+                        fields_after_command = stat_record[closing_paren + 1 :].split()
+                        if len(fields_after_command) < 3:
+                            continue
+                        state = fields_after_command[0]
+                        member_group_id = int(fields_after_command[2])
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, UnicodeError, ValueError):
+                        procfs_complete = False
+                        continue
+                    if member_group_id == pgid and state not in {"Z", "X"}:
+                        return True
+                if procfs_complete:
+                    return False
+            except OSError:
+                pass
         try:
             os.killpg(pgid, 0)
             return True
