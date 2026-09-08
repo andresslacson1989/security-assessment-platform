@@ -92,7 +92,7 @@ def test_ci_workflow_static_contract_is_complete():
 
     assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
     for trigger_name in ("push", "pull_request"):
-        assert triggers[trigger_name]["branches"] == ["main", "security/nmap-installer-closure"]
+        assert triggers[trigger_name]["branches"] == ["security/nmap-installer-closure"]
 
     assert set(workflow["jobs"]) == {
         "compile-backend",
@@ -114,8 +114,27 @@ def test_ci_workflow_static_contract_is_complete():
     }
     assert all(re.fullmatch(r"[0-9a-f]{40}", parts[1]) for parts in action_names_and_shas)
 
-    assert "CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-focused-${{ github.run_id }}.db" in workflow_text
-    assert "CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-full-${{ github.run_id }}.db" in workflow_text
+    assert "runner.temp" not in "\n".join(
+        str(value)
+        for job in workflow["jobs"].values()
+        for value in (job.get("env") or {}).values()
+    )
+    assert 'CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-focused-${GITHUB_RUN_ID}.db' in workflow_text
+    assert 'CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-full-${GITHUB_RUN_ID}.db' in workflow_text
+    assert 'FULL_EVIDENCE_DIR=${RUNNER_TEMP}/cyberassess-full-reports' in workflow_text
+    assert 'CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-postgres-${GITHUB_RUN_ID}.db' in workflow_text
+    assert 'POSTGRES_EVIDENCE_DIR=${RUNNER_TEMP}/cyberassess-postgres-reports' in workflow_text
+    assert workflow_text.count('>> "$GITHUB_ENV"') == 5
+    for job_id, step_name in (
+        ("focused-contract-verification", "Set isolated focused paths"),
+        ("full-repository-verification", "Set isolated full-suite paths"),
+        ("postgres-schema-assurance", "Set isolated PostgreSQL paths"),
+    ):
+        assert any(
+            step.get("name") == step_name
+            for step in workflow["jobs"][job_id]["steps"]
+            if isinstance(step, dict)
+        )
     assert "CYBERASSESS_POSTGRES_TEST_URL: postgresql://" in workflow_text
     assert "focused-contract.xml" in workflow_text
     assert "full-suite.xml" in workflow_text
@@ -138,7 +157,7 @@ def _extract_workflow_guard(workflow: str, step_name: str) -> str:
 
 def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_guard(tmp_path):
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml").read_text()
-    assert "branches: [main, security/nmap-installer-closure]" in workflow
+    assert "branches: [security/nmap-installer-closure]" in workflow
     assert "workflow_dispatch:" in workflow
     assert "raise SystemExit(f\"PostgreSQL assurance contained {skipped} skipped test(s)\") if skipped else None" not in workflow
     assert "Reject unexpected focused-test skips" in workflow
