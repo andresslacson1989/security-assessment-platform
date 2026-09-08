@@ -456,13 +456,38 @@ synchronized to the checkpoint and remains outside this evidence-closure goal.
 Final contract acceptance, release review, and deployment remain pending their
 respective gates.
 
-Repository branch topology is also an explicit separate issue. At the
-post-checkpoint review, GitHub exposed four branch refs (`main`,
-`security/audit-closure-2026-09-03`, `security/e13-enterprise-audit-closure`,
-and `security/nmap-installer-closure`), while GitLab exposed only the governed
-`security/nmap-installer-closure` mirror ref. This evidence-closure goal does not
-authorize deleting, merging, renaming, or otherwise reconciling those branches;
-the mismatch remains open for a separately authorized topology decision.
+#### Authorized single-branch topology inventory and closure
+
+The user subsequently authorized reducing both providers to the existing
+governed branch `security/nmap-installer-closure`. No branch is created, renamed,
+or force-updated. Before any deletion, the provider inventory was:
+
+| Provider/ref | Tip SHA | Tree SHA | Commits unique from governed tip `6d90d5a` | Provider state before cleanup |
+| --- | --- | --- | ---: | --- |
+| GitHub `main` | `250a5b3a6f5e045f365610bbb6f568c4edb92770` | `b146b1c8a7c3148e24cc24786511b7dc2396f182` | 0 | Default branch; unprotected; required-status enforcement off. |
+| GitHub `security/audit-closure-2026-09-03` | `b83c27a1252a50eeb94a977f61e681f3b82b0427` | `568ecf9aa03f91acc18dc64795a3223322e63e66` | 23 | Non-default; unprotected; required-status enforcement off. |
+| GitHub `security/e13-enterprise-audit-closure` | `17bdd84f085a9e7733921acd3b8a93a3f172aa37` | `7b9b7f6cee6c1e4249ffb8816f8d6fc332f785f5` | 0 | Non-default; unprotected; required-status enforcement off. |
+| GitHub `security/nmap-installer-closure` | `6d90d5a86c0b3b8af5082aeb39108325be755375` | `107ff1f4d0588418fdbfa6a7575266bc164543be` | 0 | Governed keep branch; unprotected; required-status enforcement off. |
+| GitLab `security/nmap-installer-closure` | `6d90d5a86c0b3b8af5082aeb39108325be755375` | `107ff1f4d0588418fdbfa6a7575266bc164543be` | 0 | Sole GitLab branch; mirror only. |
+
+GitHub reported no repository rulesets and no classic branch protection on the
+default or governed branches; its branch listing reported all four refs as
+unprotected with required-status enforcement off. The authorized provider
+sequence is therefore: publish this evidence record on the governed branch to
+GitHub first; mirror the identical commit to GitLab; change the GitHub default
+branch from `main` to the already-existing governed branch; and delete only the
+three exact non-governed GitHub refs by normal branch deletion. GitLab requires
+no branch creation or deletion.
+
+At completion, live provider verification must show exactly one branch on each
+provider, named `security/nmap-installer-closure`, with identical SHA, tree, and
+ordered reachable history. The final SHA/tree of the commit containing this
+record is necessarily external delivery evidence: embedding that commit's own
+SHA in its contents would change the Git object. The final delivery report binds
+that SHA/tree to this document and the provider refs. The 23 commits unique to
+the old audit-closure ref are intentionally losing their branch name under the
+user-authorized reduction; no tag, replacement ref, history rewrite, or
+force-push is created.
 
 #### Post-checkpoint evidence-closure verification — 2026-09-08
 
@@ -487,6 +512,33 @@ This verification does not change the non-production status of the checkpoint,
 does not supply authoritative GitHub Actions evidence, does not resolve A6
 historical provenance or path ownership, and does not prove test-server
 synchronization or deployment readiness.
+
+#### Full-regression warning-count reconciliation — 2026-09-08
+
+The previously reported `14` and independently observed `15` warning counts are
+both retained because they come from two reproducible command variants. All
+three comparison runs used
+`C:\laragon\bin\python\python-3.13\python.exe`, Python `3.13.0`, pytest `9.1.1`,
+the `anyio` and `asyncio` pytest entry-point plugins, and
+`-p no:cacheprovider`. No `PYTESTADDOPTS`, `PYTHONWARNINGS`, repository warning
+filter, test edit, or warning suppression was used.
+
+| Run | Exact material command options | Result | Attribution |
+| --- | --- | --- | --- |
+| JUnit evidence command | `--basetemp <external>/pytest --junitxml <external>/full-suite.xml -q -ra` with explicit disposable `CYBERASSESS_DB_PATH`, empty `DATABASE_URL`, `PYTHONPATH=backend`, `OPERATING_MODE=TEST`, and a test-only JWT secret | 814 passed, 39 skipped, **14 warnings**, exit 0, 299.61s; JUnit 853 cases, 0 failures/errors, 39 skipped, 299.589s | Reproduces the documented 14-warning evidence. JUnit: `C:\Users\junme\AppData\Local\Temp\cyberassess-warning-reconcile-junit-3c445b09ee914c458f9f1488426f950b\full-suite.xml`. |
+| Independent auditor command | `--basetemp <external>/pytest -q` with disposable `CYBERASSESS_DB_PATH` and empty `DATABASE_URL`; no JUnit option | 814 passed, 39 skipped, **15 warnings**, exit 0, 281.34s | Independently observed result supplied by the auditor. |
+| Controlled no-JUnit comparison | `--basetemp <external>/pytest -q -ra` with the same explicit test-mode environment as the JUnit command, but no JUnit option | 814 passed, 39 skipped, **15 warnings**, exit 0, 311.15s | Isolates the observable variance from the extra environment and `-ra`; the no-JUnit form still reports 15. |
+
+The warning-category comparison identifies the additional no-JUnit warning as
+a second unawaited `AsyncMockMixin._execute_mock_call` `RuntimeWarning` attached
+to `test_scenario_14_interactive_http_repeater` through
+`unittest.mock.py`. The JUnit command reports the scenario-14 warning through
+`fastapi.routing.py` and one `unittest.mock.py` warning for scenario 19; the
+no-JUnit commands additionally report the scenario-14 `unittest.mock.py`
+instance. This is separately attributable reporting evidence, not proof that a
+warning disappeared from the application and not authority to classify either
+count as a pass. The historical 15-warning regression record above remains
+unchanged.
 
 ## Subsequent CI/CD section: GitHub Actions authority, GitLab mirror
 
