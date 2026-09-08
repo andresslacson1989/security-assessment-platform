@@ -171,3 +171,83 @@ The validation closes only the isolated compatibility question. It does not clos
 - independent final contract acceptance.
 
 A separate explicit goal is required before switching the active service. That goal needs an approved disposition for the dirty active checkout and a database migration/reconciliation plan. Until then, the live server remains on `ef0dbb4297ae86559761da265175ed007dcc0ba9`.
+
+## GitHub CI remediation evidence — 2026-09-09
+
+This addendum records the GitHub verification performed after the isolated
+server validation above. It applies to the remediation commit below and does
+not replace the server-validation decision or constitute deployment,
+dependency-provenance, or final contract acceptance.
+
+### Source and workflow identity
+
+| Identity | Value |
+| --- | --- |
+| Governed branch | `security/nmap-installer-closure` |
+| Remediation commit | `468070caa2dae5ac24f027bb7d04c5deaaf50ab4` |
+| Parent commit | `5195389044400d923f84230f4e835fd1d7fadfc5` |
+| GitHub ref verified | `refs/heads/security/nmap-installer-closure` resolved to the remediation commit |
+| Workflow | `Contract Verification` |
+| GitHub Actions run | `34289803258` |
+| Trigger | `push` |
+| Run URL | https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34289803258 |
+| Overall conclusion | `success` |
+| GitLab publication at this checkpoint | Not performed; GitHub-first promotion gate remained in force |
+
+The remediation commit contains only the grouped CI/process-verification
+change: full-history checkout for the history-dependent jobs, Linux
+process-group liveness handling that excludes zombie/dead entries, and a
+structural workflow regression assertion. The protected runtime database,
+`AGENTS.md`, and the untracked `.ci/` evidence tree were not included in that
+commit.
+
+### GitHub job results
+
+| Job | Result | Evidence |
+| --- | --- | --- |
+| Compile backend | PASS | Backend compilation completed successfully |
+| Focused contract verification | PASS | `186 passed, 1 skipped` from 187 tests; the sole skip was the allowlisted historical `a1c4fc4` artifact-mismatch case |
+| Full repository verification | PASS | `820 passed, 33 skipped, 14 warnings` from 853 tests; the skip classifier completed successfully |
+| PostgreSQL 16 schema assurance | PASS | `29 passed, 0 skipped` |
+| Hardened production image verification | PASS | Image build, read-only/no-capability hardening smoke test, and application health smoke test all completed successfully |
+
+The full-suite skip classifier recorded exactly:
+
+- 29 dependency-deferred PostgreSQL tests, covered by the PostgreSQL job;
+- 1 unavailable managed Nmap binary;
+- 2 unavailable approved managed Subfinder v2.6.5 runtime tests; and
+- 1 provenance-blocked historical `a1c4fc4` migration fixture.
+
+No unclassified skip, test failure, or job failure was present in run
+`34289803258`.
+
+### Downloaded evidence digests
+
+The uploaded JUnit and log artifacts were downloaded into the project-local
+validation evidence area. Their SHA-256 digests are recorded here so the
+reported counts can be independently compared with the immutable GitHub run:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `focused-contract.xml` | `4ec7ba810de05d5eda94084c532fba4848e0529eef1365fc4ae0865dc542a33f` |
+| `focused-contract.log` | `d6e0efede13f6bdedb9df91f72b67df077297aabde77ec45cc82da95d73ac5b8` |
+| `full-suite.xml` | `52cac88a1fb25760a57667605da7aec9ac81fb5b305e954fda84a08defd95dcf` |
+| `full-suite.log` | `07426924896a11e0f5ba7a60ceca14f456246a4f4aff5289c5228a1f15a7f7eb` |
+| `full-suite-skip-classification.txt` | `073b7c6c8d519ad14754d0b08651f22a3a3eb48c4b2e696b5e0cf232ddacca75` |
+| `postgres-suite.xml` | `aaa327b788bd98e1bf45c4afb0b385b7ff93c5e4855d9984c188659979289963` |
+| `postgres-suite.log` | `37f811ae4320bb1214a3a7a8451d464f9245db17a91bdcc95bc3512841d8e7e8` |
+
+### Assurance interpretation
+
+This run closes the previously observed GitHub CI failures on the remediation
+source: the focused and full jobs had complete history, and the Linux process
+supervisor confirmed timeout completion when only zombie/dead process entries
+remained. The process control remains conservative when procfs cannot be
+reliably inspected, and the result does not claim that an operating-system
+race is mathematically impossible.
+
+The two real managed Subfinder v2.6.5 runtime vectors remain explicitly
+classified as environment-unavailable because the approved managed binary is
+not installed in the GitHub runner. This is an evidence limitation, not a
+passing runtime verification. Active CT 108 was not restarted, synchronized,
+or scanned as part of this CI run.
