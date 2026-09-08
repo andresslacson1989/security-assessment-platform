@@ -53,6 +53,58 @@ def _is_ci_path(entry: dict[str, str]) -> bool:
     return entry["path"] == ".ci" or entry["path"].startswith(".ci/")
 
 
+def _git_text(repository_root: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=repository_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+
+
+def _checkpoint_change_to_pre_publication_status(status: str, path: str) -> dict[str, str]:
+    status_mapping = {"M": " M", "A": "??"}
+    assert status in status_mapping, f"unsupported checkpoint transition status: {status}"
+    entry = {"state": status_mapping[status], "path": path}
+    assert not _is_ci_path(entry), f"checkpoint transition contains forbidden .ci path: {path}"
+    assert path != "data/cyberassess.db", "checkpoint transition contains the runtime database"
+    return entry
+
+
+def _read_checkpoint_transition_entries(
+    repository_root: Path,
+    pre_publication_head: str,
+    checkpoint_commit: str,
+) -> list[dict[str, str]]:
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "-z",
+            pre_publication_head,
+            checkpoint_commit,
+            "--",
+        ],
+        cwd=repository_root,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    fields = result.stdout.split(b"\0")
+    assert fields[-1] == b""
+    fields = fields[:-1]
+    assert len(fields) % 2 == 0
+
+    entries = []
+    for offset in range(0, len(fields), 2):
+        status = fields[offset].decode("ascii")
+        path = fields[offset + 1].decode("utf-8")
+        entries.append(_checkpoint_change_to_pre_publication_status(status, path))
+    return sorted(entries, key=lambda entry: entry["path"])
+
+
 def _manifest_reference_path_and_locator(reference: str | dict[str, str]) -> tuple[str, str | None]:
     assert isinstance(reference, (str, dict))
     if isinstance(reference, str):
@@ -169,53 +221,147 @@ def test_worktree_inventory_snapshot_matches_documented_git_serialization():
         pytest.skip("dirty-worktree evidence snapshot is not present in this checkout")
 
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    assert inventory["schema"] == "cyberassess.section_a.worktree_inventory.v2"
+    assert inventory["snapshot_kind"] == "HISTORICAL_PRE_PUBLICATION_WORKTREE"
     git_status = inventory["git_status"]
-    entries = _read_porcelain_status_entries(repository_root)
-    non_ci_entries = [entry for entry in entries if not _is_ci_path(entry)]
-    ci_entries = [entry for entry in entries if _is_ci_path(entry)]
+    checkpoint = inventory["checkpoint"]
+    pre_publication_head = inventory["head"]
+    checkpoint_commit = checkpoint["commit"]
 
-    assert inventory["branch"] == subprocess.run(
-        ["git", "branch", "--show-current"],
+    assert re.fullmatch(r"[0-9a-f]{40}", pre_publication_head)
+    assert re.fullmatch(r"[0-9a-f]{40}", checkpoint_commit)
+    assert re.fullmatch(r"[0-9a-f]{40}", checkpoint["tree"])
+    assert checkpoint["parent"] == pre_publication_head
+    assert _git_text(repository_root, "show", "-s", "--format=%P", checkpoint_commit).split() == [
+        pre_publication_head
+    ]
+    assert _git_text(repository_root, "rev-parse", f"{checkpoint_commit}^") == pre_publication_head
+    assert _git_text(repository_root, "rev-parse", f"{checkpoint_commit}^{{tree}}") == checkpoint["tree"]
+    assert int(_git_text(repository_root, "rev-list", "--count", checkpoint_commit)) == checkpoint[
+        "reachable_history_count"
+    ]
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", checkpoint_commit, "HEAD"],
         cwd=repository_root,
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert inventory["head"] == subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repository_root,
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert all(entry["path"] != "data/cyberassess.db" for entry in entries)
+        check=False,
+    ).returncode == 0
+    current_branch = _git_text(repository_root, "branch", "--show-current")
+    if current_branch:
+        assert current_branch == inventory["branch"]
 
-    assert git_status["visible_entry_count"] == len(entries)
-    assert git_status["non_ci_entry_count"] == len(non_ci_entries)
-    assert git_status["ci_entry_count"] == len(ci_entries)
-    assert sorted(git_status["non_ci_entries"], key=lambda entry: entry["path"]) == non_ci_entries
-    assert git_status["state_counts"]["all"] == dict(Counter(entry["state"] for entry in entries))
-    assert git_status["state_counts"]["non_ci"] == dict(Counter(entry["state"] for entry in non_ci_entries))
-    assert git_status["state_counts"]["ci"] == dict(Counter(entry["state"] for entry in ci_entries))
+    expected_transition_command = (
+        f"git diff --name-status --no-renames -z {pre_publication_head} "
+        f"{checkpoint_commit} --"
+    )
+    assert checkpoint["transition_command"] == expected_transition_command
+    assert checkpoint["status_mapping"] == {"M": " M", "A": "??"}
 
-    for group_name, group_entries in (
-        ("all", entries),
-        ("non_ci", non_ci_entries),
-        ("ci", ci_entries),
-    ):
-        assert git_status[f"{group_name}_path_sha256"] == _inventory_digest(group_entries, False)
-        assert git_status[f"{group_name}_state_path_sha256"] == _inventory_digest(group_entries, True)
+    reconstructed_non_ci = _read_checkpoint_transition_entries(
+        repository_root,
+        pre_publication_head,
+        checkpoint_commit,
+    )
+    recorded_non_ci = sorted(git_status["non_ci_entries"], key=lambda entry: entry["path"])
+    assert recorded_non_ci == reconstructed_non_ci
+    assert len(recorded_non_ci) == len({entry["path"] for entry in recorded_non_ci})
+    assert all(entry["state"] in {" M", "??"} for entry in recorded_non_ci)
+    assert all(entry["path"] != "data/cyberassess.db" for entry in recorded_non_ci)
+    assert all(not _is_ci_path(entry) for entry in recorded_non_ci)
+
+    checkpoint_tree_paths = set(
+        _git_text(repository_root, "ls-tree", "-r", "--name-only", checkpoint_commit).splitlines()
+    )
+    assert ".ci" not in checkpoint_tree_paths
+    assert all(not path.startswith(".ci/") for path in checkpoint_tree_paths)
+    assert "data/cyberassess.db" not in checkpoint_tree_paths
+    assert inventory["runtime_database"] == {
+        "path": "data/cyberassess.db",
+        "delivery_scope": "outside",
+        "included_in_inventory": False,
+        "modification_authorized": False,
+    }
+
+    current_entries = _read_porcelain_status_entries(repository_root)
+    current_ci_entries = [entry for entry in current_entries if _is_ci_path(entry)]
+    assert all(entry["path"] != "data/cyberassess.db" for entry in current_entries)
+
+    assert git_status["non_ci_entry_count"] == len(recorded_non_ci)
+    assert git_status["non_ci_entry_count"] == 106
+    assert git_status["state_counts"]["non_ci"] == dict(
+        Counter(entry["state"] for entry in recorded_non_ci)
+    )
+    assert git_status["non_ci_path_sha256"] == _inventory_digest(recorded_non_ci, False)
+    assert git_status["non_ci_state_path_sha256"] == _inventory_digest(recorded_non_ci, True)
+
+    if (repository_root / ".ci").exists():
+        assert git_status["ci_entry_count"] == len(current_ci_entries)
+        assert git_status["state_counts"]["ci"] == dict(
+            Counter(entry["state"] for entry in current_ci_entries)
+        )
+        assert git_status["ci_path_sha256"] == _inventory_digest(current_ci_entries, False)
+        assert git_status["ci_state_path_sha256"] == _inventory_digest(current_ci_entries, True)
+
+        reconstructed_all = sorted(
+            [*recorded_non_ci, *current_ci_entries],
+            key=lambda entry: entry["path"],
+        )
+        assert git_status["visible_entry_count"] == len(reconstructed_all)
+        assert git_status["state_counts"]["all"] == dict(
+            Counter(entry["state"] for entry in reconstructed_all)
+        )
+        assert git_status["all_path_sha256"] == _inventory_digest(reconstructed_all, False)
+        assert git_status["all_state_path_sha256"] == _inventory_digest(reconstructed_all, True)
+    else:
+        assert current_ci_entries == []
+        assert inventory["preserved_ci_tree"]["included_in_checkpoint"] is False
+
+    delivery = inventory["delivery"]
+    assert delivery["capture_state"] == {
+        "staged": False,
+        "commit_created": False,
+        "published": False,
+    }
+    checkpoint_state = delivery["checkpoint_state"]
+    assert checkpoint_state["commit_created"] is True
+    assert checkpoint_state["commit"] == checkpoint_commit
+    assert checkpoint_state["tree"] == checkpoint["tree"]
+    assert checkpoint_state["github"]["role"] == "FIRST_PUBLICATION"
+    assert checkpoint_state["gitlab"]["role"] == "MIRROR_ONLY"
+    assert checkpoint_state["github"]["sha"] == checkpoint_commit
+    assert checkpoint_state["gitlab"]["sha"] == checkpoint_commit
+    assert checkpoint_state["gitlab"]["tree"] == checkpoint["tree"]
+    assert checkpoint_state["gitlab"]["previous_sha"] == pre_publication_head
+    assert checkpoint_state["gitlab"]["update_type"] == "NORMAL_FAST_FORWARD"
+    assert checkpoint_state["gitlab"]["reachable_history_count"] == checkpoint[
+        "reachable_history_count"
+    ]
+    assert checkpoint_state["github_actions"] == "NOT_RUN_FOR_NON_PRODUCTION_CHECKPOINT"
+    assert checkpoint_state["deployment"] == "NOT_DEPLOYED"
+    assert checkpoint_state["server_synchronization"] == "NOT_CLAIMED"
+    assert checkpoint_state["contract_acceptance"] == "NOT_CLAIMED"
 
 
-def test_section_a_delivery_candidate_manifest_covers_live_non_ci_paths():
+def test_section_a_delivery_candidate_manifest_covers_captured_non_ci_snapshot():
     repository_root = Path(__file__).resolve().parents[2]
     manifest_path = repository_root / "docs" / "evidence" / "section_a_delivery_candidate_manifest_2026-09-08.json"
     if not manifest_path.is_file():
         pytest.skip("Section A delivery-candidate evidence manifest is not present in this checkout")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    live_entries = _read_porcelain_status_entries(repository_root)
-    live_non_ci = [entry for entry in live_entries if not _is_ci_path(entry)]
+    assert manifest["schema"] == "cyberassess.section_a.delivery_candidate_manifest.v2"
+    snapshot_identity = manifest["snapshot_identity"]
+    inventory_path = repository_root / snapshot_identity["inventory_path"]
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    captured_non_ci = sorted(
+        inventory["git_status"]["non_ci_entries"],
+        key=lambda entry: entry["path"],
+    )
+    assert snapshot_identity["kind"] == inventory["snapshot_kind"]
+    assert snapshot_identity["branch"] == inventory["branch"]
+    assert snapshot_identity["pre_publication_head"] == inventory["head"]
+    assert snapshot_identity["checkpoint_commit"] == inventory["checkpoint"]["commit"]
+    assert snapshot_identity["checkpoint_tree"] == inventory["checkpoint"]["tree"]
+    assert manifest["scope_status"] == "BLOCKED_BY_UNRESOLVED_OWNERSHIP_AND_A6_PROVENANCE"
     allowed_classifications = {
         "SECTION_A_CANDIDATE",
         "EVIDENCE/GOVERNANCE",
@@ -248,15 +394,15 @@ def test_section_a_delivery_candidate_manifest_covers_live_non_ci_paths():
             )
 
     manifest_paths = [entry["path"] for entry in expanded_entries]
-    assert manifest["expected_live_non_ci_entry_count"] == len(live_non_ci)
-    assert len(expanded_entries) == len(live_non_ci)
+    assert manifest["captured_non_ci_entry_count"] == len(captured_non_ci)
+    assert len(expanded_entries) == len(captured_non_ci)
     assert len(manifest_paths) == len(set(manifest_paths))
     assert all(not _is_ci_path(entry) for entry in expanded_entries)
     assert all(entry["path"] != "data/cyberassess.db" for entry in expanded_entries)
     assert sorted(
         ({"state": entry["state"], "path": entry["path"]} for entry in expanded_entries),
         key=lambda entry: entry["path"],
-    ) == live_non_ci
+    ) == captured_non_ci
     expected_classification_counts = {
         "SECTION_A_CANDIDATE": 39,
         "EVIDENCE/GOVERNANCE": 9,
@@ -286,6 +432,38 @@ def test_section_a_delivery_candidate_manifest_covers_live_non_ci_paths():
     for exclusion in manifest["scope_exclusions"]:
         assert exclusion["classification"] == "RUNTIME-EXCLUDED"
         assert exclusion["path"] in {".ci", "data/cyberassess.db"}
+
+    delivery = manifest["delivery"]
+    assert delivery["checkpoint"]["commit"] == snapshot_identity["checkpoint_commit"]
+    assert delivery["checkpoint"]["tree"] == snapshot_identity["checkpoint_tree"]
+    assert delivery["github"]["role"] == "FIRST_PUBLICATION"
+    assert delivery["gitlab"]["role"] == "MIRROR_ONLY"
+    assert delivery["github"]["sha"] == snapshot_identity["checkpoint_commit"]
+    assert delivery["gitlab"]["sha"] == snapshot_identity["checkpoint_commit"]
+    assert delivery["gitlab"]["tree"] == snapshot_identity["checkpoint_tree"]
+    assert delivery["gitlab"]["previous_sha"] == snapshot_identity["pre_publication_head"]
+    assert delivery["gitlab"]["update_type"] == "NORMAL_FAST_FORWARD"
+    assert delivery["gitlab"]["reachable_history_count"] == inventory["checkpoint"][
+        "reachable_history_count"
+    ]
+    assert delivery["github_actions_acceptance"] == "NOT_RUN_FOR_CHECKPOINT"
+    assert delivery["deployment_status"] == "NOT_DEPLOYED"
+    assert delivery["server_synchronization"] == "NOT_CLAIMED"
+    assert delivery["contract_acceptance"] == "NOT_CLAIMED"
+
+
+def test_historical_snapshot_transition_rejects_unsupported_or_forbidden_changes():
+    invalid_changes = (
+        ("D", "backend/app/core/models.py"),
+        ("R100", "backend/app/core/models.py"),
+        ("C100", "backend/app/core/models.py"),
+        ("T", "backend/app/core/models.py"),
+        ("M", ".ci/forbidden-evidence.xml"),
+        ("A", "data/cyberassess.db"),
+    )
+    for status, path in invalid_changes:
+        with pytest.raises(AssertionError):
+            _checkpoint_change_to_pre_publication_status(status, path)
 
 
 def test_manifest_string_locator_mutation_is_rejected():

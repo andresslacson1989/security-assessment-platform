@@ -169,12 +169,14 @@ and duplicate/orphan/cross-tenant migration preflight rejection.
   metadata and failed on the existing v8 identity mismatch; it did not
   intentionally inspect application records. The file was not staged,
   modified, copied, mounted, archived, or included in any delivery operation.
-- The current branch is `security/nmap-installer-closure` at HEAD
-  `351430bc47144581371eb5bb544e7bd9b55f9db5`; it matches the configured
-  `origin/security/nmap-installer-closure` ref. The worktree is intentionally
-  dirty from the broader uncommitted Section A correction round; no commit,
-  push, branch operation, deployment, or mirror operation was performed in
-  this pass.
+- At the time of this historical verification pass, the branch was
+  `security/nmap-installer-closure` at HEAD
+  `351430bc47144581371eb5bb544e7bd9b55f9db5`, matching the configured
+  `origin/security/nmap-installer-closure` ref. The worktree was intentionally
+  dirty from the broader uncommitted Section A correction round, and that pass
+  itself performed no commit, push, branch operation, deployment, or mirror
+  operation. The later checkpoint publication is recorded below and supersedes
+  this paragraph only as a statement of current repository delivery state.
 
 ### Remaining Section A status
 
@@ -305,8 +307,8 @@ acceptance declaration.
 | PostgreSQL 16 schema assurance | 29 passed, 0 skipped, 1 warning | Fresh disposable `postgres:16-alpine` container, loopback URL, explicit disposable-database acknowledgment, catalog tamper/restart vectors, and container removal. |
 | Full local regression | 812 passed, 39 skipped, 15 warnings | Disposable SQLite path, isolated pytest base directory, JUnit total `851`, failures `0`, errors `0`, duration `286.83s`; the strengthened manifest validator is included. |
 | Contract source/mirror byte consistency | PASS | `tests/security/test_contract_fleet_consistency.py`; all maintained `contracts/` and `docs/contracts/` pairs compare equal as raw bytes, including the repaired Contract 04 pair. |
-| Worktree inventory serialization and live reconciliation | PASS | `test_worktree_inventory_snapshot_matches_documented_git_serialization` plus an independent recomputation; explicit NUL-delimited porcelain status, strict UTF-8 path decoding, Python Unicode code-point path sort, LF/TAB serialization, exact state/path entries, and matching all/non-`.ci`/`.ci` digests. |
-| Section A delivery-candidate manifest coverage | 6 passed | `tests/security/test_contract_fleet_consistency.py` final deterministic run; 106 unique non-`.ci` entries are classified exactly once with live porcelain-state equality, declared classification totals, normalized contract references whose locators resolve in-file, source-of-truth evidence, existing test files/symbols, and an in-memory tampered-locator rejection. `independent_test_exercised` remains a declared evidence claim, not runtime correlation. The manifest records 39 Section A candidates, 9 evidence/governance paths, 55 outside Section A, and 3 unresolved paths. |
+| Historical worktree inventory serialization and capture-time reconciliation | PASS | `test_worktree_inventory_snapshot_matches_documented_git_serialization` plus an independent recomputation at capture time; explicit NUL-delimited porcelain status, strict UTF-8 path decoding, Python Unicode code-point path sort, LF/TAB serialization, exact state/path entries, and matching all/non-`.ci`/`.ci` digests. |
+| Section A pre-publication delivery-candidate manifest coverage | 6 passed | `tests/security/test_contract_fleet_consistency.py` historical deterministic run; 106 unique non-`.ci` entries were classified exactly once with captured porcelain-state equality, declared classification totals, normalized contract references whose locators resolve in-file, source-of-truth evidence, existing test files/symbols, and an in-memory tampered-locator rejection. `independent_test_exercised` remains a declared evidence claim, not runtime correlation. The manifest records 39 Section A candidates, 9 evidence/governance paths, 55 outside Section A, and 3 unresolved paths. |
 | Repository whitespace check | PASS | `git diff --check`. |
 
 The final rerun evidence files are retained outside the repository at these
@@ -354,13 +356,26 @@ no application code changed between those runs.
   encountered the existing v8 migration-ledger identity mismatch during
   ambient import and did not inspect application records. The database was
   not staged, modified, copied, mounted, archived, or published.
-- The current branch remains `security/nmap-installer-closure` at HEAD
-  `351430bc47144581371eb5bb544e7bd9b55f9db5`, matching the configured GitHub
-  and GitLab branch refs. The worktree remains intentionally dirty with the
-  broader uncommitted correction-round files preserved; the current inventory
-  is 1,815 visible status entries: 106 non-`.ci` entries and 1,709 `.ci`
-  entries. No commit, push, branch operation, deployment, remote mutation, or
-  Proxmox operation was performed during this correction round.
+- The historical pre-publication snapshot was captured on branch
+  `security/nmap-installer-closure` at HEAD
+  `351430bc47144581371eb5bb544e7bd9b55f9db5`. It contains 1,815 visible
+  status entries: 106 non-`.ci` entries and 1,709 `.ci` entries. These captured
+  facts remain immutable evidence and are not a claim about the current
+  post-publication live worktree.
+- After explicit user authorization, the exact 106 manifest-listed non-`.ci`
+  paths were committed as the non-production rollback checkpoint
+  `fa05003f0b841c800ca805be80106a7a8c708d60`, with tree
+  `adb08c837c679b05e69aeef302c016227c0052cb` and sole parent
+  `351430bc47144581371eb5bb544e7bd9b55f9db5`. The checkpoint was published
+  to GitHub first and then mirrored by a normal fast-forward to GitLab at the
+  identical SHA and tree. Neither `.ci` nor `data/cyberassess.db` is present in
+  the checkpoint commit.
+- Immediately after checkpoint publication, the local worktree had zero staged
+  entries and 1,709 visible entries, all under `.ci`; it had zero non-`.ci`
+  status entries. GitHub Actions was not run as an acceptance prerequisite for
+  this explicitly non-production checkpoint. No deployment, runtime database
+  mutation, test-server synchronization, Proxmox operation, or contract
+  acceptance is claimed.
 - The inventory count uses the complete command
   `git status --porcelain=v1 --untracked-files=all --no-renames -z`.
   Compact `git status --short` output may collapse the `.ci/` tree and must not
@@ -374,16 +389,20 @@ no application code changed between those runs.
   which 1,709 file paths are visible in Git status and 102 are excluded by
   existing ignore rules. It remains preserved and outside delivery scope
   pending ownership/cleanup classification; it is not a runtime data source.
-- The machine-checkable snapshot
+- The machine-checkable historical pre-publication snapshot
   `docs/evidence/section_a_worktree_inventory_2026-09-08.json` records the
   exact non-`.ci` status entries and deterministic path digests for all visible
-  status groups. The temporary preservation directory used before restoration
-  no longer exists because the `.ci/` tree was restored in place; no preserved
-  path was deleted.
+  status groups. Its non-`.ci` entries are independently reconstructed from the
+  no-renames Git transition between the recorded pre-publication HEAD and the
+  checkpoint commit; current preserved `.ci` evidence remains validated
+  separately. The temporary preservation directory used before restoration no
+  longer exists because the `.ci/` tree was restored in place; no preserved path
+  was deleted.
 
 #### Exact path-by-path worktree inventory
 
-This inventory is the status captured after the correction-round verification.
+This inventory is the historical pre-publication status captured after the
+correction-round verification.
 The machine-checkable snapshot named above accounts for all 1,815 visible
 status entries. The machine-checkable candidate manifest
 `docs/evidence/section_a_delivery_candidate_manifest_2026-09-08.json` expands
@@ -392,10 +411,11 @@ the applicable contract references, test vectors, change kind, independent
 exercise status, and unresolved ownership state for each group. The 1,709
 `.ci` entries are preserved as one explicitly identified artifact set and are
 represented by the snapshot's exact path and state/path digests. Every listed
-repository path is unstaged. Git metadata does not establish whether a change
-originated with the user, an earlier agent, or this correction round, so
-ownership is intentionally recorded as `UNRESOLVED` and no path is treated as
-disposable source.
+repository path was unstaged at capture; the 106 non-`.ci` paths were later
+published together in the non-production checkpoint without resolving their
+recorded ownership. Git metadata does not establish whether a change originated
+with the user, an earlier agent, or this correction round, so ownership remains
+`UNRESOLVED` and no path is treated as disposable source.
 
 The source-of-truth rule is evidence-backed rather than assumed: `contracts/README.md`
 under `## Master Contract Index (Contracts 01 – 09)` identifies `contracts/` as
@@ -426,15 +446,47 @@ silently classified as generated.
 
 #### Current status
 
-The implementation evidence is materially stronger and the required local,
-PostgreSQL, and inventory-reconciliation checks pass, but Section A remains
-`IN PROGRESS` pending the independent auditor's review. The frozen historical
-fixture remains an explicit provenance blocker, and ownership of the broader
-dirty worktree remains unresolved; an inventory PASS does not make the delivery
-scope clean. GitHub Actions has not yet executed for a new commit because this
-correction round is intentionally uncommitted; no CI success is inferred from
-local results. GitHub-first publication, GitLab mirroring, deployment, and
-final acceptance remain pending their respective gates.
+The non-production checkpoint is published and mirrored, but Section A remains
+`IN PROGRESS`. The frozen historical fixture remains
+`PROVENANCE_BLOCKED_ESCALATION_REQUIRED`, ownership of the captured broader
+worktree remains unresolved, and a checkpoint does not convert those paths into
+an accepted delivery section. GitHub Actions was not run for the checkpoint, so
+no authoritative CI success is inferred. The current test server was not
+synchronized to the checkpoint and remains outside this evidence-closure goal.
+Final contract acceptance, release review, and deployment remain pending their
+respective gates.
+
+Repository branch topology is also an explicit separate issue. At the
+post-checkpoint review, GitHub exposed four branch refs (`main`,
+`security/audit-closure-2026-09-03`, `security/e13-enterprise-audit-closure`,
+and `security/nmap-installer-closure`), while GitLab exposed only the governed
+`security/nmap-installer-closure` mirror ref. This evidence-closure goal does not
+authorize deleting, merging, renaming, or otherwise reconciling those branches;
+the mismatch remains open for a separately authorized topology decision.
+
+#### Post-checkpoint evidence-closure verification — 2026-09-08
+
+The evidence validator now treats the 1,815-entry inventory and 106-path
+candidate manifest as historical pre-publication records. It independently
+reconstructs the captured non-`.ci` states from the no-renames Git transition
+between parent `351430bc47144581371eb5bb544e7bd9b55f9db5` and checkpoint
+`fa05003f0b841c800ca805be80106a7a8c708d60`: checkpoint status `M` maps to
+captured porcelain state ` M`, and checkpoint status `A` maps to captured state
+`??`. Deletes, renames, copies, type changes, unmerged states, `.ci` paths, and
+`data/cyberassess.db` are rejected. The current preserved `.ci` tree is still
+validated when present; a clean delivery checkout instead verifies that `.ci`
+was excluded from the checkpoint tree.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Focused contract/evidence suite | 7 passed, 0 failed, exit 0 | Fresh disposable SQLite path and pytest base outside the repository; validates Git parent/commit/tree identity, the 106 reconstructed captured paths, six preserved inventory digests, current `.ci` preservation, manifest/snapshot identity, delivery-provider roles, 26-tool consistency, contract mirrors, and negative transition/locator tamper cases. |
+| Full local regression | 814 passed, 39 skipped, 14 warnings, exit 0 | Fresh disposable SQLite path and external pytest base; JUnit records 853 cases, 0 failures, 0 errors, 39 skipped, and 286.569 seconds. Skips remain visible and are not counted as passes; PostgreSQL tests are dependency-gated in this local run. |
+| Full-suite JUnit | RETAINED OUTSIDE REPOSITORY | `C:\Users\junme\AppData\Local\Temp\cyberassess-postcheckpoint-regression-final-61b911d2bcd24150b3106cb17685a27b\full-suite.xml`; 129,424 bytes. |
+
+This verification does not change the non-production status of the checkpoint,
+does not supply authoritative GitHub Actions evidence, does not resolve A6
+historical provenance or path ownership, and does not prove test-server
+synchronization or deployment readiness.
 
 ## Subsequent CI/CD section: GitHub Actions authority, GitLab mirror
 

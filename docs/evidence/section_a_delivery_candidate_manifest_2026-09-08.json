@@ -1,16 +1,24 @@
 {
-  "schema": "cyberassess.section_a.delivery_candidate_manifest.v1",
+  "schema": "cyberassess.section_a.delivery_candidate_manifest.v2",
   "captured_at_utc": "2026-09-08T07:39:40.1671077Z",
   "scope_status": "BLOCKED_BY_UNRESOLVED_OWNERSHIP_AND_A6_PROVENANCE",
-  "purpose": "Deterministic classification of the current non-.ci worktree for Section A delivery review. This manifest records evidence and scope; it does not authorize staging, committing, publishing, deployment, or database mutation.",
+  "purpose": "Deterministic classification of the captured historical pre-publication non-.ci worktree for Section A delivery review. This manifest records evidence and scope; its later checkpoint publication does not establish ownership, contract acceptance, deployment, or database-mutation authority.",
   "authoritative_sources": {
     "contract_source_directory": "contracts/",
     "contract_mirror_directory": "docs/contracts/",
     "delivery_policy": "AGENTS.md",
     "acceptance_goal": "docs/REPOSITORY_DELIVERY_AND_CONTRACT_ACCEPTANCE_GOAL.md",
     "checkpoint_record": "docs/SECTION_A_SCAN_APPROVAL_CHECKPOINTS.md",
-    "live_inventory": "docs/evidence/section_a_worktree_inventory_2026-09-08.json",
+    "captured_inventory": "docs/evidence/section_a_worktree_inventory_2026-09-08.json",
     "consistency_test": "tests/security/test_contract_fleet_consistency.py"
+  },
+  "snapshot_identity": {
+    "kind": "HISTORICAL_PRE_PUBLICATION_WORKTREE",
+    "inventory_path": "docs/evidence/section_a_worktree_inventory_2026-09-08.json",
+    "branch": "security/nmap-installer-closure",
+    "pre_publication_head": "351430bc47144581371eb5bb544e7bd9b55f9db5",
+    "checkpoint_commit": "fa05003f0b841c800ca805be80106a7a8c708d60",
+    "checkpoint_tree": "adb08c837c679b05e69aeef302c016227c0052cb"
   },
   "source_of_truth_rule": {
     "source_path": "contracts/README.md",
@@ -43,12 +51,13 @@
   },
   "entry_rules": {
     "status_source": "git status --porcelain=v1 --untracked-files=all --no-renames -z",
+    "historical_validation_source": "Reconstruct the captured non-.ci status/path set from git diff --name-status --no-renames -z between the recorded pre-publication HEAD and checkpoint commit; map only M to ' M' and A to '??'.",
     "path_identity": "Repository-relative path with the exact case and separators returned by Git.",
     "group_application": "Every group metadata field applies to every path in that group's paths array.",
-    "required_unique_coverage": "After expanding groups, every live non-.ci status/path pair must appear exactly once; no .ci path or runtime database path may appear in entries.",
+    "required_unique_coverage": "After expanding groups, every captured historical pre-publication non-.ci status/path pair must appear exactly once; no .ci path or runtime database path may appear in entries.",
     "independent_test_exercised_semantics": "A declared evidence claim from the review record, not a runtime correlation or proof that the current validator process executed every referenced path. Actual execution evidence is established only by the retained test output and JUnit artifacts."
   },
-  "expected_live_non_ci_entry_count": 106,
+  "captured_non_ci_entry_count": 106,
   "classification_counts": {
     "SECTION_A_CANDIDATE": 39,
     "EVIDENCE/GOVERNANCE": 9,
@@ -1069,12 +1078,32 @@
     }
   ],
   "delivery": {
-    "candidate_commit_created": false,
-    "github_published": false,
-    "gitlab_published": false,
-    "staged": false,
-    "publication_gate": "BLOCKED_PENDING_SCOPE_OWNERSHIP_AND_A6_PROVENANCE_RECONCILIATION",
-    "github_first_policy": "If later authorized, create one grouped Section A commit on the existing branch, verify GitHub first, and mirror the exact verified commit object to GitLab only afterward.",
-    "current_action": "Evidence classification only; no commit, push, branch operation, CI mutation, deployment, GitLab operation, or database mutation."
+    "checkpoint": {
+      "commit_created": true,
+      "commit": "fa05003f0b841c800ca805be80106a7a8c708d60",
+      "tree": "adb08c837c679b05e69aeef302c016227c0052cb",
+      "parent": "351430bc47144581371eb5bb544e7bd9b55f9db5",
+      "purpose": "NON_PRODUCTION_PRE_CHANGE_ROLLBACK_CHECKPOINT"
+    },
+    "github": {
+      "role": "FIRST_PUBLICATION",
+      "ref": "refs/heads/security/nmap-installer-closure",
+      "sha": "fa05003f0b841c800ca805be80106a7a8c708d60"
+    },
+    "gitlab": {
+      "role": "MIRROR_ONLY",
+      "ref": "refs/heads/security/nmap-installer-closure",
+      "sha": "fa05003f0b841c800ca805be80106a7a8c708d60",
+      "tree": "adb08c837c679b05e69aeef302c016227c0052cb",
+      "previous_sha": "351430bc47144581371eb5bb544e7bd9b55f9db5",
+      "update_type": "NORMAL_FAST_FORWARD",
+      "reachable_history_count": 614
+    },
+    "github_first_sequence": "The checkpoint was pushed to GitHub and verified before the identical commit object was mirrored to GitLab.",
+    "github_actions_acceptance": "NOT_RUN_FOR_CHECKPOINT",
+    "deployment_status": "NOT_DEPLOYED",
+    "server_synchronization": "NOT_CLAIMED",
+    "contract_acceptance": "NOT_CLAIMED",
+    "acceptance_gate": "BLOCKED_PENDING_SCOPE_OWNERSHIP_A6_PROVENANCE_AUTHORITATIVE_GITHUB_ACTIONS_AND_FINAL_REVIEW"
   }
 }
