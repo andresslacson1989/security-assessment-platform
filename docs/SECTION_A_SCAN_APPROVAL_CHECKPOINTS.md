@@ -459,8 +459,9 @@ respective gates.
 #### Authorized single-branch topology inventory and closure
 
 The user subsequently authorized reducing both providers to the existing
-governed branch `security/nmap-installer-closure`. No branch is created, renamed,
-or force-updated. Before any deletion, the provider inventory was:
+governed branch `security/nmap-installer-closure`. No branch was created,
+renamed, force-updated, or deleted on GitLab. The read-only provider inventory
+before the authorized GitHub cleanup was:
 
 | Provider/ref | Tip SHA | Tree SHA | Commits unique from governed tip `6d90d5a` | Provider state before cleanup |
 | --- | --- | --- | ---: | --- |
@@ -472,22 +473,33 @@ or force-updated. Before any deletion, the provider inventory was:
 
 GitHub reported no repository rulesets and no classic branch protection on the
 default or governed branches; its branch listing reported all four refs as
-unprotected with required-status enforcement off. The authorized provider
-sequence is therefore: publish this evidence record on the governed branch to
-GitHub first; mirror the identical commit to GitLab; change the GitHub default
-branch from `main` to the already-existing governed branch; and delete only the
-three exact non-governed GitHub refs by normal branch deletion. GitLab requires
-no branch creation or deletion.
+unprotected with required-status enforcement off. The authorized sequence was
+completed as follows:
 
-At completion, live provider verification must show exactly one branch on each
-provider, named `security/nmap-installer-closure`, with identical SHA, tree, and
-ordered reachable history. The final SHA/tree of the commit containing this
-record is necessarily external delivery evidence: embedding that commit's own
-SHA in its contents would change the Git object. The final delivery report binds
-that SHA/tree to this document and the provider refs. The 23 commits unique to
-the old audit-closure ref are intentionally losing their branch name under the
-user-authorized reduction; no tag, replacement ref, history rewrite, or
-force-push is created.
+1. The GitHub default branch changed from `main` to the already-existing
+   governed `security/nmap-installer-closure` branch.
+2. GitHub deleted only the three exact non-governed refs by normal branch
+   deletion: `main`, `security/audit-closure-2026-09-03`, and
+   `security/e13-enterprise-audit-closure`.
+3. GitLab was not given any branch create/delete operation; it retained its
+   sole governed mirror ref.
+4. Post-operation `git ls-remote --heads` and the GitHub branch API show exactly
+   one branch on each provider, both named `security/nmap-installer-closure`,
+   resolving before the final documentation commit to
+   `216d3e3e3c9937f288ac81a2f91f6c2fbd70fd95` with tree
+   `783e940ded3d666aee32aa9047f985ea9c2982e3`. The final documentation commit
+   and its GitHub-first/GitLab mirror SHA are recorded by the external delivery
+   evidence because embedding a commit's own SHA in its contents would change
+   the Git object.
+
+The three deleted refs had exact pre-cleanup tips `250a5b3a6f5e045f365610bbb6f568c4edb92770`,
+`b83c27a1252a50eeb94a977f61e681f3b82b0427`, and
+`17bdd84f085a9e7733921acd3b8a93a3f172aa37`, respectively. GitHub comparison
+reported zero commits unique to `main`, 23 commits unique to
+`security/audit-closure-2026-09-03`, and zero commits unique to
+`security/e13-enterprise-audit-closure` relative to the governed tip. The 23
+commits intentionally lost their branch name under the user-authorized
+reduction; no tag, replacement ref, history rewrite, or force-push was created.
 
 #### Post-checkpoint evidence-closure verification — 2026-09-08
 
