@@ -17,7 +17,8 @@ import yaml
 from unittest.mock import patch
 import pytest
 
-from app.core.process_supervisor import ProcessSupervisor, VerifiedEgressProxy
+from app.core.process_supervisor import ProcessExecutionStatus, ProcessSupervisor, VerifiedEgressProxy
+from app.core.execution_service import issue_non_scan_execution_context
 from app.adapters.base_adapter import BaseToolAdapter
 
 
@@ -94,7 +95,11 @@ async def test_real_subprocess_execution_does_not_receive_secrets():
     cmd = [sys.executable, "-c", "import os, json; print(json.dumps(dict(os.environ)))"]
 
     try:
-        res = await supervisor.execute(cmd, timeout=10.0, execution_id="test-env-exec")
+        res = await supervisor.execute(
+            cmd,
+            timeout=10.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-egress-environment"),
+        )
         assert res.returncode == 0
         child_env = json.loads(res.stdout)
 
@@ -143,20 +148,32 @@ async def test_enterprise_mode_fails_closed_unconditionally():
 
     # 1. Under ENTERPRISE operating mode -> MUST FAIL CLOSED
     with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE"}):
-        res = await supervisor.execute(cmd, timeout=5.0)
-        assert res.returncode == -1
+        res = await supervisor.execute(
+            cmd,
+            timeout=5.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-enterprise-mode"),
+        )
+        assert res.execution_status == ProcessExecutionStatus.SECURITY_REJECTED
         assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
         assert "egress network enforcement facility is not configured" in res.stderr
 
     # 2. Fake string bypass attempt -> MUST STILL FAIL CLOSED
     with patch.dict(os.environ, {"OPERATING_MODE": "ENTERPRISE", "CYBERASSESS_VERIFIED_EGRESS_FACILITY": "fake-bypass"}):
-        res = await supervisor.execute(cmd, timeout=5.0)
-        assert res.returncode == -1
+        res = await supervisor.execute(
+            cmd,
+            timeout=5.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-enterprise-bypass"),
+        )
+        assert res.execution_status == ProcessExecutionStatus.SECURITY_REJECTED
         assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
 
     # 3. Non-enterprise standalone mode -> Launch proceeds
     with patch.dict(os.environ, {"OPERATING_MODE": "STANDALONE", "ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED": "false", "ENVIRONMENT": "development"}):
-        res = await supervisor.execute(cmd, timeout=5.0)
+        res = await supervisor.execute(
+            cmd,
+            timeout=5.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-standalone-mode"),
+        )
         assert res.returncode == 0
         assert "hello" in res.stdout
 
@@ -191,8 +208,12 @@ async def test_worker_docker_compose_environment_fails_closed_without_manual_ope
     with patch.dict(os.environ, simulated_env, clear=False):
         # Clear ambient OPERATING_MODE if set
         os.environ.pop("OPERATING_MODE", None)
-        res = await supervisor.execute(cmd, timeout=5.0)
-        assert res.returncode == -1
+        res = await supervisor.execute(
+            cmd,
+            timeout=5.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-compose-worker"),
+        )
+        assert res.execution_status == ProcessExecutionStatus.SECURITY_REJECTED
         assert "PROCESS_LAUNCH_REJECTED_SECURITY" in res.stderr
         assert "egress network enforcement facility is not configured" in res.stderr
 

@@ -14,6 +14,7 @@ import httpx
 import httpcore
 import os
 import secrets
+from collections.abc import Mapping
 from typing import Any, List, Tuple, Optional, Union
 from enum import Enum
 from app.core.version import APP_VERSION
@@ -142,7 +143,7 @@ def _compute_gateway_seal(
 def _validated_target_context_digest(validated_target: Any) -> str:
     """Return the digest of authorization data bound into the gateway seal."""
     context = getattr(validated_target, "authorization_context", None)
-    if not isinstance(context, dict):
+    if not isinstance(context, Mapping):
         raise SSRFProtectionError("Validated target authorization context is invalid.")
     material = {
         "allow_internal": context.get("allow_internal"),

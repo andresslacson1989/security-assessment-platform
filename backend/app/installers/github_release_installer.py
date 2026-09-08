@@ -32,7 +32,7 @@ from app.installers.base_installer import (
     resolve_allowed_https_redirect,
 )
 from app.core.process_supervisor import process_supervisor
-from app.core.execution_context import issue_non_scan_execution_context
+from app.core.execution_service import issue_non_scan_execution_context
 
 
 GITHUB_TOOL_CONFIGS: Dict[str, dict] = {

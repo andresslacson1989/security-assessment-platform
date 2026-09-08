@@ -36,6 +36,7 @@ class ProcessExecutionStatus(str, Enum):
     OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"
     NOT_FOUND = "NOT_FOUND"
     PERMISSION_DENIED = "PERMISSION_DENIED"
+    LAUNCH_UNCERTAIN = "LAUNCH_UNCERTAIN"
     FAILED = "FAILED"
 
 
@@ -122,6 +123,8 @@ class ProcessExecutionResult(NamedTuple):
 
     @property
     def execution_status(self) -> ProcessExecutionStatus:
+        if self.stderr.startswith("PROCESS_LAUNCH_UNCERTAIN"):
+            return ProcessExecutionStatus.LAUNCH_UNCERTAIN
         if self.stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY"):
             return ProcessExecutionStatus.SECURITY_REJECTED
         if self.stderr.startswith("PROCESS_LAUNCH_CANCELLED"):
@@ -288,6 +291,10 @@ class ProcessSupervisor:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
+        if identity is None and (root_exists or group_exists):
+            # A missing launch identity is an uncertainty condition, never
+            # permission to signal a possibly reused PID or process group.
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
         identity_valid = identity is not None and (
             (root_exists and self._identity_matches(identity))
             or (group_exists and self._process_group_identity_matches(identity))
@@ -411,6 +418,27 @@ class ProcessSupervisor:
     def _pid_exists(pid: int) -> bool:
         if not pid or pid <= 0:
             return False
+        if os.name == "nt":
+            # ``os.kill(pid, 0)`` reports some terminated Windows process
+            # objects as still queryable while ``Popen`` retains its handle.
+            # Query the kernel exit code instead; this is also the fact used
+            # by the identity checks and avoids treating a stale PID as live.
+            try:
+                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                if not handle:
+                    return False
+                try:
+                    exit_code = wintypes.DWORD()
+                    if not ctypes.windll.kernel32.GetExitCodeProcess(
+                        handle,
+                        ctypes.byref(exit_code),
+                    ):
+                        return False
+                    return exit_code.value == 259  # STILL_ACTIVE
+                finally:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+            except (AttributeError, OSError):
+                return False
         try:
             os.kill(pid, 0)
             return True
@@ -524,6 +552,28 @@ class ProcessSupervisor:
                 return os.getpgid(identity.pid) == identity.process_group_id if os.name != "nt" else True
             except OSError:
                 return False
+        return True
+
+    @staticmethod
+    def _process_tree_empty(
+        identity: Optional[ProcessIdentity],
+        process_group_id: Optional[int],
+        *,
+        root_exited: bool = False,
+    ) -> bool:
+        """Require both the root and its owned container to be gone."""
+        if identity is None:
+            return False
+        # ``os.kill(pid, 0)`` is not a reliable post-reap liveness test on
+        # Windows: the PID can remain queryable after ``Popen.wait()`` has
+        # reaped the process.  The supervisor has the stronger process-handle
+        # fact in that case, so callers pass ``root_exited`` after observing
+        # the child return.  POSIX still requires the process-group check
+        # below, which covers surviving descendants.
+        if not root_exited and ProcessSupervisor._pid_exists(identity.pid):
+            return False
+        if process_group_id and ProcessSupervisor._process_group_exists(process_group_id):
+            return False
         return True
 
     @staticmethod
@@ -762,17 +812,18 @@ class ProcessSupervisor:
         if sys.platform == "win32" and execution_capability is not None:
             return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: Windows Job Object implementation is required for governed execution")
         if execution_capability is not None:
-            if execution_context is None or type(execution_context) is not GovernedExecutionContext:
-                return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required")
-            try:
-                execution_context.assert_bound_to_capability(execution_capability)
-                execution_context.assert_launch(
-                    execution_id=execution_id or "",
-                    organization_id=execution_capability.decision.organization_id,
-                    command=cmd,
-                )
-            except Exception as exc:
-                return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid execution context ({type(exc).__name__})")
+            if execution_context is not None:
+                if type(execution_context) is not GovernedExecutionContext:
+                    return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required")
+                try:
+                    execution_context.assert_bound_to_capability(execution_capability)
+                    execution_context.assert_launch(
+                        execution_id=execution_id or "",
+                        organization_id=execution_capability.decision.organization_id,
+                        command=cmd,
+                    )
+                except Exception as exc:
+                    return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid execution context ({type(exc).__name__})")
         elif non_scan_context is not None:
             if execution_id is not None:
                 return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: non-scan capability cannot carry scan execution identity")
@@ -896,7 +947,7 @@ class ProcessSupervisor:
         cancellation_requested = threading.Event()
 
         def _run_sync() -> ProcessExecutionResult:
-            nonlocal proc_ref
+            nonlocal proc_ref, execution_context
             proc = None
             launch_committed = False
 
@@ -945,9 +996,17 @@ class ProcessSupervisor:
                             operation_family=operation_family,
                             operation_options=operation_options or {},
                             command=cmd,
-                            worker_identity=os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
+                            worker_identity=execution_capability.worker_identity,
                             timeout=timeout,
                             max_output_bytes=max_output_bytes,
+                        )
+                        if execution_context is None:
+                            execution_context = execution_capability.issue_execution_context(command=cmd)
+                        execution_context.assert_bound_to_capability(execution_capability)
+                        execution_context.assert_launch(
+                            execution_id=execution_capability.execution_id,
+                            organization_id=execution_capability.decision.organization_id,
+                            command=cmd,
                         )
                         if not execution_id or execution_id != execution_capability.execution_id:
                             _settle_durable("EXECUTION_BLOCKED", "EXECUTION_IDENTITY_MISMATCH")
@@ -1005,13 +1064,33 @@ class ProcessSupervisor:
                 )
                 proc_ref[0] = proc
                 process_group_id = proc.pid if start_new_session else None
+                # Register immediately after Popen.  Identity capture and the
+                # durable ownership write are part of the launch handshake;
+                # either may fail after a real process already exists.
+                self._register_execution(
+                    proc.pid,
+                    execution_id=execution_id,
+                    process_group_id=str(process_group_id) if process_group_id else None,
+                    identity=None,
+                )
                 process_identity = self._capture_process_identity(proc.pid, process_group_id)
                 process_identity_ref[0] = process_identity
                 process_group_ref[0] = process_group_id
                 if process_identity is None:
+                    retain_execution_ref[0] = True
+                    if execution_capability is not None:
+                        try:
+                            from app.core.execution_service import record_launch_uncertain
+                            record_launch_uncertain(
+                                execution_capability,
+                                pid=proc.pid,
+                                process_group_id=process_group_id,
+                            )
+                        except Exception:
+                            retain_execution_ref[0] = True
                     return ProcessExecutionResult(
                         -1, "",
-                        "PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable; governed cleanup refused",
+                        "PROCESS_LAUNCH_UNCERTAIN: process identity unavailable; recovery is required",
                     )
                 if execution_capability is not None:
                     try:
@@ -1028,7 +1107,27 @@ class ProcessSupervisor:
                         termination_confirmed = self.kill_process_tree(
                             proc.pid, process_group_id=process_group_id, identity=process_identity,
                         )
-                        retain_execution_ref[0] = not termination_confirmed
+                        if not termination_confirmed:
+                            retain_execution_ref[0] = True
+                            try:
+                                from app.core.execution_service import record_launch_uncertain
+                                record_launch_uncertain(
+                                    execution_capability,
+                                    pid=proc.pid,
+                                    process_group_id=process_group_id,
+                                    start_token=process_identity.start_token,
+                                )
+                            except Exception:
+                                pass
+                            return ProcessExecutionResult(
+                                -1, "",
+                                "PROCESS_LAUNCH_UNCERTAIN: durable process ownership commit failed and termination was not confirmed",
+                            )
+                        if not _settle_durable("EXECUTION_BLOCKED", "PROCESS_LAUNCH_REJECTED_SECURITY"):
+                            return ProcessExecutionResult(
+                                -1, "",
+                                "PROCESS_FINALIZATION_FAILED: security rejection outcome was not committed",
+                            )
                         return ProcessExecutionResult(
                             -1, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: durable process ownership commit failed ({type(exc).__name__})",
                         )
@@ -1037,6 +1136,8 @@ class ProcessSupervisor:
                         process_group_id=str(process_group_id) if process_group_id else None,
                     )
                     launch_committed = True
+                # Replace the provisional identity-free registration with the
+                # verified process identity before any bounded communication.
                 self._register_execution(
                     proc.pid,
                     execution_id=execution_id,
@@ -1056,6 +1157,33 @@ class ProcessSupervisor:
                         -1, stdout,
                         "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active\n" + stderr,
                     )
+                root_exited = proc.poll() is not None
+                if not self._process_tree_empty(
+                    process_identity,
+                    process_group_id,
+                    root_exited=root_exited,
+                ):
+                    termination_confirmed = self.kill_process_tree(
+                        proc.pid, process_group_id=process_group_id, identity=process_identity,
+                    )
+                    if not termination_confirmed or not self._process_tree_empty(
+                        process_identity,
+                        process_group_id,
+                        root_exited=proc.poll() is not None,
+                    ):
+                        retain_execution_ref[0] = True
+                        if execution_capability is not None:
+                            from app.core.execution_service import record_launch_uncertain
+                            record_launch_uncertain(
+                                execution_capability,
+                                pid=proc.pid,
+                                process_group_id=process_group_id,
+                                start_token=process_identity.start_token,
+                            )
+                        return ProcessExecutionResult(
+                            -1, stdout,
+                            "PROCESS_LAUNCH_UNCERTAIN: owned process container is not empty",
+                        )
                 if "Output exceeded maximum" in stderr:
                     finalization = _finish_durable("PARTIAL_RESULTS_WITH_WARNING", "OUTPUT_LIMIT_EXCEEDED")
                     if finalization:
@@ -1098,6 +1226,26 @@ class ProcessSupervisor:
                             identity=process_identity_ref[0],
                         )
                 if execution_capability is not None:
+                    if proc is not None and not launch_committed:
+                        # Popen succeeded but the launch handshake did not
+                        # reach a durable committed state. Preserve the exact
+                        # execution identity for recovery and never convert
+                        # this uncertainty into an ordinary FAILED result.
+                        retain_execution_ref[0] = True
+                        try:
+                            from app.core.execution_service import record_launch_uncertain
+                            record_launch_uncertain(
+                                execution_capability,
+                                pid=proc.pid,
+                                process_group_id=process_group_ref[0],
+                                start_token=(process_identity_ref[0].start_token if process_identity_ref[0] else None),
+                            )
+                        except Exception:
+                            pass
+                        return ProcessExecutionResult(
+                            -1, "",
+                            "PROCESS_LAUNCH_UNCERTAIN: post-launch ownership handshake failed; recovery is required",
+                        )
                     if launch_committed:
                         if not termination_confirmed:
                             retain_execution_ref[0] = True

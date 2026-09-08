@@ -32,7 +32,27 @@ The frontend authentication flow MUST treat the login response as complete once 
 - `DELETE /api/assets/{asset_id}`: Removes asset from inventory (`asset:delete`, tenant-scoped).
 
 ### 1.3 Scan Execution & Lifecycle Endpoints (`/api/scans`)
-- `POST /api/scans/start`: Initiates a security assessment (`scan:create`). Enforces universal target security gateway (`assert_safe_target()`) and server-derived workspace sandboxing.
+- `POST /api/scans/start`: Creates a durable scan authorization request (`scan:create`); it is request-only until an approved, typed execution authority exists. It MUST NOT enqueue, launch, or report `SCAN_STARTED` at request creation. Enforces the universal target security gateway (`assert_safe_target()`) and server-derived workspace sandboxing.
+
+### Scan authorization manifest boundary
+
+`POST /api/scans/start` MUST derive and persist one immutable, tenant-bound scan authorization manifest before returning. The manifest MUST include the gateway-issued target identity and integrity seal, project and asset binding, profile, selected engine identities, the complete 26-tool fleet snapshot, canonical operation-policy revision, deterministic manifest hash, expiry, resource/account-impact budgets, credential-scope reference, and emergency-stop reference. The endpoint MUST return `AUTHORIZATION_REQUIRED` with the scan request ID, scan ID, manifest hash, expiry, selected operations, and explicit excluded/deferred reasons; it MUST NOT claim that the assessment has started.
+
+The request MUST include an `Idempotency-Key` header using the exact bounded
+ASCII grammar `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`; blank, padded, malformed, or
+overlong values are invalid and the server MUST NOT generate a replacement.
+The key is tenant-scoped and binds to a canonical request fingerprint covering
+the target, asset, project, profile, selected engines, and durable non-secret
+configuration. An exact replay returns the original request; a changed
+fingerprint returns `409 Conflict`; the same key in another tenant cannot
+resolve or replay the first tenant's request. `target_value` is bounded to
+1–1024 characters and `target_name`, when supplied, to 1–120 characters.
+
+One authenticated administrator approval/session may approve one exact immutable parent manifest. Approval MUST bind the administrator session JTI and owned-target acknowledgement to that manifest. A changed target, asset, project, profile, engine selection, operation option, budget, credential scope, policy revision, or expiry requires a new request and approval. Each actual external operation MUST receive its own child execution request, decision, and durable run; the parent approval is not a reusable process-launch authority. Capability detection and cached availability are readiness evidence only and MUST NOT authorize execution.
+
+Implementation status during Section A: scan approval requires the registered `execution:approve` scope and ADMIN role. The endpoint persists approval but deliberately does not dispatch until the durable parent-dispatch lease and worker handoff pass Section B review. Successful approval and approval replay return `dispatch_state: PENDING_IMPLEMENTATION` and `execution_started: false`. This is an explicit implementation limitation, not fulfillment or removal of the dispatch requirements below. Approval permission tests alone do not establish durable approval or execution correctness.
+
+After Section B dispatch acceptance, `POST /api/scans/{scan_id}/approve` MUST be the only control-plane transition that dispatches an approved scan. During Section A it MUST remain request/approval persistence only, return `dispatch_state: PENDING_IMPLEMENTATION` and `execution_started: false`, and never imply that a worker or process was launched. Approval MUST lock the parent authority before rehydrating the stored manifest, compare canonical normalized operation and complete-26-tool fleet material, revalidate current policy/target/asset/session/expiry state, and atomically materialize child authorities. Any mismatch or child-insert failure MUST fail closed and roll back all partial child rows and parent links. A scan parent identifier MUST NOT be passed to the process supervisor as a process identity. Each adapter launch MUST resolve its selected child authority through the service-owned authority resolver; the resolver MUST bind the canonical tool, engine, operation family, options, worker identity, worker generation, validated target, and exact command before `ProcessSupervisor` creates a process.
 - `GET /api/scans/{scan_id}`: Retrieves full scan job snapshot and findings (`scan:read`, tenant-scoped).
 - `GET /api/scans/{scan_id}/telemetry`: Retrieves organized assessment intelligence, per-tool execution logs, per-link grouped security dossiers (`tests_performed`, `tools_executed`, `findings`), and actively resolved subdomain attack surface (`scan:read`, tenant-scoped).
 - `POST /api/scans/{scan_id}/cancel`: Cancels an active scan (`scan:cancel`), halts async workers, broadcasts `event: cancelled` SSE, and resets UI state.
@@ -59,6 +79,7 @@ The normal refresh, authentication, capability-refresh, toolbox-refresh, install
 - `POST /api/system/executions/{request_id}/approve`: Records the prompted, session-bound administrator approval for the exact request.
 - `POST /api/system/executions/{request_id}/revoke`: Revokes approval or stops the associated execution.
 - `GET /api/system/executions/{request_id}`: Returns the tenant-scoped execution state and sanitized evidence.
+- `GET /api/system/executions/recovery/health`: Returns tenant-scoped recovery coordination state to an authenticated administrator with `execution:read`; it MUST not disclose process identity as authority.
 - `GET /api/system/executions/events`: Tenant-scoped SSE stream for execution lifecycle events.
 - `GET /api/system/tools`: Authenticated (`tool:read`) list of all 26 toolbox installation/status records. The response is produced by a process-local backend snapshot with a 60-second TTL; `GET /api/system/tools?refresh=true` forces a live backend refresh. Installation success, reinstall, cancellation, and failure invalidate the snapshot before terminal telemetry is emitted.
 
@@ -207,6 +228,13 @@ MUST explicitly distinguish `NO_EXTERNAL_PROCESS`,
 be classified as either part of the same governed execution container or as
 explicitly non-scan operations with a separate non-terminalizing lifecycle;
 they MUST NOT be mixed into scan cancellation by inference.
+
+The recovery coordinator MUST expose the current tenant-scoped projection at
+`GET /api/system/executions/recovery/health` for administrators. The endpoint
+is observational only and MUST not authorize, cancel, or attach to a process.
+`LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED` records MUST remain visible until a
+verified recovery settlement or an explicit bounded `EXHAUSTED`/operator
+escalation outcome is recorded.
 
 The governed launch boundary MUST accept a typed execution context bound to
 the durable `execution_id`, organization, worker generation, approved

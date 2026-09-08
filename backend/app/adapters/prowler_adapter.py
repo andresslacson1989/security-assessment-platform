@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Callable, Awaitable, Dict, Any
 
@@ -84,7 +85,7 @@ class ProwlerAdapter(BaseToolAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-v"], timeout=10.0, pre_launch_check=pre_launch_check)
+        code, stdout, stderr = await self.execute_command([binary, "-v"], timeout=10.0, pre_launch_check=pre_launch_check, non_scan_context=self._version_probe_context())
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -136,6 +137,34 @@ class ProwlerAdapter(BaseToolAdapter):
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: explicit active cloud-audit authorization is required.")
                 return findings
 
+            execution_authority_provider = kwargs.get("execution_authority_provider")
+            operation_id = kwargs.get("operation_id")
+            if execution_authority_provider is None or not isinstance(operation_id, str) or not operation_id.strip():
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: exact operation authority is required.")
+                return findings
+            try:
+                launch_binding = execution_authority_provider.resolve_launch_binding(
+                    operation_id=operation_id,
+                    tool_id=self.tool_name,
+                )
+            except Exception as exc:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(
+                    LogLevel.ERROR,
+                    f"Prowler execution blocked: exact child operation authority could not be resolved ({type(exc).__name__}).",
+                )
+                return findings
+            if (
+                launch_binding.organization_id != validated_target.organization_id
+                or launch_binding.parent_asset_id != validated_target.asset_id
+                or launch_binding.parent_target_id != validated_target.target_id
+                or str(launch_binding.operation_credential_scope.get("provider", "")).strip().lower() != provider
+            ):
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: child operation scope does not match the validated cloud target.")
+                return findings
+
             envelope = kwargs.get("cloud_credentials")
             if not isinstance(envelope, CloudCredentialEnvelope):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
@@ -151,6 +180,20 @@ class ProwlerAdapter(BaseToolAdapter):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: credential envelope scope or expiry is invalid.")
                 return findings
+            try:
+                child_expiry = datetime.fromisoformat(launch_binding.child_decision_expires_at)
+                if child_expiry.tzinfo is None or child_expiry.utcoffset() is None:
+                    raise ValueError("child decision expiry is timezone-naive")
+                child_expiry = child_expiry.astimezone(timezone.utc)
+                envelope_expiry = envelope.expires_at.astimezone(timezone.utc)
+            except (TypeError, ValueError) as exc:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, f"Prowler execution blocked: child authorization expiry is invalid ({type(exc).__name__}).")
+                return findings
+            if envelope_expiry > child_expiry:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                await emit_log(LogLevel.ERROR, "Prowler execution blocked: credential lifetime exceeds the child authorization lifetime.")
+                return findings
             credentials = envelope.credentials
             allowed_credentials = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
             if not isinstance(credentials, dict) or not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}.issubset(credentials):
@@ -164,7 +207,7 @@ class ProwlerAdapter(BaseToolAdapter):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: cloud credential envelope is invalid.")
                 return findings
-            operation_policy_revision = str(kwargs.get("operation_policy_revision", "")).strip()
+            operation_policy_revision = launch_binding.operation_policy_revision
             if not is_canonical_operation_policy_revision(operation_policy_revision):
                 self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
                 await emit_log(LogLevel.ERROR, "Prowler execution blocked: operation policy revision is not canonical.")
@@ -194,21 +237,21 @@ class ProwlerAdapter(BaseToolAdapter):
             output_path = str(Path(temp_output_dir.name) / "prowler-asff.json")
             cmd = [binary, provider, "-M", "json-asff", "--output-filename", output_path, "--quiet"]
             credential_handoff = CredentialEnvironmentHandoff(
-                organization_id=envelope.organization_id,
-                asset_id=envelope.asset_id,
+                organization_id=launch_binding.organization_id,
+                asset_id=launch_binding.parent_asset_id or validated_target.asset_id,
                 provider=envelope.provider,
-                authorization_decision_id=validated_target.authorization_decision_id,
-                request_id=str(scan_id),
+                authorization_decision_id=launch_binding.child_decision_id,
+                request_id=launch_binding.child_request_id,
                 operation_policy_revision=operation_policy_revision,
                 expires_at=envelope.expires_at,
                 credentials=credentials,
             )
             credential_context = CredentialExecutionContext(
-                organization_id=envelope.organization_id,
-                asset_id=envelope.asset_id,
+                organization_id=launch_binding.organization_id,
+                asset_id=launch_binding.parent_asset_id or validated_target.asset_id,
                 provider=envelope.provider,
-                authorization_decision_id=validated_target.authorization_decision_id,
-                request_id=str(scan_id),
+                authorization_decision_id=launch_binding.child_decision_id,
+                request_id=launch_binding.child_request_id,
                 operation_policy_revision=operation_policy_revision,
             )
         else:
@@ -223,12 +266,11 @@ class ProwlerAdapter(BaseToolAdapter):
                 credential_handoff=credential_handoff,
                 credential_context=credential_context,
                 execution_capability=kwargs.get("execution_capability"),
-                operation_family="cloud_audit" if kwargs.get("require_managed_binary") else "",
-                operation_options=(
-                    {"provider": provider, "output_format": "json-asff", "quiet": True}
-                    if kwargs.get("require_managed_binary") else {}
-                ),
-                tool_id=self.tool_name,
+                operation_family=launch_binding.operation_family if kwargs.get("require_managed_binary") else "",
+                operation_options=dict(launch_binding.operation_options) if kwargs.get("require_managed_binary") else {},
+                tool_id=launch_binding.operation_tool_id if kwargs.get("require_managed_binary") else self.tool_name,
+                execution_authority_provider=kwargs.get("execution_authority_provider"),
+                operation_id=kwargs.get("operation_id"),
                 max_output_bytes=10 * 1024 * 1024,
             )
             if output_path:

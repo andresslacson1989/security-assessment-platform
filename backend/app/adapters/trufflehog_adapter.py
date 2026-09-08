@@ -33,7 +33,7 @@ class TruffleHogAdapter(BaseToolAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=10.0, pre_launch_check=pre_launch_check, non_scan_context=self._version_probe_context())
         output = stdout + " " + stderr
         match = re.search(r"\d+\.\d+\.\d+", output)
         if match:
@@ -85,6 +85,8 @@ class TruffleHogAdapter(BaseToolAdapter):
         code, stdout, stderr = await self.execute_command(
             cmd, timeout=60.0, emit_log=emit_log,
             pre_launch_check=managed_check,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
 
         for line in stdout.splitlines():

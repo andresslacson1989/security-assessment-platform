@@ -56,6 +56,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
     Follows Adapters First-in-Line Architecture (Nuclei + FFuF + Katana + Schemathesis primary, native active parameter fuzzing, crawler, and browser posture enrichment).
     """
 
+    allowed_tool_ids = frozenset({"ffuf", "nuclei", "katana", "schemathesis", "sqlmap"})
+
     @property
     def name(self) -> str:
         return "web_dast"
@@ -88,6 +90,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
         emit_finding: FindingCallback,
         emit_auth_status: Optional[AuthStatusCallback] = None,
         emit_endpoint_discovered: Optional[EndpointDiscoveredCallback] = None,
+        execution_context=None,
+        execution_capability=None,
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
@@ -163,6 +167,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_endpoint=emit_endpoint_discovered,
                         scan_id=scan_id,
                         validated_target=_validated_target,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="web_dast:ffuf",
                         require_managed_binary=True,
                     )
                     for f in ffuf_findings:
@@ -196,6 +202,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id=scan_id,
                         validated_target=_validated_target,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="web_dast:nuclei",
                         require_managed_binary=True,
                     )
                     for f in nuclei_findings:
@@ -230,6 +238,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                         emit_endpoint=emit_endpoint_discovered,
                         scan_id=scan_id,
                         validated_target=_validated_target,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="web_dast:katana",
                         require_managed_binary=True,
                     )
                     for f in katana_findings:
@@ -267,6 +277,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                             emit_finding,
                             scan_id=scan_id,
                             validated_target=_validated_target,
+                            execution_authority_provider=kwargs.get("execution_authority_provider"),
+                            operation_id="web_dast:schemathesis",
                             require_managed_binary=True,
                         )
                         for f in schema_findings:
@@ -637,6 +649,8 @@ class WebDastAssessmentEngine(BaseAssessmentEngine):
                                 organization_id=organization_id,
                                 output_dir=str(Path(workspace)),
                                 validated_target=_validated_target,
+                                execution_authority_provider=kwargs.get("execution_authority_provider"),
+                                operation_id="web_dast:sqlmap",
                                 require_managed_binary=True,
                             )
                             for finding in sqlmap_findings:

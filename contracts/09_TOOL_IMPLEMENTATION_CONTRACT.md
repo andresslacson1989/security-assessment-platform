@@ -54,6 +54,17 @@ delegation, profile selection, missing approval, host prerequisites, failed
 installation, deferral, and unverified capability MUST use their applicable
 state or reason and MUST NOT be reported as a platform exclusion.
 
+Tool registry membership, capability registration, installed-version detection,
+and toolbox/system capability snapshots are observational readiness evidence.
+They MUST NOT create a validated target, authorization decision, child execution
+request, dispatch lease, or process-launch authority. `LIVE` and `CACHE` source
+metadata and cache age MUST remain visible to the reader; expiry or detection
+failure MUST NOT be presented as current trusted capability. The execution
+service MUST repeat managed executable-path, executable-integrity, exact-version,
+target-seal, policy, budget, credential, worker, and revocation checks at the
+actual process boundary. A fallback or manual presentation state MUST identify
+coverage impact and MUST NOT conceal a primary-tool failure.
+
 The snapshot records upstream version/tag, acquisition identity, platform and
 architecture, enumeration method, observed feature inventory, verifier,
 verification timestamp, and reverification expiry. Any upstream update,

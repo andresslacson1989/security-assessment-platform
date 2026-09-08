@@ -5,6 +5,11 @@ Contract 03 & 08 Base Assessment Engine Plugin Interface.
 from abc import ABC, abstractmethod
 from typing import List, Callable, Awaitable, Optional, Dict, Any
 from app.core.models import Target, Finding, ScanConfig, LogLevel, DiscoveredEndpoint, DiscoveredSubdomain
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.core.execution_context import GovernedExecutionContext
+    from app.core.execution_decision import ExecutionDecisionCapability
 
 # Callback signatures for asynchronous telemetry streaming
 LogCallback = Callable[[LogLevel, str], Awaitable[None]]
@@ -59,6 +64,8 @@ class BaseAssessmentEngine(ABC):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        execution_context: "GovernedExecutionContext",
+        execution_capability: "ExecutionDecisionCapability",
         **kwargs,
     ) -> List[Finding]:
         """

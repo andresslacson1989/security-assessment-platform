@@ -4,6 +4,7 @@ Unit tests for Engine Plugin Interface, Token Bucket Rate Limiter, Circuit Break
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 import pytest
 from typing import List
 
@@ -19,12 +20,46 @@ from app.core.models import (
     Severity,
     calculate_fingerprint,
     RejectedDiscovery,
+    SystemCapabilities,
     ToolFailureEvent,
 )
 from app.engines.base import BaseAssessmentEngine, LogCallback, ProgressCallback, FindingCallback
 from app.core.rate_limiter import TokenBucketRateLimiter, CircuitBreaker, CircuitState
 from app.core.orchestrator import ScanOrchestrator
 from app.core.storage import save_scan, get_scan
+from app.core.db import db_manager
+from app.core.queue import ScanQueueManager
+
+
+async def _dispatch_authorized_scan(monkeypatch, orchestrator, scan_job):
+    """Run the production dispatch path with a server-owned test authority parent."""
+    authorization_request_id = f"test-scan-request-{scan_job.id}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scan_job.authorization_request_id = authorization_request_id
+    scan_job.authorization_state = "DISPATCHABLE"
+    parent = {
+        "scan_id": scan_job.id,
+        "organization_id": scan_job.organization_id,
+        "state": "DISPATCHABLE",
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": None,
+        "consumed_at": None,
+    }
+
+    def get_test_parent(request_id, organization_id):
+        if request_id != authorization_request_id or organization_id != scan_job.organization_id:
+            return None
+        return parent
+
+    async def no_external_capability_detection(_config):
+        return SystemCapabilities(tools=[])
+
+    monkeypatch.setattr(db_manager, "get_scan_authorization_request", get_test_parent)
+    monkeypatch.setattr("app.core.orchestrator.create_validated_target", lambda *args, **kwargs: object())
+    monkeypatch.setattr("app.core.orchestrator.discover_system_capabilities", no_external_capability_detection)
+    monkeypatch.setattr("app.core.queue.queue_manager", ScanQueueManager())
+
+    return await orchestrator.dispatch_approved_scan(scan_job)
 
 
 class MockSuccessfulEngine(BaseAssessmentEngine):
@@ -204,7 +239,7 @@ def test_circuit_breaker_transitions():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_full_scan_lifecycle():
+async def test_orchestrator_full_scan_lifecycle(monkeypatch):
     orch = ScanOrchestrator()
     mock_engine = MockSuccessfulEngine()
     orch.register_engine(mock_engine)
@@ -223,7 +258,7 @@ async def test_orchestrator_full_scan_lifecycle():
     queue = orch.subscribe_events(scan_job.id)
 
     # Start scan
-    task = await orch.start_scan(scan_job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, scan_job)
     await task
 
     # Verify final state
@@ -253,7 +288,7 @@ async def test_orchestrator_full_scan_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_rebinds_returned_only_findings_to_authoritative_scan_and_tenant():
+async def test_orchestrator_rebinds_returned_only_findings_to_authoritative_scan_and_tenant(monkeypatch):
     orch = ScanOrchestrator()
     orch.register_engine(MockReturnOnlyEngine())
     job = ScanJob(
@@ -263,7 +298,7 @@ async def test_orchestrator_rebinds_returned_only_findings_to_authoritative_scan
         organization_id="org-authoritative",
     )
 
-    task = await orch.start_scan(job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, job)
     await task
 
     completed = orch.get_active_job(job.id, organization_id="org-authoritative")
@@ -274,7 +309,7 @@ async def test_orchestrator_rebinds_returned_only_findings_to_authoritative_scan
 
 
 @pytest.mark.asyncio
-async def test_engine_exception_degrades_persisted_coverage():
+async def test_engine_exception_degrades_persisted_coverage(monkeypatch):
     orch = ScanOrchestrator()
     orch.register_engine(MockFailingEngine())
     job = ScanJob(
@@ -284,7 +319,7 @@ async def test_engine_exception_degrades_persisted_coverage():
         organization_id="org-failure",
     )
 
-    task = await orch.start_scan(job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, job)
     await task
 
     completed = orch.get_active_job(job.id, organization_id="org-failure")
@@ -298,7 +333,7 @@ async def test_engine_exception_degrades_persisted_coverage():
 
 
 @pytest.mark.asyncio
-async def test_final_grading_preserves_subfinder_coverage_degradation():
+async def test_final_grading_preserves_subfinder_coverage_degradation(monkeypatch):
     orch = ScanOrchestrator()
     orch.register_engine(MockPartialToolEngine())
     job = ScanJob(
@@ -307,7 +342,7 @@ async def test_final_grading_preserves_subfinder_coverage_degradation():
         enabled_engines=["mock_partial_tool"],
     )
 
-    task = await orch.start_scan(job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, job)
     await task
 
     completed = orch.get_active_job(job.id)
@@ -464,7 +499,7 @@ def test_degraded_network_evidence_survives_authoritative_persistence():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_error_isolation():
+async def test_orchestrator_error_isolation(monkeypatch):
     orch = ScanOrchestrator()
     orch.register_engine(MockFailingEngine())
     orch.register_engine(MockSuccessfulEngine())
@@ -477,7 +512,7 @@ async def test_orchestrator_error_isolation():
     )
 
     # Execution should NOT crash even if one engine fails
-    task = await orch.start_scan(scan_job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, scan_job)
     await task
 
     job = orch.get_active_job(scan_job.id)
@@ -492,7 +527,7 @@ async def test_orchestrator_error_isolation():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_cancellation():
+async def test_orchestrator_cancellation(monkeypatch):
     class SlowEngine(BaseAssessmentEngine):
         @property
         def name(self) -> str:
@@ -524,7 +559,7 @@ async def test_orchestrator_cancellation():
         enabled_engines=["slow_engine"],
     )
 
-    task = await orch.start_scan(scan_job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, scan_job)
     await asyncio.sleep(0.05)  # Let it begin
 
     # Cancel scan
@@ -540,7 +575,7 @@ async def test_orchestrator_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_worker_execution_honors_authoritative_cancellation_before_completion():
+async def test_worker_execution_honors_authoritative_cancellation_before_completion(monkeypatch):
     class CancellingEngine(BaseAssessmentEngine):
         @property
         def name(self) -> str:
@@ -575,7 +610,7 @@ async def test_worker_execution_honors_authoritative_cancellation_before_complet
         enabled_engines=["cancelling_engine"],
     )
 
-    task = await orch.start_scan(scan_job)
+    task = await _dispatch_authorized_scan(monkeypatch, orch, scan_job)
     with pytest.raises(asyncio.CancelledError):
         await task
 

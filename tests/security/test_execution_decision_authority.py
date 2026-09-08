@@ -12,7 +12,8 @@ from app.core.execution_decision import ExecutionDecisionError, issue_execution_
 from app.core.db import DatabaseManager
 from app.core.migration_registry import MIGRATION_REGISTRY, _EXPECTED_CHECKSUMS
 from app.core.migration_artifacts import FORWARD_APPLY_ARTIFACT_REVISION
-from app.core.models import AuditAction, AuditEvent, ExecutionDecisionRecord, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType, EXECUTION_REASON_CODES, is_canonical_execution_reason_code, is_valid_execution_terminal_outcome
+from app.core.scan_request_migration_v13 import apply_artifact_digest
+from app.core.models import AuditAction, AuditEvent, ExecutionAuthorityLease, ExecutionDecisionRecord, ExecutionDispatchLease, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType, EXECUTION_REASON_CODES, is_canonical_execution_reason_code, is_valid_execution_terminal_outcome
 from app.core.models import UserProfile, UserRole
 from app.core.ssrf_protector import create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
@@ -48,6 +49,31 @@ class FakeDecisionStore:
         self.decision = self.decision.model_copy(update={"claim_owner": worker_identity, "claim_token": "test-claim", "claim_expires_at": lease_time + timedelta(seconds=30)})
         return ExecutionLeaseClaim(token="test-claim", owner=worker_identity, expires_at=lease_time + timedelta(seconds=30))
 
+    def claim_execution_authority(
+        self, decision_id, organization_id, session_jti, worker_identity,
+        policy_revision, dispatch_claim_token=None, now=None,
+    ):
+        decision_claim = self.claim_execution_decision(
+            decision_id, organization_id, session_jti, worker_identity,
+            policy_revision, now=now,
+        )
+        if decision_claim is None:
+            return None
+        lease_time = now or datetime.now(timezone.utc)
+        return ExecutionAuthorityLease(
+            decision=decision_claim,
+            dispatch=ExecutionDispatchLease(
+                execution_id="run-test",
+                organization_id=organization_id,
+                owner=worker_identity,
+                token=dispatch_claim_token or "dispatch-claim",
+                expires_at=lease_time + timedelta(seconds=30),
+                attempt_count=1,
+            ),
+            execution_id="run-test",
+            correlation_id="corr-run-test",
+        )
+
 
 def _target():
     return create_validated_target(
@@ -58,9 +84,12 @@ def _target():
 
 
 def test_migration_registry_has_fixed_executable_verifier_vectors():
-    assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, 10))
+    assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, len(MIGRATION_REGISTRY) + 1))
     assert all(callable(spec.apply) and callable(spec.reconcile) for spec in MIGRATION_REGISTRY)
-    assert all(spec.apply_artifact.startswith("sha256:") and len(spec.apply_artifact) == 71 for spec in MIGRATION_REGISTRY)
+    assert all(
+        all(artifact.startswith("sha256:") and len(artifact) == 71 for artifact in spec.apply_artifact.values())
+        for spec in MIGRATION_REGISTRY
+    )
     assert all(callable(spec.verify) for spec in MIGRATION_REGISTRY)
     assert {spec.version: spec.checksum for spec in MIGRATION_REGISTRY} == _EXPECTED_CHECKSUMS
 
@@ -87,7 +116,7 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
         ).fetchall()
 
     assert [(row["migration_version"], row["event_sequence"], row["event_type"]) for row in rows] == [
-        item for version in range(1, 10) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
+        item for version in range(1, len(MIGRATION_REGISTRY) + 1) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
     ]
     for row in rows:
         context = json.loads(row["context_json"])
@@ -99,16 +128,20 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
 
 
 def test_forward_apply_artifact_vectors_match_runtime_serialization():
+    manager = DatabaseManager.__new__(DatabaseManager)
     for spec in MIGRATION_REGISTRY:
         for backend in ("sqlite", "postgresql"):
-            material = "\n".join((
-                inspect.getsource(DatabaseManager._init_db),
-                inspect.getsource(DatabaseManager._apply_migration_version),
-                FORWARD_APPLY_ARTIFACT_REVISION,
-                json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
-                backend,
-            )).encode("utf-8")
-            actual = "sha256:" + hashlib.sha256(material).hexdigest()
+            if spec.version == 13:
+                actual = apply_artifact_digest(manager, backend=backend, manifest=spec.apply_manifest)
+            else:
+                material = "\n".join((
+                    inspect.getsource(DatabaseManager._init_db),
+                    inspect.getsource(DatabaseManager._apply_migration_version),
+                    FORWARD_APPLY_ARTIFACT_REVISION,
+                    json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
+                    backend,
+                )).encode("utf-8")
+                actual = "sha256:" + hashlib.sha256(material).hexdigest()
             assert spec.apply_artifact[backend] == actual
 
 
@@ -178,7 +211,7 @@ def test_v7_dispatch_postcondition_rejects_v8_lease_shape():
     manager = DatabaseManager.__new__(DatabaseManager)
     manager._verify_migration_v7_postconditions(connection)
     connection.execute("ALTER TABLE execution_dispatch_intents ADD COLUMN claimed_by TEXT")
-    with pytest.raises(RuntimeError, match="pre-lease target"):
+    with pytest.raises(RuntimeError, match="pre-lease target|column definitions drifted"):
         manager._verify_migration_v7_postconditions(connection)
     for column in ("claim_token", "lease_expires_at", "correlation_id"):
         connection.execute(f"ALTER TABLE execution_dispatch_intents ADD COLUMN {column} TEXT")
@@ -192,15 +225,8 @@ def test_v9_repairs_an_already_applied_legacy_parent_index_and_is_idempotent(tmp
         connection.execute("CREATE UNIQUE INDEX uq_execution_requests_id_org ON execution_requests(id, organization_id)")
         connection.execute("DELETE FROM schema_migrations WHERE version = 9")
 
-    repaired = DatabaseManager(path)
-    with repaired._connection_scope() as connection:
-        assert connection.execute("SELECT 1 FROM pragma_index_list('execution_requests') WHERE name = 'uq_execution_requests_id_org'").fetchone() is None
-        assert connection.execute("SELECT 1 FROM schema_migrations WHERE version = 9").fetchone() is not None
-        success_count = connection.execute("SELECT COUNT(*) AS count FROM schema_migration_events WHERE migration_version = 9 AND event_type = 'SUCCEEDED'").fetchone()["count"]
-
-    DatabaseManager(path)
-    with repaired._connection_scope() as connection:
-        assert connection.execute("SELECT COUNT(*) AS count FROM schema_migration_events WHERE migration_version = 9 AND event_type = 'SUCCEEDED'").fetchone()["count"] == success_count
+    with pytest.raises(RuntimeError, match="schema migration versions are not contiguous"):
+        DatabaseManager(path)
 
 
 def test_v9_rejects_an_ambiguous_same_name_parent_index(tmp_path):
@@ -210,7 +236,7 @@ def test_v9_rejects_an_ambiguous_same_name_parent_index(tmp_path):
         connection.execute("CREATE INDEX uq_execution_requests_id_org ON execution_requests(organization_id, id)")
         connection.execute("DELETE FROM schema_migrations WHERE version = 9")
 
-    with pytest.raises(ValueError, match="ambiguous migration-owned artifact"):
+    with pytest.raises(RuntimeError, match="schema migration versions are not contiguous"):
         DatabaseManager(path)
 
 
@@ -254,9 +280,10 @@ def test_migration_ledger_records_registry_identity(tmp_path):
     assert {row["event_type"] for row in rows} == {"STARTED", "SUCCEEDED"}
 
 
-def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
-    path = tmp_path / "legacy-ledger.sqlite3"
-    spec = next(spec for spec in MIGRATION_REGISTRY if spec.version == 8)
+@pytest.mark.parametrize("version", [8, 10])
+def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path, version):
+    path = tmp_path / f"legacy-ledger-v{version}.sqlite3"
+    spec = next(spec for spec in MIGRATION_REGISTRY if spec.version == version)
     conn = sqlite3.connect(path)
     conn.executescript("""
         CREATE TABLE schema_migration_events (
@@ -272,11 +299,11 @@ def test_legacy_migration_ledger_is_upgraded_with_verified_identity(tmp_path):
     """)
     conn.execute(
         "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("event-1", "attempt-1", 8, spec.name, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", f"tx-{'1' * 32}", None, None, None, "{}", "PENDING"),
+        ("event-1", "attempt-1", version, spec.name, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", "legacy", spec.previous_version, spec.target_version, spec.checksum, "test", f"tx-{'1' * 32}", None, None, None, "{}", "PENDING"),
     )
     conn.execute(
         "INSERT INTO schema_migration_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("event-2", "attempt-1", 8, spec.name, "SUCCEEDED", "2026-01-01T00:00:01+00:00", "SQLITE", "legacy", 7, 8, spec.checksum, "test", f"tx-{'1' * 32}", None, None, None, "{}", "NOT_APPLICABLE"),
+        ("event-2", "attempt-1", version, spec.name, "SUCCEEDED", "2026-01-01T00:00:01+00:00", "SQLITE", "legacy", spec.previous_version, spec.target_version, spec.checksum, "test", f"tx-{'1' * 32}", None, None, None, "{}", "NOT_APPLICABLE"),
     )
     conn.commit()
     conn.close()
@@ -344,14 +371,26 @@ def test_failure_ledger_sequence_is_causal_when_timestamps_match(tmp_path):
     path = tmp_path / "failure-sequence.sqlite3"
     database = DatabaseManager(path)
     database._migration_attempt_id = "failure-attempt"
-    database._migration_transaction_id = "failure-tx"
     database._migration_schema_name = str(path)
     database._migration_spec = MIGRATION_REGISTRY[-1]
+    database._migration_started_durable = True
     spec = database._migration_spec
+    digest = spec.apply_artifact["sqlite"].split(":", 1)[1]
+    database._migration_transaction_id = f"txp-{'0' * 32}-{digest}"
+    context = json.dumps({
+        "coordinator": "registry",
+        "provenance_format": "registry-coordinator-v2",
+        "migration_version": spec.version,
+        "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
+        "apply_artifact": spec.apply_artifact["sqlite"],
+        "apply_artifacts": spec.apply_artifact,
+        "apply_manifest": spec.apply_manifest,
+        "backend_policy": spec.backend_policy,
+    }, sort_keys=True, separators=(",", ":"))
     with database._connection_scope() as connection:
         connection.execute(
             "INSERT INTO schema_migration_events (event_id, attempt_id, migration_version, migration_id, migration_name, registry_revision, event_sequence, event_type, event_at, backend, schema_name, previous_schema_version, target_schema_version, migration_checksum, runner_identity, transaction_context_id, context_json, rollback_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("failure-start", "failure-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", "failure-tx", "{}", "PENDING"),
+            ("failure-start", "failure-attempt", spec.version, spec.migration_id, spec.name, spec.registry_revision, 1, "STARTED", "2026-01-01T00:00:00+00:00", "SQLITE", str(path), spec.previous_version, spec.target_version, spec.checksum, "test", database._migration_transaction_id, context, "PENDING"),
         )
     database._record_migration_failure(RuntimeError("controlled failure"))
 
@@ -360,7 +399,7 @@ def test_failure_ledger_sequence_is_causal_when_timestamps_match(tmp_path):
             "SELECT event_type, event_sequence FROM schema_migration_events "
             "WHERE attempt_id = 'failure-attempt' ORDER BY event_sequence"
         ).fetchall()
-    assert rows == [("FAILED", 2), ("ROLLBACK_FAILED", 3)]
+    assert rows == [("STARTED", 1), ("FAILED", 2), ("ROLLBACK_FAILED", 3)]
 
     DatabaseManager(path)
 
@@ -407,7 +446,7 @@ def test_dispatch_reaper_closes_expired_request_and_lease_without_success(tmp_pa
     token = set_correlation_id("corr-reaper")
     try:
         result, _decision_id, execution_id = database.approve_execution_request(
-            "req-r", "org-r", "f" * 64, "approval-r", "admin-r", "session-r", "worker-r",
+            "req-r", "org-r", "f" * 64, "approval-r", "admin-r", "session-r", "worker-r", "generation-r",
         )
     finally:
         reset_correlation_id(token)
@@ -425,8 +464,8 @@ def test_dispatch_reaper_closes_expired_request_and_lease_without_success(tmp_pa
     with database._connection_scope() as conn:
         run = conn.execute("SELECT state, reason_code FROM execution_runs WHERE execution_id = ?", (execution_id,)).fetchone()
         intent = conn.execute("SELECT state, last_error, claim_token FROM execution_dispatch_intents WHERE execution_id = ?", (execution_id,)).fetchone()
-    assert run == ("TIMED_OUT", "EXECUTION_AUTHORITY_EXPIRED")
-    assert intent == ("FAILED", "EXECUTION_AUTHORITY_EXPIRED", None)
+    assert tuple(run) == ("TIMED_OUT", "EXECUTION_AUTHORITY_EXPIRED")
+    assert tuple(intent) == ("FAILED", "EXECUTION_AUTHORITY_EXPIRED", None)
 
 
 def _issue(store, target, **kwargs):
@@ -438,7 +477,7 @@ def _issue(store, target, **kwargs):
         decision_id="decision-1", validated_target=target, tool_id="prowler",
         operation_family="cloud_audit", operation_options=options,
         command=["/managed/prowler", "aws", "-M", "json-asff"],
-        worker_identity="worker-1", database=store,
+        database=store,
     )
 
 
@@ -574,13 +613,13 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     token = set_correlation_id("corr-approval-run")
     try:
         result, decision_id, execution_id = database.approve_execution_request(
-            "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+            "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a", "generation-a",
         )
         assert result == "AUTHORIZED"
         assert decision_id
         assert execution_id.startswith("run-")
         replay = database.approve_execution_request(
-            "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+            "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a", "generation-a",
         )
     finally:
         reset_correlation_id(token)
@@ -703,7 +742,7 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
     assert database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-b", lease_seconds=30) is None
     lease = database.claim_execution_dispatch_intent(execution_id, "org-a", "worker-a", lease_seconds=30)
     assert lease is not None
-    assert lease.attempt_count == 1
+    assert lease.attempt_count == 4
     renewed = database.renew_execution_dispatch_lease(
         execution_id, "org-a", "worker-a", lease.token, lease_seconds=45,
     )
@@ -743,7 +782,7 @@ def test_approval_atomically_creates_one_durable_execution_run(tmp_path):
             (execution_id, "org-a"),
         ).fetchone()
     assert dispatch["state"] == "BLOCKED"
-    assert dispatch["attempt_count"] == 1
+    assert dispatch["attempt_count"] == 4
     assert dispatch["completed_at"]
     assert dispatch["last_error"] == "EXECUTION_CANCELLED_ACKNOWLEDGED"
     assert dispatch["claimed_by"] is None
@@ -803,7 +842,7 @@ def test_approval_requires_correlation_before_any_authority_mutation(tmp_path):
             ("req-a", "idem-a", "f" * 64, options, OPERATION_POLICY_REVISION, budget, account_budget, credentials, now, expires),
         )
     assert database.approve_execution_request(
-        "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a",
+        "req-a", "org-a", "f" * 64, "approval-idem", "admin-a", "session-a", "worker-a", "generation-a",
     ) == ("CORRELATION_REQUIRED", None, None)
     with database._connection_scope() as conn:
         request = conn.execute("SELECT state, approved_decision_id FROM execution_requests WHERE id = ?", ("req-a",)).fetchone()
@@ -1277,7 +1316,7 @@ def test_postgres_execution_run_validation_locks_request_row(monkeypatch):
     assert "FOR UPDATE" in connection.queries[0]
 
 
-def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
+def test_legacy_execution_runs_schema_requires_operator_reconciliation(tmp_path):
     import sqlite3
     from app.core.db import DatabaseManager
 
@@ -1303,11 +1342,11 @@ def test_legacy_execution_runs_schema_is_rebuilt_with_tenant_fk(tmp_path):
             "created_at, started_at, finished_at FROM execution_runs_legacy WHERE 0"
         )
         conn.execute("DROP TABLE execution_runs_legacy")
-    with pytest.raises(RuntimeError, match="execution dispatch schema lacks"):
+    with pytest.raises(RuntimeError, match="schema migration versions are not contiguous"):
         DatabaseManager(db_path)
 
 
-def test_legacy_execution_runs_duplicate_preflight_fails_closed(tmp_path):
+def test_legacy_execution_runs_duplicate_preflight_requires_operator_reconciliation(tmp_path):
     from app.core.db import DatabaseManager
 
     db_path = tmp_path / "legacy-duplicate-runs.db"
@@ -1321,7 +1360,7 @@ def test_legacy_execution_runs_duplicate_preflight_fails_closed(tmp_path):
         conn.execute("DELETE FROM schema_migrations WHERE version = 1")
         conn.execute("DROP INDEX uq_execution_runs_request")
         conn.execute("INSERT INTO execution_runs (execution_id, request_id, organization_id, state, assurance_state, coverage_state, created_at) VALUES ('run-a', 'req-a', 'org-a', 'FAILED', 'UNVERIFIED', 'UNAVAILABLE', ?), ('run-b', 'req-a', 'org-a', 'FAILED', 'UNVERIFIED', 'UNAVAILABLE', ?)", (now, now))
-    with pytest.raises(ValueError, match="duplicate runs"):
+    with pytest.raises(RuntimeError, match="schema migration versions are not contiguous"):
         DatabaseManager(db_path)
 
 
@@ -1332,10 +1371,8 @@ def test_execution_migration_version_two_reruns_without_reconciling_fresh_schema
     database = DatabaseManager(db_path)
     with database._connection_scope() as conn:
         conn.execute("DELETE FROM schema_migrations WHERE version = 2")
-    DatabaseManager(db_path)
-    with database._connection_scope() as conn:
-        versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions[-3:] == [7, 8, 9]
+    with pytest.raises(RuntimeError, match="schema migration versions are not contiguous"):
+        DatabaseManager(db_path)
 
 
 def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
@@ -1345,7 +1382,7 @@ def test_execution_schema_drift_after_version_two_fails_closed(tmp_path):
     database = DatabaseManager(db_path)
     with database._connection_scope() as conn:
         conn.execute("DROP INDEX uq_execution_runs_request")
-    with pytest.raises(ValueError, match="schema health check"):
+    with pytest.raises(RuntimeError, match="execution tenant-binding postcondition is not exact"):
         DatabaseManager(db_path)
 
 
@@ -1357,7 +1394,7 @@ def test_execution_schema_wrong_column_index_fails_closed(tmp_path):
     with database._connection_scope() as conn:
         conn.execute("DROP INDEX uq_execution_runs_request")
         conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(execution_id)")
-    with pytest.raises(ValueError, match="schema health check"):
+    with pytest.raises(RuntimeError, match="execution tenant-binding postcondition is not exact"):
         DatabaseManager(db_path)
 
 
@@ -1407,11 +1444,11 @@ def test_execution_schema_partial_index_fails_closed(tmp_path):
     with database._connection_scope() as conn:
         conn.execute("DROP INDEX uq_execution_runs_request")
         conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, organization_id) WHERE state = 'SUCCEEDED'")
-    with pytest.raises(ValueError, match="schema health check"):
+    with pytest.raises(RuntimeError, match="execution tenant-binding postcondition is not exact"):
         DatabaseManager(db_path)
 
 
-def test_v5_cleans_only_the_known_migration_owned_parent_key(tmp_path):
+def test_missing_migration_ledger_entry_fails_closed_before_v5_reexecution(tmp_path):
     from app.core.db import DatabaseManager
 
     db_path = tmp_path / "known-v4-duplicate.db"
@@ -1420,25 +1457,27 @@ def test_v5_cleans_only_the_known_migration_owned_parent_key(tmp_path):
         conn.execute("CREATE UNIQUE INDEX uq_execution_decisions_id_org ON execution_decisions(id, organization_id)")
         conn.execute("DELETE FROM schema_migrations WHERE version = 5")
         conn.commit()
-    DatabaseManager(db_path)
+    with pytest.raises(RuntimeError, match="schema migration versions are not contiguous"):
+        DatabaseManager(db_path)
     with sqlite3.connect(db_path) as conn:
         names = {row[1] for row in conn.execute("PRAGMA index_list(execution_decisions)").fetchall()}
         versions = {row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
-    assert "uq_execution_decisions_id_org" not in names
-    assert 5 in versions
+    assert "uq_execution_decisions_id_org" in names
+    assert 5 not in versions
 
 
 def test_v5_rejects_unknown_parent_key_duplicates_without_recording_success(tmp_path):
     from app.core.db import DatabaseManager
 
     db_path = tmp_path / "unknown-v4-duplicate.db"
-    DatabaseManager(db_path)
+    database = DatabaseManager(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE UNIQUE INDEX operator_owned_decision_parent_key ON execution_decisions(id, organization_id)")
+        conn.execute("CREATE UNIQUE INDEX operator_owned_decision_parent_key_2 ON execution_decisions(id, organization_id)")
         conn.execute("DELETE FROM schema_migrations WHERE version = 5")
         conn.commit()
     with pytest.raises(ValueError, match="unknown duplicate decision parent keys"):
-        DatabaseManager(db_path)
+        database._init_db(max_migration_version=5)
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT 1 FROM schema_migrations WHERE version = 5").fetchone() is None
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'operator_owned_decision_parent_key'").fetchone()

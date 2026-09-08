@@ -49,6 +49,7 @@ from app.adapters.nmap_adapter import (
     APPROVED_NSE_SCRIPTS,
     FORBIDDEN_SCRIPT_CATEGORIES,
 )
+from app.core.execution_service import issue_non_scan_execution_context
 from app.core.ssrf_protector import create_validated_target, SSRFProtectionError
 
 
@@ -603,6 +604,7 @@ time.sleep(60)
         returncode, stdout, stderr = await supervisor.execute(
             [sys.executable, "-c", script],
             timeout=1.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-nmap-process-tree"),
         )
         assert returncode == -1
         assert "timed out" in stderr.lower()

@@ -1,33 +1,316 @@
 """Regression checks for the authoritative 26-tool contract fleet."""
 
 import ast
+from collections import Counter
+import hashlib
+import json
 from pathlib import Path
 import re
+import subprocess
 
-from app.adapters import get_adapter_registry
-from app.installers.manager import ToolInstallationManager
-from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
-from app.core.tool_fleet import SUPPORTED_TOOL_COUNT, SUPPORTED_TOOL_IDS
-from app.core.version import CONTRACT_VERSION
-
-
-EXPECTED_TOOLS = SUPPORTED_TOOL_IDS
+import pytest
 
 MATRIX_TOOL_ID_ALIASES = {"RETIRE": "RETIREJS"}
 
 
+def _read_porcelain_status_entries(repository_root: Path) -> list[dict[str, str]]:
+    result = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--no-renames",
+            "-z",
+        ],
+        cwd=repository_root,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    records = result.stdout.split(b"\0")
+    assert records[-1] == b""
+    entries = []
+    for record in records[:-1]:
+        assert len(record) >= 3 and record[2:3] == b" "
+        entries.append(
+            {
+                "state": record[:2].decode("ascii"),
+                "path": record[3:].decode("utf-8"),
+            }
+        )
+    return sorted(entries, key=lambda entry: entry["path"])
+
+
+def _inventory_digest(entries: list[dict[str, str]], include_state: bool) -> str:
+    if include_state:
+        values = [f"{entry['state']}\t{entry['path']}" for entry in entries]
+    else:
+        values = [entry["path"] for entry in entries]
+    return hashlib.sha256("\n".join(values).encode("utf-8")).hexdigest()
+
+
+def _is_ci_path(entry: dict[str, str]) -> bool:
+    return entry["path"] == ".ci" or entry["path"].startswith(".ci/")
+
+
+def _manifest_reference_path_and_locator(reference: str | dict[str, str]) -> tuple[str, str | None]:
+    assert isinstance(reference, (str, dict))
+    if isinstance(reference, str):
+        assert reference == reference.strip()
+        if " §" in reference:
+            assert reference.count(" §") == 1
+            path, locator = reference.split(" §", 1)
+            assert path and locator.strip()
+            return path, locator.strip()
+        return reference, None
+
+    assert set(reference) == {"path", "locator"}
+    path = reference["path"]
+    locator = reference["locator"]
+    assert path == path.strip() and path
+    assert locator == locator.strip() and locator
+    return path, locator
+
+
+def _assert_manifest_reference(repository_root: Path, reference: str | dict[str, str]) -> None:
+    path_text, locator = _manifest_reference_path_and_locator(reference)
+    relative_path = Path(path_text)
+    assert not relative_path.is_absolute()
+    assert ".." not in relative_path.parts
+    referenced_path = repository_root / relative_path
+    assert referenced_path.is_file(), path_text
+    if locator is not None:
+        assert "\r" not in locator and "\n" not in locator
+        assert locator in referenced_path.read_text(encoding="utf-8")
+
+
+def _qualified_python_symbols(source_path: Path) -> set[str]:
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    symbols: set[str] = set()
+
+    def visit(nodes: list[ast.AST], prefix: tuple[str, ...] = ()) -> None:
+        for node in nodes:
+            if isinstance(node, ast.ClassDef):
+                qualified = (*prefix, node.name)
+                symbols.add("::".join(qualified))
+                visit(node.body, qualified)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = (*prefix, node.name)
+                symbols.add("::".join(qualified))
+
+    visit(tree.body)
+    return symbols
+
+
+def _assert_manifest_test_vector(repository_root: Path, vector: str) -> None:
+    assert isinstance(vector, str) and vector == vector.strip() and vector
+    components = vector.split("::")
+    test_path = repository_root / Path(components[0])
+    assert not Path(components[0]).is_absolute()
+    assert ".." not in Path(components[0]).parts
+    assert test_path.is_file(), vector
+    if len(components) > 1:
+        qualified_symbol = "::".join(components[1:])
+        assert qualified_symbol in _qualified_python_symbols(test_path), vector
+
+
 def test_registry_manifest_and_installers_preserve_complete_26_tool_fleet():
+    from app.adapters import get_adapter_registry
+    from app.installers.manager import ToolInstallationManager
+    from app.installers.tool_manifest import PINNED_TOOL_MANIFEST
+    from app.core.tool_fleet import SUPPORTED_TOOL_COUNT, SUPPORTED_TOOL_IDS
+
+    expected_tools = SUPPORTED_TOOL_IDS
     assert SUPPORTED_TOOL_COUNT == 26
-    assert len(EXPECTED_TOOLS) == SUPPORTED_TOOL_COUNT
+    assert len(expected_tools) == SUPPORTED_TOOL_COUNT
     registry_tools = set(get_adapter_registry())
     manager_tools = set(ToolInstallationManager()._installers)
 
-    assert registry_tools == EXPECTED_TOOLS
-    assert set(PINNED_TOOL_MANIFEST) == EXPECTED_TOOLS
-    assert manager_tools == EXPECTED_TOOLS
+    assert registry_tools == expected_tools
+    assert set(PINNED_TOOL_MANIFEST) == expected_tools
+    assert manager_tools == expected_tools
+
+
+def test_contract_05_provider_authority_and_database_delivery_policy():
+    repository_root = Path(__file__).resolve().parents[2]
+    canonical_path = repository_root / "contracts" / "05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md"
+    mirror_path = repository_root / "docs" / "contracts" / canonical_path.name
+    contract_05 = canonical_path.read_text(encoding="utf-8")
+    normalized_contract_05 = " ".join(contract_05.split())
+
+    assert "GitHub Actions is the sole authoritative CI/CD" in normalized_contract_05
+    assert "GitLab is a repository mirror only" in normalized_contract_05
+    assert "GitLab CI/CD results are separately attributable diagnostics" in normalized_contract_05
+    assert "GitLab may be the authoritative CI/CD provider" not in normalized_contract_05
+    assert "GitLab alone is authoritative" not in normalized_contract_05
+    assert "An exact-path read-only inspection is permitted" in normalized_contract_05
+    assert "MUST NOT be modified, staged, committed, mirrored, archived, published" in normalized_contract_05
+    section_2_position = contract_05.find("## 2. Mandatory Adversarial Security Matrix (SEC-001 to SEC-035)")
+    section_3_position = contract_05.find("## 3. Repository Delivery and Provider Promotion")
+    sec_001_position = contract_05.find("| **SEC-001**")
+    sec_035_position = contract_05.find("| **SEC-035**")
+    assert section_2_position >= 0
+    assert section_3_position >= 0
+    assert sec_001_position >= 0
+    assert sec_035_position >= 0
+    assert section_2_position < sec_001_position < sec_035_position < section_3_position
+    section_3 = contract_05[section_3_position:]
+    normalized_section_3 = " ".join(section_3.split())
+    assert "GitHub Actions is the sole authoritative CI/CD" in normalized_section_3
+    assert "GitLab is a repository mirror only" in normalized_section_3
+    assert "An exact-path read-only inspection is permitted" in normalized_section_3
+    assert canonical_path.read_bytes() == mirror_path.read_bytes()
+
+
+def test_worktree_inventory_snapshot_matches_documented_git_serialization():
+    repository_root = Path(__file__).resolve().parents[2]
+    inventory_path = repository_root / "docs" / "evidence" / "section_a_worktree_inventory_2026-09-08.json"
+    if not inventory_path.is_file():
+        pytest.skip("dirty-worktree evidence snapshot is not present in this checkout")
+
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    git_status = inventory["git_status"]
+    entries = _read_porcelain_status_entries(repository_root)
+    non_ci_entries = [entry for entry in entries if not _is_ci_path(entry)]
+    ci_entries = [entry for entry in entries if _is_ci_path(entry)]
+
+    assert inventory["branch"] == subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=repository_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    assert inventory["head"] == subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    assert all(entry["path"] != "data/cyberassess.db" for entry in entries)
+
+    assert git_status["visible_entry_count"] == len(entries)
+    assert git_status["non_ci_entry_count"] == len(non_ci_entries)
+    assert git_status["ci_entry_count"] == len(ci_entries)
+    assert sorted(git_status["non_ci_entries"], key=lambda entry: entry["path"]) == non_ci_entries
+    assert git_status["state_counts"]["all"] == dict(Counter(entry["state"] for entry in entries))
+    assert git_status["state_counts"]["non_ci"] == dict(Counter(entry["state"] for entry in non_ci_entries))
+    assert git_status["state_counts"]["ci"] == dict(Counter(entry["state"] for entry in ci_entries))
+
+    for group_name, group_entries in (
+        ("all", entries),
+        ("non_ci", non_ci_entries),
+        ("ci", ci_entries),
+    ):
+        assert git_status[f"{group_name}_path_sha256"] == _inventory_digest(group_entries, False)
+        assert git_status[f"{group_name}_state_path_sha256"] == _inventory_digest(group_entries, True)
+
+
+def test_section_a_delivery_candidate_manifest_covers_live_non_ci_paths():
+    repository_root = Path(__file__).resolve().parents[2]
+    manifest_path = repository_root / "docs" / "evidence" / "section_a_delivery_candidate_manifest_2026-09-08.json"
+    if not manifest_path.is_file():
+        pytest.skip("Section A delivery-candidate evidence manifest is not present in this checkout")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    live_entries = _read_porcelain_status_entries(repository_root)
+    live_non_ci = [entry for entry in live_entries if not _is_ci_path(entry)]
+    allowed_classifications = {
+        "SECTION_A_CANDIDATE",
+        "EVIDENCE/GOVERNANCE",
+        "OUTSIDE-A",
+        "RUNTIME-EXCLUDED",
+        "UNRESOLVED",
+    }
+    expanded_entries = []
+    for group in manifest["groups"]:
+        classification = group["classification"]
+        assert classification in allowed_classifications
+        assert group["porcelain_state"] in {" M", "??"}
+        assert isinstance(group["tracked"], bool)
+        assert group["tracked"] is (group["porcelain_state"] == " M")
+        assert group["ownership_status"] == "UNRESOLVED"
+        assert group["paths"]
+        if classification == "SECTION_A_CANDIDATE":
+            assert group["checkpoints"]
+            assert group["contract_references"]
+            assert group["test_vectors"]
+            assert group["change_kind"]
+            assert group["independent_test_exercised"] is True
+        for path in group["paths"]:
+            expanded_entries.append(
+                {
+                    "state": group["porcelain_state"],
+                    "path": path,
+                    "classification": classification,
+                }
+            )
+
+    manifest_paths = [entry["path"] for entry in expanded_entries]
+    assert manifest["expected_live_non_ci_entry_count"] == len(live_non_ci)
+    assert len(expanded_entries) == len(live_non_ci)
+    assert len(manifest_paths) == len(set(manifest_paths))
+    assert all(not _is_ci_path(entry) for entry in expanded_entries)
+    assert all(entry["path"] != "data/cyberassess.db" for entry in expanded_entries)
+    assert sorted(
+        ({"state": entry["state"], "path": entry["path"]} for entry in expanded_entries),
+        key=lambda entry: entry["path"],
+    ) == live_non_ci
+    expected_classification_counts = {
+        "SECTION_A_CANDIDATE": 39,
+        "EVIDENCE/GOVERNANCE": 9,
+        "OUTSIDE-A": 55,
+        "UNRESOLVED": 3,
+    }
+    assert manifest["classification_counts"] == expected_classification_counts
+    assert Counter(entry["classification"] for entry in expanded_entries) == Counter(
+        manifest["classification_counts"]
+    )
+
+    source_of_truth = manifest["source_of_truth_rule"]
+    source_path = repository_root / source_of_truth["source_path"]
+    assert source_path.is_file()
+    assert source_of_truth["source_locator"] in source_path.read_text(encoding="utf-8")
+    assert source_of_truth["mirror_path_pattern"] == "docs/contracts/<same contract filename>"
+    assert "raw bytes" in source_of_truth["synchronization_rule"]
+    for evidence in source_of_truth["mirror_rule_evidence"]:
+        _assert_manifest_reference(repository_root, evidence)
+
+    for group in manifest["groups"]:
+        for reference in group["contract_references"]:
+            _assert_manifest_reference(repository_root, reference)
+        for vector in group["test_vectors"]:
+            _assert_manifest_test_vector(repository_root, vector)
+
+    for exclusion in manifest["scope_exclusions"]:
+        assert exclusion["classification"] == "RUNTIME-EXCLUDED"
+        assert exclusion["path"] in {".ci", "data/cyberassess.db"}
+
+
+def test_manifest_string_locator_mutation_is_rejected():
+    repository_root = Path(__file__).resolve().parents[2]
+    manifest_path = repository_root / "docs" / "evidence" / "section_a_delivery_candidate_manifest_2026-09-08.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reference = next(
+        reference
+        for group in manifest["groups"]
+        for reference in group["contract_references"]
+        if isinstance(reference, str) and " §" in reference
+    )
+    path, locator = _manifest_reference_path_and_locator(reference)
+    assert locator is not None
+    mutated_reference = f"{path} §{locator} [tampered-locator]"
+
+    with pytest.raises(AssertionError):
+        _assert_manifest_reference(repository_root, mutated_reference)
 
 
 def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
+    from app.core.tool_fleet import SUPPORTED_TOOL_IDS
+    from app.core.version import CONTRACT_VERSION
+
+    expected_tools = SUPPORTED_TOOL_IDS
     repository_root = Path(__file__).resolve().parents[2]
     canonical = repository_root / "contracts"
     mirror = repository_root / "docs" / "contracts"
@@ -35,6 +318,10 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     contract_01 = (canonical / "01_PROJECT_SCOPE_AND_SAFETY_CONTRACT.md").read_text(encoding="utf-8")
     contract_03 = (canonical / "03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md").read_text(encoding="utf-8")
     contract_04 = (canonical / "04_API_AND_STREAMING_EVENTS_CONTRACT.md").read_text(encoding="utf-8")
+    contract_05_path = canonical / "05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md"
+    contract_05_mirror_path = mirror / contract_05_path.name
+    contract_05 = contract_05_path.read_text(encoding="utf-8")
+    normalized_contract_05 = " ".join(contract_05.split())
     contract_07 = (canonical / "07_FRONTEND_UI_UX_SPECIFICATION_CONTRACT.md").read_text(encoding="utf-8")
     contract_08 = (canonical / "08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md").read_text(encoding="utf-8")
     contract_09 = (canonical / "09_TOOL_IMPLEMENTATION_CONTRACT.md").read_text(encoding="utf-8")
@@ -81,6 +368,12 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "backend snapshot" in contract_04
     assert "target_policy_version" in contract_04
     assert "operation_policy_revision" in contract_04
+    assert "GitHub Actions is the sole authoritative CI/CD" in contract_05
+    assert "GitLab is a repository mirror only" in contract_05
+    assert "GitLab CI/CD results are separately attributable diagnostics" in normalized_contract_05
+    assert "GitLab may be the authoritative CI/CD provider" not in contract_05
+    assert "GitLab alone is authoritative" not in contract_05
+    assert contract_05_path.read_bytes() == contract_05_mirror_path.read_bytes()
     assert "immutable nested representations" in contract_09
     assert "NOT_SUPPORTED`" in contract_09
     assert "permanent" in contract_09
@@ -119,7 +412,7 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     matrix_tool_ids = set(re.findall(r"\| `(TOOL-[A-Z0-9_-]+)` \|", assurance_matrix))
     assert len(matrix_tool_ids) == 26
     expected_matrix_ids = {
-        f"TOOL-{tool.upper().replace('_', '-')}" for tool in EXPECTED_TOOLS
+        f"TOOL-{tool.upper().replace('_', '-')}" for tool in expected_tools
     }
     expected_matrix_ids.discard("TOOL-RETIRE")
     expected_matrix_ids.add("TOOL-RETIREJS")
@@ -157,13 +450,13 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert "26-tool Enterprise Security Pentesting & Compliance Fleet" in dockerfile
     assert "all 26 available modern adapters" in models
     config_fields = set(re.findall(r"^    enable_([a-z0-9_]+):", models, re.MULTILINE))
-    expected_config_fields = {tool.replace("-", "_") for tool in EXPECTED_TOOLS}
+    expected_config_fields = {tool.replace("-", "_") for tool in expected_tools}
     expected_config_fields.discard("retire")
     expected_config_fields.add("retirejs")
     assert config_fields == expected_config_fields
     assert "FLEET (26):" in frontend_index
     frontend_tool_ids = set(re.findall(r'id="tool-pill-([a-z0-9-]+)"', frontend_index))
-    assert frontend_tool_ids == EXPECTED_TOOLS
+    assert frontend_tool_ids == expected_tools
     assert len(frontend_tool_ids) == 26
     assert "all 26 registered tool/native adapters" in (repository_root / "backend" / "app" / "adapters" / "__init__.py").read_text()
     for tool in (
@@ -195,11 +488,15 @@ def test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet():
     assert len(matrix_ids) == 26
     expected_matrix_names = {
         MATRIX_TOOL_ID_ALIASES.get(tool.upper(), tool.upper().replace("_", "-"))
-        for tool in EXPECTED_TOOLS
+        for tool in expected_tools
     }
     assert expected_matrix_names == {
         tool.removeprefix("TOOL-") for tool in matrix_ids
     }
 
     for contract_file in canonical.glob("*.md"):
-        assert (mirror / contract_file.name).read_bytes() == contract_file.read_bytes()
+        mirror_file = mirror / contract_file.name
+        assert mirror_file.read_bytes() == contract_file.read_bytes(), (
+            f"contract mirror is not byte-identical to the authoritative source: "
+            f"{contract_file.name}"
+        )

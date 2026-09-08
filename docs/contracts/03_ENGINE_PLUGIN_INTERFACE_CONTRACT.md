@@ -25,6 +25,8 @@ class BaseEngine(ABC):
         emit_log: Callable[[LogLevel, str], Awaitable[None]],
         emit_progress: Callable[[int, str], Awaitable[None]],
         emit_finding: Callable[[Finding], Awaitable[None]],
+        execution_context: GovernedExecutionContext,
+        execution_capability: ExecutionDecisionCapability,
         **kwargs: Any,
     ) -> List[Finding]: ...
 
@@ -38,10 +40,10 @@ class BaseToolAdapter(ABC):
         ...
 
     @abstractmethod
-    async def is_available(self, custom_path: Optional[str] = None) -> bool: ...
+    async def is_available(self, custom_path: Optional[str] = None, *, non_scan_context: Optional[NonScanExecutionContext] = None) -> bool: ...
 
     @abstractmethod
-    async def get_version(self, custom_path: Optional[str] = None) -> Optional[str]: ...
+    async def get_version(self, custom_path: Optional[str] = None, pre_launch_check: Optional[Callable[[], bool]] = None) -> Optional[str]: ...
 
     @abstractmethod
     async def run(
@@ -50,6 +52,8 @@ class BaseToolAdapter(ABC):
         config: ScanConfig,
         emit_log: Callable[[LogLevel, str], Awaitable[None]],
         emit_finding: Callable[[Finding], Awaitable[None]],
+        execution_context: GovernedExecutionContext,
+        execution_capability: ExecutionDecisionCapability,
         **kwargs: Any,
     ) -> List[Finding]: ...
 ```
@@ -90,11 +94,31 @@ Binary installation must follow this strict 8-step lifecycle:
 8. REGISTRATION: Register active tool status with the platform adapter registry. Capability registration and backend-owned toolbox/system capability snapshots are observational only; cached status MUST NOT replace live pre-launch executable integrity and exact-version verification.
 ```
 
+Registry registration, `/api/system/capabilities`, and `/api/system/tools`
+responses are readiness observations, not execution authority. A `LIVE` or
+`CACHE` result, an installed version string, a fallback status, or a registered
+adapter MUST NOT create an authorization decision, a validated target, a child
+execution request, or a process-launch lease. The actual execution service MUST
+repeat managed-path, executable-integrity, exact-version, target-seal, policy,
+credential, budget, worker, and revocation checks immediately before launch.
+Cache metadata MUST identify its source and age; an expired or failed refresh
+MUST NOT be reported as a current trusted capability.
+
 ### 1.1 Full-Capability Automation and Authorization Boundary
 
 Automation MUST orchestrate the upstream tool; it MUST NOT silently replace, cripple, or permanently remove upstream capabilities. The complete supported command, module, protocol, and option surface remains available to an authorized execution policy. Safety is enforced at the CyberAssess control plane and process-launch boundary through authorization, target binding, resource governance, and auditability—not by misrepresenting a reduced tool as the full tool.
 
 Each automated request MUST be represented as a typed, server-validated execution request containing the tenant, project, asset, immutable `ValidatedTarget`, tool identity, exact requested operation, `target_policy_version`, `operation_policy_revision`, authorization decision, and resource budget. `target_policy_version` identifies the Target Security Gateway policy used to seal and authorize the target; `operation_policy_revision` identifies the exact revision of the CyberAssess operation-policy artifact used to classify and authorize the requested tool operation. These are distinct authorities and MUST NOT be represented by one generic field. The adapter MUST construct the final argument vector without shell interpolation. Client input MUST NOT directly provide an executable path, shell string, output path, credential location, or unvalidated destination.
+
+`AuthConfig` is a request-model surface and is not a durable credential
+reference. The current repository has no generic tenant-scoped web-credential
+resolver. Accordingly, the durable scan-manifest path MUST reject inline
+authentication headers, cookies, passwords, and non-`NONE`/`NO_AUTH` web-auth
+types until a typed tenant-scoped reference and worker-side resolver are
+implemented. It MUST fail closed rather than persist a redaction or a digest
+that cannot be resolved at execution time. The worker-only
+`CloudCredentialEnvelope` remains limited to its governed cloud-use boundary
+and MUST NOT be treated as a general web-authentication mechanism.
 
 The platform MUST distinguish `CAPABILITY_AVAILABLE`, `EXECUTION_AUTHORIZED`, `AUTHORIZATION_REQUIRED`, `EXECUTION_BLOCKED`, and `NATIVE_ENGINE_READY`. A default assessment profile MAY select conservative operations, but that default MUST NOT be represented as a permanent capability restriction. Higher-impact operations require an explicit policy decision, appropriate tenant authorization, isolated worker permissions, bounded resources, and an auditable decision record. Installation or capability detection alone MUST never authorize execution.
 
@@ -143,6 +167,42 @@ separately through request creation, authorization decisions, request
 fingerprints, audit events, approval records, target-seal validation, and
 pre-launch revalidation. A change to either value invalidates the affected
 decision; neither value may be inferred from the other.
+
+### 1.1.3 Service-owned authority issuance and recovery
+
+The public constructors of `GovernedExecutionContext`,
+`NonScanExecutionContext`, and `ExecutionDecisionCapability` are data-model
+surfaces only; construction, deserialization, copying, or mutation MUST NOT
+make an object authoritative. The execution service MUST register the exact
+object it issued in a process-local issuer registry and the process boundary
+MUST reject objects that are not registered by that verifier. Issuer tokens and
+registries are implementation details and MUST NOT be accepted as caller
+supplied authority. Scan capabilities MUST be issued only after the durable
+child decision is claimed; installer and observation probes MUST use the
+separate service-owned non-scan issuer and MUST be incapable of scan
+terminalization.
+
+The durable execution run MUST record the worker generation at authorization
+time. Capability issuance, pre-launch revalidation, context creation, process
+ownership attestation, and recovery MUST compare the current process-owned
+worker generation to that durable value. A stale or caller-supplied generation
+MUST fail closed and MUST NOT enter an attestation or execution record.
+
+`NO_EXTERNAL_PROCESS` is a cryptographically bound evidence claim, not a
+synthetic error string. Its proof MUST bind the execution identity, decision
+and dispatch claims, worker identity/generation, proof/reason code, and
+observation time. A post-creation identity or ownership failure MUST persist
+`LAUNCH_UNCERTAIN` before returning. The lifecycle coordinator MUST retain the
+exact execution mapping, use a leased, tenant-scoped recovery record with
+bounded retry/backoff, and expose `DEFERRED`, `RECOVERY_BLOCKED`, or
+`EXHAUSTED` states to authorized operators. Only supervisor-confirmed
+termination may atomically transition ownership to `TERMINAL` and the run to
+its reviewed safe terminal outcome.
+
+On Windows, governed external execution is explicitly unsupported until a
+verified kernel-owned Job Object implementation and its runtime evidence are
+deployed. Rejection is durable/observable and MUST NOT be represented as a
+successful fallback or as proof that no process was created.
 
 ### 1.1.2 Canonical state crosswalk
 

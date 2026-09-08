@@ -190,7 +190,7 @@ class MetasploitAdapter(GovernedExtendedAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-v"], timeout=15.0, pre_launch_check=pre_launch_check)
+        code, stdout, stderr = await self.execute_command([binary, "-v"], timeout=15.0, pre_launch_check=pre_launch_check, non_scan_context=self._version_probe_context())
         match = re.search(r"Framework Version:\s*([0-9]+(?:\.[0-9]+)+(?:-[A-Za-z0-9.-]+)?)", stdout + stderr)
         return f"metasploit {match.group(1)}" if match else None
 
@@ -218,7 +218,14 @@ class MetasploitAdapter(GovernedExtendedAdapter):
         target_host = validated_target.selected_destination if validated_target is not None else getattr(target, "value", "")
         target_port = validated_target.port if validated_target is not None else None
         command = self.build_command(binary, target_host, int(kwargs.get("port", target_port or 443)))
-        code, stdout, stderr = await self.execute_command(command, timeout=min(60.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
+        code, stdout, stderr = await self.execute_command(
+            command,
+            timeout=min(60.0, config.timeout_seconds),
+            emit_log=emit_log,
+            pre_launch_check=lambda: self.verify_managed_binary(binary),
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
+        )
         findings: List[Finding] = []
         for line in stdout.splitlines():
             if "[+]" not in line:
@@ -256,7 +263,7 @@ class SqlmapAdapter(GovernedExtendedAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=15.0, pre_launch_check=pre_launch_check)
+        code, stdout, stderr = await self.execute_command([binary, "--version"], timeout=15.0, pre_launch_check=pre_launch_check, non_scan_context=self._version_probe_context())
         match = re.search(r"sqlmap/([0-9]+(?:\.[0-9]+)+)", stdout + stderr, re.IGNORECASE)
         return f"sqlmap {match.group(1)}" if match else None
 
@@ -283,7 +290,14 @@ class SqlmapAdapter(GovernedExtendedAdapter):
         if validated_target is not None:
             target_url, host_header = bind_url_to_validated_target(target_url, validated_target)
         command = self.build_command(binary, target_url, output_dir, host_header=host_header)
-        code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
+        code, stdout, stderr = await self.execute_command(
+            command,
+            timeout=min(90.0, config.timeout_seconds),
+            emit_log=emit_log,
+            pre_launch_check=lambda: self.verify_managed_binary(binary),
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
+        )
         findings: List[Finding] = []
         evidence_target = validated_target.canonical_value if validated_target is not None else target.value
         for match in re.finditer(r"Parameter:\s*([^\s(]+).*?Type:\s*([^\n]+)", stdout, re.IGNORECASE | re.DOTALL):
@@ -313,7 +327,7 @@ class AmassAdapter(GovernedExtendedAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=15.0, pre_launch_check=pre_launch_check)
+        code, stdout, stderr = await self.execute_command([binary, "-version"], timeout=15.0, pre_launch_check=pre_launch_check, non_scan_context=self._version_probe_context())
         match = re.search(r"v?(\d+(?:\.\d+)+)", stdout + stderr)
         return f"amass {match.group(1)}" if match else None
 
@@ -333,7 +347,14 @@ class AmassAdapter(GovernedExtendedAdapter):
             return []
         target_value = validated_target.canonical_value if validated_target is not None else getattr(target, "value", "")
         command = self.build_command(binary, target_value, output_file)
-        code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
+        code, stdout, stderr = await self.execute_command(
+            command,
+            timeout=min(90.0, config.timeout_seconds),
+            emit_log=emit_log,
+            pre_launch_check=lambda: self.verify_managed_binary(binary),
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
+        )
         findings: List[Finding] = []
         emit_subdomain = kwargs.get("emit_subdomain")
         try:
@@ -386,7 +407,14 @@ class HydraAdapter(GovernedExtendedAdapter):
         binary = self.resolve_binary_path(custom_path)
         if not binary:
             return None
-        code, stdout, stderr = await self.execute_command([binary, "-h"], timeout=15.0, pre_launch_check=pre_launch_check)
+        from app.core.execution_service import issue_non_scan_execution_context
+
+        code, stdout, stderr = await self.execute_command(
+            [binary, "-h"],
+            timeout=15.0,
+            pre_launch_check=pre_launch_check,
+            non_scan_context=issue_non_scan_execution_context("observation:hydra:version"),
+        )
         match = re.search(r"Hydra v([0-9]+(?:\.[0-9]+)+)", stdout + stderr, re.IGNORECASE)
         return f"hydra {match.group(1)}" if match else None
 
@@ -414,7 +442,14 @@ class HydraAdapter(GovernedExtendedAdapter):
             return []
         target_host = validated_target.selected_destination if validated_target is not None else target.value
         command = self.build_command(binary, username_file, password_file, kwargs.get("protocol", "ssh"), target_host, int(kwargs.get("port", 22)), output_file)
-        code, stdout, stderr = await self.execute_command(command, timeout=min(90.0, config.timeout_seconds), emit_log=emit_log, pre_launch_check=lambda: self.verify_managed_binary(binary))
+        code, stdout, stderr = await self.execute_command(
+            command,
+            timeout=min(90.0, config.timeout_seconds),
+            emit_log=emit_log,
+            pre_launch_check=lambda: self.verify_managed_binary(binary),
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
+        )
         findings: List[Finding] = []
         try:
             with open(output_file, "r", encoding="utf-8") as report:

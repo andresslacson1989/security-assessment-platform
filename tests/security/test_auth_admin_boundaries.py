@@ -12,6 +12,62 @@ from app.core.models import PrincipalType, UserRole
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("approval_result", ["AUTHORIZED", "REPLAY"])
+async def test_scan_approval_persists_only_and_replay_is_noop(monkeypatch, approval_result):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from app.api import scans
+
+    admin = UserProfile(
+        id="approver-1", username="tenant-approver", email="approver@example.test",
+        role=UserRole.ADMIN, organization_id="org-one",
+        principal_type=PrincipalType.TENANT_PRINCIPAL, scopes=["execution:approve"],
+    )
+    job = SimpleNamespace(authorization_request_id="parent-1")
+    monkeypatch.setattr(scans, "get_scan", lambda *args, **kwargs: job)
+    monkeypatch.setattr(scans, "_scan_session_jti", lambda *args: "session-1")
+    approve = Mock(return_value=(approval_result, []))
+    monkeypatch.setattr(scans, "db_manager", SimpleNamespace(approve_scan_authorization_request=approve))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(scans.orchestrator, "dispatch_approved_scan", dispatch)
+    save = Mock()
+    monkeypatch.setattr(scans, "save_scan", save)
+
+    result = await scans.approve_scan_authorization(
+        "scan-1", scans.ScanApprovalRequest(manifest_hash="a" * 64, confirm_owned_target=True),
+        authorization="Bearer test-session", idempotency_key="approval-1", current_user=admin,
+    )
+
+    assert result["execution_started"] is False
+    assert result["dispatch_state"] == "PENDING_IMPLEMENTATION"
+    assert result["idempotent_replay"] is (approval_result == "REPLAY")
+    approve.assert_called_once()
+    dispatch.assert_not_awaited()
+    save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scan_approval_guard_accepts_real_tenant_admin_and_rejects_missing_scope():
+    import inspect
+    from fastapi import HTTPException
+    from app.api.scans import approve_scan_authorization
+    from app.core.auth import resolve_effective_scopes
+
+    admin = UserProfile(
+        username="tenant-approver", email="approver@example.test", role=UserRole.ADMIN,
+        principal_type=PrincipalType.TENANT_PRINCIPAL, organization_id="org-one",
+    )
+    admin = admin.model_copy(update={"scopes": resolve_effective_scopes(admin)})
+    guard = inspect.signature(approve_scan_authorization).parameters["current_user"].default.dependency
+    assert "*" not in admin.scopes
+    assert await guard(admin) is admin
+    restricted = admin.model_copy(update={"scopes": ["scan:read"]})
+    with pytest.raises(HTTPException) as denied:
+        await guard(restricted)
+    assert denied.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_tenant_admin_cannot_create_user_in_another_organization():
     tenant_admin = UserProfile(
         username="tenant-admin", email="tenant@example.test", role=UserRole.ADMIN,
@@ -94,15 +150,34 @@ async def test_live_secret_verification_grant_requires_organization_admin():
 
 
 @pytest.mark.asyncio
-async def test_scan_start_requires_internal_scope_even_for_admin_role():
+async def test_scan_start_requires_internal_scope_even_for_admin_role(monkeypatch):
     from starlette.requests import Request
     from fastapi import HTTPException
+    from types import SimpleNamespace
+    from app.api import scans
+    from app.core.models import AssetType
 
     admin_without_scope = UserProfile(
         username="admin", email="admin@example.test", role=UserRole.ADMIN,
         scopes=["scan:create"], organization_id="org-internal-test",
     )
-    payload = StartScanRequest(target_type="IP", target_value="192.168.1.50", enabled_engines=[])
+    monkeypatch.setattr(
+        scans.db_manager,
+        "get_asset",
+        lambda *args, **kwargs: SimpleNamespace(
+            id="asset-internal-test",
+            organization_id="org-internal-test",
+            project_id=None,
+            type=AssetType.IP_ADDRESS,
+            target_value="192.168.1.50",
+        ),
+    )
+    payload = StartScanRequest(
+        target_type="IP",
+        target_value="192.168.1.50",
+        asset_id="asset-internal-test",
+        enabled_engines=[],
+    )
     request = Request({
         "type": "http", "method": "POST", "path": "/api/scans/start",
         "headers": [], "query_string": b"", "server": ("test", 80),
@@ -110,5 +185,10 @@ async def test_scan_start_requires_internal_scope_even_for_admin_role():
     })
 
     with pytest.raises(HTTPException) as exc_info:
-        await start_security_scan(payload, request, admin_without_scope)
+        await start_security_scan(
+            payload,
+            request,
+            idempotency_key="internal-scope-test",
+            current_user=admin_without_scope,
+        )
     assert exc_info.value.status_code == 400

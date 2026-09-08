@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 import zipfile
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -410,11 +410,13 @@ async def test_pip_tool_version_fallback_uses_process_supervisor():
             version = await installer.get_version()
 
     assert version == "bandit 1.7.8"
-    execute_mock.assert_awaited_once_with(
-        ["/managed/bandit", "--version"],
-        timeout=5.0,
-        max_output_bytes=1024 * 1024,
-    )
+    execute_mock.assert_awaited_once()
+    assert execute_mock.await_args.args == (["/managed/bandit", "--version"],)
+    assert execute_mock.await_args.kwargs == {
+        "timeout": 5.0,
+        "max_output_bytes": 1024 * 1024,
+        "non_scan_context": ANY,
+    }
 
 
 @pytest.mark.asyncio

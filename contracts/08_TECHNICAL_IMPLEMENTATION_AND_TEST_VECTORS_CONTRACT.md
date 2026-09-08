@@ -9,6 +9,39 @@
 
 ## 1. Centralized Multi-Layer Authorization Service
 
+### 1.1 Scan request and manifest test vectors
+
+The scan endpoint is request-only until a durable authority exists. Tests MUST prove that a request creates one immutable parent manifest containing all 26 fleet entries and the five registered engine identities, returns AUTHORIZATION_REQUIRED, and produces no queue task, STARTING/RUNNING run, or SCAN_STARTED event. The manifest hash MUST change when any target, asset, project, profile, engine, option, budget, credential scope, policy revision, or expiry field changes.
+
+One authenticated administrator session may approve one exact manifest after an explicit owned-target warning. Approval MUST be tenant-bound, session-JTI-bound, expiring, revocable, and idempotent only for the exact request fingerprint. Each selected external operation MUST receive a distinct child request, decision, and durable run; a parent approval MUST NOT be reused as a process-launch capability.
+
+The approved-scan dispatch vector MUST exercise `POST /api/scans/{scan_id}/approve` through the real orchestrator path. It MUST prove that every external adapter launch resolves the selected child authority using the server-owned operation policy and exact command, that the process supervisor issues the typed context only after durable claim, and that a scan parent ID cannot be used as a process identity. Worker identity and generation MUST be derived from the service runtime and match the durable child run; caller-supplied generation or reconstructed capability/context objects MUST be rejected.
+
+Negative vectors MUST cover missing policy rows, undeclared or duplicate engine/tool ownership, manual-only Hydra, native-only CI/CD, cross-tenant targets, forged/reconstructed contexts, stale worker generations, revoked sessions, request replay with a changed manifest, and direct API/orchestrator launches without a typed authority lease.
+
+Manifest-integrity vectors MUST additionally prove deep immutability of every
+nested manifest value and deterministic reconstruction/hash output; exact
+creation-key grammar and tenant-scoped replay/conflict behavior; rejection of
+inline web credentials without persisting a redaction or unusable digest;
+explicit disabled state and exclusion for each of the 26 tool IDs; Hydra's
+fleet-only deferred state until a registered automation engine exists; canonical
+normalized operation/fleet equality; post-creation asset owner/lifecycle and
+target-policy revalidation; complete child-authority replay validation; and
+transaction rollback when any child insert fails. A failed integrity check MUST
+leave the parent request and all child authority tables unchanged.
+
+Process-lifecycle vectors MUST cover a post-`Popen()` identity-capture failure persisting `LAUNCH_UNCERTAIN` with a recovery record, normal root exit with a surviving descendant or process-group member, exact-ID cancellation of every selected child execution, retry/backoff and operator-visible recovery states, cryptographically bound `NO_EXTERNAL_PROCESS` evidence, and explicit Windows governed-execution rejection until a verified Job Object implementation is deployed.
+
+Capability discovery, cached status, installed version, or fallback readiness MUST never satisfy these authorization vectors.
+
+The current migration verifier evidence uses two separate artifacts. The live
+`POSTCONDITION_SOURCE_SHA256` map MUST equal the SHA-256 digest of
+`inspect.getsource(method).encode(UTF-8)` for every v1–v13 verifier method, and
+`current_pre_v13` evidence MUST record those values. Historical checksum
+material and `committed_baseline` evidence MUST remain unchanged. If an
+authoritative v12→v13 fixture cannot be reconciled, v12→v13 remains
+blocked/unverified rather than receiving a manufactured baseline.
+
 All resource operations must be validated against the centralized authorization service:
 
 ```python
@@ -190,8 +223,31 @@ To achieve deterministic CI verification across environments without requiring e
   MUST persist bounded retry/backoff/escalation state and expose it through
   operator health/audit. Database operations that outlive an async timeout
   MUST be tracked and prevented from causing an unobserved late mutation.
+- Recovery tests MUST exercise `GET /api/system/executions/recovery/health`
+  through the authenticated administrator boundary, verify tenant isolation,
+  and prove that `LAUNCH_UNCERTAIN` is not terminalized by `NOT_FOUND`, missing
+  in-memory state, or a worker restart. A supervisor-confirmed termination
+  MUST create a digest-bound `NO_EXTERNAL_PROCESS` recovery proof and atomically
+  close ownership, dispatch, run, and recovery projection records.
 
-### 6.1.3 Historical Persistence and Retention Vectors
+### 6.1.3 Scan authorization manifest integrity vectors
+
+The following repository tests are the minimum Section A evidence for the
+manifest boundary: `backend/tests/test_scan_manifest_contract.py::test_manifest_nested_values_are_deeply_immutable_and_deterministic`,
+`backend/tests/test_scan_manifest_contract.py::test_manifest_rejects_inline_credentials_before_durable_persistence`,
+`backend/tests/test_scan_manifest_contract.py::test_all_26_tools_have_explicit_enable_flag_mappings`,
+`backend/tests/test_scan_manifest_contract.py::test_hydra_is_fleet_only_until_a_registered_automation_engine_exists`,
+`tests/test_api_endpoints.py::test_scan_creation_requires_an_exact_idempotency_key`,
+`tests/test_api_endpoints.py::test_scan_creation_idempotency_key_is_tenant_scoped`,
+`tests/test_api_endpoints.py::test_scan_creation_enforces_target_field_bounds`,
+`tests/test_api_endpoints.py::test_scan_approval_rejects_pre_approval_normalized_row_tampering`,
+`tests/test_api_endpoints.py::test_scan_approval_rejects_post_creation_asset_authority_changes`,
+`tests/test_api_endpoints.py::test_scan_approval_rolls_back_partial_child_authority_materialization`,
+and `tests/security/test_database_backend.py::test_current_verifier_fingerprints_match_every_runtime_method`.
+These tests are repository evidence only; live PostgreSQL execution and target
+environment deployment remain separate acceptance evidence.
+
+### 6.1.4 Historical Persistence and Retention Vectors
 
 - Start, progress, success, cancellation, timeout, and failure transitions MUST be persisted to the relational database and remain retrievable after a new application process is initialized.
 - `GET /api/scans` and `GET /api/scans/history` MUST return the canonical `{total, limit, offset, items}` envelope. An integration test MUST render a non-empty `items` response in the history UI.

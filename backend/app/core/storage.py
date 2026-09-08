@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional, List, Tuple
-from app.core.models import ScanJob, sanitize_sensitive_data
+from app.core.models import ScanJob, ScanAuthorizationRequestRecord, sanitize_sensitive_data
 from app.core.db import db_manager
 
 logger = logging.getLogger("cyberassess.storage")
@@ -48,6 +48,28 @@ def save_scan(scan_job: ScanJob, storage_dir: Optional[Path] = None) -> None:
         # The database write above is authoritative.  The JSON file is only
         # an export/cache artifact, so a cache failure must be observable but
         # must never cause a second persistence source or silent data loss.
+        logger.warning(
+            "Scan JSON cache write failed for scan_id=%s error_type=%s",
+            scan_job.id,
+            type(exc).__name__,
+        )
+
+
+def save_scan_with_authorization_request(
+    scan_job: ScanJob,
+    authorization_request: ScanAuthorizationRequestRecord,
+    storage_dir: Optional[Path] = None,
+) -> None:
+    """Atomically persist a new scan request and write its optional export artifact."""
+    db_manager.save_scan_and_authorization_request(scan_job, authorization_request)
+    try:
+        target_dir = get_storage_dir(storage_dir)
+        file_path = target_dir / f"{scan_job.id}.json"
+        file_path.write_text(
+            json.dumps(sanitize_sensitive_data(scan_job.model_dump(mode="json")), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
         logger.warning(
             "Scan JSON cache write failed for scan_id=%s error_type=%s",
             scan_job.id,

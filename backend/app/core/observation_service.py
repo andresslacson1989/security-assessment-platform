@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.adapters import get_cached_system_capabilities
@@ -131,6 +131,11 @@ class BackendObservationService:
         """Terminate and durably close authority-lost executions by exact ID."""
         from app.core.db import db_manager
         from app.core.process_supervisor import process_supervisor
+        from app.core.execution_service import get_worker_generation
+
+        recovery_owner = "execution-recovery-coordinator"
+        recovery_worker_generation = get_worker_generation()
+        max_recovery_attempts = 5
 
         try:
             candidates = await asyncio.wait_for(
@@ -153,6 +158,86 @@ class BackendObservationService:
         reaped = 0
         for candidate in candidates:
             execution_id = candidate["execution_id"]
+            if candidate.get("ownership_state") in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
+                # Uncertain ownership has a separate lease and settlement
+                # protocol.  A NOT_FOUND result is deliberately not treated
+                # as proof that a process is gone; only the supervisor's
+                # confirmed result can close the durable run.
+                try:
+                    lease = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.claim_recovery,
+                            execution_id,
+                            candidate["organization_id"],
+                            recovery_owner,
+                            recovery_worker_generation,
+                            lease_seconds=30,
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                    if not lease:
+                        continue
+                    cancellation_task = asyncio.create_task(
+                        asyncio.to_thread(process_supervisor.cancel_execution, execution_id)
+                    )
+                    self._recovery_workers.add(cancellation_task)
+                    cancellation_task.add_done_callback(self._recovery_workers.discard)
+                    cancellation = await asyncio.wait_for(
+                        asyncio.shield(cancellation_task),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                    if getattr(cancellation, "confirmed", bool(cancellation)):
+                        closed = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                db_manager.settle_recovery_execution,
+                                execution_id,
+                                candidate["organization_id"],
+                                recovery_owner,
+                                lease["lease_token"],
+                                recovery_worker_generation,
+                            ),
+                            timeout=self.refresh_timeout_seconds,
+                        )
+                        if closed:
+                            reaped += 1
+                        continue
+                    attempt_number = int(lease["attempt_number"])
+                    status = "EXHAUSTED" if attempt_number >= max_recovery_attempts else "DEFERRED"
+                    retry_at = None if status == "EXHAUSTED" else datetime.now(timezone.utc) + timedelta(
+                        seconds=min(300, 5 * (2 ** min(attempt_number - 1, 6)))
+                    )
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.complete_recovery,
+                            execution_id,
+                            candidate["organization_id"],
+                            recovery_owner,
+                            lease["lease_token"],
+                            recovery_worker_generation,
+                            status=status,
+                            outcome=f"termination_{getattr(cancellation, 'status', 'UNKNOWN').lower()}",
+                            error="termination was not confirmed; automatic recovery remains fenced",
+                            next_retry_at=retry_at,
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"[:512]
+                    logger.warning(
+                        "Uncertain execution recovery failed: execution_id=%s error=%s",
+                        execution_id, message,
+                    )
+                    self._state = ObservationState(
+                        last_started_at=self._state.last_started_at,
+                        last_completed_at=self._state.last_completed_at,
+                        last_error=self._state.last_error,
+                        last_recovery_error=message,
+                        last_recovered_count=reaped,
+                    )
+                continue
             # The supervisor registry is keyed by the durable execution ID;
             # cancellation cannot target an arbitrary PID or a sibling job.
             try:

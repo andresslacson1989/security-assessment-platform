@@ -16,8 +16,8 @@ from app.core.version import CONTRACT_VERSION, SCHEMA_VERSION
 from app.core.migration_artifacts import (
     FORWARD_APPLY_MANIFESTS,
     FORWARD_APPLY_SOURCE_SHA256,
+    MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256,
     POSTCONDITION_ARTIFACT_REVISION,
-    POSTCONDITION_SOURCE_SHA256,
 )
 
 REGISTRY_REVISION = "migration-registry-v1"
@@ -35,6 +35,9 @@ class MigrationManagerProtocol(Protocol):
     def _verify_migration_v8_postconditions(self, conn) -> None: ...
     def _verify_migration_v9_postconditions(self, conn) -> None: ...
     def _verify_migration_v10_postconditions(self, conn) -> None: ...
+    def _verify_migration_v11_postconditions(self, conn) -> None: ...
+    def _verify_migration_v12_postconditions(self, conn) -> None: ...
+    def _verify_migration_v13_postconditions(self, conn) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,9 @@ _DESCRIPTORS = (
     (8, "execution-dispatch-tenant-binding", "Execution dispatch tenant binding", 7, "tenant-bound dispatch lease columns and foreign keys"),
     (9, "execution-parent-index-repair", "Execution parent index repair", 8, "remove only the proven migration-owned duplicate parent index"),
     (10, "execution-process-ownership-and-recovery", "Execution process ownership and recovery", 9, "tenant-bound process ownership and immutable recovery evidence"),
+    (11, "scan-authorization-manifest", "Normalized scan authorization manifest", 10, "tenant-bound scan authorization parent, operations, and fleet snapshot"),
+    (12, "scan-authorization-bindings", "Scan authorization approval bindings", 11, "parent approval, child execution links, and worker generation"),
+    (13, "scan-authorization-parent-scoped-operations", "Parent-scoped scan authorization operations", 12, "parent-scoped operation identity and canonical request material"),
 )
 
 
@@ -83,6 +89,11 @@ def _apply_version(version: int):
     def apply(manager: MigrationManagerProtocol) -> None:
         manager._apply_migration_version(version)
     return apply
+
+
+def _apply_v13(manager: MigrationManagerProtocol) -> None:
+    """Dispatch the v13 implementation without entering the frozen legacy path."""
+    manager._apply_scan_request_v13()
 
 
 def _reconcile_version(version: int):
@@ -128,7 +139,19 @@ def _verify_v10(manager: MigrationManagerProtocol, conn) -> None:
     manager._verify_migration_v10_postconditions(conn)
 
 
-_VERIFIERS = (_verify_v1, _verify_v2, _verify_v3, _verify_v4, _verify_v5, _verify_v6, _verify_v7, _verify_v8, _verify_v9, _verify_v10)
+def _verify_v11(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v11_postconditions(conn)
+
+
+def _verify_v12(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v12_postconditions(conn)
+
+
+def _verify_v13(manager: MigrationManagerProtocol, conn) -> None:
+    manager._verify_migration_v13_postconditions(conn)
+
+
+_VERIFIERS = (_verify_v1, _verify_v2, _verify_v3, _verify_v4, _verify_v5, _verify_v6, _verify_v7, _verify_v8, _verify_v9, _verify_v10, _verify_v11, _verify_v12, _verify_v13)
 _VERIFIER_METHODS = (
     "_verify_migration_v1_postconditions",
     "_verify_migration_v2_postconditions",
@@ -140,6 +163,9 @@ _VERIFIER_METHODS = (
     "_verify_migration_v8_postconditions",
     "_verify_migration_v9_postconditions",
     "_verify_migration_v10_postconditions",
+    "_verify_migration_v11_postconditions",
+    "_verify_migration_v12_postconditions",
+    "_verify_migration_v13_postconditions",
 )
 
 
@@ -156,7 +182,10 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         "canonical_manifest": manifest,
         "postcondition_manifest_revision": POSTCONDITION_ARTIFACT_REVISION,
         "verifier_method": _VERIFIER_METHODS[version - 1],
-        "verifier_artifact": POSTCONDITION_SOURCE_SHA256[_VERIFIER_METHODS[version - 1]],
+        # Migration checksums are durable ledger identity.  They must use the
+        # historically approved artifact material, not the separately tracked
+        # current implementation fingerprint.
+        "verifier_artifact": MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256[_VERIFIER_METHODS[version - 1]],
     }
     return MigrationSpec(
         version=version, migration_id=migration_id, name=name,
@@ -165,7 +194,7 @@ def _make_spec(version: int, migration_id: str, name: str, previous: Optional[in
         registry_revision=REGISTRY_REVISION, checksum=_checksum(material),
         apply_artifact=FORWARD_APPLY_SOURCE_SHA256[version],
         apply_manifest=FORWARD_APPLY_MANIFESTS[version],
-        apply=_apply_version(version), verify=_VERIFIERS[version - 1],
+        apply=_apply_v13 if version == 13 else _apply_version(version), verify=_VERIFIERS[version - 1],
         reconcile=_reconcile_version(version),
     )
 
@@ -183,6 +212,9 @@ _EXPECTED_CHECKSUMS = {
     8: "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
     9: "sha256:f6967da3ce7cf80ddd1531f0922c7bf3398cccb0d89a0b61909427bbafe42765",
     10: "sha256:183a54fa2111427dd3f4671ab27cb1037d2628df9eef90e19900807f99d1c17a",
+    11: "sha256:496fcf71e1cef64e16dd45c924b618b089bd593ca16911d433ec36144347b9c0",
+    12: "sha256:6f6fc71110864fe3547c8343775190298b432ed02b03a818bcaf57b5ae02e783",
+    13: "sha256:7b73b874eec59e17e4a32db21dc81701b5663fbfd933fac3eaed398eed95efdc",
 }
 
 
@@ -193,7 +225,7 @@ def validate_registry() -> None:
         raise RuntimeError("migration registry versions are not strictly ordered and unique")
     if len(ids) != len(set(ids)):
         raise RuntimeError("migration registry migration_id values are not unique")
-    for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7, 8, 9]):
+    for spec, expected_previous in zip(MIGRATION_REGISTRY, [None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]):
         if spec.previous_version != expected_previous or not spec.checksum.startswith("sha256:") or len(spec.checksum) != 71 or spec.checksum != _EXPECTED_CHECKSUMS.get(spec.version):
             raise RuntimeError(f"migration registry linkage/checksum invalid for version {spec.version}")
         if spec.apply is None or spec.verify is None or spec.reconcile is None or spec.apply_artifact != FORWARD_APPLY_SOURCE_SHA256.get(spec.version):

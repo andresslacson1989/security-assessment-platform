@@ -238,10 +238,16 @@ async def test_validated_http_transport_pins_address_and_rejects_origin_escape()
 
 def test_validated_target_rejects_tampered_authorization_context():
     validated = make_validated_target()
-    validated.authorized_scope.append("attacker.example")
+    with pytest.raises((TypeError, AttributeError)):
+        validated.authorized_scope.append("attacker.example")
+    with pytest.raises(TypeError):
+        dict.__setitem__(validated.authorization_context, "active_probing_granted", False)
+    assert validate_validated_target(validated) is validated
 
     with pytest.raises(ValueError, match="integrity seal"):
-        validate_validated_target(validated)
+        validate_validated_target(
+            validated.model_copy(update={"authorized_scope": ["attacker.example"]})
+        )
 
 
 def test_validated_target_rejects_lookalike_object():

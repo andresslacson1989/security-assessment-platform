@@ -1,0 +1,1080 @@
+{
+  "schema": "cyberassess.section_a.delivery_candidate_manifest.v1",
+  "captured_at_utc": "2026-09-08T07:39:40.1671077Z",
+  "scope_status": "BLOCKED_BY_UNRESOLVED_OWNERSHIP_AND_A6_PROVENANCE",
+  "purpose": "Deterministic classification of the current non-.ci worktree for Section A delivery review. This manifest records evidence and scope; it does not authorize staging, committing, publishing, deployment, or database mutation.",
+  "authoritative_sources": {
+    "contract_source_directory": "contracts/",
+    "contract_mirror_directory": "docs/contracts/",
+    "delivery_policy": "AGENTS.md",
+    "acceptance_goal": "docs/REPOSITORY_DELIVERY_AND_CONTRACT_ACCEPTANCE_GOAL.md",
+    "checkpoint_record": "docs/SECTION_A_SCAN_APPROVAL_CHECKPOINTS.md",
+    "live_inventory": "docs/evidence/section_a_worktree_inventory_2026-09-08.json",
+    "consistency_test": "tests/security/test_contract_fleet_consistency.py"
+  },
+  "source_of_truth_rule": {
+    "source_path": "contracts/README.md",
+    "source_locator": "## Master Contract Index (Contracts 01 – 09)",
+    "source_claim": "contracts/ contains the authoritative, production-level system contracts.",
+    "mirror_path_pattern": "docs/contracts/<same contract filename>",
+    "mirror_rule_evidence": [
+      {
+        "path": "tests/security/test_contract_fleet_consistency.py",
+        "locator": "test_authoritative_contract_mirrors_and_scope_match_26_tool_fleet"
+      },
+      {
+        "path": "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md",
+        "locator": "## 3. Repository Delivery and Provider Promotion"
+      },
+      {
+        "path": "AGENTS.md",
+        "locator": "## GitHub-to-GitLab mirror consistency"
+      }
+    ],
+    "synchronization_rule": "The consistency test compares every maintained contracts/*.md and docs/contracts/<same filename> pair as raw bytes. Raw-byte equality proves synchronization; contracts/README.md and the consistency test establish the source/mirror relationship.",
+    "authority_boundary": "Contract authority and mirror synchronization do not authorize staging, committing, publishing, deployment, or database mutation."
+  },
+  "classification_definitions": {
+    "SECTION_A_CANDIDATE": "A current path with a direct, evidence-backed relationship to Section A checkpoints A1-A6 and a cited contract clause and test vector. Candidate status is not acceptance or ownership approval.",
+    "EVIDENCE/GOVERNANCE": "A policy, contract-acceptance, checkpoint, inventory, or provenance artifact used to support review; it is not implementation authorization.",
+    "OUTSIDE-A": "A current path that belongs to another delivery section or a broader capability area and is not included in this Section A candidate boundary.",
+    "RUNTIME-EXCLUDED": "A preserved path or tree explicitly excluded from repository delivery evidence. In this manifest, .ci is preserved CI/test evidence and is not characterized as runtime data; data/cyberassess.db is separately the runtime database exclusion.",
+    "UNRESOLVED": "A current path whose Section A ownership or checkpoint relationship cannot be established from repository evidence in this pass; it must remain unresolved rather than being guessed into scope."
+  },
+  "entry_rules": {
+    "status_source": "git status --porcelain=v1 --untracked-files=all --no-renames -z",
+    "path_identity": "Repository-relative path with the exact case and separators returned by Git.",
+    "group_application": "Every group metadata field applies to every path in that group's paths array.",
+    "required_unique_coverage": "After expanding groups, every live non-.ci status/path pair must appear exactly once; no .ci path or runtime database path may appear in entries.",
+    "independent_test_exercised_semantics": "A declared evidence claim from the review record, not a runtime correlation or proof that the current validator process executed every referenced path. Actual execution evidence is established only by the retained test output and JUnit artifacts."
+  },
+  "expected_live_non_ci_entry_count": 106,
+  "classification_counts": {
+    "SECTION_A_CANDIDATE": 39,
+    "EVIDENCE/GOVERNANCE": 9,
+    "OUTSIDE-A": 55,
+    "UNRESOLVED": 3
+  },
+  "groups": [
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.2"
+      ],
+      "test_vectors": [
+        "tests/security/test_container_hardening.py::test_ci_workflow_static_contract_is_complete",
+        "tests/security/test_contract_fleet_consistency.py"
+      ],
+      "change_kind": "workflow",
+      "independent_test_exercised": true,
+      "scope_reason": "The workflow is the repository delivery and required-check evidence boundary for Section A; its final delivery authority remains subject to A6 review.",
+      "paths": [".github/workflows/contract-verification.yml"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §2"
+      ],
+      "test_vectors": [
+        "tests/security/test_adversarial_sec_matrix.py::test_sec_003_cross_tenant_asset_access_idor",
+        "tests/security/test_auth_admin_boundaries.py::test_asset_registration_requires_internal_scope_even_for_admin_role"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Asset registration and tenant-bound inventory are direct inputs to Section A parent authorization and target/asset binding.",
+      "paths": ["backend/app/api/assets.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.3"
+      ],
+      "test_vectors": [
+        "tests/security/test_auth_admin_boundaries.py::test_scan_approval_guard_accepts_real_tenant_admin_and_rejects_missing_scope",
+        "tests/security/test_execution_decision_authority.py::test_approval_atomically_creates_one_durable_execution_run"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Execution request and approval API behavior is the Section A authorization transition boundary.",
+      "paths": ["backend/app/api/executions.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md \u00a7Scan authorization manifest boundary",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3.1"
+      ],
+      "test_vectors": [
+        "tests/test_api_endpoints.py::test_scan_creation_requires_an_exact_idempotency_key",
+        "tests/security/test_execution_decision_authority.py::test_approval_requires_correlation_before_any_authority_mutation",
+        "tests/security/test_auth_admin_boundaries.py::test_scan_approval_guard_accepts_real_tenant_admin_and_rejects_missing_scope"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Scan request creation, history retention, manifest persistence, and approval routing are the public Section A control-plane boundary.",
+      "paths": ["backend/app/api/scans.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3.1"
+      ],
+      "test_vectors": [
+        "tests/security/test_database_backend.py",
+        "tests/security/test_adversarial_sec_matrix.py::test_sec_029_database_transaction_integrity",
+        "tests/security/test_postgres_integration.py"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "The database layer enforces tenant, relational, migration, and transactional invariants required by durable Section A records.",
+      "paths": ["backend/app/core/db.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A5"],
+      "contract_references": [
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.1",
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.2"
+      ],
+      "test_vectors": ["backend/tests/test_execution_context_contract.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Execution context binds tenant, project, target, and authorization material used to reconstruct and approve Section A requests.",
+      "paths": ["backend/app/core/execution_context.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.3"
+      ],
+      "test_vectors": ["tests/security/test_execution_decision_authority.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Decision authority and atomic child materialization are direct A5 approval and A6 transaction invariants.",
+      "paths": ["backend/app/core/execution_decision.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.3"
+      ],
+      "test_vectors": ["tests/security/test_execution_decision_authority.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "The execution service persists and validates request/decision/run relationships required by approval idempotency and rollback.",
+      "paths": ["backend/app/core/execution_service.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §1",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §4"
+      ],
+      "test_vectors": [
+        "tests/security/test_database_backend.py::test_forward_apply_artifacts_cover_both_supported_database_backends",
+        "tests/security/test_scan_request_migration.py"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Forward migration artifacts define the durable schema and migration evidence for Section A.",
+      "paths": ["backend/app/core/migration_artifacts.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_database_backend.py", "tests/security/test_postgres_integration.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "The migration registry is the authoritative ordering and identity source for Section A schema upgrades.",
+      "paths": ["backend/app/core/migration_registry.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2"
+      ],
+      "test_vectors": [
+        "backend/tests/test_scan_manifest_contract.py",
+        "tests/security/test_database_backend.py"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "The typed models carry the immutable, tenant-bound, complete-fleet manifest and target material required by A1-A5.",
+      "paths": ["backend/app/core/models.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A4"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.2"
+      ],
+      "test_vectors": [
+        "tests/security/test_validated_target_seal.py",
+        "tests/security/test_web_dast_assurance.py"
+      ],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "The target seal and SSRF boundary protect the canonical target material reconstructed into Section A authority.",
+      "paths": ["backend/app/core/ssrf_protector.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3"
+      ],
+      "test_vectors": ["tests/security/test_database_backend.py", "tests/security/test_execution_decision_authority.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Storage helpers implement durable tenant-bound persistence for Section A records.",
+      "paths": ["backend/app/core/storage.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A4", "A5"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.1.1",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"
+      ],
+      "test_vectors": ["backend/tests/test_scan_manifest_contract.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Operation policy material is part of the canonical manifest and approval comparison, while capability status remains observational.",
+      "paths": ["backend/app/core/tool_operation_policy.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md \u00a7Scan authorization manifest boundary",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"
+      ],
+      "test_vectors": ["tests/security/test_execution_decision_authority.py", "backend/tests/test_execution_launch_inventory.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "The service-owned authority resolver is a direct Section A boundary for complete fleet material and child execution authority.",
+      "paths": ["backend/app/core/scan_execution_authority.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A4", "A5"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §1.1",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.3"
+      ],
+      "test_vectors": ["backend/tests/test_scan_manifest_contract.py"],
+      "change_kind": "implementation",
+      "independent_test_exercised": true,
+      "scope_reason": "Manifest construction and canonical hashing are direct A3/A4 reconstructibility and inventory controls.",
+      "paths": ["backend/app/core/scan_manifest.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": [
+        "tests/security/test_scan_request_migration.py",
+        "tests/security/test_postgres_integration.py"
+      ],
+      "change_kind": "migration",
+      "independent_test_exercised": true,
+      "scope_reason": "The v13 request migration is explicitly part of the Section A upgrade and legacy-preflight boundary; its historical provenance remains blocked.",
+      "paths": ["backend/app/core/scan_request_migration_v13.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3"
+      ],
+      "test_vectors": ["backend/tests/test_execution_launch_inventory.py", "tests/security/test_execution_decision_authority.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "Execution-context contract tests exercise the reconstructibility and authority binding boundary.",
+      "paths": ["backend/tests/test_execution_context_contract.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md \u00a7Scan authorization manifest boundary"
+      ],
+      "test_vectors": ["backend/tests/test_execution_launch_inventory.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "The launch inventory assurance test checks complete fleet and service-owned authority material.",
+      "paths": ["backend/tests/test_execution_launch_inventory.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A4", "A5"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.3"
+      ],
+      "test_vectors": ["backend/tests/test_scan_manifest_contract.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "The manifest contract tests cover nested immutability, deterministic serialization, credential rejection, and complete fleet mappings.",
+      "paths": ["backend/tests/test_scan_manifest_contract.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §2",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §2"
+      ],
+      "test_vectors": ["tests/security/test_adversarial_sec_matrix.py", "tests/security/test_database_backend.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "The adversarial matrix exercises tenant isolation, transactional integrity, and authority non-escalation controls relevant to Section A.",
+      "paths": ["tests/security/test_adversarial_sec_matrix.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A5"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.1",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"
+      ],
+      "test_vectors": ["tests/security/test_auth_admin_boundaries.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "Authentication, administrator approval, and tenant-scope tests exercise the Section A principal boundary.",
+      "paths": ["tests/security/test_auth_admin_boundaries.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": [
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.2"
+      ],
+      "test_vectors": ["tests/security/test_container_hardening.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "The hardening tests validate required CI behavior and delivery guards for A6.",
+      "paths": ["tests/security/test_container_hardening.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A4", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "The consistency test validates the 26-tool fleet, contract source/mirror identity, and deterministic live inventory evidence.",
+      "paths": ["tests/security/test_contract_fleet_consistency.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2"
+      ],
+      "test_vectors": ["tests/security/test_database_backend.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "Database assurance tests exercise schema, migration, tenant integrity, and rollback controls.",
+      "paths": ["tests/security/test_database_backend.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.3"
+      ],
+      "test_vectors": ["tests/security/test_execution_decision_authority.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "Decision-authority tests exercise exact-manifest approval, atomic child creation, replay, and failure rollback.",
+      "paths": ["tests/security/test_execution_decision_authority.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_postgres_integration.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "Disposable PostgreSQL integration tests provide independent backend migration and relational-integrity evidence.",
+      "paths": ["tests/security/test_postgres_integration.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_scan_request_migration.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "Migration assurance tests exercise the versioned v13 upgrade and preserve the explicitly blocked historical provenance fixture.",
+      "paths": ["tests/security/test_scan_request_migration.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A2", "A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3.1"
+      ],
+      "test_vectors": ["tests/test_api_endpoints.py"],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": true,
+      "scope_reason": "API endpoint tests exercise idempotent scan request creation and durable history response behavior.",
+      "paths": ["tests/test_api_endpoints.py"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3"
+      ],
+      "test_vectors": [
+        "tests/security/test_database_backend.py",
+        "tests/security/test_execution_decision_authority.py",
+        "tests/security/test_contract_fleet_consistency.py"
+      ],
+      "change_kind": "contract-source",
+      "independent_test_exercised": true,
+      "scope_reason": "The authoritative Contract 02 source defines the Section A model, persistence, immutability, and manifest invariants.",
+      "paths": ["contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.1",
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.2"
+      ],
+      "test_vectors": ["backend/tests/test_execution_context_contract.py", "tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-source",
+      "independent_test_exercised": true,
+      "scope_reason": "The authoritative Contract 03 source defines execution authority, target binding, and observational capability separation used by Section A.",
+      "paths": ["contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.3"
+      ],
+      "test_vectors": ["tests/test_api_endpoints.py", "tests/security/test_execution_decision_authority.py", "tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-source",
+      "independent_test_exercised": true,
+      "scope_reason": "The authoritative Contract 04 source defines the request, approval, history, execution, and observation API boundaries.",
+      "paths": ["contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": [
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §1",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_container_hardening.py", "tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-source",
+      "independent_test_exercised": true,
+      "scope_reason": "The authoritative Contract 05 source defines the Section A delivery and acceptance controls.",
+      "paths": ["contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §1.1",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.3",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.4"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-source",
+      "independent_test_exercised": true,
+      "scope_reason": "The authoritative Contract 08 source enumerates the manifest, migration, history, and assurance test vectors.",
+      "paths": ["contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.1",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-mirror",
+      "independent_test_exercised": true,
+      "scope_reason": "The byte-identical maintained mirror of Contract 02 is part of the contract consistency and delivery evidence boundary.",
+      "paths": ["docs/contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.1",
+        "contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §1.2"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-mirror",
+      "independent_test_exercised": true,
+      "scope_reason": "The byte-identical maintained mirror of Contract 03 is part of the contract consistency and delivery evidence boundary.",
+      "paths": ["docs/contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.3",
+        "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-mirror",
+      "independent_test_exercised": true,
+      "scope_reason": "The byte-identical maintained mirror of Contract 04 is part of the contract consistency and delivery evidence boundary.",
+      "paths": ["docs/contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": [
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §1",
+        "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-mirror",
+      "independent_test_exercised": true,
+      "scope_reason": "The byte-identical maintained mirror of Contract 05 is part of the contract consistency and delivery evidence boundary.",
+      "paths": ["docs/contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md"]
+    },
+    {
+      "classification": "SECTION_A_CANDIDATE",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A1", "A2", "A3", "A4", "A5", "A6"],
+      "contract_references": [
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §1.1",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.3",
+        "contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md §6.1.4"
+      ],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "contract-mirror",
+      "independent_test_exercised": true,
+      "scope_reason": "The byte-identical maintained mirror of Contract 08 is part of the contract consistency and delivery evidence boundary.",
+      "paths": ["docs/contracts/08_TECHNICAL_IMPLEMENTATION_AND_TEST_VECTORS_CONTRACT.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["AGENTS.md \u00a7Repository Delivery Policy"],
+      "test_vectors": [],
+      "change_kind": "governance",
+      "independent_test_exercised": false,
+      "scope_reason": "Repository delivery and database handling policy; included as governance evidence, not as a Section A implementation candidate.",
+      "paths": ["AGENTS.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["docs/REPOSITORY_DELIVERY_AND_CONTRACT_ACCEPTANCE_GOAL.md"],
+      "test_vectors": [],
+      "change_kind": "governance",
+      "independent_test_exercised": false,
+      "scope_reason": "Authoritative delivery-cycle goal and acceptance baseline; this artifact governs the review but does not itself authorize publication.",
+      "paths": ["docs/REPOSITORY_DELIVERY_AND_CONTRACT_ACCEPTANCE_GOAL.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["docs/SECTION_A_SCAN_APPROVAL_CHECKPOINTS.md"],
+      "test_vectors": [],
+      "change_kind": "evidence",
+      "independent_test_exercised": false,
+      "scope_reason": "Section A evidence record preserving historical and current verification results, caveats, and unresolved status.",
+      "paths": ["docs/SECTION_A_SCAN_APPROVAL_CHECKPOINTS.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md §4.2", "contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"],
+      "test_vectors": ["tests/security/test_scan_request_migration.py", "tests/security/test_postgres_integration.py"],
+      "change_kind": "evidence",
+      "independent_test_exercised": true,
+      "scope_reason": "Frozen migration probe evidence; historical provenance remains explicitly blocked and is not treated as acceptance.",
+      "paths": ["docs/evidence/section_a_frozen_migration_probe.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": ["contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"],
+      "test_vectors": ["tests/security/test_database_backend.py", "tests/security/test_postgres_integration.py"],
+      "change_kind": "evidence",
+      "independent_test_exercised": true,
+      "scope_reason": "Migration source/metadata reconciliation evidence supporting A6 while preserving the provenance blocker.",
+      "paths": ["docs/evidence/section_a_migration_reconciliation.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": ["contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"],
+      "test_vectors": ["tests/security/test_scan_request_migration.py"],
+      "change_kind": "evidence",
+      "independent_test_exercised": true,
+      "scope_reason": "Pre-v13 baseline intake evidence; it records the missing/blocked historical baseline rather than inventing one.",
+      "paths": ["docs/evidence/section_a_pre_v13_baseline_intake.md"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": ["contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3"],
+      "test_vectors": ["tests/security/test_scan_request_migration.py"],
+      "change_kind": "evidence",
+      "independent_test_exercised": true,
+      "scope_reason": "Machine-readable pre-v13 migration evidence preserving the historical identity mismatch and provenance block.",
+      "paths": ["docs/evidence/section_a_pre_v13_migrations.json"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": ["contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §3", "AGENTS.md \u00a7GitHub-before-GitLab promotion"],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py::test_worktree_inventory_snapshot_matches_documented_git_serialization"],
+      "change_kind": "evidence",
+      "independent_test_exercised": true,
+      "scope_reason": "Deterministic status/path inventory; it records the dirty worktree and excludes the protected runtime database from delivery.",
+      "paths": ["docs/evidence/section_a_worktree_inventory_2026-09-08.json"]
+    },
+    {
+      "classification": "EVIDENCE/GOVERNANCE",
+      "porcelain_state": "??",
+      "tracked": false,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": ["A6"],
+      "contract_references": ["AGENTS.md \u00a7Repository Delivery Policy", "docs/REPOSITORY_DELIVERY_AND_CONTRACT_ACCEPTANCE_GOAL.md"],
+      "test_vectors": ["tests/security/test_contract_fleet_consistency.py"],
+      "change_kind": "evidence",
+      "independent_test_exercised": true,
+      "scope_reason": "This manifest is the auditable classification of every current non-.ci status entry; it records unresolved ownership and does not authorize delivery.",
+      "paths": ["docs/evidence/section_a_delivery_candidate_manifest_2026-09-08.json"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md §1", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md §2"],
+      "test_vectors": ["tests/test_adapters.py", "tests/security/test_nmap_assurance.py", "tests/security/test_subfinder_assurance.py"],
+      "change_kind": "tool-implementation",
+      "independent_test_exercised": false,
+      "scope_reason": "Tool adapter and full-capability implementation work belongs to the tool/capability delivery sections, not Section A scan authorization persistence.",
+      "paths": [
+        "backend/app/adapters/bandit_adapter.py",
+        "backend/app/adapters/base_adapter.py",
+        "backend/app/adapters/checkov_adapter.py",
+        "backend/app/adapters/dockle_adapter.py",
+        "backend/app/adapters/extended_cli_adapters.py",
+        "backend/app/adapters/ffuf_adapter.py",
+        "backend/app/adapters/gitleaks_adapter.py",
+        "backend/app/adapters/grype_adapter.py",
+        "backend/app/adapters/httpx_adapter.py",
+        "backend/app/adapters/katana_adapter.py",
+        "backend/app/adapters/kubebench_adapter.py",
+        "backend/app/adapters/nmap_adapter.py",
+        "backend/app/adapters/nuclei_adapter.py",
+        "backend/app/adapters/osv_scanner_adapter.py",
+        "backend/app/adapters/prowler_adapter.py",
+        "backend/app/adapters/retirejs_adapter.py",
+        "backend/app/adapters/schemathesis_adapter.py",
+        "backend/app/adapters/semgrep_adapter.py",
+        "backend/app/adapters/sslyze_adapter.py",
+        "backend/app/adapters/subfinder_adapter.py",
+        "backend/app/adapters/syft_adapter.py",
+        "backend/app/adapters/trivy_adapter.py",
+        "backend/app/adapters/trufflehog_adapter.py"
+      ]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md"],
+      "test_vectors": ["tests/test_tool_installers.py"],
+      "change_kind": "tool-management",
+      "independent_test_exercised": false,
+      "scope_reason": "Tool management and installation API is outside the Section A scan authorization persistence boundary.",
+      "paths": ["backend/app/api/tools.py"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §3", "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"],
+      "test_vectors": ["tests/security/test_process_launch_boundary.py", "tests/test_e13_process_isolation.py"],
+      "change_kind": "execution-plane",
+      "independent_test_exercised": false,
+      "scope_reason": "Process supervision and queue dispatch are later execution-plane sections; Section A records authority but does not deliver the worker boundary.",
+      "paths": ["backend/app/core/process_supervisor.py", "backend/app/core/queue.py"]
+    },
+    {
+      "classification": "UNRESOLVED",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": [],
+      "test_vectors": [],
+      "change_kind": "implementation",
+      "independent_test_exercised": false,
+      "scope_reason": "The file is related to backend observation/orchestration, but this pass does not establish a direct A1-A6 ownership mapping from repository evidence; do not guess its delivery section.",
+      "paths": ["backend/app/core/observation_service.py", "backend/app/core/orchestrator.py"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §3", "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"],
+      "test_vectors": ["tests/test_engine_infra_iac.py", "tests/test_e13_process_isolation.py"],
+      "change_kind": "engine-implementation",
+      "independent_test_exercised": false,
+      "scope_reason": "Engine and worker execution implementation belongs to later engine/process delivery sections.",
+      "paths": [
+        "backend/app/engines/base.py",
+        "backend/app/engines/cicd_audit/engine.py",
+        "backend/app/engines/code_sast/engine.py",
+        "backend/app/engines/code_sast/git_history_scanner.py",
+        "backend/app/engines/infra_iac/engine.py",
+        "backend/app/engines/network/engine.py",
+        "backend/app/engines/web_dast/engine.py"
+      ]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §2", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md"],
+      "test_vectors": ["tests/test_tool_installers.py"],
+      "change_kind": "installer-implementation",
+      "independent_test_exercised": false,
+      "scope_reason": "Installer and supply-chain implementation belongs to the tool supply-chain delivery section, not Section A durable authorization persistence.",
+      "paths": [
+        "backend/app/installers/github_release_installer.py",
+        "backend/app/installers/nmap_artifact_installer.py",
+        "backend/app/installers/npm_installer.py",
+        "backend/app/installers/pip_installer.py",
+        "backend/app/installers/source_build_installer.py",
+        "backend/app/installers/system_installer.py"
+      ]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md §1", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md §2"],
+      "test_vectors": [],
+      "change_kind": "contract-source",
+      "independent_test_exercised": true,
+      "scope_reason": "Contract 09 governs tool-specific full-capability and supply-chain behavior outside the current Section A delivery boundary.",
+      "paths": ["contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md §1", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md §2"],
+      "test_vectors": [],
+      "change_kind": "contract-mirror",
+      "independent_test_exercised": true,
+      "scope_reason": "The Contract 09 mirror is maintained for contract consistency but its content is outside the current Section A scope.",
+      "paths": ["docs/contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §3", "contracts/04_API_AND_STREAMING_EVENTS_CONTRACT.md §1.5.1.2"],
+      "test_vectors": ["tests/test_e13_process_isolation.py"],
+      "change_kind": "worker-entrypoint",
+      "independent_test_exercised": false,
+      "scope_reason": "The worker entrypoint belongs to later process dispatch and execution delivery sections.",
+      "paths": ["run_worker.py"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/03_ENGINE_PLUGIN_INTERFACE_CONTRACT.md §4", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md"],
+      "test_vectors": [],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": false,
+      "scope_reason": "These assurance tests cover tool-specific behavior outside the Section A persistence boundary.",
+      "paths": [
+        "tests/security/test_code_sast_assurance.py",
+        "tests/security/test_nmap_assurance.py",
+        "tests/security/test_process_launch_boundary.py",
+        "tests/security/test_sslyze_assurance.py",
+        "tests/security/test_subfinder_assurance.py",
+        "tests/security/test_web_dast_assurance.py"
+      ]
+    },
+    {
+      "classification": "UNRESOLVED",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": [],
+      "test_vectors": [],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": false,
+      "scope_reason": "The orchestration test is adjacent to Section A but the current repository evidence does not establish whether it is owned by Section A or a later orchestration section.",
+      "paths": ["tests/test_orchestrator.py"]
+    },
+    {
+      "classification": "OUTSIDE-A",
+      "porcelain_state": " M",
+      "tracked": true,
+      "ownership_status": "UNRESOLVED",
+      "checkpoints": [],
+      "contract_references": ["contracts/05_DELIVERABLES_AND_ACCEPTANCE_CRITERIA_CONTRACT.md §2", "contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md"],
+      "test_vectors": [],
+      "change_kind": "assurance-test",
+      "independent_test_exercised": false,
+      "scope_reason": "These broad acceptance, adapter, E13, engine, security-hardening, and installer tests belong to other delivery sections.",
+      "paths": [
+        "tests/test_acceptance_scenarios.py",
+        "tests/test_adapters.py",
+        "tests/test_e13_egress_env_sanitization.py",
+        "tests/test_e13_process_isolation.py",
+        "tests/test_engine_infra_iac.py",
+        "tests/test_security_hardening.py",
+        "tests/test_tool_installers.py"
+      ]
+    }
+  ],
+  "scope_exclusions": [
+    {
+      "path": ".ci",
+      "classification": "RUNTIME-EXCLUDED",
+      "status_scope": "1,709 visible status entries; 1,811 physical files; 350 descendant directories; 102 ignored files.",
+      "disposition": "Preserved in place; not classified as Section A delivery because ownership and provenance are unresolved. The classification is a delivery-exclusion label for preserved CI/test evidence, not a claim that .ci is runtime data."
+    },
+    {
+      "path": "data/cyberassess.db",
+      "classification": "RUNTIME-EXCLUDED",
+      "status_scope": "Not represented in Git status inventory.",
+      "disposition": "Read-only inspection is now permitted by explicit user authorization, but the database remains excluded from commits, mirrors, archives, and publication. No mutation is authorized by this manifest."
+    }
+  ],
+  "delivery": {
+    "candidate_commit_created": false,
+    "github_published": false,
+    "gitlab_published": false,
+    "staged": false,
+    "publication_gate": "BLOCKED_PENDING_SCOPE_OWNERSHIP_AND_A6_PROVENANCE_RECONCILIATION",
+    "github_first_policy": "If later authorized, create one grouped Section A commit on the existing branch, verify GitHub first, and mirror the exact verified commit object to GitLab only afterward.",
+    "current_action": "Evidence classification only; no commit, push, branch operation, CI mutation, deployment, GitLab operation, or database mutation."
+  }
+}

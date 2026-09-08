@@ -121,7 +121,10 @@ async def create_asset(
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    created = db_manager.create_asset(asset)
+    try:
+        created = db_manager.create_asset(asset)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tenant organization is not provisioned for asset registration.") from exc
 
     db_manager.record_audit_event(
         AuditEvent(

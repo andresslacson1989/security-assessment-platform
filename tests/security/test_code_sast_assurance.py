@@ -13,6 +13,7 @@ from app.adapters.trufflehog_adapter import TruffleHogAdapter
 from app.core.models import NormalizedExecutionState, ScanConfig, Target, TargetType
 from app.core.path_sandbox import PathSandboxViolation, resolve_authorized_workspace
 from app.core.process_supervisor import ProcessExecutionStatus, ProcessSupervisor
+from app.core.execution_service import issue_non_scan_execution_context
 from app.engines.code_sast.ast_taint_analyzer import audit_ast_taint_flow
 from app.engines.code_sast.engine import CodeSastAssessmentEngine
 
@@ -184,6 +185,7 @@ async def test_e13_process_supervisor_enforces_combined_output_limit():
         [sys.executable, "-c", code],
         timeout=5,
         max_output_bytes=4096,
+        non_scan_context=issue_non_scan_execution_context("observation:test-output-limit"),
     )
     assert returncode == -1
     assert len(stdout.encode("utf-8")) <= 4096
@@ -225,7 +227,11 @@ async def test_e13_process_supervisor_uses_isolated_unix_session_when_available(
         proc.poll.return_value = 0
         proc.wait.return_value = None
         proc.returncode = 0
-        await supervisor.execute(["tool"], timeout=1)
+        await supervisor.execute(
+            ["tool"],
+            timeout=1,
+            non_scan_context=issue_non_scan_execution_context("observation:test-session"),
+        )
         assert popen.call_args.kwargs["start_new_session"] is True
         assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
@@ -253,6 +259,7 @@ async def test_e13_process_supervisor_terminates_real_child_process_tree(tmp_pat
         [sys.executable, "-c", parent_code],
         timeout=0.5,
         max_output_bytes=4096,
+        non_scan_context=issue_non_scan_execution_context("observation:test-process-tree"),
     )
 
     assert result.execution_status is ProcessExecutionStatus.TIMED_OUT

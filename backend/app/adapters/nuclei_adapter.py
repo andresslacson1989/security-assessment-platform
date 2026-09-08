@@ -106,6 +106,7 @@ class NucleiAdapter(BaseToolAdapter):
 
         returncode, stdout, stderr = await self.execute_command(
             [path, "-version"], timeout=5.0, pre_launch_check=pre_launch_check,
+            non_scan_context=self._version_probe_context(),
         )
         output = stdout or stderr
         if output:
@@ -194,6 +195,8 @@ class NucleiAdapter(BaseToolAdapter):
             timeout=float(min(90.0, max(1.0, config.timeout_seconds * 6))),
             emit_log=emit_log,
             pre_launch_check=(lambda: self.verify_managed_binary(nuclei_path)) if kwargs.get("require_managed_binary") else None,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
             max_output_bytes=10 * 1024 * 1024,
         )
 

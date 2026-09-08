@@ -431,11 +431,14 @@ class SslyzeAdapter(BaseToolAdapter):
             "import importlib.metadata as metadata; "
             "print(metadata.version('sslyze'))"
         )
+        from app.core.execution_service import issue_non_scan_execution_context
+
         returncode, stdout, _ = await self.execute_command(
             [str(interpreter), "-c", version_probe],
             timeout=5.0,
             max_output_bytes=1024,
             pre_launch_check=pre_launch_check,
+            non_scan_context=issue_non_scan_execution_context("observation:sslyze:version"),
         )
         if returncode == 0 and stdout:
             first_line = stdout.splitlines()[0].strip()
@@ -967,6 +970,8 @@ class SslyzeAdapter(BaseToolAdapter):
             timeout=timeout_sec,
             emit_log=emit_log,
             pre_launch_check=managed_check,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
 
         # Handle Timeout & Execution Errors

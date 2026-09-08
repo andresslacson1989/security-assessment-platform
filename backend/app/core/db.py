@@ -15,6 +15,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextvars import ContextVar
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -22,6 +23,24 @@ from typing import Dict, List, Optional, Any, Tuple
 import uuid
 
 logger = logging.getLogger("cyberassess.persistence")
+
+
+def is_database_integrity_error(error: BaseException) -> bool:
+    """Recognize uniqueness/constraint failures across supported DAL backends."""
+    integrity_error_types: list[type[BaseException]] = [sqlite3.IntegrityError]
+    try:
+        from psycopg import IntegrityError as PsycopgIntegrityError
+    except ImportError:
+        pass
+    else:
+        integrity_error_types.append(PsycopgIntegrityError)
+    try:
+        from psycopg2 import IntegrityError as Psycopg2IntegrityError
+    except ImportError:
+        pass
+    else:
+        integrity_error_types.append(Psycopg2IntegrityError)
+    return isinstance(error, tuple(integrity_error_types))
 
 
 def _quote_postgres_identifier(identifier: str) -> str:
@@ -39,6 +58,8 @@ from app.core.models import (
     FindingComment,
     Severity,
     ScanJob,
+    TargetType,
+    ValidatedTarget,
     UserProfile,
     UserRole,
     Organization,
@@ -57,12 +78,15 @@ from app.core.models import (
     ExecutionProcessOwnershipRecord,
     ExecutionRecoveryAttemptRecord,
     ExecutionRecoveryStateRecord,
+    ScanAuthorizationManifest,
     ProcessOwnershipState, ProcessContainerType, LaunchCommitState, PROCESS_OWNERSHIP_TRANSITIONS,
     EXECUTION_RUN_STATES, EXECUTION_RUN_TERMINAL_STATES, EXECUTION_RUN_TRANSITIONS,
     is_valid_execution_terminal_outcome,
     ExecutionRequestRecord,
     sanitize_sensitive_data,
     utc_now,
+    validate_idempotency_key,
+    validate_request_fingerprint,
 )
 from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.migration_artifacts import (
@@ -73,8 +97,619 @@ from app.core.migration_artifacts import (
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 from app.core.correlation import get_correlation_id
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
+
+_DURABLE_SECRET_KEY_PATTERN = re.compile(
+    r"(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|pwd|"
+    r"token|secret|api[-_]?key|access[-_]?token|credential)",
+    re.IGNORECASE,
+)
+
+_MANIFEST_SECRET_KEY_PATTERN = re.compile(
+    r"(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|pwd|"
+    r"token|secret|api[-_]?key|access[-_]?token|client[-_]?secret|private[-_]?key|"
+    r"raw[-_]?secret|credential(?:[-_](?:value|data))?)",
+    re.IGNORECASE,
+)
+_MANIFEST_REFERENCE_KEYS = frozenset({
+    "credential_scope", "credential_envelope_ref", "credential_reference",
+    "authorization_decision_id", "target_authorization_context",
+})
+_MANIFEST_NON_SECRET_METADATA_KEYS = frozenset({
+    "username_field", "password_field", "csrf_token_field",
+    "logged_in_indicator", "logout_url_patterns",
+})
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _decode_json_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(value or "{}") if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"scan authorization {field_name} is not valid canonical JSON") from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"scan authorization {field_name} is not a JSON object")
+    return decoded
+
+
+def _has_manifest_material(value: Any) -> bool:
+    return value not in (None, "", {}, [], ())
+
+
+def _assert_manifest_secret_safe(manifest: ScanAuthorizationManifest) -> None:
+    """Reject durable manifest material that contains inline secret values."""
+    from app.core.scan_manifest import validate_durable_scan_config
+
+    try:
+        validate_durable_scan_config(dict(manifest.effective_scan_config))
+    except ValueError as exc:
+        raise RuntimeError("scan authorization manifest contains unsupported inline credential material") from exc
+
+    def walk(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_text = str(key)
+                if (
+                    key_text.lower() not in _MANIFEST_REFERENCE_KEYS
+                    and key_text.lower() not in _MANIFEST_NON_SECRET_METADATA_KEYS
+                    and _MANIFEST_SECRET_KEY_PATTERN.search(key_text)
+                    and _has_manifest_material(item)
+                ):
+                    raise RuntimeError(f"scan authorization manifest contains secret material at {path}.{key_text}")
+                walk(item, f"{path}.{key_text}" if path else key_text)
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+
+    walk(manifest.model_dump(mode="json"), "manifest")
+
+
+def _assert_parent_manifest_binding(
+    parent: Any,
+    scan_request_id: str,
+    manifest: ScanAuthorizationManifest,
+) -> None:
+    """Compare every persisted parent binding column to the canonical manifest."""
+    if parent["scan_request_id"] != scan_request_id:
+        raise RuntimeError("scan authorization parent identity is inconsistent")
+    expected = {
+        "organization_id": manifest.organization_id,
+        "project_id": manifest.project_id,
+        "asset_id": manifest.asset_id,
+        "manifest_hash": manifest.manifest_hash,
+        "target_id": manifest.target_id,
+        "target_integrity_seal": manifest.target_integrity_seal,
+        "target_policy_version": manifest.target_policy_version,
+        "profile": manifest.profile,
+        "policy_revision": manifest.policy_revision,
+    }
+    if any(parent[field] != value for field, value in expected.items()):
+        raise RuntimeError("scan authorization parent binding does not match the immutable manifest")
+    try:
+        selected_engine_ids = json.loads(parent["selected_engine_ids_json"] or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("scan authorization selected-engine material is not valid JSON") from exc
+    if selected_engine_ids != list(manifest.selected_engine_ids):
+        raise RuntimeError("scan authorization selected-engine material does not match the immutable manifest")
+    stored_manifest = _decode_json_mapping(parent["manifest_json"], "manifest")
+    expected_manifest = manifest.model_dump(mode="json")
+    if _canonical_json(stored_manifest) != _canonical_json(expected_manifest):
+        raise RuntimeError("scan authorization stored manifest does not match canonical material")
+
+
+def _manifest_operation_material(operation: Any, scan_request_id: str, organization_id: str) -> dict[str, Any]:
+    return {
+        "operation_id": operation.operation_id,
+        "scan_request_id": scan_request_id,
+        "organization_id": organization_id,
+        "tool_id": operation.tool_id,
+        "engine_id": operation.engine_id,
+        "operation_family": operation.operation_family,
+        "classification": operation.classification,
+        "operation_options": dict(operation.operation_options),
+        "operation_policy_revision": operation.operation_policy_revision,
+        "target_id": operation.target_id,
+        "authorization_decision_id": operation.authorization_decision_id,
+        "resource_budget": dict(operation.resource_budget),
+        "account_impact_budget": dict(operation.account_impact_budget),
+        "credential_scope": dict(operation.credential_scope),
+        "capability_state": operation.capability_state,
+        "selection_state": operation.selection_state,
+        "exclusion_reason": operation.exclusion_reason,
+    }
+
+
+def _normalized_operation_material(row: Any) -> dict[str, Any]:
+    return {
+        "operation_id": row["operation_id"],
+        "scan_request_id": row["scan_request_id"],
+        "organization_id": row["organization_id"],
+        "tool_id": row["tool_id"],
+        "engine_id": row["engine_id"],
+        "operation_family": row["operation_family"],
+        "classification": row["classification"],
+        "operation_options": _decode_json_mapping(row["operation_options_json"], "operation options"),
+        "operation_policy_revision": row["operation_policy_revision"],
+        "target_id": row["target_id"],
+        "authorization_decision_id": row["authorization_decision_id"],
+        "resource_budget": _decode_json_mapping(row["resource_budget_json"], "resource budget"),
+        "account_impact_budget": _decode_json_mapping(row["account_impact_budget_json"], "account-impact budget"),
+        "credential_scope": _decode_json_mapping(row["credential_scope_json"], "credential scope"),
+        "capability_state": row["capability_state"],
+        "selection_state": row["selection_state"],
+        "exclusion_reason": row["exclusion_reason"],
+    }
+
+
+def _manifest_fleet_material(entry: Any, scan_request_id: str, organization_id: str) -> dict[str, Any]:
+    return {
+        "scan_request_id": scan_request_id,
+        "organization_id": organization_id,
+        "tool_id": entry.tool_id,
+        "owner_engine_id": entry.owner_engine_id,
+        "status": entry.status,
+        "reason": entry.reason,
+    }
+
+
+def _normalized_fleet_material(row: Any) -> dict[str, Any]:
+    return {
+        "scan_request_id": row["scan_request_id"],
+        "organization_id": row["organization_id"],
+        "tool_id": row["tool_id"],
+        "owner_engine_id": row["owner_engine_id"],
+        "status": row["status"],
+        "reason": row["reason"],
+    }
+
+
+def _assert_normalized_manifest_rows_match(
+    conn: Any,
+    scan_request_id: str,
+    organization_id: str,
+    manifest: ScanAuthorizationManifest,
+) -> None:
+    """Compare normalized rows to the immutable manifest in canonical form."""
+    expected_operations = sorted(
+        (_manifest_operation_material(operation, scan_request_id, organization_id)
+         for operation in manifest.operations),
+        key=lambda item: item["operation_id"],
+    )
+    operation_rows = conn.execute(
+        "SELECT * FROM scan_authorization_operations "
+        "WHERE scan_request_id=? AND organization_id=? ORDER BY operation_id",
+        (scan_request_id, organization_id),
+    ).fetchall()
+    actual_operations = [_normalized_operation_material(row) for row in operation_rows]
+    if _canonical_json(actual_operations) != _canonical_json(expected_operations):
+        raise RuntimeError("scan authorization normalized operation rows do not match the immutable manifest")
+
+    expected_fleet = sorted(
+        (_manifest_fleet_material(entry, scan_request_id, organization_id)
+         for entry in manifest.fleet_snapshot),
+        key=lambda item: item["tool_id"],
+    )
+    fleet_rows = conn.execute(
+        "SELECT * FROM scan_authorization_fleet "
+        "WHERE scan_request_id=? AND organization_id=? ORDER BY tool_id",
+        (scan_request_id, organization_id),
+    ).fetchall()
+    actual_fleet = [_normalized_fleet_material(row) for row in fleet_rows]
+    if _canonical_json(actual_fleet) != _canonical_json(expected_fleet):
+        raise RuntimeError("scan authorization normalized fleet rows do not match the immutable manifest")
+
+    engine_operation_ids = {
+        operation.operation_id for operation in manifest.engine_operations
+    }
+    if any(operation.selection_state != "EXCLUDED" for operation in manifest.engine_operations):
+        raise RuntimeError("scan authorization engine operation is not explicitly excluded")
+    if engine_operation_ids & {operation["operation_id"] for operation in operation_rows}:
+        raise RuntimeError("scan authorization engine operation was incorrectly normalized as a fleet operation")
+
+
+def _child_request_fingerprint(
+    *,
+    scan_request_id: str,
+    manifest_hash: str,
+    operation: Any,
+    organization_id: str,
+) -> str:
+    """Return the canonical fingerprint shared by every materialized child request."""
+    material = {
+        "parent_scan_request_id": scan_request_id,
+        "manifest_hash": manifest_hash,
+        "operation_id": operation["operation_id"],
+        "organization_id": organization_id,
+        "target_id": operation["target_id"],
+        "tool_id": operation["tool_id"],
+        "engine_id": operation["engine_id"],
+        "operation_family": operation["operation_family"],
+        "operation_options": _decode_json_mapping(operation["operation_options_json"], "operation options"),
+        "operation_policy_revision": operation["operation_policy_revision"],
+        "resource_budget": _decode_json_mapping(operation["resource_budget_json"], "resource budget"),
+        "account_impact_budget": _decode_json_mapping(operation["account_impact_budget_json"], "account-impact budget"),
+        "credential_scope": _decode_json_mapping(operation["credential_scope_json"], "credential scope"),
+    }
+    return hashlib.sha256(_canonical_json(material).encode("utf-8")).hexdigest()
+
+
+def _assert_materialized_child_authorities(
+    conn: Any,
+    *,
+    scan_request_id: str,
+    organization_id: str,
+    parent: Any,
+    manifest: ScanAuthorizationManifest,
+) -> list[dict[str, str]]:
+    """Verify every replayed child authority remains bound to its parent operation."""
+    operation_rows = conn.execute(
+        "SELECT * FROM scan_authorization_operations "
+        "WHERE scan_request_id=? AND organization_id=? ORDER BY operation_id",
+        (scan_request_id, organization_id),
+    ).fetchall()
+    selected_operations = [
+        row for row in operation_rows if row["selection_state"] == "SELECTED"
+    ]
+    selected_manifest_ids = {
+        operation.operation_id
+        for operation in manifest.operations
+        if operation.selection_state == "SELECTED"
+    }
+    if {row["operation_id"] for row in selected_operations} != selected_manifest_ids:
+        raise RuntimeError("scan authorization replay selection inventory is inconsistent")
+
+    links: list[dict[str, str]] = []
+    for operation in operation_rows:
+        child_ids = tuple(operation[field] for field in (
+            "child_request_id", "child_decision_id", "child_execution_id",
+        ))
+        if operation["selection_state"] != "SELECTED":
+            if any(child_ids):
+                raise RuntimeError("excluded scan authorization operation has child authority")
+            continue
+        if not all(child_ids):
+            raise RuntimeError("scan authorization replay child authority is incomplete")
+
+        child = conn.execute(
+            """SELECT
+                q.id AS request_id, q.idempotency_key, q.request_fingerprint,
+                q.organization_id AS request_organization_id, q.project_id AS request_project_id,
+                q.asset_id AS request_asset_id, q.target_id AS request_target_id,
+                q.authorization_decision_id AS request_authorization_decision_id,
+                q.target_policy_version AS request_target_policy_version,
+                q.tool_id AS request_tool_id, q.operation_family AS request_operation_family,
+                q.operation_options_json AS request_operation_options_json,
+                q.operation_policy_revision AS request_operation_policy_revision,
+                q.resource_budget_json AS request_resource_budget_json,
+                q.account_impact_budget_json AS request_account_impact_budget_json,
+                q.credential_scope_json AS request_credential_scope_json,
+                q.requested_by_user_id, q.state AS request_state, q.expires_at AS request_expires_at,
+                q.approved_decision_id AS request_approved_decision_id,
+                q.approval_idempotency_key AS request_approval_idempotency_key,
+                d.id AS decision_id, d.organization_id AS decision_organization_id,
+                d.project_id AS decision_project_id, d.asset_id AS decision_asset_id,
+                d.target_id AS decision_target_id,
+                d.authorization_decision_id AS decision_authorization_decision_id,
+                d.target_policy_version AS decision_target_policy_version,
+                d.tool_id AS decision_tool_id, d.operation_family AS decision_operation_family,
+                d.operation_options_json AS decision_operation_options_json,
+                d.operation_policy_revision AS decision_operation_policy_revision,
+                d.approval_state, d.approver_user_id, d.session_jti, d.worker_identity AS decision_worker_identity,
+                d.resource_budget_json AS decision_resource_budget_json,
+                d.account_impact_budget_json AS decision_account_impact_budget_json,
+                d.credential_scope_json AS decision_credential_scope_json,
+                d.expires_at AS decision_expires_at, d.revoked_at, d.consumed_at,
+                r.execution_id, r.request_id AS run_request_id,
+                r.organization_id AS run_organization_id, r.approved_decision_id AS run_approved_decision_id,
+                r.target_policy_version AS run_target_policy_version,
+                r.operation_policy_revision AS run_operation_policy_revision,
+                r.request_fingerprint AS run_request_fingerprint,
+                r.operation_options_json AS run_operation_options_json,
+                r.resource_budget_json AS run_resource_budget_json,
+                r.account_impact_budget_json AS run_account_impact_budget_json,
+                r.credential_scope_json AS run_credential_scope_json,
+                r.snapshot_completeness, r.state AS run_state, r.worker_identity AS run_worker_identity,
+                r.worker_generation AS run_worker_generation, r.assurance_state, r.coverage_state,
+                r.correlation_id AS run_correlation_id,
+                di.state AS dispatch_state, di.attempt_count AS dispatch_attempt_count,
+                di.organization_id AS dispatch_organization_id, di.correlation_id AS dispatch_correlation_id,
+                po.execution_id AS ownership_execution_id, po.organization_id AS ownership_organization_id,
+                rs.execution_id AS recovery_execution_id, rs.organization_id AS recovery_organization_id,
+                rs.worker_generation AS recovery_worker_generation
+             FROM execution_requests q
+             JOIN execution_decisions d
+               ON d.id=q.approved_decision_id AND d.organization_id=q.organization_id
+             JOIN execution_runs r
+               ON r.request_id=q.id AND r.organization_id=q.organization_id
+              AND r.approved_decision_id=d.id
+             JOIN execution_dispatch_intents di
+               ON di.execution_id=r.execution_id AND di.organization_id=r.organization_id
+             JOIN execution_process_ownership po
+               ON po.execution_id=r.execution_id AND po.organization_id=r.organization_id
+             JOIN execution_recovery_state rs
+               ON rs.execution_id=r.execution_id AND rs.organization_id=r.organization_id
+             WHERE q.id=? AND q.organization_id=?""",
+            (operation["child_request_id"], organization_id),
+        ).fetchone()
+        if not child:
+            raise RuntimeError("scan authorization replay child authority is missing or cross-tenant")
+
+        expected_request = {
+            "request_organization_id": organization_id,
+            "request_project_id": parent["project_id"],
+            "request_asset_id": parent["asset_id"],
+            "request_target_id": operation["target_id"],
+            "request_authorization_decision_id": operation["authorization_decision_id"],
+            "request_target_policy_version": parent["target_policy_version"],
+            "request_tool_id": operation["tool_id"],
+            "request_operation_family": operation["operation_family"],
+            "request_operation_policy_revision": operation["operation_policy_revision"],
+            "requested_by_user_id": parent["requested_by_user_id"],
+            "request_state": "AUTHORIZED",
+            "request_approved_decision_id": operation["child_decision_id"],
+            "request_approval_idempotency_key": parent["approval_idempotency_key"],
+        }
+        if any(child[field] != value for field, value in expected_request.items()):
+            raise RuntimeError("scan authorization replay child request binding changed")
+        if child["request_id"] != operation["child_request_id"] or child["idempotency_key"] != f"{scan_request_id}:{operation['operation_id']}":
+            raise RuntimeError("scan authorization replay child request identity changed")
+        if child["request_fingerprint"] != _child_request_fingerprint(
+            scan_request_id=scan_request_id,
+            manifest_hash=manifest.manifest_hash,
+            operation=operation,
+            organization_id=organization_id,
+        ):
+            raise RuntimeError("scan authorization replay child request fingerprint changed")
+        if child["request_expires_at"] != parent["expires_at"]:
+            raise RuntimeError("scan authorization replay child request expiry changed")
+
+        for prefix in ("request", "decision"):
+            pairs = (
+                (f"{prefix}_operation_options_json", operation["operation_options_json"], "operation options"),
+                (f"{prefix}_resource_budget_json", operation["resource_budget_json"], "resource budget"),
+                (f"{prefix}_account_impact_budget_json", operation["account_impact_budget_json"], "account-impact budget"),
+                (f"{prefix}_credential_scope_json", operation["credential_scope_json"], "credential scope"),
+            )
+            for actual_field, expected_json, field_name in pairs:
+                if _canonical_json(_decode_json_mapping(child[actual_field], field_name)) != _canonical_json(_decode_json_mapping(expected_json, field_name)):
+                    raise RuntimeError(f"scan authorization replay child {prefix} material changed")
+
+        expected_decision = {
+            "decision_id": operation["child_decision_id"],
+            "decision_organization_id": organization_id,
+            "decision_project_id": parent["project_id"],
+            "decision_asset_id": parent["asset_id"],
+            "decision_target_id": operation["target_id"],
+            "decision_authorization_decision_id": operation["authorization_decision_id"],
+            "decision_target_policy_version": parent["target_policy_version"],
+            "decision_tool_id": operation["tool_id"],
+            "decision_operation_family": operation["operation_family"],
+            "decision_operation_policy_revision": operation["operation_policy_revision"],
+            "approval_state": "APPROVED",
+            "approver_user_id": parent["approver_user_id"],
+            "session_jti": parent["approval_session_jti"],
+            "revoked_at": None,
+            "consumed_at": None,
+        }
+        if any(child[field] != value for field, value in expected_decision.items()):
+            raise RuntimeError("scan authorization replay child decision binding changed")
+        if child["decision_worker_identity"] != child["run_worker_identity"]:
+            raise RuntimeError("scan authorization replay worker identity binding changed")
+        if child["decision_expires_at"] != parent["expires_at"]:
+            raise RuntimeError("scan authorization replay child decision expiry changed")
+
+        expected_run = {
+            "execution_id": operation["child_execution_id"],
+            "run_request_id": operation["child_request_id"],
+            "run_organization_id": organization_id,
+            "run_approved_decision_id": operation["child_decision_id"],
+            "run_target_policy_version": parent["target_policy_version"],
+            "run_operation_policy_revision": operation["operation_policy_revision"],
+            "run_request_fingerprint": child["request_fingerprint"],
+            "snapshot_completeness": "COMPLETE",
+            "run_state": "REQUESTED",
+            "assurance_state": "UNVERIFIED",
+            "coverage_state": "UNAVAILABLE",
+            "run_correlation_id": parent["correlation_id"],
+        }
+        if any(child[field] != value for field, value in expected_run.items()):
+            raise RuntimeError("scan authorization replay execution binding changed")
+        for actual_field, expected_json, field_name in (
+            ("run_operation_options_json", operation["operation_options_json"], "operation options"),
+            ("run_resource_budget_json", operation["resource_budget_json"], "resource budget"),
+            ("run_account_impact_budget_json", operation["account_impact_budget_json"], "account-impact budget"),
+            ("run_credential_scope_json", operation["credential_scope_json"], "credential scope"),
+        ):
+            if _canonical_json(_decode_json_mapping(child[actual_field], field_name)) != _canonical_json(_decode_json_mapping(expected_json, field_name)):
+                raise RuntimeError("scan authorization replay execution material changed")
+
+        if any(child[field] != value for field, value in (
+            ("dispatch_state", "PENDING"),
+            ("dispatch_attempt_count", 0),
+            ("dispatch_organization_id", organization_id),
+            ("dispatch_correlation_id", parent["correlation_id"]),
+            ("ownership_execution_id", operation["child_execution_id"]),
+            ("ownership_organization_id", organization_id),
+            ("recovery_execution_id", operation["child_execution_id"]),
+            ("recovery_organization_id", organization_id),
+            ("recovery_worker_generation", child["run_worker_generation"]),
+        )):
+            raise RuntimeError("scan authorization replay lifecycle binding changed")
+
+        links.append({
+            "operation_id": operation["operation_id"],
+            "child_request_id": operation["child_request_id"],
+            "child_decision_id": operation["child_decision_id"],
+            "child_execution_id": operation["child_execution_id"],
+        })
+    return links
+
+
+def _assert_policy_material_current(manifest: ScanAuthorizationManifest) -> None:
+    """Revalidate selected and excluded operation rows against current policy."""
+    if not is_canonical_operation_policy_revision(manifest.policy_revision):
+        raise RuntimeError("scan authorization policy revision is stale or untrusted")
+    for operation in manifest.operations:
+        if operation.operation_policy_revision != manifest.policy_revision:
+            raise RuntimeError("scan authorization operation policy revision is inconsistent")
+        if operation.operation_id != f"{operation.engine_id}:{operation.tool_id}":
+            raise RuntimeError("scan authorization operation identity is not canonical")
+        if operation.selection_state not in {"SELECTED", "EXCLUDED"}:
+            raise RuntimeError("scan authorization operation selection state is invalid")
+        policy = get_operation_policy(operation.tool_id, operation.operation_family)
+        if operation.operation_family == "UNREPRESENTED_POLICY":
+            if policy is not None or operation.selection_state != "EXCLUDED":
+                raise RuntimeError("scan authorization policy-gap operation is inconsistent")
+            continue
+        if policy is None:
+            raise RuntimeError("scan authorization operation policy is no longer registered")
+        expected = {
+            "operation_options": dict(policy.get("required_options", {})),
+            "resource_budget": dict(policy.get("resource_budget", {})),
+            "account_impact_budget": dict(policy.get("account_impact_budget", {})),
+            "credential_scope": dict(policy.get("credential_scope", {})),
+            "capability_state": str(policy.get("capability_state", "UNAVAILABLE")),
+            "classification": str(policy.get("approval_level", "ADMINISTRATOR_APPROVAL_REQUIRED")),
+            "operation_family": str(policy["operation_family"]),
+        }
+        actual = {
+            "operation_options": dict(operation.operation_options),
+            "resource_budget": dict(operation.resource_budget),
+            "account_impact_budget": dict(operation.account_impact_budget),
+            "credential_scope": dict(operation.credential_scope),
+            "capability_state": operation.capability_state,
+            "classification": operation.classification,
+            "operation_family": operation.operation_family,
+        }
+        if _canonical_json(actual) != _canonical_json(expected):
+            raise RuntimeError("scan authorization operation no longer matches current policy")
+        if operation.selection_state == "SELECTED" and operation.exclusion_reason is not None:
+            raise RuntimeError("selected scan authorization operation has an exclusion reason")
+
+    for field_name, values in (
+        ("resource budget", dict(manifest.resource_budget)),
+        ("account-impact budget", dict(manifest.account_impact_budget)),
+        ("credential scope", dict(manifest.credential_scope)),
+    ):
+        if any(_DURABLE_SECRET_KEY_PATTERN.search(str(key)) for key in values):
+            raise RuntimeError(f"scan authorization {field_name} contains secret material")
+    if any(not isinstance(value, int) or value <= 0 for value in dict(manifest.resource_budget).values()):
+        raise RuntimeError("scan authorization resource budget is invalid")
+    if any(not isinstance(value, int) or value < 0 for value in dict(manifest.account_impact_budget).values()):
+        raise RuntimeError("scan authorization account-impact budget is invalid")
+
+
+def _assert_current_target_and_asset(conn: Any, parent: Any, manifest: ScanAuthorizationManifest, postgres: bool) -> None:
+    """Revalidate tenant, project, asset, target seal and target policy after locking."""
+    if any(parent[field] != expected for field, expected in (
+        ("organization_id", manifest.organization_id),
+        ("project_id", manifest.project_id),
+        ("asset_id", manifest.asset_id),
+        ("target_id", manifest.target_id),
+        ("target_integrity_seal", manifest.target_integrity_seal),
+        ("target_policy_version", manifest.target_policy_version),
+    )):
+        raise RuntimeError("scan authorization parent binding changed after request creation")
+
+    lock_suffix = " FOR UPDATE" if postgres else ""
+    organization = conn.execute(
+        "SELECT id FROM organizations WHERE id=? AND is_active=1" + lock_suffix,
+        (manifest.organization_id,),
+    ).fetchone()
+    if not organization:
+        raise RuntimeError("scan authorization organization is inactive or no longer exists")
+    if manifest.project_id:
+        project = conn.execute(
+            "SELECT id, organization_id FROM projects WHERE id=? AND organization_id=?" + lock_suffix,
+            (manifest.project_id, manifest.organization_id),
+        ).fetchone()
+        if not project:
+            raise RuntimeError("scan authorization project ownership or delegation is no longer valid")
+
+    asset = conn.execute(
+        "SELECT id, organization_id, project_id, type, target_value, owner, lifecycle_status FROM assets "
+        "WHERE id=? AND organization_id=? AND (project_id=? OR (project_id IS NULL AND ? IS NULL))" + lock_suffix,
+        (manifest.asset_id, manifest.organization_id, manifest.project_id, manifest.project_id),
+    ).fetchone()
+    if not asset:
+        raise RuntimeError("scan authorization asset ownership or delegation is no longer valid")
+    if asset["project_id"] != manifest.project_id or asset["target_value"].strip() != manifest.target_raw_value.strip():
+        raise RuntimeError("scan authorization asset target binding changed after request creation")
+    if manifest.asset_owner is not None and asset["owner"] != manifest.asset_owner:
+        raise RuntimeError("scan authorization asset owner binding changed after request creation")
+    if manifest.asset_lifecycle_status is not None and asset["lifecycle_status"] != manifest.asset_lifecycle_status:
+        raise RuntimeError("scan authorization asset lifecycle binding changed after request creation")
+    if asset["lifecycle_status"] in {
+        AssetLifecycleStatus.DECOMMISSIONED.value,
+        AssetLifecycleStatus.ARCHIVED.value,
+    }:
+        raise RuntimeError("scan authorization asset is no longer eligible for assessment")
+    expected_asset_type = {
+        "WEB_APPLICATION": "URL",
+        "API_ENDPOINT": "URL",
+        "DOMAIN": "DOMAIN",
+        "IP_ADDRESS": "IP",
+        "IAC_TEMPLATE": "IAC_MANIFEST",
+        "CLOUD_ACCOUNT": "CLOUD_ACCOUNT",
+        "KUBERNETES_CLUSTER": "KUBERNETES_CLUSTER",
+    }.get(str(asset["type"]))
+    if expected_asset_type != manifest.target_type:
+        raise RuntimeError("scan authorization asset type is inconsistent with the sealed target")
+
+    scan = conn.execute(
+        "SELECT organization_id, project_id, asset_id, target_type, target_value "
+        "FROM scans WHERE id=? AND organization_id=?" + lock_suffix,
+        (parent["scan_id"], manifest.organization_id),
+    ).fetchone()
+    if not scan or any(scan[field] != expected for field, expected in (
+        ("project_id", manifest.project_id),
+        ("asset_id", manifest.asset_id),
+        ("target_type", manifest.target_type),
+    )) or scan["target_value"].strip() != manifest.target_raw_value.strip():
+        raise RuntimeError("scan authorization scan record is inconsistent with the sealed target")
+
+    requester = conn.execute(
+        "SELECT id FROM users WHERE id=? AND organization_id=? AND is_active=1" + lock_suffix,
+        (parent["requested_by_user_id"], manifest.organization_id),
+    ).fetchone()
+    if not requester:
+        raise RuntimeError("scan authorization requester is no longer tenant-bound")
+
+    try:
+        target_type = TargetType(manifest.target_type)
+        target = ValidatedTarget(
+            target_id=manifest.target_id,
+            authorization_decision_id=manifest.authorization_decision_id,
+            integrity_seal=manifest.target_integrity_seal,
+            organization_id=manifest.organization_id,
+            project_id=manifest.project_id,
+            asset_id=manifest.asset_id,
+            target_type=target_type,
+            raw_value=manifest.target_raw_value,
+            canonical_value=manifest.target_canonical_value,
+            authorized_scope=list(manifest.target_authorized_scope),
+            resolved_addresses=list(manifest.target_resolved_addresses),
+            selected_destination=manifest.target_selected_destination,
+            port=manifest.target_port,
+            scheme=manifest.target_scheme,
+            authorization_context=dict(manifest.target_authorization_context),
+            policy_version=manifest.target_policy_version,
+        )
+        from app.core.ssrf_protector import validate_validated_target
+        validate_validated_target(target)
+    except Exception as exc:
+        raise RuntimeError("scan authorization target seal or policy validation failed") from exc
+
+_CONFIGURED_DB_PATH = os.environ.get("CYBERASSESS_DB_PATH", "").strip()
+if _CONFIGURED_DB_PATH and not Path(_CONFIGURED_DB_PATH).is_absolute():
+    raise RuntimeError("CYBERASSESS_DB_PATH must be an absolute path")
+DEFAULT_DB_PATH = Path(_CONFIGURED_DB_PATH) if _CONFIGURED_DB_PATH else Path(__file__).resolve().parent.parent.parent.parent / "data" / "cyberassess.db"
 MIGRATION_POSTCONDITION_REVISION = "execution-postconditions-v2"
+_ACTIVE_DATABASE_CONNECTION: ContextVar[Any | None] = ContextVar(
+    "cyberassess_active_database_connection", default=None,
+)
 
 
 class _PostgresRow(dict):
@@ -254,6 +889,10 @@ class PostgresDatabaseManager:
 
     @contextmanager
     def _connection_scope(self):
+        active_connection = _ACTIVE_DATABASE_CONNECTION.get()
+        if active_connection is not None:
+            yield active_connection
+            return
         raw_connection = self._pool.getconn()
         connection = _PostgresConnection(raw_connection)
         try:
@@ -424,12 +1063,37 @@ class DatabaseManager:
                 finally:
                     self._migration_coordinator_active = False
                     self._migration_started_durable = False
+            with self._connection_scope() as conn:
+                self._verify_current_schema_postconditions(conn)
             self._migration_attempt_id = None
             self._migration_transaction_id = None
             self._migration_spec = None
 
+    def _verify_current_schema_postconditions(self, conn) -> None:
+        """Verify the live schema after migration history has been accepted.
+
+        Historical verifiers intentionally describe intermediate schema shapes;
+        for example, migration v7 is the pre-lease dispatch table and cannot
+        be re-run after v8.  The latest compatible verifier set is therefore
+        re-applied at every startup so recorded migration history cannot mask
+        post-migration DDL drift.
+        """
+        for version in (3, 4, 6, 8, 9, 10, 11, 12, 13):
+            verifier = getattr(self, f"_verify_migration_v{version}_postconditions", None)
+            if verifier is None:
+                raise RuntimeError(f"current schema verifier is missing for migration v{version}")
+            verifier(conn)
+
     def _verify_forward_apply_artifact(self, spec) -> None:
         """Bind execution to the reviewed forward-apply implementation."""
+        if spec.version == 13:
+            from app.core.scan_request_migration_v13 import apply_artifact_digest
+            backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+            expected = spec.apply_artifact.get(backend) if isinstance(spec.apply_artifact, dict) else None
+            actual = apply_artifact_digest(self, backend=backend, manifest=spec.apply_manifest)
+            if actual != expected:
+                raise RuntimeError("migration forward-apply artifact drifted for version 13")
+            return
         implementation = getattr(DatabaseManager, "_init_db", None)
         if implementation is None:
             raise RuntimeError("migration forward-apply implementation is unavailable")
@@ -902,18 +1566,30 @@ class DatabaseManager:
         now = utc_now().isoformat()
         with self._connection_scope() as conn:
             spec = self._migration_spec
+            backend_key = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+            failure_context = {
+                "coordinator": "registry",
+                "provenance_format": "registry-coordinator-v2",
+                "migration_version": spec.version,
+                "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
+                "apply_artifact": spec.apply_artifact.get(backend_key),
+                "apply_artifacts": spec.apply_artifact,
+                "apply_manifest": spec.apply_manifest,
+                "backend_policy": spec.backend_policy,
+                "rollback": "not independently confirmed",
+            }
             for event_type, rollback_status, sequence in (("FAILED", "FAILED", 2), ("ROLLBACK_FAILED", "FAILED", 3)):
                 conn.execute("""INSERT INTO schema_migration_events
                     (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
                      previous_schema_version,target_schema_version,migration_checksum,runner_identity,transaction_context_id,
                      error_class,error_message,context_json,rollback_status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                     f"event-{uuid.uuid4().hex}", self._migration_attempt_id, self._migration_spec.version,
                     self._migration_spec.migration_id, self._migration_spec.name, self._migration_spec.registry_revision,
                     sequence, event_type, now, "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                     self._migration_schema_name, spec.previous_version, spec.target_version,
                     spec.checksum, "database-startup", self._migration_transaction_id,
-                    type(exc).__name__, str(exc)[:500], '{"coordinator":"registry","rollback":"not independently confirmed"}', rollback_status))
+                    type(exc).__name__, str(exc)[:500], json.dumps(failure_context, sort_keys=True, separators=(",", ":")), rollback_status))
 
     def _verify_migration_ledger(self, conn) -> None:
         """Reject any existing migration ledger that cannot be trusted."""
@@ -1084,6 +1760,10 @@ class DatabaseManager:
     @contextmanager
     def _connection_scope(self):
         """Provide an explicit transaction scope that always closes SQLite handles."""
+        active_connection = _ACTIVE_DATABASE_CONNECTION.get()
+        if active_connection is not None:
+            yield active_connection
+            return
         conn = self._get_connection()
         try:
             yield conn
@@ -1204,7 +1884,7 @@ class DatabaseManager:
                 ):
                     raise RuntimeError(f"execution lifecycle migration v10 {table} tenant foreign key is absent")
         else:
-            constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(oid) AS definition
+            constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(c.oid) AS definition
                 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
                 WHERE t.relname IN ('execution_process_ownership','execution_recovery_attempts','execution_recovery_state')""").fetchall()
             if any(not row["convalidated"] for row in constraints):
@@ -1220,6 +1900,150 @@ class DatabaseManager:
                 expected_key = ["attempt_id"] if table == "execution_recovery_attempts" else ["execution_id", "organization_id"]
                 if not any(list(row["columns"] or []) == expected_key for row in key):
                     raise RuntimeError(f"execution lifecycle migration v10 {table} primary key is not tenant-bound as required")
+
+    def _verify_migration_v11_postconditions(self, conn) -> None:
+        """Verify normalized scan authorization parent/operation/fleet tables."""
+        expected = {
+            "scan_authorization_requests": {
+                "scan_request_id", "scan_id", "organization_id", "requested_by_user_id",
+                "correlation_id", "manifest_hash", "target_id", "target_integrity_seal",
+                "target_policy_version", "profile", "selected_engine_ids_json",
+                "policy_revision", "state", "created_at", "expires_at",
+            },
+            "scan_authorization_operations": {
+                "operation_id", "scan_request_id", "organization_id", "tool_id",
+                "engine_id", "operation_family", "classification", "operation_options_json",
+                "operation_policy_revision", "target_id", "authorization_decision_id",
+                "resource_budget_json", "account_impact_budget_json", "credential_scope_json",
+                "capability_state", "selection_state", "exclusion_reason",
+            },
+            "scan_authorization_fleet": {
+                "scan_request_id", "organization_id", "tool_id", "owner_engine_id",
+                "status", "reason",
+            },
+        }
+        for table, columns in expected.items():
+            if isinstance(self, PostgresDatabaseManager):
+                actual = {
+                    row["column_name"] for row in conn.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=?",
+                        (table,),
+                    ).fetchall()
+                }
+            else:
+                actual = {
+                    row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+            if not columns.issubset(actual):
+                raise RuntimeError(f"scan authorization migration v11 schema drifted for {table}")
+        if isinstance(self, PostgresDatabaseManager):
+            parent_key = conn.execute("""
+                SELECT i.relname, x.indisunique, x.indpred, x.indisvalid,
+                       x.indisready, x.indnkeyatts, x.indnatts,
+                       array_agg(a.attname ORDER BY key_cols.ordinality) AS columns
+                FROM pg_class i
+                JOIN pg_index x ON x.indexrelid = i.oid
+                JOIN pg_class t ON t.oid = x.indrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN unnest(x.indkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key_cols.attnum
+                WHERE i.relname = 'scan_authorization_requests_id_org_uq'
+                  AND t.relname = 'scan_authorization_requests'
+                  AND n.nspname = current_schema()
+                GROUP BY i.relname, x.indisunique, x.indpred, x.indisvalid,
+                         x.indisready, x.indnkeyatts, x.indnatts
+            """).fetchall()
+            if len(parent_key) != 1 or not (
+                parent_key[0]["indisunique"]
+                and parent_key[0]["indpred"] is None
+                and parent_key[0]["indisvalid"]
+                and parent_key[0]["indisready"]
+                and parent_key[0]["indnkeyatts"] == parent_key[0]["indnatts"] == 2
+                and list(parent_key[0]["columns"] or []) == ["scan_request_id", "organization_id"]
+            ):
+                raise RuntimeError("scan authorization migration v11 parent composite key is absent or invalid")
+            parent_bindings = conn.execute("""
+                SELECT t.relname AS child_table, c.convalidated,
+                       array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                       array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_class pt ON pt.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+                JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+                  ON parent_cols.ordinality = local_cols.ordinality
+                JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+                WHERE t.relname IN ('scan_authorization_operations', 'scan_authorization_fleet')
+                  AND pt.relname = 'scan_authorization_requests'
+                  AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND c.contype = 'f'
+                GROUP BY c.oid, t.relname, c.convalidated
+            """).fetchall()
+            exact_bindings = {
+                row["child_table"] for row in parent_bindings
+                if row["convalidated"]
+                and list(row["local_columns"] or []) == ["scan_request_id", "organization_id"]
+                and list(row["parent_columns"] or []) == ["scan_request_id", "organization_id"]
+            }
+            if exact_bindings != {"scan_authorization_operations", "scan_authorization_fleet"}:
+                raise RuntimeError("scan authorization migration v11 tenant-bound parent foreign keys are incomplete")
+        else:
+            for table in expected:
+                if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    raise RuntimeError(f"scan authorization migration v11 missing table {table}")
+                foreign_keys = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+                if not foreign_keys:
+                    raise RuntimeError(f"scan authorization migration v11 missing tenant foreign keys for {table}")
+
+    def _verify_migration_v12_postconditions(self, conn) -> None:
+        """Verify durable parent approval bindings and worker-generation storage."""
+        expected = {
+            "scan_authorization_requests": {
+                "approver_user_id", "approval_session_jti", "approval_idempotency_key",
+                "revoked_at", "consumed_at", "project_id", "asset_id",
+            },
+            "scan_authorization_operations": {
+                "child_request_id", "child_decision_id", "child_execution_id",
+            },
+            "execution_runs": {"worker_generation"},
+        }
+        for table, columns in expected.items():
+            if isinstance(self, PostgresDatabaseManager):
+                actual = {
+                    row["column_name"] for row in conn.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=?",
+                        (table,),
+                    ).fetchall()
+                }
+            else:
+                actual = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if not columns.issubset(actual):
+                raise RuntimeError(f"scan authorization migration v12 schema drifted for {table}")
+
+    def _apply_scan_request_v13(self) -> None:
+        """Run the separately fingerprinted v13 migration on its coordinator connection."""
+        from app.core.scan_request_migration_v13 import apply_schema
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            apply_schema(conn, backend="postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite")
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (13,)).fetchone():
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (13, utc_now().isoformat()),
+                )
+
+    def _verify_migration_v13_postconditions(self, conn) -> None:
+        """Verify every v13-owned identity, tenant binding, and readiness invariant."""
+        from app.core.scan_request_migration_v13 import verify_schema
+
+        verify_schema(
+            conn,
+            backend="postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite",
+        )
 
     def _verify_execution_dispatch_base_schema(self, conn) -> None:
         """Verify only the pre-lease dispatch shape created by migration v7."""
@@ -1322,12 +2146,12 @@ class DatabaseManager:
             return
         parent = 0
         for index in conn.execute("PRAGMA index_list(execution_requests)").fetchall():
-            if index["unique"]:
+            if index["unique"] and not index["partial"]:
                 cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                 parent += [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["id", "organization_id"]
         run_unique = 0
         for index in conn.execute("PRAGMA index_list(execution_runs)").fetchall():
-            if index["unique"]:
+            if index["unique"] and not index["partial"]:
                 cols = conn.execute(f"PRAGMA index_info('{str(index['name']).replace(chr(39), chr(39) + chr(39))}')").fetchall()
                 run_unique += [c["name"] for c in sorted(cols, key=lambda c: c["seqno"])] == ["request_id", "organization_id"]
         groups = {}
@@ -2906,6 +3730,140 @@ class DatabaseManager:
                 ):
                     raise ValueError("execution schema health check failed: composite tenant foreign key is absent")
 
+            scan_authorization_version = 11
+            scan_authorization_tables = (
+                "scan_authorization_requests",
+                "scan_authorization_operations",
+                "scan_authorization_fleet",
+            )
+            if not conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (scan_authorization_version,),
+            ).fetchone():
+                existing = []
+                for table in scan_authorization_tables:
+                    exists = conn.execute(
+                        "SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name = ?"
+                        if isinstance(self, PostgresDatabaseManager)
+                        else "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+                        (table,),
+                    ).fetchone()
+                    if exists:
+                        existing.append(table)
+                if existing:
+                    raise RuntimeError(
+                        f"scan authorization migration v11 found pre-existing artifacts {existing!r}; manual reconciliation required"
+                    )
+                conn.execute("""CREATE TABLE scan_authorization_requests (
+                    scan_request_id TEXT PRIMARY KEY,
+                    scan_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    requested_by_user_id TEXT NOT NULL,
+                    correlation_id TEXT NOT NULL,
+                    manifest_hash TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    target_integrity_seal TEXT NOT NULL,
+                    target_policy_version TEXT NOT NULL,
+                    profile TEXT NOT NULL,
+                    selected_engine_ids_json TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('REQUESTED','APPROVED','DISPATCHABLE','REVOKED','EXPIRED','CONSUMED')),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    UNIQUE (scan_id, organization_id),
+                    FOREIGN KEY (scan_id) REFERENCES scans(id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                )""")
+                # PostgreSQL requires the referenced composite key to exist
+                # before a child foreign key can be declared.  Keep the
+                # tenant-bound parent identity available before creating the
+                # operation and fleet tables that reference it.
+                conn.execute("CREATE UNIQUE INDEX scan_authorization_requests_id_org_uq ON scan_authorization_requests(scan_request_id, organization_id)")
+                conn.execute("""CREATE TABLE scan_authorization_operations (
+                    operation_id TEXT NOT NULL,
+                    scan_request_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    tool_id TEXT NOT NULL,
+                    engine_id TEXT NOT NULL,
+                    operation_family TEXT NOT NULL,
+                    classification TEXT NOT NULL,
+                    operation_options_json TEXT NOT NULL,
+                    operation_policy_revision TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    authorization_decision_id TEXT NOT NULL,
+                    resource_budget_json TEXT NOT NULL,
+                    account_impact_budget_json TEXT NOT NULL,
+                    credential_scope_json TEXT NOT NULL,
+                    capability_state TEXT NOT NULL,
+                    selection_state TEXT NOT NULL,
+                    exclusion_reason TEXT,
+                    PRIMARY KEY (operation_id, organization_id),
+                    UNIQUE (scan_request_id, organization_id, tool_id, engine_id),
+                    FOREIGN KEY (scan_request_id, organization_id)
+                        REFERENCES scan_authorization_requests(scan_request_id, organization_id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                )""")
+                conn.execute("""CREATE TABLE scan_authorization_fleet (
+                    scan_request_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    tool_id TEXT NOT NULL,
+                    owner_engine_id TEXT,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    PRIMARY KEY (scan_request_id, organization_id, tool_id),
+                    FOREIGN KEY (scan_request_id, organization_id)
+                        REFERENCES scan_authorization_requests(scan_request_id, organization_id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                )""")
+                conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (scan_authorization_version, utc_now().isoformat()))
+            self._verify_migration_v11_postconditions(conn)
+            if max_migration_version == scan_authorization_version:
+                return
+
+            authorization_binding_version = 12
+            authorization_columns = {
+                "scan_authorization_requests": (
+                    "approver_user_id", "approval_session_jti", "approval_idempotency_key",
+                    "revoked_at", "consumed_at", "project_id", "asset_id",
+                ),
+                "scan_authorization_operations": (
+                    "child_request_id", "child_decision_id", "child_execution_id",
+                ),
+                "execution_runs": ("worker_generation",),
+            }
+            if not conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (authorization_binding_version,),
+            ).fetchone():
+                for table, columns in authorization_columns.items():
+                    if isinstance(self, PostgresDatabaseManager):
+                        existing_columns = {
+                            row["column_name"] for row in conn.execute(
+                                "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=?",
+                                (table,),
+                            ).fetchall()
+                        }
+                    else:
+                        existing_columns = {
+                            row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                        }
+                    present = set(columns) & existing_columns
+                    if present and present != set(columns):
+                        raise RuntimeError(
+                            f"scan authorization migration v12 found partial columns for {table}: {sorted(present)!r}"
+                        )
+                    for column in columns:
+                        if column in existing_columns:
+                            continue
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (authorization_binding_version, utc_now().isoformat()),
+                )
+            self._verify_migration_v12_postconditions(conn)
+            if max_migration_version == authorization_binding_version:
+                return
+
             if getattr(self, "_migration_attempt_id", None) and not getattr(self, "_migration_coordinator_active", False):
                 conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
@@ -3176,7 +4134,13 @@ class DatabaseManager:
                 """SELECT r.execution_id, r.organization_id, r.process_id,
                            r.state AS run_state,
                            r.process_group_id, r.correlation_id,
+                           p.ownership_state, p.root_process_id,
+                           p.process_group_id AS ownership_process_group_id,
+                           s.status AS recovery_status, s.attempt_number,
+                           s.next_retry_at, s.escalation_level,
                            CASE
+                             WHEN p.ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                               THEN 'FAILED'
                              WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
                                OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                                THEN 'CANCELLED'
@@ -3185,6 +4149,8 @@ class DatabaseManager:
                              ELSE 'TIMED_OUT'
                            END AS terminal_state,
                            CASE
+                             WHEN p.ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                               THEN 'PROCESS_LAUNCH_UNCERTAIN'
                              WHEN q.state = 'REVOKED' OR d.revoked_at IS NOT NULL
                                OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                                THEN 'EXECUTION_CANCELLED'
@@ -3196,6 +4162,8 @@ class DatabaseManager:
                       JOIN execution_requests q ON q.id = r.request_id AND q.organization_id = r.organization_id
                       JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
                       JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
+                      JOIN execution_process_ownership p ON p.execution_id = r.execution_id AND p.organization_id = r.organization_id
+                      JOIN execution_recovery_state s ON s.execution_id = r.execution_id AND s.organization_id = r.organization_id
                      WHERE r.state IN ('REQUESTED', 'STARTING', 'RUNNING')
                        AND (
                             q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
@@ -3203,12 +4171,228 @@ class DatabaseManager:
                             OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                             OR q.expires_at <= ? OR d.expires_at <= ?
                             OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))
+                            OR (p.ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                                AND s.status <> 'IN_PROGRESS'
+                                AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?))
                        )
                      ORDER BY r.created_at
                      LIMIT ?""",
-                (now, now, now, limit),
+                (now, now, now, now, limit),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def list_scan_execution_ids(self, scan_id: str, organization_id: str) -> list[str]:
+        """Return only child execution identities belonging to one tenant scan."""
+        if not isinstance(scan_id, str) or not scan_id.strip() or not isinstance(organization_id, str) or not organization_id.strip():
+            return []
+        with self._connection_scope() as conn:
+            rows = conn.execute(
+                """SELECT o.child_execution_id
+                   FROM scan_authorization_requests r
+                   JOIN scan_authorization_operations o
+                     ON o.scan_request_id=r.scan_request_id AND o.organization_id=r.organization_id
+                  WHERE r.scan_id=? AND r.organization_id=?
+                    AND o.child_execution_id IS NOT NULL
+                  ORDER BY o.operation_id""",
+                (scan_id, organization_id),
+            ).fetchall()
+            return [str(row["child_execution_id"]) for row in rows if row["child_execution_id"]]
+
+    def get_scan_authorization_launch_binding(
+        self,
+        scan_request_id: str,
+        organization_id: str,
+        operation_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """Read the complete tenant-bound authority tuple for one operation.
+
+        This is deliberately a read-only data-access boundary.  It joins the
+        immutable scan parent, the exact v13 operation row, and all three
+        materialized child authority records in one tenant-scoped query.  A
+        partially materialized operation therefore cannot be mistaken for a
+        launchable operation by callers that only inspect one table.
+
+        The returned mapping is an internal authority snapshot.  It contains
+        no credential material and must be revalidated by the execution
+        authority provider immediately before capability issuance.
+        """
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (scan_request_id, organization_id, operation_id)
+        ):
+            return None
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    p.scan_request_id AS scan_request_id,
+                    p.scan_id AS scan_id,
+                    p.organization_id AS organization_id,
+                    p.state AS parent_state,
+                    p.manifest_hash AS parent_manifest_hash,
+                    p.project_id AS parent_project_id,
+                    p.asset_id AS parent_asset_id,
+                    p.target_id AS parent_target_id,
+                    p.target_integrity_seal AS parent_target_integrity_seal,
+                    p.target_policy_version AS parent_target_policy_version,
+
+                    o.operation_id AS operation_id,
+                    o.tool_id AS operation_tool_id,
+                    o.engine_id AS operation_engine_id,
+                    o.operation_family AS operation_family,
+                    o.operation_options_json AS operation_options_json,
+                    o.operation_policy_revision AS operation_policy_revision,
+                    o.target_id AS operation_target_id,
+                    o.authorization_decision_id AS operation_authorization_decision_id,
+                    o.resource_budget_json AS operation_resource_budget_json,
+                    o.account_impact_budget_json AS operation_account_impact_budget_json,
+                    o.credential_scope_json AS operation_credential_scope_json,
+                    o.capability_state AS operation_capability_state,
+                    o.selection_state AS operation_selection_state,
+
+                    q.id AS child_request_id,
+                    q.organization_id AS child_request_organization_id,
+                    q.state AS child_request_state,
+                    q.project_id AS child_request_project_id,
+                    q.asset_id AS child_request_asset_id,
+                    q.target_id AS child_request_target_id,
+                    q.authorization_decision_id AS child_request_authorization_decision_id,
+                    q.target_policy_version AS child_request_target_policy_version,
+                    q.tool_id AS child_request_tool_id,
+                    q.operation_family AS child_request_operation_family,
+                    q.operation_options_json AS child_request_operation_options_json,
+                    q.operation_policy_revision AS child_request_operation_policy_revision,
+                    q.resource_budget_json AS child_request_resource_budget_json,
+                    q.account_impact_budget_json AS child_request_account_impact_budget_json,
+                    q.credential_scope_json AS child_request_credential_scope_json,
+                    q.request_fingerprint AS child_request_fingerprint,
+                    q.expires_at AS child_request_expires_at,
+
+                    d.id AS child_decision_id,
+                    d.organization_id AS child_decision_organization_id,
+                    d.project_id AS child_decision_project_id,
+                    d.asset_id AS child_decision_asset_id,
+                    d.target_id AS child_decision_target_id,
+                    d.authorization_decision_id AS child_decision_authorization_decision_id,
+                    d.target_policy_version AS child_decision_target_policy_version,
+                    d.tool_id AS child_decision_tool_id,
+                    d.operation_family AS child_decision_operation_family,
+                    d.operation_options_json AS child_decision_operation_options_json,
+                    d.operation_policy_revision AS child_decision_operation_policy_revision,
+                    d.approval_state AS child_decision_approval_state,
+                    d.session_jti AS child_decision_session_jti,
+                    d.worker_identity AS child_decision_worker_identity,
+                    d.resource_budget_json AS child_decision_resource_budget_json,
+                    d.account_impact_budget_json AS child_decision_account_impact_budget_json,
+                    d.credential_scope_json AS child_decision_credential_scope_json,
+                    d.expires_at AS child_decision_expires_at,
+                    d.revoked_at AS child_decision_revoked_at,
+                    d.consumed_at AS child_decision_consumed_at,
+
+                    r.execution_id AS child_execution_id,
+                    r.request_id AS child_run_request_id,
+                    r.organization_id AS child_run_organization_id,
+                    r.approved_decision_id AS child_run_approved_decision_id,
+                    r.target_policy_version AS child_run_target_policy_version,
+                    r.operation_policy_revision AS child_run_operation_policy_revision,
+                    r.request_fingerprint AS child_run_request_fingerprint,
+                    r.operation_options_json AS child_run_operation_options_json,
+                    r.resource_budget_json AS child_run_resource_budget_json,
+                    r.account_impact_budget_json AS child_run_account_impact_budget_json,
+                    r.credential_scope_json AS child_run_credential_scope_json,
+                    r.snapshot_completeness AS child_run_snapshot_completeness,
+                    r.state AS child_run_state,
+                    r.worker_identity AS child_run_worker_identity,
+                    r.worker_generation AS child_run_worker_generation,
+                    r.correlation_id AS child_run_correlation_id,
+
+                    i.state AS dispatch_state,
+                    i.attempt_count AS dispatch_attempt_count
+                FROM scan_authorization_requests p
+                JOIN scan_authorization_operations o
+                  ON o.scan_request_id = p.scan_request_id
+                 AND o.organization_id = p.organization_id
+                 AND o.operation_id = ?
+                JOIN execution_requests q
+                  ON q.id = o.child_request_id
+                 AND q.organization_id = o.organization_id
+                JOIN execution_decisions d
+                  ON d.id = o.child_decision_id
+                 AND d.organization_id = o.organization_id
+                JOIN execution_runs r
+                  ON r.execution_id = o.child_execution_id
+                 AND r.organization_id = o.organization_id
+                JOIN execution_dispatch_intents i
+                  ON i.execution_id = r.execution_id
+                 AND i.organization_id = r.organization_id
+                WHERE p.scan_request_id = ?
+                  AND p.organization_id = ?
+                """,
+                (operation_id, scan_request_id, organization_id),
+            ).fetchone()
+            if not row:
+                return None
+            binding = dict(row)
+            for prefix in ("operation", "child_request", "child_decision", "child_run"):
+                for suffix in (
+                    "options_json",
+                    "resource_budget_json",
+                    "account_impact_budget_json",
+                    "credential_scope_json",
+                ):
+                    field = f"{prefix}_{suffix}"
+                    binding[field.removesuffix("_json")] = json.loads(binding.pop(field) or "{}")
+            return binding
+
+    def get_scan_authorization_request(
+        self,
+        scan_request_id: str,
+        organization_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """Read one tenant-scoped scan parent for worker dispatch validation."""
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (scan_request_id, organization_id)
+        ):
+            return None
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                """
+                SELECT scan_request_id, scan_id, organization_id, state,
+                       manifest_hash, project_id, asset_id, target_id,
+                       target_integrity_seal, target_policy_version,
+                       expires_at, revoked_at, consumed_at
+                  FROM scan_authorization_requests
+                 WHERE scan_request_id=? AND organization_id=?
+                """,
+                (scan_request_id, organization_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_scan_authorization_operation_ids(
+        self,
+        scan_request_id: str,
+        organization_id: str,
+        *,
+        selected_only: bool = False,
+    ) -> list[str]:
+        """Return server-owned operation identities for one approved parent."""
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (scan_request_id, organization_id)
+        ):
+            return []
+        with self._connection_scope() as conn:
+            query = (
+                "SELECT operation_id FROM scan_authorization_operations "
+                "WHERE scan_request_id=? AND organization_id=?"
+            )
+            params: list[Any] = [scan_request_id, organization_id]
+            if selected_only:
+                query += " AND selection_state='SELECTED'"
+            query += " ORDER BY operation_id"
+            rows = conn.execute(query, params).fetchall()
+            return [str(row["operation_id"]) for row in rows if row["operation_id"]]
 
     def is_token_revoked(self, jti: str) -> bool:
         """Checks if a JWT token has been revoked in the database."""
@@ -3297,7 +4481,7 @@ class DatabaseManager:
 
     def approve_execution_request(
         self, request_id: str, organization_id: str, request_fingerprint: str, approval_idempotency_key: str,
-        approver_user_id: str, session_jti: str, worker_identity: str,
+        approver_user_id: str, session_jti: str, worker_identity: str, worker_generation: str,
     ) -> tuple[str, Optional[str], Optional[str]]:
         """Atomically authorize a request or return an idempotent/conflict result."""
         correlation_id = get_correlation_id()
@@ -3353,7 +4537,7 @@ class DatabaseManager:
             if not cur.fetchone():
                 return "DENIED", None, None
             cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND role = 'ADMIN' AND is_active = 1", (approver_user_id, organization_id))
-            if not cur.fetchone() or not session_jti or not worker_identity:
+            if not cur.fetchone() or not session_jti or not worker_identity or not worker_generation:
                 return "DENIED", None, None
             decision_id = f"dec-{uuid.uuid4().hex[:16]}"
             cur.execute(
@@ -3381,16 +4565,16 @@ class DatabaseManager:
             conn.execute(
                 """INSERT INTO execution_runs (
                     execution_id, request_id, organization_id, approved_decision_id,
-                    target_policy_version, operation_policy_revision, request_fingerprint,
+                    target_policy_version, operation_policy_revision, request_fingerprint, worker_generation,
                     operation_options_json, resource_budget_json, account_impact_budget_json,
                     credential_scope_json, snapshot_completeness, state, worker_identity, assurance_state,
                     coverage_state, correlation_id, created_at
                 ) SELECT ?, id, organization_id, ?, target_policy_version,
-                    operation_policy_revision, request_fingerprint, operation_options_json,
+                    operation_policy_revision, request_fingerprint, ?, operation_options_json,
                     resource_budget_json, account_impact_budget_json, credential_scope_json,
                     'COMPLETE', 'REQUESTED', ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
                     FROM execution_requests WHERE id = ? AND organization_id = ?""",
-                    (execution_id, decision_id, worker_identity, correlation_id, now.isoformat(), request_id, organization_id),
+                     (execution_id, decision_id, worker_generation, worker_identity, correlation_id, now.isoformat(), request_id, organization_id),
             )
             conn.execute(
                 "INSERT INTO execution_dispatch_intents (execution_id, organization_id, state, attempt_count, created_at) VALUES (?, ?, 'PENDING', 0, ?)",
@@ -3428,7 +4612,7 @@ class DatabaseManager:
             row = conn.execute(
                 "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
                 "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
-                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, "
+                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, worker_generation, "
                 "operation_options_json, resource_budget_json, account_impact_budget_json, credential_scope_json, "
                 "snapshot_completeness, correlation_id, created_at, started_at, finished_at FROM execution_runs "
                 "WHERE request_id = ? AND organization_id = ?",
@@ -3449,7 +4633,7 @@ class DatabaseManager:
             row = conn.execute(
                 "SELECT execution_id, request_id, organization_id, state, worker_identity, process_id, "
                 "process_group_id, assurance_state, coverage_state, reason_code, evidence_ref, "
-                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, "
+                "approved_decision_id, target_policy_version, operation_policy_revision, request_fingerprint, worker_generation, "
                 "operation_options_json, resource_budget_json, account_impact_budget_json, credential_scope_json, "
                 "snapshot_completeness, correlation_id, created_at, started_at, finished_at FROM execution_runs "
                 "WHERE execution_id = ? AND organization_id = ?",
@@ -3614,6 +4798,10 @@ class DatabaseManager:
             ).fetchone()
             if state and state["lease_expires_at"] and datetime.fromisoformat(state["lease_expires_at"]) > now:
                 return None
+            if state and state["next_retry_at"] and datetime.fromisoformat(state["next_retry_at"]) > now:
+                return None
+            if state and state["status"] == "EXHAUSTED":
+                return None
             attempt_number = (int(state["attempt_number"]) if state else 0) + 1
             if state:
                 changed = conn.execute(
@@ -3656,18 +4844,31 @@ class DatabaseManager:
                 (expiry.isoformat(), utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation, utc_now().isoformat()),
             ).rowcount == 1
 
-    def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, status: str, outcome: str, error: Optional[str] = None) -> bool:
+    def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, status: str, outcome: str, error: Optional[str] = None, next_retry_at: Optional[datetime] = None) -> bool:
         allowed = {"CONFIRMED_TERMINATED", "DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
         if status not in allowed:
             return False
+        if status == "DEFERRED" and next_retry_at is None:
+            raise ValueError("deferred recovery requires a retry time")
+        if status != "DEFERRED" and next_retry_at is not None:
+            raise ValueError("only deferred recovery may carry a retry time")
         with self._connection_scope() as conn:
             changed = conn.execute(
                 """UPDATE execution_recovery_state SET status=?, last_outcome=?, last_error=?,
-                owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=?
+                owner=NULL, lease_token=NULL, lease_expires_at=NULL, next_retry_at=?, updated_at=?
                 WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=? AND status='IN_PROGRESS'""",
-                (status, outcome, error, utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation),
+                (status, outcome, error, next_retry_at.isoformat() if next_retry_at else None,
+                 utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation),
             )
             if changed.rowcount == 1:
+                if status in {"DEFERRED", "ESCALATED", "EXHAUSTED"}:
+                    conn.execute(
+                        """UPDATE execution_process_ownership
+                           SET ownership_state='RECOVERY_BLOCKED', updated_at=?
+                         WHERE execution_id=? AND organization_id=?
+                           AND ownership_state='LAUNCH_UNCERTAIN'""",
+                        (utc_now().isoformat(), execution_id, organization_id),
+                    )
                 now = utc_now()
                 conn.execute(
                     """INSERT INTO execution_recovery_attempts
@@ -3683,6 +4884,125 @@ class DatabaseManager:
                      now.isoformat(), now.isoformat(), error, execution_id, organization_id),
                 )
             return changed.rowcount == 1
+
+    def settle_recovery_execution(
+        self, execution_id: str, organization_id: str, owner: str,
+        lease_token: str, worker_generation: str, *,
+        terminal_state: str = "FAILED",
+        reason_code: str = "PROCESS_LAUNCH_UNCERTAIN",
+    ) -> bool:
+        """Atomically close a recovered uncertain process and its run.
+
+        The coordinator may terminalize an uncertain launch only after the
+        supervisor has independently confirmed that the owned process
+        container is gone.  This method records a digest-bound proof and
+        commits ownership, run, dispatch, decision, recovery projection, and
+        immutable recovery evidence in one transaction.
+        """
+        if terminal_state != "FAILED" or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
+            raise ValueError("recovery settlement requires the reviewed failed/uncertain outcome")
+        now = utc_now()
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                """SELECT p.ownership_state, s.status AS recovery_status,
+                          s.attempt_number, r.request_id, r.approved_decision_id,
+                          r.correlation_id, i.state AS dispatch_state
+                     FROM execution_process_ownership p
+                     JOIN execution_recovery_state s
+                       ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id
+                     JOIN execution_runs r
+                       ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id
+                     JOIN execution_dispatch_intents i
+                       ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id
+                    WHERE p.execution_id=? AND p.organization_id=?
+                      AND s.owner=? AND s.lease_token=?
+                      AND s.worker_generation=? AND s.status='IN_PROGRESS'""" + lock,
+                (execution_id, organization_id, owner, lease_token, worker_generation),
+            ).fetchone()
+            if not row or row["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
+                return False
+            proof_material = {
+                "schema_version": "recovery-no-process-proof-v1",
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "lease_token": lease_token,
+                "attempt_number": int(row["attempt_number"]),
+                "worker_generation": worker_generation,
+                "observed_at": now.isoformat(),
+            }
+            proof_digest = hashlib.sha256(
+                json.dumps(proof_material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+            ).hexdigest()
+            no_process_proof = f"NO_EXTERNAL_PROCESS:recovery:v1:{proof_digest}"
+            ownership = conn.execute(
+                """UPDATE execution_process_ownership
+                      SET ownership_state='TERMINAL', no_process_proof=?,
+                          terminalized_at=?, updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')""",
+                (no_process_proof, now.isoformat(), now.isoformat(), execution_id, organization_id),
+            )
+            dispatch = conn.execute(
+                """UPDATE execution_dispatch_intents
+                      SET state='FAILED', completed_at=?, last_error=?,
+                          claimed_by=NULL, claim_token=NULL, lease_expires_at=NULL
+                    WHERE execution_id=? AND organization_id=?
+                      AND state IN ('PENDING','CLAIMED')""",
+                (now.isoformat(), reason_code, execution_id, organization_id),
+            )
+            run = conn.execute(
+                """UPDATE execution_runs
+                      SET state=?, reason_code=?, finished_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND state IN ('REQUESTED','STARTING','RUNNING')""",
+                (terminal_state, reason_code, now.isoformat(), execution_id, organization_id),
+            )
+            decision = conn.execute(
+                """UPDATE execution_decisions
+                      SET claim_owner=NULL, claim_expires_at=NULL, claim_token=NULL
+                    WHERE id=? AND organization_id=?""",
+                (row["approved_decision_id"], organization_id),
+            )
+            recovery = conn.execute(
+                """UPDATE execution_recovery_state
+                      SET status='CONFIRMED_TERMINATED', last_outcome=?,
+                          last_error=NULL, owner=NULL, lease_token=NULL,
+                          lease_expires_at=NULL, next_retry_at=NULL, updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND owner=? AND lease_token=? AND worker_generation=?
+                      AND status='IN_PROGRESS'""",
+                (no_process_proof, now.isoformat(), execution_id, organization_id,
+                 owner, lease_token, worker_generation),
+            )
+            if any(result.rowcount != 1 for result in (ownership, dispatch, run, recovery)):
+                raise RuntimeError("recovery settlement lost its transaction fence")
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                   (attempt_id, execution_id, organization_id, worker_identity,
+                    worker_generation, attempt_number, status, cancellation_status,
+                    reason_code, correlation_id, requested_at, started_at,
+                    completed_at, error_code, escalation_level, health_reference)
+                   SELECT ?, execution_id, organization_id, ?, worker_generation,
+                          attempt_number, 'CONFIRMED_TERMINATED', 'CONFIRMED', ?, ?,
+                          ?, ?, ?, NULL, escalation_level, ?
+                     FROM execution_recovery_state
+                    WHERE execution_id=? AND organization_id=?""",
+                (f"{lease_token}-settled", owner, reason_code,
+                 row["correlation_id"] or f"corr-recovery-{execution_id}",
+                 now.isoformat(), now.isoformat(), now.isoformat(),
+                 f"recovery-health:{execution_id}", execution_id, organization_id),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=owner,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", correlation_id=row["correlation_id"] or f"corr-recovery-{execution_id}",
+                details={"to": terminal_state, "reason_code": reason_code,
+                         "no_process_proof": no_process_proof},
+            ))
+            return True
 
     def recovery_health(self, organization_id: str) -> list[dict[str, Any]]:
         """Tenant-scoped operator health view; no process identity is exposed as authority."""
@@ -4522,6 +5842,12 @@ class DatabaseManager:
 
     def create_asset(self, asset: Asset) -> Asset:
         with self._connection_scope() as conn:
+            organization = conn.execute(
+                "SELECT id FROM organizations WHERE id=? AND is_active=1",
+                (asset.organization_id,),
+            ).fetchone()
+            if not organization:
+                raise ValueError("asset organization does not exist or is inactive")
             conn.execute(
                 """
                 INSERT INTO assets (
@@ -5132,15 +6458,15 @@ class DatabaseManager:
             conn.execute(
                 """INSERT INTO execution_runs (
                     execution_id, request_id, organization_id, approved_decision_id,
-                    target_policy_version, operation_policy_revision, request_fingerprint,
+                    target_policy_version, operation_policy_revision, request_fingerprint, worker_generation,
                     operation_options_json, resource_budget_json, account_impact_budget_json,
                     credential_scope_json, snapshot_completeness, state, worker_identity, process_id, process_group_id,
                     assurance_state, coverage_state, reason_code, evidence_ref, correlation_id,
                     created_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (run.execution_id, run.request_id, run.organization_id, decision_row["id"],
                  decision_row["target_policy_version"], decision_row["operation_policy_revision"],
-                 request_full["request_fingerprint"], decision_row["operation_options_json"],
+                 request_full["request_fingerprint"], run.worker_generation, decision_row["operation_options_json"],
                  decision_row["resource_budget_json"], decision_row["account_impact_budget_json"],
                  decision_row["credential_scope_json"], "COMPLETE", run.state, run.worker_identity,
                  run.process_id, run.process_group_id, run.assurance_state, run.coverage_state,
@@ -5309,6 +6635,352 @@ class DatabaseManager:
     # 4. Scan & Finding Persistence Operations
     # ========================================================================
 
+    def save_scan_authorization_request(self, request: "ScanAuthorizationRequestRecord") -> None:
+        """Persist one immutable parent scan manifest and normalized children atomically."""
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            manifest = request.manifest
+            try:
+                validate_idempotency_key(request.creation_idempotency_key)
+                validate_request_fingerprint(request.creation_fingerprint)
+                _assert_manifest_secret_safe(manifest)
+            except ValueError as exc:
+                raise RuntimeError("scan authorization request contains invalid durable identity material") from exc
+            parent_insert = conn.execute(
+                """INSERT INTO scan_authorization_requests
+                (scan_request_id, scan_id, organization_id, requested_by_user_id,
+                 project_id, asset_id, correlation_id, manifest_hash, target_id, target_integrity_seal,
+                 target_policy_version, profile, selected_engine_ids_json,
+                 policy_revision, state, created_at, expires_at, manifest_json,
+                 creation_idempotency_key, creation_fingerprint)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (request.scan_request_id, request.scan_id, request.organization_id,
+                 request.requested_by_user_id, manifest.project_id, manifest.asset_id, request.correlation_id,
+                 request.manifest_hash, manifest.target_id, manifest.target_integrity_seal,
+                 manifest.target_policy_version, manifest.profile,
+                 json.dumps(list(manifest.selected_engine_ids), separators=(",", ":")),
+                 manifest.policy_revision, request.state.value, request.created_at.isoformat(),
+                 request.expires_at.isoformat(),
+                  json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+                  request.creation_idempotency_key, request.creation_fingerprint),
+            )
+            if parent_insert.rowcount != 1:
+                raise RuntimeError("scan authorization parent insert did not create exactly one row")
+            parent = conn.execute(
+                "SELECT * FROM scan_authorization_requests WHERE scan_request_id=? AND organization_id=?",
+                (request.scan_request_id, request.organization_id),
+            ).fetchone()
+            if not parent:
+                raise RuntimeError("scan authorization parent insert cannot be re-read")
+            _assert_parent_manifest_binding(parent, request.scan_request_id, manifest)
+
+            for operation in manifest.operations:
+                operation_insert = conn.execute(
+                    """INSERT INTO scan_authorization_operations
+                    (operation_id, scan_request_id, organization_id, tool_id, engine_id,
+                     operation_family, classification, operation_options_json,
+                     operation_policy_revision, target_id, authorization_decision_id,
+                     resource_budget_json, account_impact_budget_json, credential_scope_json,
+                     capability_state, selection_state, exclusion_reason)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (operation.operation_id, request.scan_request_id, request.organization_id,
+                     operation.tool_id, operation.engine_id, operation.operation_family,
+                     operation.classification,
+                     json.dumps(dict(operation.operation_options), sort_keys=True, separators=(",", ":")),
+                     operation.operation_policy_revision, operation.target_id,
+                     operation.authorization_decision_id,
+                     json.dumps(dict(operation.resource_budget), sort_keys=True, separators=(",", ":")),
+                     json.dumps(dict(operation.account_impact_budget), sort_keys=True, separators=(",", ":")),
+                     json.dumps(dict(operation.credential_scope), sort_keys=True, separators=(",", ":")),
+                      operation.capability_state, operation.selection_state,
+                      operation.exclusion_reason),
+                )
+                if operation_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization operation insert did not create exactly one row")
+            for entry in manifest.fleet_snapshot:
+                fleet_insert = conn.execute(
+                    """INSERT INTO scan_authorization_fleet
+                    (scan_request_id, organization_id, tool_id, owner_engine_id, status, reason)
+                    VALUES (?,?,?,?,?,?)""",
+                     (request.scan_request_id, request.organization_id, entry.tool_id,
+                      entry.owner_engine_id, entry.status, entry.reason),
+                )
+                if fleet_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization fleet insert did not create exactly one row")
+            _assert_normalized_manifest_rows_match(
+                conn,
+                request.scan_request_id,
+                request.organization_id,
+                manifest,
+            )
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}",
+                    actor=request.requested_by_user_id,
+                    organization_id=request.organization_id,
+                    action=AuditAction.SCAN_CREATED,
+                    object_type="scan_authorization_request",
+                    object_id=request.scan_request_id,
+                    correlation_id=request.correlation_id,
+                    result="SUCCESS",
+                    details={"scan_id": request.scan_id, "manifest_hash": request.manifest_hash},
+                ),
+            )
+
+    def find_scan_authorization_request_by_idempotency(
+        self, organization_id: str, idempotency_key: str,
+    ) -> Optional[dict[str, Any]]:
+        """Return the tenant-scoped request identity for an idempotency replay."""
+        with self._connection_scope() as conn:
+            row = conn.execute(
+                """SELECT scan_request_id, scan_id, creation_fingerprint, manifest_hash,
+                          state, expires_at
+                   FROM scan_authorization_requests
+                   WHERE organization_id=? AND creation_idempotency_key=?""",
+                (organization_id, idempotency_key),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_scan_and_authorization_request(
+        self, scan_job: ScanJob, request: "ScanAuthorizationRequestRecord",
+    ) -> None:
+        """Persist the scan row, manifest, normalized children, and audit atomically."""
+        with self._connection_scope() as conn:
+            token = _ACTIVE_DATABASE_CONNECTION.set(conn)
+            try:
+                self.save_scan_record(scan_job)
+                self.save_scan_authorization_request(request)
+            finally:
+                _ACTIVE_DATABASE_CONNECTION.reset(token)
+
+    def approve_scan_authorization_request(
+        self,
+        scan_request_id: str,
+        organization_id: str,
+        manifest_hash: str,
+        approval_idempotency_key: str,
+        approver_user_id: str,
+        session_jti: str,
+        worker_identity: str,
+        worker_generation: str,
+    ) -> tuple[str, list[dict[str, str]]]:
+        """Approve one immutable parent and materialize its child authorities atomically."""
+        if not all(isinstance(value, str) and value.strip() for value in (
+            scan_request_id, organization_id, manifest_hash, approval_idempotency_key,
+            approver_user_id, session_jti, worker_identity, worker_generation,
+        )):
+            return "DENIED", []
+        try:
+            validate_idempotency_key(approval_idempotency_key)
+        except ValueError:
+            return "DENIED", []
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            lock_suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            parent = conn.execute(
+                "SELECT * FROM scan_authorization_requests WHERE scan_request_id=? AND organization_id=?" + lock_suffix,
+                (scan_request_id, organization_id),
+            ).fetchone()
+            if not parent:
+                return "NOT_FOUND", []
+            if parent["manifest_hash"] != manifest_hash:
+                return "CONFLICT", []
+            if parent["state"] not in {"REQUESTED", "DISPATCHABLE"}:
+                return "CONFLICT", []
+            now = utc_now()
+            if datetime.fromisoformat(parent["expires_at"]) <= now:
+                conn.execute(
+                    "UPDATE scan_authorization_requests SET state='EXPIRED' WHERE scan_request_id=? AND organization_id=? AND state='REQUESTED'",
+                    (scan_request_id, organization_id),
+                )
+                return "EXPIRED", []
+            approver = conn.execute(
+                "SELECT id FROM users WHERE id=? AND organization_id=? AND role='ADMIN' AND is_active=1",
+                (approver_user_id, organization_id),
+            ).fetchone()
+            if not approver:
+                return "DENIED", []
+            if conn.execute("SELECT 1 FROM revoked_tokens WHERE jti=?", (session_jti,)).fetchone():
+                return "DENIED", []
+            try:
+                stored_manifest = ScanAuthorizationManifest.model_validate(json.loads(parent["manifest_json"]))
+            except Exception as exc:
+                raise RuntimeError("scan authorization manifest cannot be reconstructed; operator reconciliation required") from exc
+            if stored_manifest.manifest_hash != parent["manifest_hash"]:
+                raise RuntimeError("scan authorization manifest hash does not match stored canonical material")
+            _assert_manifest_secret_safe(stored_manifest)
+            _assert_parent_manifest_binding(parent, scan_request_id, stored_manifest)
+
+            # The parent lock is held before any normalized child is trusted.
+            # Revalidate all stored material against the manifest and the
+            # current tenant/policy/target authority before replay or insert.
+            _assert_normalized_manifest_rows_match(
+                conn, scan_request_id, organization_id, stored_manifest,
+            )
+            _assert_policy_material_current(stored_manifest)
+            _assert_current_target_and_asset(
+                conn,
+                parent,
+                stored_manifest,
+                isinstance(self, PostgresDatabaseManager),
+            )
+            if datetime.fromisoformat(parent["expires_at"]) <= utc_now():
+                conn.execute(
+                    "UPDATE scan_authorization_requests SET state='EXPIRED' "
+                    "WHERE scan_request_id=? AND organization_id=? AND state='REQUESTED'",
+                    (scan_request_id, organization_id),
+                )
+                return "EXPIRED", []
+            if parent["state"] == "DISPATCHABLE":
+                if any(parent[field] != expected for field, expected in (
+                    ("approval_idempotency_key", approval_idempotency_key),
+                    ("approver_user_id", approver_user_id),
+                    ("approval_session_jti", session_jti),
+                )):
+                    return "CONFLICT", []
+                return "REPLAY", _assert_materialized_child_authorities(
+                    conn,
+                    scan_request_id=scan_request_id,
+                    organization_id=organization_id,
+                    parent=parent,
+                    manifest=stored_manifest,
+                )
+
+            operations = conn.execute(
+                "SELECT * FROM scan_authorization_operations WHERE scan_request_id=? AND organization_id=? "
+                "AND selection_state='SELECTED' ORDER BY operation_id",
+                (scan_request_id, organization_id),
+            ).fetchall()
+            child_links: list[dict[str, str]] = []
+            for operation in operations:
+                operation_options = json.loads(operation["operation_options_json"] or "{}")
+                resource_budget = json.loads(operation["resource_budget_json"] or "{}")
+                account_budget = json.loads(operation["account_impact_budget_json"] or "{}")
+                credential_scope = json.loads(operation["credential_scope_json"] or "{}")
+                request_fingerprint = _child_request_fingerprint(
+                    scan_request_id=scan_request_id,
+                    manifest_hash=manifest_hash,
+                    operation=operation,
+                    organization_id=organization_id,
+                )
+                child_request_id = f"req-scan-{uuid.uuid4().hex[:16]}"
+                child_decision_id = f"dec-scan-{uuid.uuid4().hex[:16]}"
+                child_execution_id = f"run-scan-{uuid.uuid4().hex[:16]}"
+                idempotency_key = f"{scan_request_id}:{operation['operation_id']}"
+                child_request_insert = conn.execute(
+                    """INSERT INTO execution_requests
+                    (id, idempotency_key, request_fingerprint, organization_id, project_id,
+                     asset_id, target_id, authorization_decision_id, target_policy_version,
+                     tool_id, operation_family, operation_options_json, operation_policy_revision,
+                     resource_budget_json, account_impact_budget_json, credential_scope_json,
+                     requested_by_user_id, state, created_at, expires_at, approved_decision_id,
+                     approval_idempotency_key)
+                    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'AUTHORIZED', ?, ?, ?, ?
+                    FROM scan_authorization_requests p
+                    WHERE p.scan_request_id=? AND p.organization_id=?""",
+                    (child_request_id, idempotency_key, request_fingerprint, organization_id,
+                     parent["project_id"], parent["asset_id"], operation["target_id"], operation["authorization_decision_id"],
+                     parent["target_policy_version"], operation["tool_id"], operation["operation_family"],
+                     json.dumps(operation_options, sort_keys=True, separators=(",", ":")), operation["operation_policy_revision"],
+                     json.dumps(resource_budget, sort_keys=True, separators=(",", ":")),
+                     json.dumps(account_budget, sort_keys=True, separators=(",", ":")),
+                     json.dumps(credential_scope, sort_keys=True, separators=(",", ":")),
+                     parent["requested_by_user_id"], now.isoformat(), parent["expires_at"], child_decision_id,
+                     approval_idempotency_key, scan_request_id, organization_id),
+                )
+                if child_request_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization child request insert did not create exactly one row")
+                child_decision_insert = conn.execute(
+                    """INSERT INTO execution_decisions
+                    (id, organization_id, project_id, asset_id, target_id, authorization_decision_id,
+                     target_policy_version, tool_id, operation_family, operation_options_json,
+                     operation_policy_revision, approval_state, approver_user_id, session_jti,
+                     worker_identity, resource_budget_json, account_impact_budget_json,
+                     credential_scope_json, created_at, expires_at, revoked_at, consumed_at)
+                    SELECT ?, organization_id, project_id, asset_id, target_id, authorization_decision_id,
+                     target_policy_version, tool_id, operation_family, operation_options_json,
+                     operation_policy_revision, 'APPROVED', ?, ?, ?, resource_budget_json,
+                     account_impact_budget_json, credential_scope_json, ?, expires_at, NULL, NULL
+                    FROM execution_requests WHERE id=? AND organization_id=?""",
+                     (child_decision_id, approver_user_id, session_jti, worker_identity,
+                      now.isoformat(), child_request_id, organization_id),
+                )
+                if child_decision_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization child decision insert did not create exactly one row")
+                correlation_id = parent["correlation_id"]
+                child_run_insert = conn.execute(
+                    """INSERT INTO execution_runs
+                    (execution_id, request_id, organization_id, approved_decision_id,
+                     target_policy_version, operation_policy_revision, request_fingerprint,
+                     operation_options_json, resource_budget_json, account_impact_budget_json,
+                     credential_scope_json, snapshot_completeness, state, worker_identity,
+                     worker_generation, assurance_state, coverage_state, correlation_id, created_at)
+                    SELECT ?, id, organization_id, ?, target_policy_version,
+                     operation_policy_revision, request_fingerprint, operation_options_json,
+                     resource_budget_json, account_impact_budget_json, credential_scope_json,
+                     'COMPLETE', 'REQUESTED', ?, ?, 'UNVERIFIED', 'UNAVAILABLE', ?, ?
+                    FROM execution_requests WHERE id=? AND organization_id=?""",
+                     (child_execution_id, child_decision_id, worker_identity, worker_generation,
+                      correlation_id, now.isoformat(), child_request_id, organization_id),
+                )
+                if child_run_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization child run insert did not create exactly one row")
+                dispatch_insert = conn.execute(
+                    "INSERT INTO execution_dispatch_intents (execution_id, organization_id, state, attempt_count, created_at, correlation_id) VALUES (?, ?, 'PENDING', 0, ?, ?)",
+                    (child_execution_id, organization_id, now.isoformat(), correlation_id),
+                )
+                if dispatch_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization dispatch intent insert did not create exactly one row")
+                ownership_insert = conn.execute(
+                    """INSERT INTO execution_process_ownership
+                    (execution_id, organization_id, ownership_state, container_type,
+                     launch_commit_state, correlation_id, created_at, updated_at)
+                    VALUES (?, ?, 'UNKNOWN', 'NONE', 'NOT_ATTEMPTED', ?, ?, ?)""",
+                     (child_execution_id, organization_id, correlation_id, now.isoformat(), now.isoformat()),
+                )
+                if ownership_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization process ownership insert did not create exactly one row")
+                recovery_insert = conn.execute(
+                    "INSERT INTO execution_recovery_state (execution_id, organization_id, status, attempt_number, escalation_level, worker_generation, updated_at) VALUES (?, ?, 'REQUESTED', 0, 0, ?, ?)",
+                    (child_execution_id, organization_id, worker_generation, now.isoformat()),
+                )
+                if recovery_insert.rowcount != 1:
+                    raise RuntimeError("scan authorization recovery-state insert did not create exactly one row")
+                operation_update = conn.execute(
+                    """UPDATE scan_authorization_operations
+                    SET child_request_id=?, child_decision_id=?, child_execution_id=?
+                    WHERE operation_id=? AND organization_id=? AND scan_request_id=?""",
+                    (child_request_id, child_decision_id, child_execution_id, operation["operation_id"], organization_id, scan_request_id),
+                )
+                if operation_update.rowcount != 1:
+                    raise RuntimeError("scan authorization operation child-link update did not update exactly one row")
+                child_links.append({
+                    "operation_id": operation["operation_id"],
+                    "child_request_id": child_request_id,
+                    "child_decision_id": child_decision_id,
+                    "child_execution_id": child_execution_id,
+                })
+            updated = conn.execute(
+                """UPDATE scan_authorization_requests
+                SET state='DISPATCHABLE', approver_user_id=?, approval_session_jti=?,
+                    approval_idempotency_key=?
+                WHERE scan_request_id=? AND organization_id=? AND state='REQUESTED'""",
+                (approver_user_id, session_jti, approval_idempotency_key, scan_request_id, organization_id),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("scan authorization parent approval lost its serialization fence")
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=approver_user_id,
+                organization_id=organization_id, action=AuditAction.INTERNAL_SCAN_AUTHORIZED,
+                object_type="scan_authorization_request", object_id=scan_request_id,
+                correlation_id=parent["correlation_id"], result="SUCCESS",
+                details={"manifest_hash": manifest_hash, "child_count": len(child_links), "worker_generation": worker_generation},
+            ))
+            return "AUTHORIZED", child_links
+
     def save_scan_record(self, scan_job: ScanJob) -> None:
         """
         Atomically persists or updates a ScanJob entity, correlates raw findings into
@@ -5317,8 +6989,15 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             target = scan_job.target
             summary = scan_job.summary
+            persisted_scan = sanitize_sensitive_data(scan_job.model_dump(mode="json"))
+            # The authorization request identifier is an internal relational
+            # join key, not a secret.  It must remain available in the
+            # authoritative scan record so the approval endpoint can resolve
+            # the tenant-scoped parent without falling back to export data.
+            if scan_job.authorization_request_id:
+                persisted_scan["authorization_request_id"] = scan_job.authorization_request_id
             data_json = json.dumps(
-                sanitize_sensitive_data(scan_job.model_dump(mode="json")),
+                persisted_scan,
                 separators=(",", ":"),
                 ensure_ascii=False,
             )

@@ -31,6 +31,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
     Follows Adapters First-in-Line Architecture (Gitleaks + TruffleHog + Bandit + Semgrep + RetireJS + Syft + Grype + OSV-Scanner + Trivy primary, native AST Taint & Entropy enrichment).
     """
 
+    allowed_tool_ids = frozenset({"gitleaks", "trufflehog", "bandit", "semgrep", "retire", "syft", "grype", "osv-scanner", "trivy"})
+
     @property
     def name(self) -> str:
         return "code_sast"
@@ -61,6 +63,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        execution_context=None,
+        execution_capability=None,
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
@@ -132,6 +136,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:gitleaks",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("gitleaks", gitleaks_adapter, len(gitleaks_findings))
@@ -165,6 +171,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:trufflehog",
                         require_managed_binary=require_managed_binary,
                         allow_live_verification=allow_live_verification,
                     )
@@ -199,6 +207,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:bandit",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("bandit", bandit_adapter, len(bandit_findings))
@@ -232,6 +242,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:semgrep",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("semgrep", semgrep_adapter, len(semgrep_findings))
@@ -265,6 +277,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:retire",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("retire", retire_adapter, len(retire_findings))
@@ -298,6 +312,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:syft",
                         record_sbom_report=record_sbom,
                         require_managed_binary=require_managed_binary,
                     )
@@ -332,6 +348,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:grype",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("grype", grype_adapter, len(grype_findings))
@@ -365,6 +383,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:osv-scanner",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("osv-scanner", osv_adapter, len(osv_findings))
@@ -398,6 +418,8 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="code_sast:trivy",
                         require_managed_binary=require_managed_binary,
                     )
                     await report_tool_state("trivy", trivy_adapter, len(trivy_findings))
@@ -430,10 +452,11 @@ class CodeSastAssessmentEngine(BaseAssessmentEngine):
                 await emit_finding(f)
 
         # Historical Git Commit Secret Scanning (SAST-GIT-001)
+        from app.core.execution_service import issue_non_scan_execution_context
+
         git_findings = await audit_git_commit_history(
             repo_path,
-            execution_context=kwargs.get("execution_context"),
-            execution_capability=kwargs.get("execution_capability"),
+            non_scan_context=issue_non_scan_execution_context("observation:code_sast:git-history"),
         )
         mark_fallback(git_findings, ("gitleaks",))
         for f in git_findings:

@@ -34,6 +34,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
     Follows Adapters First-in-Line Architecture (SSLyze + Nmap + Subfinder + Httpx primary, native DNS/OSINT enrichment, native fallback).
     """
 
+    allowed_tool_ids = frozenset({"sslyze", "nmap", "metasploit", "subfinder", "amass", "httpx"})
+
     @property
     def name(self) -> str:
         return "network"
@@ -63,6 +65,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        execution_context=None,
+        execution_capability=None,
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
@@ -122,6 +126,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="network:sslyze",
                         require_managed_binary=True,
                     )
                     await emit_log(LogLevel.INFO, f"SSLyze audit completed successfully with {len(sslyze_findings)} findings.")
@@ -203,6 +209,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="network:nmap",
                         require_managed_binary=True,
                     )
                     await emit_log(LogLevel.INFO, "Nmap active scan completed successfully")
@@ -281,6 +289,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         emit_finding,
                         scan_id=scan_id,
                         organization_id=organization_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="network:metasploit",
                         port=validated_target.port or 443,
                         validated_target=validated_target,
                         require_managed_binary=True,
@@ -319,6 +329,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         scan_id=scan_id,
                         organization_id=organization_id,
                         validated_target=validated_target,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="network:subfinder",
                         require_managed_binary=True,
                         emit_subdomain=subdomain_cb,
                         emit_rejected_discovery=rejected_discovery_cb,
@@ -349,11 +361,13 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                             validated_target,
                             config,
                             emit_log,
-                            emit_finding,
-                            scan_id=scan_id,
-                            organization_id=organization_id,
-                            validated_target=validated_target,
-                            require_managed_binary=True,
+                        emit_finding,
+                        scan_id=scan_id,
+                        organization_id=organization_id,
+                        validated_target=validated_target,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="network:amass",
+                        require_managed_binary=True,
                             output_file=output_file,
                             emit_subdomain=subdomain_cb,
                         )
@@ -382,6 +396,8 @@ class NetworkAssessmentEngine(BaseAssessmentEngine):
                         scan_id=scan_id,
                         emit_endpoint=endpoint_cb,
                         validated_target=validated_target,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="network:httpx",
                         require_managed_binary=True,
                     )
                     findings.extend(hx_findings)

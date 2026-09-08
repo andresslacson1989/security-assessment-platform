@@ -25,6 +25,7 @@ from app.core.models import (
     AuditEvent,
     AuditAction,
     sanitize_sensitive_text,
+    sanitize_sensitive_data,
 )
 from app.core.version import APP_VERSION
 from app.installers.manager import ToolInstallationManager
@@ -91,7 +92,7 @@ async def stream_tool_events(
             if await request.is_disconnected():
                 break
             ev = payload.get("event", "message")
-            data = json.dumps(payload.get("data", {}))
+            data = json.dumps(sanitize_sensitive_data(payload.get("data", {})))
             yield f"event: {ev}\ndata: {data}\n\n"
 
     return StreamingResponse(

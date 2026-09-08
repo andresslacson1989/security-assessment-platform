@@ -12,7 +12,7 @@ import sys
 import time
 import pytest
 from unittest.mock import patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -31,11 +31,69 @@ from app.core.models import (
     Target,
     TargetType,
     ScanProfile,
+    SystemCapabilities,
     AuditEvent,
     AuditAction,
     utc_now,
     calculate_evidence_hash,
 )
+
+
+async def _dispatch_authorized_cancellation_scan(monkeypatch, scan_orchestrator, scan_job):
+    """Exercise cancellation only after the explicit authorization dispatch gate."""
+    from app.core.db import db_manager
+    from app.core.queue import ScanQueueManager
+    from app.engines.base import BaseAssessmentEngine
+
+    class SlowEngine(BaseAssessmentEngine):
+        @property
+        def name(self) -> str:
+            return "security_matrix_slow"
+
+        @property
+        def display_name(self) -> str:
+            return "Security Matrix Slow Engine"
+
+        @property
+        def description(self) -> str:
+            return "Test-only bounded cancellation engine"
+
+        def is_applicable(self, target: Target) -> bool:
+            return True
+
+        async def run(self, target, config, emit_log, emit_progress, emit_finding, **kwargs):
+            await emit_progress(10, "Waiting for cancellation...")
+            await asyncio.sleep(5.0)
+            return []
+
+    scan_orchestrator.register_engine(SlowEngine())
+    scan_job.enabled_engines = ["security_matrix_slow"]
+    request_id = f"security-matrix-request-{scan_job.id}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scan_job.authorization_request_id = request_id
+    scan_job.authorization_state = "DISPATCHABLE"
+    parent = {
+        "scan_id": scan_job.id,
+        "organization_id": scan_job.organization_id,
+        "state": "DISPATCHABLE",
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": None,
+        "consumed_at": None,
+    }
+
+    def get_test_parent(candidate_request_id, organization_id):
+        if candidate_request_id != request_id or organization_id != scan_job.organization_id:
+            return None
+        return parent
+
+    async def no_capability_detection(_config):
+        return SystemCapabilities(tools=[])
+
+    monkeypatch.setattr(db_manager, "get_scan_authorization_request", get_test_parent)
+    monkeypatch.setattr("app.core.ssrf_protector.resolve_hostname_ips", lambda _host: ["93.184.216.34"])
+    monkeypatch.setattr("app.core.orchestrator.discover_system_capabilities", no_capability_detection)
+    monkeypatch.setattr("app.core.queue.queue_manager", ScanQueueManager())
+    return await scan_orchestrator.dispatch_approved_scan(scan_job)
 
 
 def test_sec_000_production_fails_closed_without_jwt_secret():
@@ -621,17 +679,18 @@ def test_sec_019_malicious_archive_zipslip_rejection(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sec_020_scan_cancellation_lifecycle():
+async def test_sec_020_scan_cancellation_lifecycle(monkeypatch):
     """SEC-020: Cancelling a scan job immediately transitions status to CANCELLED and halts background tasks."""
-    from app.core.orchestrator import orchestrator
     from app.core.models import ScanStatus
+    from app.core.orchestrator import ScanOrchestrator
+    scan_orchestrator = ScanOrchestrator()
     scan = ScanJob(
         target=Target(name="Cancel Target", type=TargetType.URL, value="https://example.com"),
         profile=ScanProfile.QUICK,
     )
-    task = await orchestrator.start_scan(scan)
+    task = await _dispatch_authorized_cancellation_scan(monkeypatch, scan_orchestrator, scan)
     await asyncio.sleep(0.05)
-    cancelled = await orchestrator.cancel_scan(scan.id)
+    cancelled = await scan_orchestrator.cancel_scan(scan.id)
     assert cancelled is True
     assert scan.status == ScanStatus.CANCELLED
 

@@ -9,18 +9,28 @@ import hashlib
 import json
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 import psycopg
 
 from app.core.db import PostgresDatabaseManager
+from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.models import AuditAction, AuditEvent
+from app.core.scan_request_migration_v13 import _CHILD_LINK_CHECK, _normalized_sql
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 
 POSTGRES_TEST_URL = os.getenv("CYBERASSESS_POSTGRES_TEST_URL", "").strip()
 POSTGRES_TEST_ACK = os.getenv("CYBERASSESS_POSTGRES_TEST_ACK", "").strip()
+
+
+def test_v10_postcondition_query_qualifies_constraint_oid():
+    """Keep the PostgreSQL v10 verifier safe against catalog-column ambiguity."""
+    source = (Path(__file__).resolve().parents[2] / "backend" / "app" / "core" / "db.py").read_text(encoding="utf-8")
+    assert "pg_get_constraintdef(oid)" not in source
+    assert "pg_get_constraintdef(c.oid)" in source
 
 
 def _assert_audit_event_hash(event):
@@ -120,13 +130,265 @@ def _drop_execution_run_foreign_keys(manager):
             conn.execute(f"ALTER TABLE execution_runs DROP CONSTRAINT {name}")
 
 
+def _quote_postgres_identifier(value: str) -> str:
+    """Quote an identifier selected from the trusted v13 catalog fixture."""
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _postgres_key_constraint_name(
+    conn,
+    *,
+    table: str,
+    constraint_type: str,
+    local_columns: tuple[str, ...],
+    parent_table: str | None = None,
+    parent_columns: tuple[str, ...] | None = None,
+) -> str:
+    if constraint_type in {"p", "u"}:
+        rows = conn.execute(
+            """
+            SELECT c.conname,
+                   array_agg(a.attname ORDER BY key_cols.ordinality) AS local_columns
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid=c.conrelid
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            JOIN unnest(c.conkey) WITH ORDINALITY AS key_cols(attnum, ordinality) ON TRUE
+            JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=key_cols.attnum
+            WHERE t.relname=? AND n.nspname=current_schema() AND c.contype=?
+            GROUP BY c.oid, c.conname
+            """,
+            (table, constraint_type),
+        ).fetchall()
+        matches = [
+            row for row in rows
+            if tuple(row["local_columns"] or []) == local_columns
+        ]
+    else:
+        rows = conn.execute(
+            """
+            SELECT c.conname, pt.relname AS parent_table,
+                   array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                   array_agg(pa.attname ORDER BY local_cols.ordinality) AS parent_columns
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid=c.conrelid
+            JOIN pg_class pt ON pt.oid=c.confrelid
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            JOIN pg_namespace pn ON pn.oid=pt.relnamespace
+            JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+            JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=local_cols.attnum
+            JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+              ON parent_cols.ordinality=local_cols.ordinality
+            JOIN pg_attribute pa ON pa.attrelid=pt.oid AND pa.attnum=parent_cols.attnum
+            WHERE t.relname=? AND n.nspname=current_schema()
+              AND pn.nspname=current_schema() AND c.contype='f'
+            GROUP BY c.oid, c.conname, pt.relname
+            """,
+            (table,),
+        ).fetchall()
+        matches = [
+            row for row in rows
+            if tuple(row["local_columns"] or []) == local_columns
+            and str(row["parent_table"]) == parent_table
+            and tuple(row["parent_columns"] or []) == (parent_columns or ())
+        ]
+    assert len(matches) == 1, (table, constraint_type, local_columns, parent_table, parent_columns, matches)
+    return str(matches[0]["conname"])
+
+
+def _drop_postgres_key_constraint(
+    manager,
+    *,
+    table: str,
+    constraint_type: str,
+    local_columns: tuple[str, ...],
+    parent_table: str | None = None,
+    parent_columns: tuple[str, ...] | None = None,
+) -> None:
+    with manager._connection_scope() as conn:
+        name = _postgres_key_constraint_name(
+            conn,
+            table=table,
+            constraint_type=constraint_type,
+            local_columns=local_columns,
+            parent_table=parent_table,
+            parent_columns=parent_columns,
+        )
+        conn.execute(
+            f"ALTER TABLE {_quote_postgres_identifier(table)} "
+            f"DROP CONSTRAINT {_quote_postgres_identifier(name)}"
+        )
+
+
+def _drop_postgres_child_link_check(manager) -> None:
+    with manager._connection_scope() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid=c.conrelid
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            WHERE t.relname='scan_authorization_operations'
+              AND n.nspname=current_schema() AND c.contype='c'
+            """
+        ).fetchall()
+        matches = [
+            row for row in rows
+            if _normalized_sql(_CHILD_LINK_CHECK) in _normalized_sql(row["definition"])
+        ]
+        assert len(matches) == 1, matches
+        conn.execute(
+            "ALTER TABLE \"scan_authorization_operations\" DROP CONSTRAINT "
+            + _quote_postgres_identifier(str(matches[0]["conname"]))
+        )
+
+
+def _tamper_postgres_v13_schema(manager, tamper: str) -> None:
+    operation_unique_keys = {
+        "child-request-unique-key": ("child_request_id", "organization_id"),
+        "child-decision-unique-key": ("child_decision_id", "organization_id"),
+        "child-execution-unique-key": ("child_execution_id", "organization_id"),
+    }
+    operation_foreign_keys = {
+        "parent-composite-foreign-key": (
+            ("scan_request_id", "organization_id"),
+            "scan_authorization_requests",
+            ("scan_request_id", "organization_id"),
+        ),
+        "organization-foreign-key": (("organization_id",), "organizations", ("id",)),
+        "child-request-foreign-key": (
+            ("child_request_id", "organization_id"),
+            "execution_requests",
+            ("id", "organization_id"),
+        ),
+        "child-decision-foreign-key": (
+            ("child_decision_id", "organization_id"),
+            "execution_decisions",
+            ("id", "organization_id"),
+        ),
+        "child-execution-foreign-key": (
+            ("child_execution_id", "organization_id"),
+            "execution_runs",
+            ("execution_id", "organization_id"),
+        ),
+        "request-organization-foreign-key": (("organization_id",), "organizations", ("id",)),
+    }
+    if tamper == "operation-primary-key":
+        _drop_postgres_key_constraint(
+            manager,
+            table="scan_authorization_operations",
+            constraint_type="p",
+            local_columns=("scan_request_id", "organization_id", "operation_id"),
+        )
+    elif tamper in operation_unique_keys:
+        _drop_postgres_key_constraint(
+            manager,
+            table="scan_authorization_operations",
+            constraint_type="u",
+            local_columns=operation_unique_keys[tamper],
+        )
+    elif tamper in operation_foreign_keys:
+        local_columns, parent_table, parent_columns = operation_foreign_keys[tamper]
+        table = (
+            "scan_authorization_requests"
+            if tamper == "request-organization-foreign-key"
+            else "scan_authorization_operations"
+        )
+        _drop_postgres_key_constraint(
+            manager,
+            table=table,
+            constraint_type="f",
+            local_columns=local_columns,
+            parent_table=parent_table,
+            parent_columns=parent_columns,
+        )
+    elif tamper == "child-link-check":
+        _drop_postgres_child_link_check(manager)
+    elif tamper == "parent-identity-index":
+        with manager._connection_scope() as conn:
+            # The child FKs depend on this unique index in PostgreSQL.  This
+            # CASCADE is confined to the disposable schema created by the
+            # integration fixture and leaves a deterministic missing-index
+            # state for the verifier.
+            conn.execute("DROP INDEX \"scan_authorization_requests_id_org_uq\" CASCADE")
+    elif tamper == "request-idempotency-index":
+        with manager._connection_scope() as conn:
+            conn.execute("DROP INDEX \"scan_request_creation_idempotency_uq\"")
+    elif tamper in {"manifest_json", "creation_idempotency_key", "creation_fingerprint"}:
+        with manager._connection_scope() as conn:
+            conn.execute(
+                "ALTER TABLE \"scan_authorization_requests\" DROP COLUMN "
+                + _quote_postgres_identifier(tamper)
+            )
+    else:
+        raise AssertionError(f"unknown PostgreSQL v13 tamper case: {tamper}")
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "operation-primary-key",
+        "parent-identity-index",
+        "child-request-unique-key",
+        "child-decision-unique-key",
+        "child-execution-unique-key",
+        "parent-composite-foreign-key",
+        "organization-foreign-key",
+        "child-request-foreign-key",
+        "child-decision-foreign-key",
+        "child-execution-foreign-key",
+        "request-organization-foreign-key",
+        "child-link-check",
+        "request-idempotency-index",
+        "manifest_json",
+        "creation_idempotency_key",
+        "creation_fingerprint",
+    ),
+)
+def test_postgres_v13_rejects_each_required_schema_tamper(tamper):
+    """Verify the live v13 catalog and startup path fail closed for each defect."""
+    with _isolated_manager() as manager:
+        _tamper_postgres_v13_schema(manager, tamper)
+
+        with manager._connection_scope() as conn:
+            with pytest.raises(RuntimeError, match="v13"):
+                manager._verify_migration_v13_postconditions(conn)
+
+        with pytest.raises(RuntimeError, match=r"v(?:11|13)"):
+            PostgresDatabaseManager(manager.database_url)
+
+
 def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
     with _isolated_manager() as manager:
         with manager._connection_scope() as conn:
             versions = [row["version"] for row in conn.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()]
-            assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+            assert versions == [spec.version for spec in MIGRATION_REGISTRY]
+
+            request_org_fks = conn.execute("""
+            SELECT c.convalidated,
+                   array_agg(a.attname ORDER BY local_cols.ordinality) AS local_columns,
+                   array_agg(pa.attname ORDER BY parent_cols.ordinality) AS parent_columns
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_class pt ON pt.oid = c.confrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+            JOIN unnest(c.conkey) WITH ORDINALITY AS local_cols(attnum, ordinality) ON TRUE
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = local_cols.attnum
+            JOIN unnest(c.confkey) WITH ORDINALITY AS parent_cols(attnum, ordinality)
+              ON parent_cols.ordinality = local_cols.ordinality
+            JOIN pg_attribute pa ON pa.attrelid = pt.oid AND pa.attnum = parent_cols.attnum
+            WHERE t.relname = 'scan_authorization_requests'
+              AND pt.relname = 'organizations'
+              AND n.nspname = current_schema() AND pn.nspname = current_schema()
+              AND c.contype = 'f'
+            GROUP BY c.oid, c.convalidated
+            """).fetchall()
+            assert len(request_org_fks) == 1
+            assert request_org_fks[0]["convalidated"]
+            assert list(request_org_fks[0]["local_columns"]) == ["organization_id"]
+            assert list(request_org_fks[0]["parent_columns"]) == ["id"]
 
             run_index = conn.execute("""
             SELECT i.relname, am.amname, x.indisunique, x.indpred,
@@ -199,26 +461,26 @@ def test_postgres_version_two_remediates_legacy_request_fk():
     with _isolated_manager() as manager:
         with manager._connection_scope() as conn:
             conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_legacy_request_fk FOREIGN KEY (request_id) REFERENCES execution_requests(id)")
-            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
-        repaired = PostgresDatabaseManager(manager.database_url)
-        try:
-            with repaired._connection_scope() as conn:
-                legacy = conn.execute("""
-                    SELECT COUNT(*) AS count
-                    FROM pg_constraint c
-                    JOIN pg_class t ON t.oid = c.conrelid
-                    JOIN pg_class pt ON pt.oid = c.confrelid
-                    JOIN pg_namespace n ON n.oid = t.relnamespace
-                    JOIN pg_namespace pn ON pn.oid = pt.relnamespace
-                    WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
-                      AND n.nspname = current_schema() AND pn.nspname = current_schema()
-                      AND c.contype = 'f' AND array_length(c.conkey, 1) = 1
-                      AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id)%'
-                """).fetchone()
-                assert legacy["count"] == 0
-                assert conn.execute("SELECT 1 FROM schema_migrations WHERE version = 2").fetchone()
-        finally:
-            repaired._pool.close()
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 2")
+        # The startup coordinator correctly rejects a non-contiguous ledger.
+        # Exercise the bounded v2 remediation directly without replaying later
+        # historical DDL migrations that are already present in this schema.
+        manager._init_db(max_migration_version=2)
+        with manager._connection_scope() as conn:
+            legacy = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_class pt ON pt.oid = c.confrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                  AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                  AND c.contype = 'f' AND array_length(c.conkey, 1) = 1
+                  AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id)%'
+            """).fetchone()
+            assert legacy["count"] == 0
+            assert conn.execute("SELECT 1 FROM schema_migrations WHERE version = 2").fetchone()
 
 
 def test_postgres_health_rejects_same_name_wrong_column_index():
@@ -226,16 +488,15 @@ def test_postgres_health_rejects_same_name_wrong_column_index():
         with manager._connection_scope() as conn:
             conn.execute("DROP INDEX uq_execution_runs_request")
             conn.execute("CREATE UNIQUE INDEX uq_execution_runs_request ON execution_runs(request_id, state)")
-        with pytest.raises(ValueError, match="schema health check"):
+        with pytest.raises(RuntimeError, match="execution tenant-binding postcondition is not exact"):
             PostgresDatabaseManager(manager.database_url)
 
 
 def test_postgres_health_rejects_same_name_wrong_column_parent_index():
     with _isolated_manager() as manager:
         with manager._connection_scope() as conn:
-            conn.execute("DROP INDEX uq_execution_requests_id_org")
             conn.execute("CREATE UNIQUE INDEX uq_execution_requests_id_org ON execution_requests(id, created_at)")
-        with pytest.raises(ValueError, match="schema health check"):
+        with pytest.raises(RuntimeError, match="execution parent index repair did not remove the migration-owned duplicate"):
             PostgresDatabaseManager(manager.database_url)
 
 
@@ -331,7 +592,7 @@ def test_postgres_approval_requires_correlation_without_authority_mutation():
         try:
             result = manager.approve_execution_request(
                 "req-correlation", "org-correlation", "f" * 64, "approval-correlation",
-                "user-correlation", "session-correlation", "worker-correlation",
+                "user-correlation", "session-correlation", "worker-correlation", "generation-correlation",
             )
         finally:
             reset_correlation_id(token)
@@ -500,8 +761,7 @@ def test_postgres_migration_rejects_duplicate_runs_before_recording_version():
                     assurance_state, coverage_state, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, ("run-preflight-duplicate", "request-preflight", "org-preflight", "FAILED", "UNVERIFIED", "UNAVAILABLE", "2026-01-01T00:00:01+00:00"))
-            conn.execute("DELETE FROM schema_migrations WHERE version = 1")
-            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 1")
         with pytest.raises(ValueError, match="duplicate runs"):
             PostgresDatabaseManager(manager.database_url)
 
@@ -517,8 +777,7 @@ def test_postgres_migration_rejects_orphaned_run_before_recording_version():
                     assurance_state, coverage_state, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, ("run-preflight-orphan", "missing-request", "missing-org", "FAILED", "UNVERIFIED", "UNAVAILABLE", "2026-01-01T00:00:00+00:00"))
-            conn.execute("DELETE FROM schema_migrations WHERE version = 1")
-            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 1")
         with pytest.raises(ValueError, match="orphaned or cross-tenant"):
             PostgresDatabaseManager(manager.database_url)
         with psycopg.connect(manager.database_url, autocommit=True) as connection:
@@ -541,8 +800,7 @@ def test_postgres_migration_rejects_cross_tenant_run_reference():
                     assurance_state, coverage_state, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, ("run-cross-tenant", "request-preflight", "org-other", "FAILED", "UNVERIFIED", "UNAVAILABLE", "2026-01-01T00:00:00+00:00"))
-            conn.execute("DELETE FROM schema_migrations WHERE version = 1")
-            conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 1")
         with pytest.raises(ValueError, match="orphaned or cross-tenant"):
             PostgresDatabaseManager(manager.database_url)
         with psycopg.connect(manager.database_url, autocommit=True) as connection:

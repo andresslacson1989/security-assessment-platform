@@ -45,7 +45,7 @@ class BanditAdapter(BaseToolAdapter):
         if not path:
             return None
 
-        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check)
+        returncode, stdout, stderr = await self.execute_command([path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check, non_scan_context=self._version_probe_context())
         output = stdout.strip() or stderr.strip()
         if output:
             match = re.search(r"(\d+\.\d+(\.\d+)?)", output)
@@ -101,6 +101,8 @@ class BanditAdapter(BaseToolAdapter):
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
             pre_launch_check=managed_check,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
 
         if not stdout.strip():

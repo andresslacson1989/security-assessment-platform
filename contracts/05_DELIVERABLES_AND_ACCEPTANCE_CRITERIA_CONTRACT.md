@@ -59,3 +59,47 @@ The platform is considered complete ONLY when all following criteria are satisfi
 | **SEC-033** | Hydra Rate Limiting Enforcement | `hydra` adapter enforces `-t 2` or `-t 4` concurrency with inter-request delay to prevent service disruption. |
 | **SEC-034** | GTFOBins Host Privilege Rule Evaluation | SUID binaries and sudoers entries matching GTFOBins catalog emit canonical `HOST-PRIV-001` or `HOST-SUDO-001`. |
 | **SEC-035** | 26-Tool Graceful Fallback Guarantee | When any external CLI tool is unavailable or times out, the platform falls back 100% seamlessly to native Python checks without crashing. |
+
+## 3. Repository Delivery and Provider Promotion
+
+Every completed repository section MUST be delivered as one grouped, reviewed
+commit. GitHub is the mandatory first publication and review provider. The
+delivery sequence is:
+
+1. complete implementation, documentation, and required verification for the
+   bounded section;
+2. create the section commit on the approved branch;
+3. push the exact commit to GitHub;
+4. independently verify the GitHub commit SHA, branch/ref, and applicable
+   review or CI evidence; and
+5. publish the same verified commit object to GitLab only after the GitHub
+   verification succeeds.
+
+GitLab publication MUST be blocked when the worktree is dirty, GitHub
+publication or verification fails, required evidence is unavailable, a
+review blocker remains open, or the commit object differs between providers.
+GitLab MUST NOT silently replace the GitHub-first review step. Provider
+identity, commit SHA, branch/ref, pipeline or review identifier, policy
+revision, verification timestamp, and evidence digest MUST remain separately
+attributable in delivery records; contradictory provider results MUST NOT be
+silently merged.
+
+This sequence is a delivery control, not authorization to create commits,
+modify remotes, push, create projects, or change branch protection. Those
+actions require explicit scope and least-privilege credentials. Runtime
+database data, including `data/cyberassess.db`, MUST NOT be modified, staged,
+committed, mirrored, archived, published, or included in a delivery commit as
+part of this delivery control. An exact-path read-only inspection is permitted
+only when separately authorized and recorded; destructive changes require
+separate explicit authorization and evidence. These controls do not weaken the
+database persistence, retention, or history requirements in this contract.
+
+GitHub Actions is the sole authoritative CI/CD execution, policy,
+release/deployment-gate, and compliance-evidence provider for this contract.
+GitLab is a repository mirror only. GitLab CI/CD results are separately
+attributable diagnostics and MUST NOT satisfy, replace, or override a required
+GitHub Actions acceptance gate. GitHub publication and required GitHub Actions
+evidence MUST precede any GitLab mirror update. Provider identity, commit SHA,
+branch/ref, pipeline or review identifier, policy revision, verification
+timestamp, and evidence digest MUST remain separately attributable;
+contradictory provider results MUST NOT be silently merged.

@@ -6,10 +6,13 @@ Authoritative Reference: contracts/02_DATA_SCHEMA_AND_MODELS_CONTRACT.md
 from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
+from copy import deepcopy
 import hashlib
+import json
 import re
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, model_validator
+from collections.abc import Iterable, Mapping
+from typing import Optional, List, Dict, Any, Tuple
+from pydantic import BaseModel, Field, field_serializer, model_validator
 import uuid
 from app.core.version import (
     APP_VERSION,
@@ -24,6 +27,212 @@ from app.core.version import (
 def utc_now() -> datetime:
     """Helper to return current timezone-aware UTC datetime."""
     return datetime.now(timezone.utc)
+
+
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+REQUEST_FINGERPRINT_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def validate_idempotency_key(value: object) -> str:
+    """Validate the exact durable idempotency-key grammar used by the API and DAL."""
+    if (
+        not isinstance(value, str)
+        or len(value) > 128
+        or value != value.strip()
+        or not IDEMPOTENCY_KEY_PATTERN.fullmatch(value)
+    ):
+        raise ValueError(
+            "Idempotency-Key must be 1-128 ASCII characters and contain only "
+            "letters, numbers, '.', '_' , ':' or '-'."
+        )
+    return value
+
+
+def validate_request_fingerprint(value: object) -> str:
+    """Validate the opaque SHA-256 request fingerprint persisted with a request."""
+    if not isinstance(value, str) or not REQUEST_FINGERPRINT_PATTERN.fullmatch(value):
+        raise ValueError("scan request fingerprint must be a lowercase SHA-256 digest")
+    return value
+
+
+class _ImmutableMapping(Mapping[str, Any]):
+    """Tuple-backed mapping with no ordinary mutation API or mutable backing store."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Mapping[str, Any] | Iterable[tuple[Any, Any]]):
+        source = values.items() if isinstance(values, Mapping) else values
+        pairs = tuple((str(key), value) for key, value in source)
+        keys = tuple(key for key, _ in pairs)
+        if len(keys) != len(set(keys)):
+            raise ValueError("manifest mapping contains duplicate normalized keys")
+        object.__setattr__(self, "_items", pairs)
+
+    def __getitem__(self, key: str) -> Any:
+        for current_key, value in self._items:
+            if current_key == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __repr__(self) -> str:
+        return f"_ImmutableMapping({dict(self._items)!r})"
+
+    @staticmethod
+    def _reject(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("manifest mapping values are immutable")
+
+    __setitem__ = _reject
+    __delitem__ = _reject
+    clear = _reject
+    pop = _reject
+    popitem = _reject
+    setdefault = _reject
+    update = _reject
+
+    def __ior__(self, other: Any) -> "_ImmutableMapping":
+        self._reject(other)
+        return self
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise TypeError("manifest mapping values are immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("manifest mapping values are immutable")
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "_ImmutableMapping":
+        memo[id(self)] = self
+        return self
+
+
+def _freeze_manifest_value(value: Any) -> Any:
+    """Recursively freeze arbitrary manifest values while retaining JSON shape."""
+    if isinstance(value, Mapping):
+        return _ImmutableMapping(
+            (
+                str(key),
+                _freeze_manifest_value(item),
+            )
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = (_freeze_manifest_value(item) for item in value)
+        if isinstance(value, (set, frozenset)):
+            return tuple(sorted(items, key=repr))
+        return tuple(items)
+    return value
+
+
+def _freeze_manifest_pairs(value: Any) -> tuple[tuple[str, Any], ...]:
+    """Normalize a mapping-like pair sequence into a deeply immutable tuple."""
+    if isinstance(value, Mapping):
+        pairs = value.items()
+    else:
+        pairs = value or ()
+    normalized = tuple(
+        (str(key), _freeze_manifest_value(item))
+        for key, item in pairs
+    )
+    keys = tuple(key for key, _ in normalized)
+    if len(keys) != len(set(keys)):
+        raise ValueError("manifest pair values contain duplicate normalized keys")
+    return tuple(sorted(normalized, key=lambda pair: pair[0]))
+
+
+def _json_safe_manifest_value(value: Any) -> Any:
+    """Convert immutable manifest containers to their canonical JSON shape."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_safe_manifest_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (tuple, list, set, frozenset)):
+        items = (_json_safe_manifest_value(item) for item in value)
+        if isinstance(value, (set, frozenset)):
+            return sorted(items, key=repr)
+        return list(items)
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+class _RevalidatingFrozenModel(BaseModel):
+    """Frozen authorization model whose public reconstruction APIs always validate."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "_RevalidatingFrozenModel":
+        """Revalidate every public copy so updates cannot bypass model invariants."""
+        # Use the validated internal field state rather than a serialized
+        # representation.  This preserves immutable mapping instances and
+        # avoids converting the security boundary into a mutable alias.
+        values = dict(self.__dict__)
+        if deep:
+            values = deepcopy(values)
+        if update is not None:
+            try:
+                update_values = dict(update)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("model copy update must be a mapping") from exc
+            values.update(update_values)
+        copied = type(self).model_validate(values)
+        fields_set = set(self.model_fields_set)
+        if update is not None:
+            fields_set.update(update_values.keys())
+        object.__setattr__(copied, "__pydantic_fields_set__", fields_set)
+        return copied
+
+    @classmethod
+    def model_construct(
+        cls,
+        _fields_set: set[str] | None = None,
+        **values: Any,
+    ) -> "_RevalidatingFrozenModel":
+        """Retain Pydantic's API shape while routing construction through validation."""
+        validated = cls.model_validate(dict(values))
+        if _fields_set is not None:
+            fields_set = set(_fields_set)
+            unknown = fields_set.difference(cls.model_fields)
+            if unknown:
+                raise ValueError(
+                    f"model fields_set contains unknown fields: {sorted(unknown)!r}"
+                )
+            object.__setattr__(validated, "__pydantic_fields_set__", fields_set)
+        return validated
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "_RevalidatingFrozenModel":
+        """Keep deprecated ``copy`` fail-closed by using the same validation path."""
+        if include is None and exclude is None:
+            return self.model_copy(update=update, deep=deep)
+
+        values = self.model_dump(mode="python", include=include, exclude=exclude)
+        if deep:
+            values = deepcopy(values)
+        if update is not None:
+            values.update(dict(update))
+        return type(self).model_validate(values)
 
 
 # ============================================================================
@@ -726,7 +935,7 @@ class NormalizedExecutionState(str, Enum):
     NOT_EXECUTED_UNSUPPORTED_TARGET = "NOT_EXECUTED_UNSUPPORTED_TARGET"
 
 
-class ValidatedTarget(BaseModel):
+class ValidatedTarget(_RevalidatingFrozenModel):
     """
     Contract 01 §5.1, Contract 02 §3, Contract 08 §12.1 & Contract 09 §1.1:
     Authoritative Validated Target Object.
@@ -745,14 +954,37 @@ class ValidatedTarget(BaseModel):
     target_type: TargetType = Field(..., description="Target classification type")
     raw_value: str = Field(default="", description="Original raw user input string")
     canonical_value: str = Field(..., description="Canonical normalized target URI, FQDN, IP, or path")
-    authorized_scope: List[str] = Field(default_factory=list, description="Authorized CIDRs or root domain wildcards")
-    resolved_addresses: List[str] = Field(default_factory=list, description="All pre-resolved IPv4/IPv6 addresses")
+    authorized_scope: Tuple[str, ...] = Field(default_factory=tuple, description="Authorized CIDRs or root domain wildcards")
+    resolved_addresses: Tuple[str, ...] = Field(default_factory=tuple, description="All pre-resolved IPv4/IPv6 addresses")
     selected_destination: str = Field(..., description="Connection-bound IPv4/IPv6 destination or canonical filesystem root")
     port: Optional[int] = Field(default=None, description="Target port if applicable")
     scheme: Optional[str] = Field(default=None, description="Protocol scheme if applicable")
     authorization_context: Dict[str, Any] = Field(default_factory=dict, description="Audit authorization metadata")
     validation_timestamp: datetime = Field(default_factory=utc_now, description="Timestamp of validation gate passage")
     policy_version: str = Field(default=APP_VERSION, description="SSRF and boundary policy version applied")
+
+    @model_validator(mode="after")
+    def freeze_authorization_values(self) -> "ValidatedTarget":
+        """Deep-freeze authorization inputs without changing their JSON shape.
+
+        Pydantic's frozen model configuration prevents field replacement, but it
+        does not make mutable collection values safe.  Rebuilding these values
+        from the validated model state prevents caller-owned lists and nested
+        dictionaries from retaining a mutation path into the gateway-issued
+        authorization object.
+        """
+        object.__setattr__(self, "authorized_scope", tuple(deepcopy(self.authorized_scope)))
+        object.__setattr__(self, "resolved_addresses", tuple(deepcopy(self.resolved_addresses)))
+        object.__setattr__(
+            self,
+            "authorization_context",
+            _freeze_manifest_value(deepcopy(self.authorization_context)),
+        )
+        return self
+
+    @field_serializer("authorization_context")
+    def serialize_authorization_context(self, value: Mapping[str, Any]) -> Any:
+        return _json_safe_manifest_value(value)
 
     @property
     def id(self) -> str:
@@ -816,6 +1048,7 @@ def sanitize_sensitive_text(value: Optional[str], max_length: int = 4096) -> Opt
         (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED_AWS_KEY]"),
         (r"\b(?:ghp|github_pat)_[A-Za-z0-9_]+\b", "[REDACTED_GITHUB_TOKEN]"),
         (r"\b(?:sk|pk)_(?:test|live)_[A-Za-z0-9]+\b", "[REDACTED_STRIPE_KEY]"),
+        (r"(?i)(^|[\s,;{])((?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|bearer[_-]?token|authorization|credential|session[_-]?jti))\s*[:=]\s*([^\s,;}\"']+)", r"\1\2=[REDACTED]"),
         (r"(?i)([\"']?\b(password|passwd|pwd|secret|api[_-]?key|token|auth[_-]?token)\b[\"']?\s*[:=]\s*)([\"']?)([^\s,;}\"']+)\3", r"\1\3[REDACTED]\3"),
         (r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]"),
         (r"(?i)(https?://[^\s/:]+):[^@\s]+@", r"\1:[REDACTED]@"),
@@ -828,7 +1061,7 @@ def sanitize_sensitive_text(value: Optional[str], max_length: int = 4096) -> Opt
 
 _SENSITIVE_DATA_KEY = re.compile(
     r"(?:^|[_-])(authorization|proxy-authorization|cookie|set-cookie|password|passwd|pwd|"
-    r"token|api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|"
+    r"token|session[_-]?jti|api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|"
     r"raw[_-]?secret|secret[_-]?(?:value|data)|credential)(?:$|[_-])",
     re.IGNORECASE,
 )
@@ -1057,6 +1290,9 @@ class ScanJob(BaseModel):
     )
     config: ScanConfig = Field(default_factory=ScanConfig)
     status: ScanStatus = Field(default=ScanStatus.PENDING)
+    authorization_state: str = Field(default="REQUESTED")
+    authorization_request_id: Optional[str] = None
+    authorization_manifest_hash: Optional[str] = None
     progress_percent: int = Field(default=0, ge=0, le=100)
     current_stage: str = Field(default="Initializing assessment engine...")
     summary: ScanJobSummary = Field(default_factory=ScanJobSummary)
@@ -1269,6 +1505,246 @@ class ExecutionAuthorityLease(BaseModel):
     correlation_id: str
 
 
+class ScanAuthorizationState(str, Enum):
+    """Durable parent scan authorization lifecycle."""
+
+    REQUESTED = "REQUESTED"
+    APPROVED = "APPROVED"
+    DISPATCHABLE = "DISPATCHABLE"
+    REVOKED = "REVOKED"
+    EXPIRED = "EXPIRED"
+    CONSUMED = "CONSUMED"
+
+
+class ScanFleetSnapshotEntry(BaseModel):
+    """Immutable status for exactly one canonical fleet member."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+    tool_id: str
+    owner_engine_id: Optional[str] = None
+    status: str
+    reason: Optional[str] = None
+
+
+class ScanManifestOperation(_RevalidatingFrozenModel):
+    """One server-derived operation in an immutable scan manifest."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+    operation_id: str
+    tool_id: str
+    engine_id: str
+    operation_family: str
+    classification: str
+    operation_options: Tuple[Tuple[str, Any], ...] = Field(default_factory=tuple)
+    operation_policy_revision: str
+    target_id: str
+    authorization_decision_id: str
+    resource_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    account_impact_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    credential_scope: Tuple[Tuple[str, str], ...] = Field(default_factory=tuple)
+    capability_state: str
+    selection_state: str
+    exclusion_reason: Optional[str] = None
+    child_request_id: Optional[str] = None
+    child_decision_id: Optional[str] = None
+    child_execution_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def freeze_nested_values(self) -> "ScanManifestOperation":
+        object.__setattr__(self, "operation_options", _freeze_manifest_pairs(self.operation_options))
+        object.__setattr__(self, "resource_budget", _freeze_manifest_pairs(self.resource_budget))
+        object.__setattr__(self, "account_impact_budget", _freeze_manifest_pairs(self.account_impact_budget))
+        object.__setattr__(self, "credential_scope", _freeze_manifest_pairs(self.credential_scope))
+        return self
+
+    @field_serializer(
+        "operation_options",
+        "resource_budget",
+        "account_impact_budget",
+        "credential_scope",
+    )
+    def serialize_manifest_pairs(self, value: Any) -> Any:
+        return _json_safe_manifest_value(value)
+
+
+class ScanManifestEngineOperation(_RevalidatingFrozenModel):
+    """A typed engine-level operation that is not one of the 26 fleet tools."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+    operation_id: str
+    engine_id: str
+    operation_family: str
+    classification: str
+    operation_options: Tuple[Tuple[str, Any], ...] = Field(default_factory=tuple)
+    operation_policy_revision: str
+    target_id: str
+    authorization_decision_id: str
+    resource_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    account_impact_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    credential_scope: Tuple[Tuple[str, str], ...] = Field(default_factory=tuple)
+    capability_state: str
+    selection_state: str
+    exclusion_reason: Optional[str] = None
+
+    @model_validator(mode="after")
+    def freeze_nested_values(self) -> "ScanManifestEngineOperation":
+        object.__setattr__(self, "operation_options", _freeze_manifest_pairs(self.operation_options))
+        object.__setattr__(self, "resource_budget", _freeze_manifest_pairs(self.resource_budget))
+        object.__setattr__(self, "account_impact_budget", _freeze_manifest_pairs(self.account_impact_budget))
+        object.__setattr__(self, "credential_scope", _freeze_manifest_pairs(self.credential_scope))
+        return self
+
+    @field_serializer(
+        "operation_options",
+        "resource_budget",
+        "account_impact_budget",
+        "credential_scope",
+        when_used="json",
+    )
+    def serialize_manifest_pairs(self, value: Any) -> Any:
+        return _json_safe_manifest_value(value)
+
+
+class ScanAuthorizationManifest(_RevalidatingFrozenModel):
+    """Canonical, server-owned parent manifest for one scan request."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+    schema_version: str
+    manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    organization_id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    asset_owner: Optional[str] = None
+    asset_lifecycle_status: Optional[str] = None
+    target_id: str
+    authorization_decision_id: str
+    target_integrity_seal: str
+    target_policy_version: str
+    target_type: str
+    target_raw_value: str
+    target_canonical_value: str
+    target_selected_destination: str
+    target_resolved_addresses: Tuple[str, ...] = Field(default_factory=tuple)
+    target_authorized_scope: Tuple[str, ...] = Field(default_factory=tuple)
+    target_port: Optional[int] = None
+    target_scheme: Optional[str] = None
+    target_authorization_context: Tuple[Tuple[str, Any], ...] = Field(default_factory=tuple)
+    profile: str
+    selected_engine_ids: Tuple[str, ...]
+    engine_revision: str
+    policy_revision: str
+    operations: Tuple[ScanManifestOperation, ...]
+    engine_operations: Tuple[ScanManifestEngineOperation, ...] = Field(default_factory=tuple)
+    fleet_snapshot: Tuple[ScanFleetSnapshotEntry, ...]
+    requested_expiry: datetime
+    resource_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    account_impact_budget: Tuple[Tuple[str, int], ...] = Field(default_factory=tuple)
+    credential_scope: Tuple[Tuple[str, str], ...] = Field(default_factory=tuple)
+    emergency_stop_reference: str
+    effective_scan_config: Tuple[Tuple[str, Any], ...] = Field(default_factory=tuple)
+
+    @model_validator(mode="after")
+    def freeze_nested_values(self) -> "ScanAuthorizationManifest":
+        object.__setattr__(self, "resource_budget", _freeze_manifest_pairs(self.resource_budget))
+        object.__setattr__(self, "account_impact_budget", _freeze_manifest_pairs(self.account_impact_budget))
+        object.__setattr__(self, "credential_scope", _freeze_manifest_pairs(self.credential_scope))
+        object.__setattr__(self, "target_authorization_context", _freeze_manifest_pairs(self.target_authorization_context))
+        object.__setattr__(self, "effective_scan_config", _freeze_manifest_pairs(self.effective_scan_config))
+        object.__setattr__(self, "target_resolved_addresses", tuple(self.target_resolved_addresses))
+        object.__setattr__(self, "target_authorized_scope", tuple(self.target_authorized_scope))
+        return self
+
+    @field_serializer(
+        "resource_budget",
+        "account_impact_budget",
+        "credential_scope",
+        "target_authorization_context",
+        "effective_scan_config",
+    )
+    def serialize_manifest_pairs(self, value: Any) -> Any:
+        return _json_safe_manifest_value(value)
+
+    @model_validator(mode="after")
+    def validate_manifest_hash(self) -> "ScanAuthorizationManifest":
+        material = self.model_dump(mode="json")
+        supplied = material.pop("manifest_hash")
+        expected = hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+        if supplied != expected:
+            raise ValueError("scan authorization manifest hash does not match canonical content")
+        return self
+
+    @classmethod
+    def _trusted_digest_preimage(cls, values: Mapping[str, Any]) -> dict[str, Any]:
+        """Build only the placeholder digest preimage for the server manifest builder.
+
+        This private path is intentionally narrower than the public
+        ``model_construct`` API.  The builder first validates all nested
+        operation and target values, then needs the canonical representation
+        with a placeholder hash in order to calculate the final content
+        digest.  It refuses missing/unknown fields and any non-placeholder
+        hash, and it is not a supported caller-facing construction path.
+        """
+        candidate = dict(values)
+        known_fields = set(cls.model_fields)
+        unknown_fields = set(candidate).difference(known_fields)
+        missing_fields = known_fields.difference(candidate)
+        if unknown_fields or missing_fields:
+            raise ValueError(
+                "manifest digest preimage must contain exactly the canonical fields"
+            )
+        if candidate.get("manifest_hash") != "0" * 64:
+            raise ValueError("manifest digest preimage requires the zero hash placeholder")
+
+        # The underlying primitive is deliberately isolated here so the
+        # public model_construct override below cannot be used to bypass the
+        # manifest hash validator.
+        preimage = BaseModel.model_construct.__func__(cls, **candidate)
+        material = preimage.model_dump(mode="json")
+        material.pop("manifest_hash", None)
+        return material
+
+
+class ScanAuthorizationRequestRecord(_RevalidatingFrozenModel):
+    """Durable parent request binding one immutable scan manifest to a requester."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+    scan_request_id: str
+    scan_id: str
+    organization_id: str
+    requested_by_user_id: str
+    correlation_id: str
+    manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest: ScanAuthorizationManifest
+    state: ScanAuthorizationState = ScanAuthorizationState.REQUESTED
+    approver_user_id: Optional[str] = None
+    approval_session_jti: Optional[str] = None
+    approval_idempotency_key: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None
+    consumed_at: Optional[datetime] = None
+    creation_idempotency_key: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    creation_fingerprint: str = Field(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_manifest_binding(self) -> "ScanAuthorizationRequestRecord":
+        if self.manifest_hash != self.manifest.manifest_hash or self.organization_id != self.manifest.organization_id:
+            raise ValueError("scan authorization request is not bound to its immutable manifest")
+        if self.expires_at != self.manifest.requested_expiry:
+            raise ValueError("scan authorization request expiry differs from its approved manifest")
+        if self.created_at >= self.expires_at:
+            raise ValueError("scan authorization request must expire after creation")
+        validate_idempotency_key(self.creation_idempotency_key)
+        validate_request_fingerprint(self.creation_fingerprint)
+        operation_ids = [operation.operation_id for operation in self.manifest.operations]
+        operation_ids.extend(operation.operation_id for operation in self.manifest.engine_operations)
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("scan authorization request contains duplicate operation identities")
+        return self
+
+
 class ExecutionRequestRecord(BaseModel):
     """Durable pre-approval execution request and its immutable fingerprint."""
 
@@ -1315,6 +1791,7 @@ class ExecutionRunRecord(BaseModel):
     snapshot_completeness: str = "LEGACY_SNAPSHOT_UNAVAILABLE"
     state: str = "REQUESTED"
     worker_identity: Optional[str] = None
+    worker_generation: Optional[str] = None
     process_id: Optional[int] = None
     process_group_id: Optional[str] = None
     assurance_state: str = "UNVERIFIED"
@@ -1445,6 +1922,7 @@ EXECUTION_REASON_CODES = frozenset({
     "PROCESS_EXECUTION_EXCEPTION",
     "PROCESS_EXIT_NONZERO",
     "PROCESS_LAUNCH_REJECTED_SECURITY",
+    "PROCESS_LAUNCH_UNCERTAIN",
 })
 
 
@@ -1471,7 +1949,7 @@ EXECUTION_TERMINAL_REASON_CODES = {
         "EXECUTION_DISPATCH_FAILED", "EXECUTION_LEASE_RENEWAL_FAILED",
         "EXECUTABLE_NOT_FOUND", "EXECUTABLE_PERMISSION_DENIED",
         "LINKED_DISPATCH_INTENT_MISSING", "PROCESS_EXECUTION_EXCEPTION",
-        "PROCESS_EXIT_NONZERO",
+        "PROCESS_EXIT_NONZERO", "PROCESS_LAUNCH_UNCERTAIN",
     }),
     "TIMED_OUT": frozenset({"EXECUTION_AUTHORITY_EXPIRED", "EXECUTION_TIMEOUT"}),
     "CANCELLED": frozenset({

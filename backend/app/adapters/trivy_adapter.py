@@ -56,6 +56,7 @@ class TrivyAdapter(BaseToolAdapter):
             [path, "--config", "/dev/null", "--version"],
             timeout=5.0,
             pre_launch_check=pre_launch_check,
+            non_scan_context=self._version_probe_context(),
         )
         output = stdout or stderr
         if output:
@@ -114,6 +115,8 @@ class TrivyAdapter(BaseToolAdapter):
             timeout=float(min(60.0, config.timeout_seconds * 6)),
             emit_log=emit_log,
             pre_launch_check=managed_check,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
 
         if not stdout.strip():

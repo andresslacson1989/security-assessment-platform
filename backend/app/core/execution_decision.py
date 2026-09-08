@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import secrets
 import hashlib
 import json
 from dataclasses import dataclass
@@ -20,6 +18,7 @@ from app.core.tool_operation_policy import (
 )
 from app.core.execution_context import (
     GovernedExecutionContext,
+    _register_issued_context,
     canonical_command_digest,
     canonical_binding_digest,
     _freeze_value,
@@ -27,6 +26,14 @@ from app.core.execution_context import (
 
 
 _CAPABILITY_TOKEN = object()
+_ISSUED_CAPABILITIES: dict[int, object] = {}
+
+
+def _register_capability(capability: object) -> None:
+    """Register the exact verifier-created capability object in this worker."""
+    if len(_ISSUED_CAPABILITIES) >= 4096:
+        _ISSUED_CAPABILITIES.clear()
+    _ISSUED_CAPABILITIES[id(capability)] = capability
 
 
 class ExecutionDecisionError(ValueError):
@@ -44,11 +51,16 @@ class ExecutionDecisionCapability:
     operation_options_digest: str
     command_digest: str
     worker_identity: str
+    worker_generation: str
     _issuer_token: object
     database: Any
     claim_token: Optional[str] = None
     dispatch_claim_token: Optional[str] = None
     execution_id: Optional[str] = None
+
+    def assert_issued(self) -> None:
+        if _ISSUED_CAPABILITIES.get(id(self)) is not self or self._issuer_token is not _CAPABILITY_TOKEN:
+            raise ExecutionDecisionError("execution capability was not issued by the decision verifier")
 
     def assert_valid_for_launch(
         self,
@@ -59,8 +71,7 @@ class ExecutionDecisionCapability:
         command: list[str],
         worker_identity: str,
     ) -> None:
-        if self._issuer_token is not _CAPABILITY_TOKEN:
-            raise ExecutionDecisionError("execution capability was not issued by the decision verifier")
+        self.assert_issued()
         if (
             self.tool_id != tool_id
             or self.operation_family != operation_family
@@ -88,6 +99,9 @@ class ExecutionDecisionCapability:
             operation_options=operation_options, command=command,
             worker_identity=worker_identity,
         )
+        from app.core.execution_service import get_worker_generation
+        if get_worker_generation() != self.worker_generation:
+            raise ExecutionDecisionError("execution capability belongs to another worker generation")
         decision = self.database.get_execution_decision(
             self.decision.id, organization_id=self.decision.organization_id,
         )
@@ -167,13 +181,10 @@ class ExecutionDecisionCapability:
         self,
         *,
         command: list[str],
-        worker_generation: str,
     ) -> GovernedExecutionContext:
         """Issue a typed context only after the durable authority is claimed."""
         if not self.execution_id or not self.dispatch_claim_token or not self.claim_token:
             raise ExecutionDecisionError("execution authority must be claimed before context issuance")
-        if not isinstance(worker_generation, str) or not worker_generation.strip():
-            raise ExecutionDecisionError("worker generation is required")
         self.assert_valid_for_launch(
             tool_id=self.tool_id, operation_family=self.operation_family,
             operation_options=dict(self.decision.operation_options), command=command,
@@ -187,6 +198,8 @@ class ExecutionDecisionCapability:
             raise ExecutionDecisionError("execution run is not bound to the approved decision")
         if run.get("organization_id") != self.decision.organization_id:
             raise ExecutionDecisionError("execution run tenant binding does not match")
+        if run.get("worker_generation") != self.worker_generation:
+            raise ExecutionDecisionError("execution run worker generation does not match the capability")
         if run.get("request_fingerprint") is None or run.get("operation_policy_revision") != self.decision.operation_policy_revision:
             raise ExecutionDecisionError("execution run authority snapshot is incomplete")
         expected = {
@@ -206,6 +219,7 @@ class ExecutionDecisionCapability:
             project_id=self.decision.project_id,
             asset_id=self.decision.asset_id,
             target_id=self.decision.target_id,
+            target_integrity_seal=self.target.integrity_seal,
             authorization_decision_id=self.decision.authorization_decision_id,
             request_fingerprint=str(run["request_fingerprint"]),
             target_policy_version=self.decision.target_policy_version,
@@ -222,7 +236,7 @@ class ExecutionDecisionCapability:
             credential_scope_digest=canonical_binding_digest(self.decision.credential_scope),
             revocation_check_reference=f"session-jti:{self.decision.session_jti}",
             worker_identity=self.worker_identity,
-            worker_generation=worker_generation.strip(),
+            worker_generation=self.worker_generation,
             session_jti=self.decision.session_jti,
             expires_at=self.decision.expires_at,
             correlation_id=str(run.get("correlation_id") or f"corr-execution-{self.execution_id}"),
@@ -230,7 +244,7 @@ class ExecutionDecisionCapability:
             command_digest=canonical_command_digest(tuple(command)),
             authority_token=self.dispatch_claim_token,
         )
-        object.__setattr__(context, "_issued_by", self)
+        _register_issued_context(context)
         return context
 
 
@@ -252,7 +266,6 @@ def issue_execution_capability(
     operation_family: str,
     operation_options: dict[str, Any],
     command: list[str],
-    worker_identity: str,
     database: Any = db_manager,
 ) -> ExecutionDecisionCapability:
     """Verify the durable decision and issue an opaque one-launch capability."""
@@ -263,11 +276,11 @@ def issue_execution_capability(
     if not isinstance(operation_options, dict):
         raise ExecutionDecisionError("operation options must be an object")
     command_digest = _command_digest(command)
-    if not isinstance(worker_identity, str) or not worker_identity.strip():
-        raise ExecutionDecisionError("worker identity is required")
-    expected_worker = os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip()
-    if not expected_worker or not secrets.compare_digest(expected_worker, worker_identity):
-        raise ExecutionDecisionError("worker identity is not authoritative for this process")
+    from app.core.execution_service import get_worker_generation, get_worker_identity
+    worker_identity = get_worker_identity()
+    worker_generation = get_worker_generation()
+    if not worker_identity or not worker_generation:
+        raise ExecutionDecisionError("worker identity and generation are not configured")
 
     target = validate_validated_target(validated_target)
     decision = database.get_execution_decision(decision_id, organization_id=target.organization_id)
@@ -310,7 +323,7 @@ def issue_execution_capability(
     if decision.account_impact_budget and any(int(value) < 0 for value in decision.account_impact_budget.values()):
         raise ExecutionDecisionError("execution account-impact budget is invalid")
 
-    return ExecutionDecisionCapability(
+    capability = ExecutionDecisionCapability(
         decision=decision,
         target=target,
         tool_id=tool_id,
@@ -318,6 +331,9 @@ def issue_execution_capability(
         operation_options_digest=_operation_digest(operation_options),
         command_digest=command_digest,
         worker_identity=worker_identity,
+        worker_generation=worker_generation.strip(),
         _issuer_token=_CAPABILITY_TOKEN,
         database=database,
     )
+    _register_capability(capability)
+    return capability

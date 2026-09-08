@@ -15,6 +15,10 @@ class CicdAuditAssessmentEngine(BaseAssessmentEngine):
     Coordinator engine for CI/CD Pipeline, GitHub Actions, and Build Supply Chain Security Audits.
     """
 
+    # CI/CD auditing is native repository analysis and has no external
+    # process adapter; its empty declaration is explicit.
+    allowed_tool_ids = frozenset()
+
     @property
     def name(self) -> str:
         return "cicd_audit"
@@ -44,6 +48,8 @@ class CicdAuditAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        execution_context=None,
+        execution_capability=None,
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []

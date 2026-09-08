@@ -2,9 +2,10 @@ name: Contract Verification
 
 on:
   push:
-    branches: [main]
+    branches: [main, security/nmap-installer-closure]
   pull_request:
-    branches: [main]
+    branches: [main, security/nmap-installer-closure]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,10 +15,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tests:
-    name: Full repository verification
+  compile-backend:
+    name: Compile backend
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    env:
+      CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-compile-${{ github.run_id }}.db
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,19 +32,188 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.lock
 
-      - name: Install dependencies
-        run: python -m pip install --require-hashes --requirement backend/requirements.lock
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes --requirement backend/requirements.lock
 
-      - name: Run complete test suite
-        env:
-          OPERATING_MODE: TEST
-          JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
-        run: python -m pytest -q
+      - name: Compile backend modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
 
-  postgres-integration:
+  focused-contract-verification:
+    name: Focused contract verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPERATING_MODE: TEST
+      JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-focused-${{ github.run_id }}.db
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes --requirement backend/requirements.lock
+
+      - name: Run focused contract suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/cyberassess-focused-reports"
+          mkdir -p "$report_dir"
+          python -m pytest -q \
+            tests/security/test_contract_fleet_consistency.py \
+            backend/tests/test_scan_manifest_contract.py \
+            backend/tests/test_execution_launch_inventory.py \
+            tests/security/test_database_backend.py \
+            tests/security/test_auth_admin_boundaries.py \
+            tests/security/test_execution_decision_authority.py \
+            tests/security/test_scan_request_migration.py \
+            tests/security/test_process_launch_boundary.py \
+            tests/security/test_container_hardening.py \
+            --junitxml="$report_dir/focused-contract.xml" \
+            2>&1 | tee "$report_dir/focused-contract.log"
+
+      - name: Reject unexpected focused-test skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report_path = os.path.join(os.environ["RUNNER_TEMP"], "cyberassess-focused-reports", "focused-contract.xml")
+          root = ET.parse(report_path).getroot()
+          allowed = {
+              "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch",
+          }
+          reasons = [node.attrib.get("message", "") for node in root.iter("skipped")]
+          unexpected = sorted(reason for reason in reasons if reason not in allowed)
+          if unexpected:
+              raise SystemExit("Focused contract suite contained unexpected skip(s): " + "; ".join(unexpected))
+          PY
+
+      - name: Upload focused evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: focused-contract-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/cyberassess-focused-reports/
+          if-no-files-found: error
+          retention-days: 14
+
+  full-repository-verification:
+    name: Full repository verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPERATING_MODE: TEST
+      JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-full-${{ github.run_id }}.db
+      FULL_EVIDENCE_DIR: ${{ runner.temp }}/cyberassess-full-reports
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes --requirement backend/requirements.lock
+
+      - name: Run full repository suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="$FULL_EVIDENCE_DIR"
+          mkdir -p "$report_dir"
+          python -m pytest -q \
+            --junitxml="$report_dir/full-suite.xml" \
+            2>&1 | tee "$report_dir/full-suite.log"
+
+      - name: Classify full-suite skips
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import collections
+          import os
+          import xml.etree.ElementTree as ET
+
+          report_path = os.path.join(os.environ["FULL_EVIDENCE_DIR"], "full-suite.xml")
+          if not os.path.isfile(report_path):
+              raise SystemExit("Full-suite JUnit evidence was not produced")
+          root = ET.parse(report_path).getroot()
+          classifications = {
+              "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite":
+                  "DEPENDENCY_DEFERRED_TO_POSTGRES_JOB",
+              "UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed":
+                  "ENVIRONMENT_UNAVAILABLE_MANAGED_TOOL",
+              "Managed nmap binary not present on this dev machine":
+                  "ENVIRONMENT_UNAVAILABLE_MANAGED_TOOL",
+              "Symlinks require elevated privileges on Windows":
+                  "PLATFORM_CAPABILITY_UNAVAILABLE",
+              "Symlink creation is unavailable in this environment":
+                  "PLATFORM_CAPABILITY_UNAVAILABLE",
+              "Unix process sessions are not available on Windows":
+                  "PLATFORM_CAPABILITY_UNAVAILABLE",
+              "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch":
+                  "PROVENANCE_BLOCKED_ESCALATION_REQUIRED",
+          }
+          reasons = [node.attrib.get("message", "") for node in root.iter("skipped")]
+          unknown = sorted(reason for reason in reasons if reason not in classifications)
+          if unknown:
+              raise SystemExit("Full repository suite contained unclassified skip(s): " + "; ".join(unknown))
+          counts = collections.Counter(reasons)
+          output_path = os.path.join(os.environ["FULL_EVIDENCE_DIR"], "full-suite-skip-classification.txt")
+          with open(output_path, "w", encoding="utf-8") as output:
+              output.write(f"total_skips={len(reasons)}\n")
+              for reason in sorted(counts):
+                  output.write(f"{classifications[reason]}\t{counts[reason]}\t{reason}\n")
+          PY
+
+      - name: Upload full-suite evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: full-repository-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/cyberassess-full-reports/
+          if-no-files-found: error
+          retention-days: 14
+
+  postgres-schema-assurance:
     name: PostgreSQL 16 schema assurance
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      OPERATING_MODE: TEST
+      JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-postgres-${{ github.run_id }}.db
+      CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
+      CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
+      POSTGRES_EVIDENCE_DIR: ${{ runner.temp }}/cyberassess-postgres-reports
     services:
       postgres:
         image: postgres:16-alpine
@@ -57,21 +229,67 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.lock
-      - name: Install dependencies
-        run: python -m pip install --require-hashes --requirement backend/requirements.lock
+
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes --requirement backend/requirements.lock
+
+      - name: Wait for authenticated PostgreSQL readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            if python -c 'import os, psycopg; connection=psycopg.connect(os.environ["CYBERASSESS_POSTGRES_TEST_URL"], connect_timeout=2); connection.execute("SELECT 1"); connection.close()'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
       - name: Run real PostgreSQL schema assurance
-        env:
-          CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
-          CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
-          OPERATING_MODE: TEST
-          JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
-        run: python -m pytest -q tests/security/test_postgres_integration.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$POSTGRES_EVIDENCE_DIR"
+          python -m pytest -q \
+            tests/security/test_postgres_integration.py \
+            --junitxml="$POSTGRES_EVIDENCE_DIR/postgres-suite.xml" \
+            2>&1 | tee "$POSTGRES_EVIDENCE_DIR/postgres-suite.log"
+
+      - name: Reject dependency-gated PostgreSQL skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report_path = os.path.join(os.environ["POSTGRES_EVIDENCE_DIR"], "postgres-suite.xml")
+          root = ET.parse(report_path).getroot()
+          skipped = int(root.attrib.get("skipped", "0"))
+          if skipped:
+              raise SystemExit(f"PostgreSQL assurance contained {skipped} skipped test(s)")
+          PY
+
+      - name: Upload PostgreSQL evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres-schema-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/cyberassess-postgres-reports/
+          if-no-files-found: error
+          retention-days: 14
 
   container:
     name: Hardened production image verification
@@ -82,28 +300,44 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build production image
-        run: docker build --tag cyberassess-contract-runtime .
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag cyberassess-contract-runtime .
 
       - name: Smoke-test hardened runtime
-        run: >-
-          docker run --rm --read-only --cap-drop=ALL
-          --security-opt=no-new-privileges
-          --tmpfs /tmp:rw,noexec,nosuid,nodev
-          --user cyberassess
-          --entrypoint /bin/sh cyberassess-contract-runtime
-          -c 'test "$(id -u)" -ne 0 &&
-          test ! -w /app/backend/bin/subfinder &&
-          test ! -w /app/backend/bin/subfinder.trust.json &&
-          test ! -w /opt/cyberassess/tool-venvs/sslyze/bin/sslyze.trust.json'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --user cyberassess \
+            --entrypoint /bin/sh cyberassess-contract-runtime \
+            -c 'test "$(id -u)" -ne 0 &&
+            test ! -w /app/backend/bin/subfinder &&
+            test ! -w /app/backend/bin/subfinder.trust.json &&
+            test ! -w /opt/cyberassess/tool-venvs/sslyze/bin/sslyze.trust.json'
 
       - name: Smoke-test application startup and health endpoint
+        shell: bash
         run: |
-          docker run -d --name cyberassess-health-smoke \
+          set -euo pipefail
+          container_name=cyberassess-health-smoke
+          volume_name=cyberassess-smoke-data
+          cleanup() {
+            docker logs "$container_name" 2>&1 || true
+            docker rm -f -v "$container_name" 2>/dev/null || true
+            docker volume rm "$volume_name" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          docker run -d --name "$container_name" \
             --read-only \
             --cap-drop=ALL \
             --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,nodev \
-            -v cyberassess-smoke-data:/app/data \
+            -v "$volume_name":/app/data \
             --user cyberassess \
             -p 8000:8000 \
             -e HOST=0.0.0.0 \
@@ -112,26 +346,20 @@ jobs:
             -e JWT_SECRET=ci-only-jwt-secret-012345678901234567890123456789 \
             cyberassess-contract-runtime
 
-          HEALTHY=0
-          for i in $(seq 1 30); do
-            echo "Polling /api/system/health attempt $i..."
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/system/health || true)
-            if [ "$HTTP_CODE" = "200" ]; then
-              RESPONSE=$(curl -fsSL http://127.0.0.1:8000/api/system/health)
-              echo "Health probe succeeded: $RESPONSE"
-              echo "$RESPONSE" | grep -iq '"status":"healthy"' || exit 1
-              HEALTHY=1
+          healthy=0
+          for attempt in $(seq 1 30); do
+            echo "Polling /api/system/health attempt $attempt..."
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/system/health || true)
+            if [ "$http_code" = "200" ]; then
+              response=$(curl -fsSL http://127.0.0.1:8000/api/system/health)
+              echo "Health probe succeeded: $response"
+              echo "$response" | grep -iq '"status":"healthy"'
+              healthy=1
               break
             fi
             sleep 1
           done
-
-          docker logs cyberassess-health-smoke
-          docker stop cyberassess-health-smoke
-          docker rm -v cyberassess-health-smoke
-          docker volume rm cyberassess-smoke-data || true
-
-          if [ "$HEALTHY" -ne 1 ]; then
+          if [ "$healthy" -ne 1 ]; then
             echo "Health endpoint failed to report healthy within 30 seconds"
             exit 1
           fi

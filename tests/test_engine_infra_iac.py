@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import pytest
 
@@ -355,6 +356,25 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
         },
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
+
+    class TestAuthorityProvider:
+        def resolve_launch_binding(self, *, operation_id, tool_id):
+            assert operation_id == "infra_iac:prowler"
+            assert tool_id == "prowler"
+            return SimpleNamespace(
+                organization_id="org-a",
+                parent_asset_id="asset-a",
+                parent_target_id=validated.target_id,
+                operation_credential_scope={"provider": "aws"},
+                child_decision_expires_at=(datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                operation_policy_revision=OPERATION_POLICY_REVISION,
+                operation_family="cloud-audit",
+                operation_options={},
+                operation_tool_id="prowler",
+                child_decision_id="child-decision-a",
+                child_request_id="child-request-a",
+            )
+
     with patch.object(adapter, "resolve_binary_path", return_value=str(tmp_path / "prowler")), \
          patch.object(adapter, "verify_managed_binary", return_value=True), \
          patch.object(adapter, "execute_command", side_effect=execute):
@@ -366,7 +386,9 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
             require_managed_binary=True,
             validated_target=validated,
             cloud_credentials=credentials,
-                operation_policy_revision=OPERATION_POLICY_REVISION,
+            operation_policy_revision=OPERATION_POLICY_REVISION,
+            execution_authority_provider=TestAuthorityProvider(),
+            operation_id="infra_iac:prowler",
         )
 
     assert commands[-1][1:4] == ["aws", "-M", "json-asff"]
@@ -374,7 +396,8 @@ async def test_prowler_cloud_execution_uses_validated_provider_and_ephemeral_cre
     assert handoffs[-1].organization_id == "org-a"
     assert handoffs[-1].asset_id == "asset-a"
     assert handoffs[-1].provider == "aws"
-    assert handoffs[-1].authorization_decision_id == validated.authorization_decision_id
+    assert handoffs[-1].authorization_decision_id == "child-decision-a"
+    assert handoffs[-1].request_id == "child-request-a"
     assert dict(handoffs[-1].credentials) == credentials.credentials
     assert findings[-1].severity == Severity.CRITICAL
 

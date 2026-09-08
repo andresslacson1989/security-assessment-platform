@@ -93,8 +93,9 @@ def _validate_policy_input(payload: ExecutionRequestPayload) -> dict[str, Any]:
     account_budget = payload.account_impact_budget or {"max_operations": 1}
     if any(not isinstance(value, int) or value < 0 for value in account_budget.values()) or account_budget.get("max_operations", 0) > 1:
         raise HTTPException(status_code=422, detail="Requested account-impact budget exceeds the canonical policy ceiling.")
-    if payload.credential_scope != {"provider": "aws"}:
-        raise HTTPException(status_code=422, detail="Credential scope must exactly match the approved provider boundary.")
+    expected_credential_scope = dict(policy.get("credential_scope", {}))
+    if payload.credential_scope != expected_credential_scope:
+        raise HTTPException(status_code=422, detail="Credential scope must exactly match the canonical operation policy.")
     return {"policy": policy, "resource_budget": resource_budget, "account_budget": account_budget}
 
 
@@ -175,10 +176,11 @@ async def approve_execution_request(
         raise HTTPException(status_code=422, detail="A unique Idempotency-Key header is required.")
     if not payload.confirm_owned_target:
         raise HTTPException(status_code=400, detail="Explicit owned-target acknowledgement is required before approval.")
+    from app.core.execution_service import get_worker_generation, get_worker_identity
     result, decision_id, execution_id = db_manager.approve_execution_request(
         request_id, current_user.organization_id, payload.request_fingerprint,
         idempotency_key,
-        current_user.id, _session_jti(authorization, current_user), os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip(),
+        current_user.id, _session_jti(authorization, current_user), get_worker_identity(), get_worker_generation(),
     )
     if result == "NOT_FOUND":
         raise HTTPException(status_code=404, detail="Execution request not found.")
@@ -191,6 +193,19 @@ async def approve_execution_request(
     if result != "AUTHORIZED":
         raise HTTPException(status_code=409, detail="Execution request cannot be authorized in its current state.")
     return {"request_id": request_id, "decision_id": decision_id, "execution_id": execution_id, "state": "AUTHORIZED", "idempotent_replay": False}
+
+
+@router.get("/recovery/health")
+async def get_recovery_health(
+    current_user: UserProfile = Depends(
+        require_permission(required_scope="execution:read", allowed_roles=[UserRole.ADMIN])
+    ),
+) -> Dict[str, Any]:
+    """Return tenant-scoped recovery state for authorized operators."""
+    return {
+        "organization_id": current_user.organization_id,
+        "recovery": db_manager.recovery_health(current_user.organization_id),
+    }
 
 
 @router.get("/{request_id}")

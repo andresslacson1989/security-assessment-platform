@@ -112,6 +112,7 @@ class SubfinderAdapter(BaseToolAdapter):
                 [binary, "-version"], timeout=10.0,
                 env=self._provider_environment(isolated_home),
                 pre_launch_check=lambda: self.verify_managed_binary(binary),
+                non_scan_context=self._version_probe_context(),
             )
         output = stdout + " " + stderr
         match = re.search(r"(?<![0-9A-Za-z])v?(\d+\.\d+\.\d+)(?![0-9A-Za-z])", output, re.IGNORECASE)
@@ -239,6 +240,8 @@ class SubfinderAdapter(BaseToolAdapter):
                 cmd, timeout=30.0, emit_log=emit_log,
                 env=self._provider_environment(isolated_home),
                 pre_launch_check=lambda: self.verify_managed_binary(binary),
+                execution_authority_provider=kwargs.get("execution_authority_provider"),
+                operation_id=kwargs.get("operation_id"),
             )
         if code != 0 and not stdout:
             self.last_execution_state = (NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED)

@@ -21,7 +21,7 @@ import httpx
 from app.core.models import ToolInstallMethod
 from app.core.version import APP_VERSION
 from app.core.process_supervisor import process_supervisor
-from app.core.execution_context import issue_non_scan_execution_context
+from app.core.execution_service import issue_non_scan_execution_context
 from app.installers.base_installer import (
     BaseToolInstaller,
     LogCallback,

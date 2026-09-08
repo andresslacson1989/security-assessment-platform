@@ -24,6 +24,7 @@ from app.core.models import (
     utc_now,
 )
 from app.core.db import db_manager
+from app.core.execution_service import issue_non_scan_execution_context
 
 
 @pytest.mark.asyncio
@@ -71,27 +72,33 @@ async def test_concurrent_sibling_execution_isolation():
     cmd_b = [sys.executable, "-c", "import time; time.sleep(0.5); print('sibling done')"]
 
     exec_a_task = asyncio.create_task(
-        supervisor.execute(cmd_a, timeout=10.0, execution_id="exec-sibling-a")
+        supervisor.execute(
+            cmd_a,
+            timeout=10.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-sibling-a"),
+        )
     )
     exec_b_task = asyncio.create_task(
-        supervisor.execute(cmd_b, timeout=10.0, execution_id="exec-sibling-b")
+        supervisor.execute(
+            cmd_b,
+            timeout=10.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-sibling-b"),
+        )
     )
 
     # Allow processes time to spawn
     await asyncio.sleep(0.1)
 
-    # Cancel execution A only
-    cancelled_a = supervisor.cancel_execution("exec-sibling-a")
-    assert cancelled_a.confirmed is True
+    # Cancel execution A's task only.  Non-scan capabilities intentionally do
+    # not carry scan execution IDs; governed scan cancellation is tested at
+    # the durable execution boundary.
+    exec_a_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await exec_a_task
 
     # Execution B must complete cleanly on its own
     res_b = await exec_b_task
     assert "sibling done" in res_b.stdout
-
-    # Execution A task should finish (either via process termination or return code)
-    res_a = await exec_a_task
-    assert res_a.returncode != 0
-
 
 @pytest.mark.asyncio
 async def test_asyncio_cancellation_does_not_kill_siblings():
@@ -105,10 +112,18 @@ async def test_asyncio_cancellation_does_not_kill_siblings():
     cmd_b = [sys.executable, "-c", "import time; time.sleep(0.5); print('sibling survives')"]
 
     task_a = asyncio.create_task(
-        supervisor.execute(cmd_a, timeout=10.0, execution_id="exec-async-a")
+        supervisor.execute(
+            cmd_a,
+            timeout=10.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-async-a"),
+        )
     )
     task_b = asyncio.create_task(
-        supervisor.execute(cmd_b, timeout=10.0, execution_id="exec-async-b")
+        supervisor.execute(
+            cmd_b,
+            timeout=10.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-async-b"),
+        )
     )
 
     await asyncio.sleep(0.1)

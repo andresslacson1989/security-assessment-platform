@@ -37,6 +37,7 @@ class HttpxAdapter(BaseToolAdapter):
             return None
         code, stdout, stderr = await self.execute_command(
             [binary, "-version"], timeout=10.0, pre_launch_check=pre_launch_check,
+            non_scan_context=self._version_probe_context(),
         )
         output = stdout + " " + stderr
         # Reject Python pip httpx CLI (which fails on -version with 'Usage: httpx')
@@ -102,6 +103,8 @@ class HttpxAdapter(BaseToolAdapter):
         code, stdout, stderr = await self.execute_command(
             cmd, timeout=45.0, emit_log=emit_log,
             pre_launch_check=(lambda: self.verify_managed_binary(binary)) if require_managed else None,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
         if code != 0 and not stdout:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED

@@ -19,7 +19,7 @@ from app.installers.base_installer import (
     ProgressCallback,
 )
 from app.core.process_supervisor import process_supervisor
-from app.core.execution_context import issue_non_scan_execution_context
+from app.core.execution_service import issue_non_scan_execution_context
 from app.core.package_trust import (
     PackageTrustError,
     build_package_trust_record,

@@ -259,6 +259,11 @@ def test_database_asset_and_finding_crud():
         tmp_db = Path(f.name)
 
     db = DatabaseManager(db_path=tmp_db)
+    with db._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
+            ("org-default", "Default Test Organization", "default-test-organization", "2026-09-08T00:00:00+00:00"),
+        )
     asset = Asset(
         name="Production Web API",
         type=AssetType.API_ENDPOINT,

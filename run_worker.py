@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -67,15 +68,67 @@ async def run_worker() -> None:
     queue = RedisDurableQueue(EXECUTION_QUEUE_URL)
     local_executor = ScanQueueManager()
 
-    async def handle(scan_id: str, organization_id: str | None, cloud_credentials=None) -> None:
+    async def handle(
+        scan_id: str,
+        organization_id: str | None,
+        authorization_request_id: str | None,
+        cloud_credentials=None,
+    ) -> None:
         from app.core.models import ScanStatus
+        from app.core.db import db_manager
         from app.core.storage import get_scan, save_scan
 
+        if not organization_id or not authorization_request_id:
+            raise RuntimeError("queued scan is missing its authoritative tenant/request identity")
         job = get_scan(scan_id, organization_id=organization_id)
         if job is None:
             raise RuntimeError("queued scan no longer exists in authoritative storage")
         if organization_id is not None and job.organization_id != organization_id:
             raise RuntimeError("queued scan tenant binding failed")
+        if job.authorization_request_id != authorization_request_id:
+            raise RuntimeError("queued scan authorization request binding failed")
+        parent = db_manager.get_scan_authorization_request(
+            authorization_request_id,
+            organization_id,
+        )
+        if not parent or parent["scan_id"] != scan_id or parent["organization_id"] != organization_id:
+            raise RuntimeError("queued scan parent authority binding failed")
+        if parent["state"] != "DISPATCHABLE":
+            raise RuntimeError("queued scan parent is not dispatchable")
+        if parent.get("revoked_at") or parent.get("consumed_at"):
+            raise RuntimeError("queued scan parent authority is revoked or consumed")
+        try:
+            expires_at = datetime.fromisoformat(parent["expires_at"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("queued scan parent expiry is invalid") from exc
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            raise RuntimeError("queued scan parent expiry must be timezone-aware")
+        if expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            raise RuntimeError("queued scan parent authority is expired")
+
+        # Reload every selected operation and its complete child relation before
+        # handing the scan to the orchestrator.  The worker carries no command,
+        # target, credential, or decision authority in the queue message.
+        operation_ids = db_manager.list_scan_authorization_operation_ids(
+            authorization_request_id,
+            organization_id,
+            selected_only=True,
+        )
+        for operation_id in operation_ids:
+            binding = db_manager.get_scan_authorization_launch_binding(
+                authorization_request_id,
+                organization_id,
+                operation_id,
+            )
+            if (
+                not binding
+                or binding.get("scan_id") != scan_id
+                or binding.get("organization_id") != organization_id
+                or not binding.get("child_request_id")
+                or not binding.get("child_decision_id")
+                or not binding.get("child_execution_id")
+            ):
+                raise RuntimeError("queued scan selected operation authority binding failed")
         if cloud_credentials is not None:
             if cloud_credentials.organization_id != job.organization_id:
                 raise RuntimeError("queued credential envelope tenant binding failed")
@@ -89,6 +142,7 @@ async def run_worker() -> None:
             orchestrator._execute_scan,
             scan_id,
             organization_id=organization_id,
+            authorization_request_id=authorization_request_id,
         )
         save_scan(job)
 

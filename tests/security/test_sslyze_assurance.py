@@ -18,6 +18,7 @@ import json
 import os
 import pytest
 import unittest.mock as mock
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.adapters.sslyze_adapter import (
@@ -759,11 +760,26 @@ class TestSslyzeProcessSupervision:
             ]
         }
 
+        authority_provider = mock.MagicMock()
+        authority_provider.issue_capability.return_value = SimpleNamespace(
+            execution_id="test-execution:network:sslyze",
+            operation_family="tls-assessment",
+            decision=SimpleNamespace(operation_options={}),
+            tool_id="sslyze",
+        )
+
         with patch.object(adapter, "resolve_binary_path", return_value="/usr/bin/sslyze"):
             with patch.object(adapter, "get_version", return_value="SSLyze 5.2.0"):
                 with patch("app.core.ssrf_protector.resolve_hostname_ips", return_value=["93.184.216.34"]):
                     with patch("app.core.process_supervisor.process_supervisor.execute", return_value=(0, json.dumps(clean_json), "")) as mock_ps_exec:
-                        findings = await adapter.run(target, config, mock_log, mock_finding)
+                        findings = await adapter.run(
+                            target,
+                            config,
+                            mock_log,
+                            mock_finding,
+                            execution_authority_provider=authority_provider,
+                            operation_id="network:sslyze",
+                        )
 
         assert mock_ps_exec.called
         call_kwargs = mock_ps_exec.call_args[1]

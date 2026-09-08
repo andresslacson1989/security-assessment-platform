@@ -39,6 +39,7 @@ class KatanaAdapter(BaseToolAdapter):
             return None
         code, stdout, stderr = await self.execute_command(
             [binary, "-version"], timeout=10.0, pre_launch_check=pre_launch_check,
+            non_scan_context=self._version_probe_context(),
         )
         output = stdout + " " + stderr
         match = re.search(r"v\d+\.\d+\.\d+", output, re.IGNORECASE)
@@ -97,6 +98,8 @@ class KatanaAdapter(BaseToolAdapter):
             timeout=60.0,
             emit_log=emit_log,
             pre_launch_check=(lambda: self.verify_managed_binary(binary)) if kwargs.get("require_managed_binary") else None,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
         if code != 0 and not stdout:
             self.last_execution_state = NormalizedExecutionState.EXECUTION_TIMED_OUT if "timed out" in stderr.lower() else NormalizedExecutionState.TOOL_EXECUTION_FAILED

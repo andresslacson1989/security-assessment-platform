@@ -8,6 +8,7 @@ import platform
 import shutil
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.core.models import ScanConfig, Target, TargetType, ScanJob, DiscoveredSubdomain, NormalizedExecutionState
 from app.core.orchestrator import ScanOrchestrator
@@ -17,6 +18,28 @@ from app.adapters.subfinder_adapter import SubfinderAdapter
 from app.engines.network.engine import NetworkAssessmentEngine
 from app.core.models import RejectedDiscovery
 from app.core.ssrf_protector import create_validated_target
+
+
+class _TestExecutionAuthorityProvider:
+    """Test-only authority for parser/state assertions with mocked subprocesses."""
+
+    def issue_capability(
+        self,
+        *,
+        operation_id,
+        tool_id=None,
+        operation_family=None,
+        operation_options=None,
+        command,
+    ):
+        assert isinstance(operation_id, str) and operation_id.strip()
+        assert isinstance(command, list) and command
+        return SimpleNamespace(
+            execution_id=f"test-execution:{operation_id}",
+            operation_family=operation_family or "TEST",
+            decision=SimpleNamespace(operation_options=dict(operation_options or {})),
+            tool_id=tool_id or command[0],
+        )
 
 
 def test_normalization_and_scope_are_deterministic():
@@ -224,7 +247,16 @@ async def test_discovery_never_promotes_out_of_scope_or_resolves_hosts(monkeypat
     async def reject(value):
         rejected.append(value)
 
-    await adapter.run(Target(name="root", type=TargetType.DOMAIN, value="example.com"), ScanConfig(), callback, callback, scan_id="scan-1", organization_id="org-a", emit_subdomain=subdomain, emit_rejected_discovery=reject)
+    await adapter.run(
+        Target(name="root", type=TargetType.DOMAIN, value="example.com"),
+        ScanConfig(), callback, callback,
+        scan_id="scan-1",
+        organization_id="org-a",
+        emit_subdomain=subdomain,
+        emit_rejected_discovery=reject,
+        execution_authority_provider=_TestExecutionAuthorityProvider(),
+        operation_id="network:subfinder",
+    )
     assert [item.domain for item in emitted] == ["admin.example.com"]
     assert rejected[0].domain == "outside.example.net"
     assert rejected[0].organization_id == "org-a"
@@ -251,6 +283,8 @@ async def test_nonzero_exit_with_partial_stdout_is_degraded_not_success(monkeypa
         Target(name="root", type=TargetType.DOMAIN, value="example.com"),
         ScanConfig(), callback, callback,
         organization_id="org-a",
+        execution_authority_provider=_TestExecutionAuthorityProvider(),
+        operation_id="network:subfinder",
     )
 
     assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
@@ -308,6 +342,8 @@ async def test_timeout_with_partial_stdout_remains_timed_out(monkeypatch):
         Target(name="root", type=TargetType.DOMAIN, value="example.com"),
         ScanConfig(), callback, callback,
         organization_id="org-a",
+        execution_authority_provider=_TestExecutionAuthorityProvider(),
+        operation_id="network:subfinder",
     )
 
     assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_TIMED_OUT

@@ -23,13 +23,15 @@ from app.core.models import (
     ToolExecutionMode,
     utc_now,
     calculate_fingerprint,
+    sanitize_sensitive_data,
 )
 from app.core.grading import calculate_scan_grade
 from app.core.storage import save_scan, get_scan
 from app.engines.base import BaseAssessmentEngine
 from app.adapters import discover_system_capabilities, get_adapter_registry
-from app.core.execution_context import GovernedExecutionContext
-from app.core.execution_decision import ExecutionDecisionCapability
+from app.core.scan_execution_authority import ScanExecutionAuthority
+from app.core.ssrf_protector import create_validated_target
+from app.core.db import db_manager
 
 logger = logging.getLogger("cyberassess.orchestrator")
 
@@ -119,7 +121,7 @@ class ScanOrchestrator:
                 _TOOL_ID_ALIASES.get(str(tool), str(tool))
                 for tool in declared_tools
             }
-            if not canonical_tools or not canonical_tools.issubset(_CANONICAL_TOOL_IDS):
+            if (not canonical_tools and engine_name != "cicd_audit") or not canonical_tools.issubset(_CANONICAL_TOOL_IDS):
                 raise ValueError(f"Engine {engine_name!r} declares unknown or empty tool identities")
             self._registered_engine_tool_ids[engine_name] = canonical_tools
         self._engines[engine_name] = engine
@@ -152,42 +154,82 @@ class ScanOrchestrator:
         return get_scan(scan_id, organization_id=organization_id)
 
     async def start_scan(
-        self, scan_job: ScanJob, *,
-        execution_context: Optional[GovernedExecutionContext] = None,
-        execution_capability: Optional[ExecutionDecisionCapability] = None,
+        self, scan_job: ScanJob,
     ) -> asyncio.Task:
         """
-        Queues and launches background execution for a new scan job governed by ScanQueueManager.
-        """
-        async with self._lock:
-            self._active_jobs[scan_job.id] = scan_job
-            save_scan(scan_job)
-        if (execution_context is None) != (execution_capability is None):
-            raise ValueError("governed scan start requires both typed context and decision capability")
+        Reject the legacy direct-start entry point.
 
+        Scan execution is dispatched only by the explicit administrator approval
+        transition after its durable parent and child authorities exist. Keeping
+        this method as a hard rejection preserves a clear failure for stale
+        callers without creating a second execution authority path.
+        """
+        raise ValueError(
+            "direct scan start is disabled; an administrator must approve the exact manifest before dispatch"
+        )
+
+    async def dispatch_approved_scan(self, scan_job: ScanJob) -> asyncio.Task:
+        """Dispatch a scan only after its durable parent approval is complete."""
+        if not scan_job.authorization_request_id:
+            raise ValueError("approved scan is missing its authorization request")
+        parent = db_manager.get_scan_authorization_request(
+            scan_job.authorization_request_id,
+            scan_job.organization_id,
+        )
+        if not parent or parent["scan_id"] != scan_job.id or parent["state"] != "DISPATCHABLE":
+            raise ValueError("scan is not durably dispatchable")
+        if parent.get("revoked_at") or parent.get("consumed_at"):
+            raise ValueError("scan authorization is revoked or consumed")
+        try:
+            expires_at = datetime.fromisoformat(parent["expires_at"])
+            if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                raise ValueError("timezone-naive")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("scan authorization expiry is invalid") from exc
+        if expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            raise ValueError("scan authorization has expired")
         from app.core.queue import queue_manager
+        async with self._lock:
+            existing_task = self._tasks.get(scan_job.id)
+            if existing_task is not None:
+                # The approval route may be retried while the first dispatch is
+                # still being accepted.  Returning the existing task preserves
+                # one dispatch per scan identity and avoids a second queue item.
+                return existing_task
+            self._active_jobs[scan_job.id] = scan_job
+            scan_job.authorization_state = "DISPATCHABLE"
+            save_scan(scan_job)
+            if queue_manager.durable_enabled:
+                task = asyncio.create_task(
+                    queue_manager.enqueue_only(
+                        scan_job.id,
+                        scan_job.organization_id,
+                        scan_job.cloud_credentials,
+                        scan_job.authorization_request_id,
+                    )
+                )
+            else:
+                task = asyncio.create_task(
+                    queue_manager.execute_bounded(
+                        scan_job.id,
+                        self._execute_scan,
+                        scan_job.id,
+                        organization_id=scan_job.organization_id,
+                        authorization_request_id=scan_job.authorization_request_id,
+                    )
+                )
+            self._tasks[scan_job.id] = task
         if queue_manager.durable_enabled:
-            # In enterprise mode the API is control-plane only. A dedicated
-            # worker claims the durable intent and performs the scan.
-            task = asyncio.create_task(
-                queue_manager.enqueue_only(
-                    scan_job.id,
-                    scan_job.organization_id,
-                    scan_job.cloud_credentials,
-                )
-            )
-        else:
-            task = asyncio.create_task(
-                queue_manager.execute_bounded(
-                    scan_job.id,
-                    self._execute_scan,
-                    scan_job.id,
-                    organization_id=scan_job.organization_id,
-                    execution_context=execution_context,
-                    execution_capability=execution_capability,
-                )
-            )
-        self._tasks[scan_job.id] = task
+            try:
+                # Confirm queue acceptance before the API reports success.  The
+                # worker remains responsible for process execution and is never
+                # awaited by this control-plane call.
+                await asyncio.shield(task)
+            except Exception:
+                async with self._lock:
+                    if self._tasks.get(scan_job.id) is task:
+                        self._tasks.pop(scan_job.id, None)
+                raise
         return task
 
     async def cancel_scan(self, scan_id: str, organization_id: Optional[str] = None) -> bool:
@@ -200,15 +242,20 @@ class ScanOrchestrator:
         if not job:
             return False
 
-        # 2. Explicitly terminate any subprocess tracked by process_supervisor for this scan
+        # 2. Explicitly terminate every child process tracked by this scan's
+        # durable authorization manifest.  The parent scan ID is not a process
+        # identity and must never be used as a kill target.
         from app.core.process_supervisor import process_supervisor
-        cancellation = process_supervisor.cancel_execution(scan_id)
+        execution_ids = db_manager.list_scan_execution_ids(scan_id, job.organization_id or organization_id or "")
+        cancellations = [process_supervisor.cancel_execution(execution_id) for execution_id in execution_ids]
 
         # 3. Cancel the owning scan task and wait for it to stop. A task
         # cancellation request alone is not proof that the task or any
         # supervised child has stopped.
         task = self._tasks.get(scan_id)
+        task_cancel_requested = False
         if task and not task.done():
+            task_cancel_requested = True
             task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=_CANCELLATION_JOIN_TIMEOUT_SECONDS)
@@ -235,19 +282,18 @@ class ScanOrchestrator:
         # owning task has stopped and a second exact-ID lookup still finds no
         # supervised execution. External launches are required to register
         # under this same scan execution ID.
-        if not cancellation.confirmed:
+        if any(not cancellation.confirmed for cancellation in cancellations):
             no_process_proven = (
-                cancellation.status.value == "NOT_FOUND"
+                all(cancellation.status.value == "NOT_FOUND" for cancellation in cancellations)
                 and task is not None
                 and task.done()
-                and process_supervisor.cancel_execution(scan_id).status.value == "NOT_FOUND"
             )
             if not no_process_proven:
                 await self.emit_log(
                     scan_id,
                     LogLevel.WARNING,
                     "orchestrator",
-                    f"Scan cancellation is pending verified process termination ({cancellation.status.value}).",
+                    "Scan cancellation is pending verified process termination.",
                 )
                 return False
 
@@ -260,6 +306,12 @@ class ScanOrchestrator:
             await self.emit_log(scan_id, LogLevel.WARNING, "orchestrator", "Scan job cancelled by user.")
             await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
             await self.emit_cancelled(scan_id, "Scan job cancelled by user.")
+            return True
+        # The owning task may have completed the authoritative cancellation
+        # transition while this method was joining it.  Treat that result as
+        # success for this cancellation request, while preserving idempotent
+        # false results for jobs cancelled before the request arrived.
+        if task_cancel_requested and job.status == ScanStatus.CANCELLED:
             return True
         return False
 
@@ -336,14 +388,14 @@ class ScanOrchestrator:
         if job:
             job.logs.append(entry)
 
-        await self._broadcast(scan_id, "log", {
+        await self._broadcast(scan_id, "log", sanitize_sensitive_data({
             "timestamp": entry.timestamp.isoformat(),
             "correlation_id": entry.correlation_id,
             "level": entry.level.value,
             "engine": engine,
             "tool": tool,
             "message": message,
-        })
+        }))
 
     async def emit_finding(self, scan_id: str, finding: Finding) -> None:
         job = self._active_jobs.get(scan_id)
@@ -364,7 +416,7 @@ class ScanOrchestrator:
                 (utc_now() - (job.started_at or utc_now())).total_seconds(),
             )
 
-        await self._broadcast(scan_id, "finding", finding.model_dump(mode="json"))
+        await self._broadcast(scan_id, "finding", sanitize_sensitive_data(finding.model_dump(mode="json")))
 
     async def emit_auth_status(self, scan_id: str, data: dict) -> None:
         """
@@ -374,7 +426,7 @@ class ScanOrchestrator:
         if job:
             job.summary.authenticated_session_active = bool(data.get("session_active", False))
 
-        await self._broadcast(scan_id, "auth_status", data)
+        await self._broadcast(scan_id, "auth_status", sanitize_sensitive_data(data))
 
     async def emit_endpoint_discovered(self, scan_id: str, endpoint: DiscoveredEndpoint) -> None:
         """
@@ -573,13 +625,98 @@ class ScanOrchestrator:
     # --- Background Execution Engine ---
 
     async def _execute_scan(
-        self, scan_id: str, *,
-        execution_context: Optional[GovernedExecutionContext] = None,
-        execution_capability: Optional[ExecutionDecisionCapability] = None,
+        self,
+        scan_id: str,
+        *,
+        authorization_request_id: Optional[str] = None,
     ) -> None:
         job = self._active_jobs.get(scan_id)
         if not job:
             return
+
+        expected_request_id = job.authorization_request_id
+        if not expected_request_id or (
+            authorization_request_id is not None
+            and authorization_request_id != expected_request_id
+        ):
+            job.status = ScanStatus.FAILED
+            job.current_stage = "Execution blocked: authoritative scan request identity is missing or mismatched."
+            job.completed_at = utc_now()
+            save_scan(job)
+            await self.emit_log(
+                scan_id,
+                LogLevel.ERROR,
+                "orchestrator",
+                "Execution blocked: the worker did not provide the authoritative scan request identity.",
+            )
+            return
+        parent = db_manager.get_scan_authorization_request(
+            expected_request_id,
+            job.organization_id,
+        )
+        if (
+            not parent
+            or parent.get("scan_id") != scan_id
+            or parent.get("organization_id") != job.organization_id
+            or parent.get("state") != "DISPATCHABLE"
+            or parent.get("revoked_at")
+            or parent.get("consumed_at")
+        ):
+            job.status = ScanStatus.FAILED
+            job.current_stage = "Execution blocked: scan authorization is not dispatchable."
+            job.completed_at = utc_now()
+            save_scan(job)
+            await self.emit_log(
+                scan_id,
+                LogLevel.ERROR,
+                "orchestrator",
+                "Execution blocked: authoritative scan authorization is not dispatchable.",
+            )
+            return
+        try:
+            expires_at = datetime.fromisoformat(parent["expires_at"])
+            if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                raise ValueError("timezone-naive")
+        except (TypeError, ValueError):
+            job.status = ScanStatus.FAILED
+            job.current_stage = "Execution blocked: scan authorization is expired or invalid."
+            job.completed_at = utc_now()
+            save_scan(job)
+            await self.emit_log(
+                scan_id,
+                LogLevel.ERROR,
+                "orchestrator",
+                "Execution blocked: authoritative scan authorization is expired or invalid.",
+            )
+            return
+        if expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            job.status = ScanStatus.FAILED
+            job.current_stage = "Execution blocked: scan authorization is expired or invalid."
+            job.completed_at = utc_now()
+            save_scan(job)
+            await self.emit_log(
+                scan_id,
+                LogLevel.ERROR,
+                "orchestrator",
+                "Execution blocked: authoritative scan authorization is expired or invalid.",
+            )
+            return
+
+        try:
+            validated_scan_target = create_validated_target(
+                job.target,
+                organization_id=job.organization_id,
+                project_id=job.project_id,
+                asset_id=job.asset_id,
+                active_probing_granted=job.active_probing_granted,
+                state_changing_granted=job.state_changing_granted,
+            )
+        except Exception as exc:
+            validated_scan_target = None
+            await self.emit_log(
+                scan_id, LogLevel.ERROR, "orchestrator",
+                f"Approved scan target could not be revalidated; external execution is blocked ({type(exc).__name__}).",
+            )
 
         async def _raise_if_authoritatively_cancelled() -> None:
             latest = get_scan(scan_id, organization_id=job.organization_id)
@@ -735,6 +872,14 @@ class ScanOrchestrator:
                             "organization_id": job.organization_id,
                             "assessment_id": job.id,
                         }
+                        if validated_scan_target is not None:
+                            run_kwargs["execution_authority_provider"] = ScanExecutionAuthority(
+                                scan_request_id=expected_request_id,
+                                organization_id=job.organization_id,
+                                engine_id=engine.name,
+                                validated_target=validated_scan_target,
+                                database=db_manager,
+                            )
                     if "emit_auth_status" in sig.parameters or accepts_var_keyword:
                         run_kwargs["emit_auth_status"] = _auth_cb
                     if "emit_endpoint_discovered" in sig.parameters or accepts_var_keyword:
@@ -752,9 +897,6 @@ class ScanOrchestrator:
                     if "record_cis_result" in sig.parameters or accepts_var_keyword:
                         run_kwargs["record_cis_result"] = _cis_cb
 
-                    if execution_context is not None:
-                        run_kwargs["execution_context"] = execution_context
-                        run_kwargs["execution_capability"] = execution_capability
                     engine_findings = await engine.run(
                         job.target, job.config, _log_cb, _prog_cb, _find_cb, **run_kwargs,
                     )

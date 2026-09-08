@@ -26,6 +26,7 @@ class DurableQueueBackend(Protocol):
         scan_id: str,
         organization_id: Optional[str],
         credential_envelope: Optional[CloudCredentialEnvelope] = None,
+        authorization_request_id: Optional[str] = None,
     ) -> str: ...
     async def complete(self, message_id: str) -> None: ...
     async def fail(self, message_id: str, error_code: str) -> None: ...
@@ -77,13 +78,26 @@ class RedisDurableQueue:
         scan_id: str,
         organization_id: Optional[str],
         credential_envelope: Optional[CloudCredentialEnvelope] = None,
+        authorization_request_id: Optional[str] = None,
     ) -> str:
+        if not isinstance(scan_id, str) or not scan_id.strip():
+            raise ValueError("execution intent requires a scan identity")
+        if authorization_request_id is not None and (
+            not isinstance(authorization_request_id, str)
+            or not authorization_request_id.strip()
+            or len(authorization_request_id) > 256
+        ):
+            raise ValueError("execution intent authorization request identity is invalid")
+        if authorization_request_id and not organization_id:
+            raise ValueError("execution intent authorization request requires a tenant")
         await self._ensure_group()
         fields = {
             "scan_id": scan_id,
             "organization_id": organization_id or "",
             "enqueued_at": datetime.now(timezone.utc).isoformat(),
         }
+        if authorization_request_id:
+            fields["authorization_request_id"] = authorization_request_id.strip()
         if credential_envelope is not None:
             if not organization_id:
                 raise ValueError("credential handoff requires a queue tenant")
@@ -153,9 +167,12 @@ class RedisDurableQueue:
         message_id, fields = messages[0]
         scan_id = str(fields.get("scan_id", "")).strip()
         organization_id = str(fields.get("organization_id", "")).strip() or None
+        authorization_request_id = str(fields.get("authorization_request_id", "")).strip() or None
         try:
             if not scan_id:
                 raise ValueError("execution intent is missing scan_id")
+            if authorization_request_id and not organization_id:
+                raise ValueError("execution intent authorization request is missing queue tenant")
             envelope = None
             encrypted_envelope = str(fields.get("credential_envelope", "")).strip()
             if encrypted_envelope:
@@ -169,12 +186,21 @@ class RedisDurableQueue:
             import inspect
 
             signature = inspect.signature(handler)
+            accepts_four = any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            ) or len(signature.parameters) >= 4
             accepts_three = any(
                 parameter.kind == inspect.Parameter.VAR_POSITIONAL
                 or parameter.kind == inspect.Parameter.VAR_KEYWORD
                 for parameter in signature.parameters.values()
             ) or len(signature.parameters) >= 3
-            if accepts_three:
+            if accepts_four:
+                await handler(scan_id, organization_id, authorization_request_id, envelope)
+            elif authorization_request_id:
+                raise ValueError("worker handler does not accept authoritative scan request identity")
+            elif accepts_three:
                 await handler(scan_id, organization_id, envelope)
             else:
                 if envelope is not None:
@@ -233,13 +259,21 @@ class ScanQueueManager:
         scan_id: str,
         organization_id: Optional[str],
         credential_envelope: Optional[CloudCredentialEnvelope] = None,
+        authorization_request_id: Optional[str] = None,
     ) -> str:
         """Persist an enterprise execution intent without running it locally."""
         if self._durable_backend is None:
             raise RuntimeError("enqueue_only requires a durable execution backend")
-        if credential_envelope is None:
+        if credential_envelope is None and authorization_request_id is None:
             return await self._durable_backend.enqueue(scan_id, organization_id)
-        return await self._durable_backend.enqueue(scan_id, organization_id, credential_envelope)
+        if authorization_request_id is None:
+            return await self._durable_backend.enqueue(scan_id, organization_id, credential_envelope)
+        return await self._durable_backend.enqueue(
+            scan_id,
+            organization_id,
+            credential_envelope,
+            authorization_request_id,
+        )
 
     async def _tenant_semaphore(self, organization_id: Optional[str]) -> Optional[asyncio.Semaphore]:
         if not organization_id:
@@ -257,6 +291,7 @@ class ScanQueueManager:
         *args,
         timeout_seconds: float = GLOBAL_SCAN_TIMEOUT_SECONDS,
         organization_id: Optional[str] = None,
+        authorization_request_id: Optional[str] = None,
         **kwargs,
     ) -> Any:
         """
@@ -265,7 +300,15 @@ class ScanQueueManager:
         tenant_semaphore = await self._tenant_semaphore(organization_id)
         message_id = None
         if self._durable_backend is not None:
-            message_id = await self._durable_backend.enqueue(scan_id, organization_id)
+            if authorization_request_id is None:
+                message_id = await self._durable_backend.enqueue(scan_id, organization_id)
+            else:
+                message_id = await self._durable_backend.enqueue(
+                    scan_id,
+                    organization_id,
+                    None,
+                    authorization_request_id,
+                )
         try:
             async with self._semaphore:
                 if tenant_semaphore is None:

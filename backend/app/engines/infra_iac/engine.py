@@ -27,6 +27,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
     Follows Adapters First-in-Line Architecture (Checkov + Trivy + Dockle + Kube-bench + Prowler primary, native HCL/YAML/Dockerfile manifest auditors fallback & enrichment).
     """
 
+    allowed_tool_ids = frozenset({"checkov", "trivy", "dockle", "kube-bench", "prowler", "gtfobins"})
+
     @property
     def name(self) -> str:
         return "infra_iac"
@@ -63,6 +65,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
         emit_log: LogCallback,
         emit_progress: ProgressCallback,
         emit_finding: FindingCallback,
+        execution_context=None,
+        execution_capability=None,
         **kwargs,
     ) -> List[Finding]:
         findings: List[Finding] = []
@@ -162,6 +166,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                     require_managed_binary=True,
                     validated_target=validated_target,
                     cloud_credentials=kwargs.get("cloud_credentials"),
+                    execution_authority_provider=kwargs.get("execution_authority_provider"),
+                    operation_id="infra_iac:prowler",
                 )
                 await report_tool_state("prowler", prowler_adapter, len(prowler_findings))
                 for finding in prowler_findings:
@@ -194,6 +200,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="infra_iac:checkov",
                         require_managed_binary=True,
                     )
                     await report_tool_state("checkov", checkov_adapter, len(checkov_findings))
@@ -223,6 +231,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="infra_iac:trivy",
                         require_managed_binary=True,
                     )
                     await report_tool_state("trivy", trivy_adapter, len(trivy_findings))
@@ -252,6 +262,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="infra_iac:dockle",
                         record_cis_result=record_cis,
                         require_managed_binary=True,
                     )
@@ -281,6 +293,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="infra_iac:kube-bench",
                         record_cis_result=record_cis,
                         require_managed_binary=True,
                     )
@@ -310,6 +324,8 @@ class InfraIacAssessmentEngine(BaseAssessmentEngine):
                         emit_log,
                         emit_finding,
                         scan_id=scan_id,
+                        execution_authority_provider=kwargs.get("execution_authority_provider"),
+                        operation_id="infra_iac:prowler",
                         record_cis_result=record_cis,
                         require_managed_binary=True,
                     )

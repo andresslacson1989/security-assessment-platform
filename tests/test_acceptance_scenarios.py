@@ -60,6 +60,35 @@ from app.exporters.sarif_exporter import export_scan_to_sarif
 from app.exporters.json_exporter import export_scan_to_json
 
 
+async def _dispatch_authorized_scenario_scan(monkeypatch, scan_orchestrator, scan_job):
+    """Run scenario execution only through the explicit approval dispatch path."""
+    from app.core.db import db_manager
+    from app.core.queue import ScanQueueManager
+
+    request_id = f"acceptance-scenario-request-{scan_job.id}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scan_job.authorization_request_id = request_id
+    scan_job.authorization_state = "DISPATCHABLE"
+    parent = {
+        "scan_id": scan_job.id,
+        "organization_id": scan_job.organization_id,
+        "state": "DISPATCHABLE",
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": None,
+        "consumed_at": None,
+    }
+
+    def get_test_parent(candidate_request_id, organization_id):
+        if candidate_request_id != request_id or organization_id != scan_job.organization_id:
+            return None
+        return parent
+
+    monkeypatch.setattr(db_manager, "get_scan_authorization_request", get_test_parent)
+    monkeypatch.setattr("app.core.ssrf_protector.resolve_hostname_ips", lambda _host: ["93.184.216.34"])
+    with patch("app.core.queue.queue_manager", ScanQueueManager()):
+        return await scan_orchestrator.dispatch_approved_scan(scan_job)
+
+
 # ==============================================================================
 # Scenario 1: Network Perimeter, TLS & DNS Hygiene
 # ==============================================================================
@@ -654,7 +683,7 @@ async def test_scenario_10_authenticated_dast_session_scanning():
 # (Contract 05 v4.1.0 - Acceptance Scenario 15)
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_active_and_discovery():
+async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_active_and_discovery(monkeypatch):
     """SEC-035: unavailable external tools degrade to native fallback coverage."""
     """
     Scenario 15A: Adapters present (mocked) -> findings emitted with correct source_tool.
@@ -811,7 +840,7 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_active_and
              native_engines_ready=True,
              os_platform="test",
          ))):
-        task = await orch.start_scan(job)
+        task = await _dispatch_authorized_scenario_scan(monkeypatch, orch, job)
         await task
 
     assert job.status == ScanStatus.COMPLETED, f"Expected COMPLETED, got {job.status}"
@@ -1196,7 +1225,7 @@ diff --git a/config.py b/config.py
 # (Contract 05 v5.0.0 - Acceptance Scenario 15)
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_orchestrator():
+async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_orchestrator(monkeypatch):
     """
     SEC-035: unavailable external tools degrade to native fallback coverage.
     Scenario 15: External Tool Adapter Discovery, Execution & Graceful Fallback
@@ -1228,7 +1257,7 @@ async def test_scenario_15_hybrid_tool_adapters_and_graceful_fallback_orchestrat
          patch("app.engines.network.engine.audit_exposed_ports", AsyncMock(return_value=[])), \
          patch("app.engines.network.engine.audit_subdomain_osint", AsyncMock(return_value=[])):
         
-        task = await orchestrator.start_scan(job)
+        task = await _dispatch_authorized_scenario_scan(monkeypatch, orchestrator, job)
         await task
 
     completed_job = orchestrator.get_active_job(job.id)
@@ -2090,6 +2119,11 @@ def test_scenario_30_relational_persistence_and_asset_inventory():
         db_file = Path(f.name)
 
     db = DatabaseManager(db_path=db_file)
+    with db._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
+            ("org-default", "Default Test Organization", "default-test-organization", "2026-09-08T00:00:00+00:00"),
+        )
     asset = Asset(
         name="Main SaaS Web App",
         type=AssetType.WEB_APPLICATION,

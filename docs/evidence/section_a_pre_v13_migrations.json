@@ -1,0 +1,718 @@
+{
+  "committed_baseline": {
+    "metadata": {
+      "FORWARD_APPLY_ARTIFACT_REVISION": "execution-migration-apply-v1",
+      "FORWARD_APPLY_MANIFESTS": {
+        "1": {
+          "postgresql": "execution_runs tenant composite request binding",
+          "sqlite": "execution_runs tenant composite request binding"
+        },
+        "2": {
+          "postgresql": "execution_runs legacy binding remediation",
+          "sqlite": "execution_runs legacy binding remediation"
+        },
+        "3": {
+          "postgresql": "execution_runs immutable snapshot columns",
+          "sqlite": "execution_runs immutable snapshot columns"
+        },
+        "4": {
+          "postgresql": "execution_runs decision composite binding",
+          "sqlite": "execution_runs decision composite binding"
+        },
+        "5": {
+          "postgresql": "migration-owned duplicate parent cleanup",
+          "sqlite": "migration-owned duplicate parent cleanup"
+        },
+        "6": {
+          "postgresql": "decision/request compatibility columns",
+          "sqlite": "decision/request compatibility columns"
+        },
+        "7": {
+          "postgresql": "durable execution dispatch intent table",
+          "sqlite": "durable execution dispatch intent table"
+        },
+        "8": {
+          "postgresql": "tenant-bound dispatch lease columns and foreign keys",
+          "sqlite": "tenant-bound dispatch lease columns and foreign keys"
+        },
+        "9": {
+          "postgresql": "remove only the proven migration-owned duplicate parent index",
+          "sqlite": "remove only the proven migration-owned duplicate parent index"
+        },
+        "10": {
+          "postgresql": "tenant-bound process ownership and immutable recovery evidence",
+          "sqlite": "tenant-bound process ownership and immutable recovery evidence"
+        }
+      },
+      "FORWARD_APPLY_SOURCE_SHA256": {
+        "1": {
+          "postgresql": "sha256:9b5879a82fa6a21842f9eb053f7154133341009c8730b32495714845ea6fdb3b",
+          "sqlite": "sha256:efe0e41b2a6577088fd5250d96d03fabddda9ed8b7c7fc7c776c32806043da02"
+        },
+        "2": {
+          "postgresql": "sha256:09fd7a2505c01ff5659570b0d731abf348a4cdcd5d9aa21a1c9598cc34545b22",
+          "sqlite": "sha256:d88e8d072e0f5392e7e5546931c2e5b0a1700eea098f1889ae254537c0696b1f"
+        },
+        "3": {
+          "postgresql": "sha256:0b16e431ac866f1eaa04351355c0320399958267c90ddb214c3a6ae385f5b4a4",
+          "sqlite": "sha256:aafa95f1ca1ad3385720803277e83b92e3aa62ce8b6e5be86fdf348c8a345bcb"
+        },
+        "4": {
+          "postgresql": "sha256:d8d405fcefaf2102deae05afaa7b8ceee8d6dbd361b21389bbf499a27f6a5866",
+          "sqlite": "sha256:cd671465b60b0241308b55a67d03d9b74870d868a875071d049ac2270864cc6b"
+        },
+        "5": {
+          "postgresql": "sha256:9631bf85d0879fae6a8cb1715c35877a595deebce5a080945f1588afd9276ef9",
+          "sqlite": "sha256:2be97b45dbed297ae812f068468d661c65ae26130c926bab7f599e6308cc974a"
+        },
+        "6": {
+          "postgresql": "sha256:1a59f362ca96e65921c3cd0b03bbe648ed4b227967f8269859c442ecee71477f",
+          "sqlite": "sha256:95276ea45038d1981da0b453da192a49eed3e5bc5f261c7c3876b11fb9a40738"
+        },
+        "7": {
+          "postgresql": "sha256:f8d888adac03c624409f65d51609337f297e5fca2638528b780fe4960b8563b2",
+          "sqlite": "sha256:4fbb0aee354a999e2dcbf21cb9e9911fcb47e309222fd232427c3f2ff967aa1d"
+        },
+        "8": {
+          "postgresql": "sha256:c73057a361645525b0ebb39ebf446cd33492803ea2081c1cae07f62fc5368d1d",
+          "sqlite": "sha256:6a9321a33a3af3b4cd1350b6fb68bee570f4268e5479541c6b6250656ad89f7e"
+        },
+        "9": {
+          "postgresql": "sha256:5d0433293f83f4469a981da2a6683033feb80dbca19c7b9fe9c031ea5564194c",
+          "sqlite": "sha256:3f235514ae70e0057e1c3d9550b8f0c0bffed1b353c2cef2e86c92e45d8dc970"
+        },
+        "10": {
+          "postgresql": "sha256:6264f2ef1bb13110326b999909546ab90744ec9e10959595ff64fc67424e8cd1",
+          "sqlite": "sha256:02226630ed9e13093a6780d5a1b197fc0c787b48ab0bb086f7d9f98fd2384214"
+        }
+      },
+      "POSTCONDITION_ARTIFACT_REVISION": "execution-postconditions-v2",
+      "MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256": {
+        "_verify_migration_v10_postconditions": "sha256:0c9dbfd369deee0e3240845793bb61be9bc8e66ac9eeaf2e9612e1dcc00c52f7",
+        "_verify_migration_v1_postconditions": "sha256:dc73db43009963308b455d1803967ea23257132a22443738beaaa10df6a47caf",
+        "_verify_migration_v2_postconditions": "sha256:dc73db43009963308b455d1803967ea23257132a22443738beaaa10df6a47caf",
+        "_verify_migration_v3_postconditions": "sha256:f374c82515fece05f9e59878df78d73dbf438dcf212ef2b737e934ccb487b8fd",
+        "_verify_migration_v4_postconditions": "sha256:1c6679cd32bf744ba3043927449ff67a0690d6f52b9a4b02afb17d288621af7b",
+        "_verify_migration_v5_postconditions": "sha256:dc73db43009963308b455d1803967ea23257132a22443738beaaa10df6a47caf",
+        "_verify_migration_v6_postconditions": "sha256:637314d1088d968cc45d62cd8fb330f41e94b50b3777c7f31616d7894c6708f5",
+        "_verify_migration_v7_postconditions": "sha256:acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
+        "_verify_migration_v8_postconditions": "sha256:fa3a73f138323ac681b97bfddfeabe3ed4eb8dd329c8d3f0df522264a6b39462",
+        "_verify_migration_v9_postconditions": "sha256:a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e"
+      },
+      "REGISTRY_REVISION": "migration-registry-v1",
+      "_DESCRIPTORS": [
+        [
+          1,
+          "execution-runs-tenant-binding",
+          "Execution runs tenant binding",
+          null,
+          "execution_runs tenant composite request binding"
+        ],
+        [
+          2,
+          "execution-runs-tenant-binding-remediation",
+          "Execution runs tenant binding remediation",
+          1,
+          "execution_runs legacy binding remediation"
+        ],
+        [
+          3,
+          "execution-runs-snapshot-metadata",
+          "Execution runs snapshot metadata",
+          2,
+          "execution_runs immutable snapshot columns"
+        ],
+        [
+          4,
+          "execution-authority-tenant-binding",
+          "Execution authority tenant binding",
+          3,
+          "execution_runs decision composite binding"
+        ],
+        [
+          5,
+          "execution-authority-parent-key-cleanup",
+          "Execution authority parent-key cleanup",
+          4,
+          "migration-owned duplicate parent cleanup"
+        ],
+        [
+          6,
+          "execution-compatibility-columns",
+          "Execution compatibility columns",
+          5,
+          "decision/request compatibility columns"
+        ],
+        [
+          7,
+          "execution-dispatch-intents",
+          "Execution dispatch intents",
+          6,
+          "durable execution dispatch intent table"
+        ],
+        [
+          8,
+          "execution-dispatch-tenant-binding",
+          "Execution dispatch tenant binding",
+          7,
+          "tenant-bound dispatch lease columns and foreign keys"
+        ],
+        [
+          9,
+          "execution-parent-index-repair",
+          "Execution parent index repair",
+          8,
+          "remove only the proven migration-owned duplicate parent index"
+        ],
+        [
+          10,
+          "execution-process-ownership-and-recovery",
+          "Execution process ownership and recovery",
+          9,
+          "tenant-bound process ownership and immutable recovery evidence"
+        ]
+      ],
+      "_EXPECTED_CHECKSUMS": {
+        "1": "sha256:d67b1f1dd9149120504c946f5d514b155f0b685ff0983b058c97a169bc0ceb1c",
+        "2": "sha256:cb581847722adabb6b9fbdfa38f962790e0842dfa10eb0d1cd8c89f58c5eac64",
+        "3": "sha256:cd6e1b03a386049a28e2a9c1d8b33db6ec4f302d0d27e9a438629a63160e14e2",
+        "4": "sha256:245a6167393211c34f6963b3f2b1d78098fb5b5c7a47750ef446801e35e5d97a",
+        "5": "sha256:bdc72fda90958fd58509c0e4afdcfc2079c82689db98abe49aeb0e41d0f8f869",
+        "6": "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
+        "7": "sha256:fb0be1cafc6be8f45ff0e9237e5b375ea29fa657d2fa9768204fd2174695609f",
+        "8": "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
+        "9": "sha256:f6967da3ce7cf80ddd1531f0922c7bf3398cccb0d89a0b61909427bbafe42765",
+        "10": "sha256:183a54fa2111427dd3f4671ab27cb1037d2628df9eef90e19900807f99d1c17a"
+      }
+    },
+    "source_sha256": {
+      "_apply_migration_version": "d6ac50f8710780d4cb2a18e2505c157f41b5274eb6c528f0b92a2b6706cda688",
+      "_init_db": "72176b57cd12131f7bf5c5e5e5240b74eb7cf754eab51f2189decab6e30aa337",
+      "_verify_migration_v10_postconditions": "2f63e4b1e57a86171481c37ce0ea9d20ec8c79b0dabf7d93805ba596216eda35",
+      "_verify_migration_v1_postconditions": "d73742acf78163c4bf6647db7250016d73ca397a541b5bfdd4eae7e3d0db04a9",
+      "_verify_migration_v2_postconditions": "6adf5f0d0145218249381d84c8981d5eb189dd12d80495696ab68cfa3c178d88",
+      "_verify_migration_v3_postconditions": "1b88df9388f8b16288771f432b249265bdf52124ea9eef5cd05cec50d1da4b8a",
+      "_verify_migration_v4_postconditions": "87d0466913eee934c6a398cfbdc7299be47a5b384ec40f986891bea4896538d2",
+      "_verify_migration_v5_postconditions": "4be32c13dc44103de82f61eb3cbe1fcee13008ff70b28c2ad4c21598ffdc5049",
+      "_verify_migration_v6_postconditions": "b5e03446462e26b5eba0a4d6fb9c40a9f6f0581c3629d7a84e52350740f57c49",
+      "_verify_migration_v7_postconditions": "acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
+      "_verify_migration_v8_postconditions": "0b7993600559646c79dc2d56bdbf4ab6c9b1154495767f02c4269b4b98e873fd",
+      "_verify_migration_v9_postconditions": "a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e"
+    }
+  },
+  "current_pre_v13": {
+    "metadata": {
+      "FORWARD_APPLY_ARTIFACT_REVISION": "execution-migration-apply-v1",
+      "FORWARD_APPLY_MANIFESTS": {
+        "1": {
+          "postgresql": "execution_runs tenant composite request binding",
+          "sqlite": "execution_runs tenant composite request binding"
+        },
+        "2": {
+          "postgresql": "execution_runs legacy binding remediation",
+          "sqlite": "execution_runs legacy binding remediation"
+        },
+        "3": {
+          "postgresql": "execution_runs immutable snapshot columns",
+          "sqlite": "execution_runs immutable snapshot columns"
+        },
+        "4": {
+          "postgresql": "execution_runs decision composite binding",
+          "sqlite": "execution_runs decision composite binding"
+        },
+        "5": {
+          "postgresql": "migration-owned duplicate parent cleanup",
+          "sqlite": "migration-owned duplicate parent cleanup"
+        },
+        "6": {
+          "postgresql": "decision/request compatibility columns",
+          "sqlite": "decision/request compatibility columns"
+        },
+        "7": {
+          "postgresql": "durable execution dispatch intent table",
+          "sqlite": "durable execution dispatch intent table"
+        },
+        "8": {
+          "postgresql": "tenant-bound dispatch lease columns and foreign keys",
+          "sqlite": "tenant-bound dispatch lease columns and foreign keys"
+        },
+        "9": {
+          "postgresql": "remove only the proven migration-owned duplicate parent index",
+          "sqlite": "remove only the proven migration-owned duplicate parent index"
+        },
+        "10": {
+          "postgresql": "tenant-bound process ownership and immutable recovery evidence",
+          "sqlite": "tenant-bound process ownership and immutable recovery evidence"
+        },
+        "11": {
+          "postgresql": "tenant-bound scan authorization parent, operations, and fleet snapshot",
+          "sqlite": "tenant-bound scan authorization parent, operations, and fleet snapshot"
+        },
+        "12": {
+          "postgresql": "parent approval, child execution links, and worker generation",
+          "sqlite": "parent approval, child execution links, and worker generation"
+        }
+      },
+      "FORWARD_APPLY_SOURCE_SHA256": {
+        "1": {
+          "postgresql": "sha256:cad1976d162f7b2feb70c8c3621afd36f96841bca0280b13e9e891af33de1cef",
+          "sqlite": "sha256:8a0778721d6be2da6acb4c0c3324bff2fd93d81be008e5855d0ef7eae047b8e0"
+        },
+        "2": {
+          "postgresql": "sha256:692475db28925fb483da0e49a2024ffaa4978dcbea5c6f31b33f56ab1b416166",
+          "sqlite": "sha256:5140808ebabe415c2b8eed51cf6a96153aa0f9c39dd23086424f4f364bc13ff4"
+        },
+        "3": {
+          "postgresql": "sha256:90b6427dfd7099c68efdb2e7c870c5be81152923869367028601962ce728d87b",
+          "sqlite": "sha256:32d694cc7c3007223e837fe6709f6bf7a6890c81b7fafccda7c23e918378d8df"
+        },
+        "4": {
+          "postgresql": "sha256:796f69cdc62b1d9257f4339ea085167ec8cad3eff9c7b4dc3c140e92b93496b8",
+          "sqlite": "sha256:62516993eb967c06d07778a14abeb5935f1da3e78cf5753b2b51247495642231"
+        },
+        "5": {
+          "postgresql": "sha256:2f4ff41705201a7b70abc6c65b7d74695bb090a22159f696b70162cc2eb59f7d",
+          "sqlite": "sha256:31d6bd391cdf79374c65117b40d8a3eaf23925f91e353bff5b3b4f6da9176c68"
+        },
+        "6": {
+          "postgresql": "sha256:784cf5483370f2e690b78ddbf46a8165a65d8eb5f60a28c619eafeb5e15aae56",
+          "sqlite": "sha256:756480f8c46c3dc540a49a7e4d1fb72ad4e7aba7048a8077c246e2d7b5d18ec3"
+        },
+        "7": {
+          "postgresql": "sha256:49414cf849a465ebab6de20e90efb7f2b75f1f65eb0e46b86c91345bf9a1034e",
+          "sqlite": "sha256:4e653211c3bb615f8455a04aca91fc992a104f890226a3a3f10473765a00e179"
+        },
+        "8": {
+          "postgresql": "sha256:b061ff07680d1c2efe73badf179aa6ec6f54253548f4f116a6219cc4f3076844",
+          "sqlite": "sha256:cc97230c6f967c521e29ff91d51976e4a3185f17dee7e3d86b27bf71ebbacb0e"
+        },
+        "9": {
+          "postgresql": "sha256:ff183bc0ff4fbd0f1c8eeaa29e6e0602e3b91ed51779e72dcb1c5b89e20dbaee",
+          "sqlite": "sha256:acd7a834e2e33fe0d8c67ae9df0e7afbfc73a2d0e771beec295d2532667f0fb0"
+        },
+        "10": {
+          "postgresql": "sha256:a01bb87d6de0ce935f771f39966328296e562d1cd6169cf4e7f0fe02f151e6ea",
+          "sqlite": "sha256:aed28dda074a4d02db12982896288fd5743cc06010b38be4671663e20f3acbc8"
+        },
+        "11": {
+          "postgresql": "sha256:fc097d6b87ba2bcb3af09a0c118916dca23b6d4916ead9f5976b39fe94b9da8e",
+          "sqlite": "sha256:f98b27aa80d9829db869f024f1dc0a4ece591993c5b464f91fb786a791dd68ea"
+        },
+        "12": {
+          "postgresql": "sha256:6485aa439c8a7cf17d5673a075295ff85208957ec1a94ec47b10b442489e476b",
+          "sqlite": "sha256:066ae684b0dc8450f195f35265b580f3a2f1f9ad7b595461f1dabcb45cb33913"
+        }
+      },
+      "POSTCONDITION_ARTIFACT_REVISION": "execution-postconditions-v2",
+      "POSTCONDITION_SOURCE_SHA256": {
+        "_verify_migration_v10_postconditions": "sha256:f7c6b70bc95fe5ee2bb1c1062454a8b4db5121fa483926794c1708b06c211ae8",
+        "_verify_migration_v11_postconditions": "sha256:371741f9a54764ad5d7b7293489c6ceb6d8827d9ba4e177410bae73aa99194f0",
+        "_verify_migration_v12_postconditions": "sha256:0abd928081cdb9bc79056ab97f28d9d095c44450ab1d34ae0a0a13b96fa1e005",
+        "_verify_migration_v1_postconditions": "sha256:d73742acf78163c4bf6647db7250016d73ca397a541b5bfdd4eae7e3d0db04a9",
+        "_verify_migration_v2_postconditions": "sha256:6adf5f0d0145218249381d84c8981d5eb189dd12d80495696ab68cfa3c178d88",
+        "_verify_migration_v3_postconditions": "sha256:1b88df9388f8b16288771f432b249265bdf52124ea9eef5cd05cec50d1da4b8a",
+        "_verify_migration_v4_postconditions": "sha256:87d0466913eee934c6a398cfbdc7299be47a5b384ec40f986891bea4896538d2",
+        "_verify_migration_v5_postconditions": "sha256:4be32c13dc44103de82f61eb3cbe1fcee13008ff70b28c2ad4c21598ffdc5049",
+        "_verify_migration_v6_postconditions": "sha256:b5e03446462e26b5eba0a4d6fb9c40a9f6f0581c3629d7a84e52350740f57c49",
+        "_verify_migration_v7_postconditions": "sha256:acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
+        "_verify_migration_v8_postconditions": "sha256:0b7993600559646c79dc2d56bdbf4ab6c9b1154495767f02c4269b4b98e873fd",
+        "_verify_migration_v9_postconditions": "sha256:a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e"
+      },
+      "REGISTRY_REVISION": "migration-registry-v1",
+      "_DESCRIPTORS": [
+        [
+          1,
+          "execution-runs-tenant-binding",
+          "Execution runs tenant binding",
+          null,
+          "execution_runs tenant composite request binding"
+        ],
+        [
+          2,
+          "execution-runs-tenant-binding-remediation",
+          "Execution runs tenant binding remediation",
+          1,
+          "execution_runs legacy binding remediation"
+        ],
+        [
+          3,
+          "execution-runs-snapshot-metadata",
+          "Execution runs snapshot metadata",
+          2,
+          "execution_runs immutable snapshot columns"
+        ],
+        [
+          4,
+          "execution-authority-tenant-binding",
+          "Execution authority tenant binding",
+          3,
+          "execution_runs decision composite binding"
+        ],
+        [
+          5,
+          "execution-authority-parent-key-cleanup",
+          "Execution authority parent-key cleanup",
+          4,
+          "migration-owned duplicate parent cleanup"
+        ],
+        [
+          6,
+          "execution-compatibility-columns",
+          "Execution compatibility columns",
+          5,
+          "decision/request compatibility columns"
+        ],
+        [
+          7,
+          "execution-dispatch-intents",
+          "Execution dispatch intents",
+          6,
+          "durable execution dispatch intent table"
+        ],
+        [
+          8,
+          "execution-dispatch-tenant-binding",
+          "Execution dispatch tenant binding",
+          7,
+          "tenant-bound dispatch lease columns and foreign keys"
+        ],
+        [
+          9,
+          "execution-parent-index-repair",
+          "Execution parent index repair",
+          8,
+          "remove only the proven migration-owned duplicate parent index"
+        ],
+        [
+          10,
+          "execution-process-ownership-and-recovery",
+          "Execution process ownership and recovery",
+          9,
+          "tenant-bound process ownership and immutable recovery evidence"
+        ],
+        [
+          11,
+          "scan-authorization-manifest",
+          "Normalized scan authorization manifest",
+          10,
+          "tenant-bound scan authorization parent, operations, and fleet snapshot"
+        ],
+        [
+          12,
+          "scan-authorization-bindings",
+          "Scan authorization approval bindings",
+          11,
+          "parent approval, child execution links, and worker generation"
+        ]
+      ],
+      "_EXPECTED_CHECKSUMS": {
+        "1": "sha256:d67b1f1dd9149120504c946f5d514b155f0b685ff0983b058c97a169bc0ceb1c",
+        "2": "sha256:cb581847722adabb6b9fbdfa38f962790e0842dfa10eb0d1cd8c89f58c5eac64",
+        "3": "sha256:cd6e1b03a386049a28e2a9c1d8b33db6ec4f302d0d27e9a438629a63160e14e2",
+        "4": "sha256:245a6167393211c34f6963b3f2b1d78098fb5b5c7a47750ef446801e35e5d97a",
+        "5": "sha256:bdc72fda90958fd58509c0e4afdcfc2079c82689db98abe49aeb0e41d0f8f869",
+        "6": "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
+        "7": "sha256:fb0be1cafc6be8f45ff0e9237e5b375ea29fa657d2fa9768204fd2174695609f",
+        "8": "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
+        "9": "sha256:f6967da3ce7cf80ddd1531f0922c7bf3398cccb0d89a0b61909427bbafe42765",
+        "10": "sha256:183a54fa2111427dd3f4671ab27cb1037d2628df9eef90e19900807f99d1c17a",
+        "11": "sha256:496fcf71e1cef64e16dd45c924b618b089bd593ca16911d433ec36144347b9c0",
+        "12": "sha256:6f6fc71110864fe3547c8343775190298b432ed02b03a818bcaf57b5ae02e783"
+      }
+    },
+    "source_sha256": {
+      "_apply_migration_version": "d6ac50f8710780d4cb2a18e2505c157f41b5274eb6c528f0b92a2b6706cda688",
+      "_init_db": "67381a17ab75661c879caf274f2fb588ee1da33a3787d1cdbe36a73b7873b87f",
+      "_verify_migration_v10_postconditions": "f7c6b70bc95fe5ee2bb1c1062454a8b4db5121fa483926794c1708b06c211ae8",
+      "_verify_migration_v11_postconditions": "371741f9a54764ad5d7b7293489c6ceb6d8827d9ba4e177410bae73aa99194f0",
+      "_verify_migration_v12_postconditions": "0abd928081cdb9bc79056ab97f28d9d095c44450ab1d34ae0a0a13b96fa1e005",
+      "_verify_migration_v1_postconditions": "d73742acf78163c4bf6647db7250016d73ca397a541b5bfdd4eae7e3d0db04a9",
+      "_verify_migration_v2_postconditions": "6adf5f0d0145218249381d84c8981d5eb189dd12d80495696ab68cfa3c178d88",
+      "_verify_migration_v3_postconditions": "1b88df9388f8b16288771f432b249265bdf52124ea9eef5cd05cec50d1da4b8a",
+      "_verify_migration_v4_postconditions": "87d0466913eee934c6a398cfbdc7299be47a5b384ec40f986891bea4896538d2",
+      "_verify_migration_v5_postconditions": "4be32c13dc44103de82f61eb3cbe1fcee13008ff70b28c2ad4c21598ffdc5049",
+      "_verify_migration_v6_postconditions": "b5e03446462e26b5eba0a4d6fb9c40a9f6f0581c3629d7a84e52350740f57c49",
+      "_verify_migration_v7_postconditions": "acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
+      "_verify_migration_v8_postconditions": "0b7993600559646c79dc2d56bdbf4ab6c9b1154495767f02c4269b4b98e873fd",
+      "_verify_migration_v9_postconditions": "a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e"
+    }
+  },
+  "current_live": {
+    "FORWARD_APPLY_ARTIFACT_REVISION": "execution-migration-apply-v1",
+    "FORWARD_APPLY_MANIFESTS": {
+      "1": {
+        "sqlite": "execution_runs tenant composite request binding",
+        "postgresql": "execution_runs tenant composite request binding"
+      },
+      "2": {
+        "sqlite": "execution_runs legacy binding remediation",
+        "postgresql": "execution_runs legacy binding remediation"
+      },
+      "3": {
+        "sqlite": "execution_runs immutable snapshot columns",
+        "postgresql": "execution_runs immutable snapshot columns"
+      },
+      "4": {
+        "sqlite": "execution_runs decision composite binding",
+        "postgresql": "execution_runs decision composite binding"
+      },
+      "5": {
+        "sqlite": "migration-owned duplicate parent cleanup",
+        "postgresql": "migration-owned duplicate parent cleanup"
+      },
+      "6": {
+        "sqlite": "decision/request compatibility columns",
+        "postgresql": "decision/request compatibility columns"
+      },
+      "7": {
+        "sqlite": "durable execution dispatch intent table",
+        "postgresql": "durable execution dispatch intent table"
+      },
+      "8": {
+        "sqlite": "tenant-bound dispatch lease columns and foreign keys",
+        "postgresql": "tenant-bound dispatch lease columns and foreign keys"
+      },
+      "9": {
+        "sqlite": "remove only the proven migration-owned duplicate parent index",
+        "postgresql": "remove only the proven migration-owned duplicate parent index"
+      },
+      "10": {
+        "sqlite": "tenant-bound process ownership and immutable recovery evidence",
+        "postgresql": "tenant-bound process ownership and immutable recovery evidence"
+      },
+      "11": {
+        "sqlite": "tenant-bound scan authorization parent, operations, and fleet snapshot",
+        "postgresql": "tenant-bound scan authorization parent, operations, and fleet snapshot"
+      },
+      "12": {
+        "sqlite": "parent approval, child execution links, and worker generation",
+        "postgresql": "parent approval, child execution links, and worker generation"
+      },
+      "13": {
+        "sqlite": "parent-scoped scan operation identity and canonical request material",
+        "postgresql": "parent-scoped scan operation identity and canonical request material"
+      }
+    },
+    "FORWARD_APPLY_SOURCE_SHA256": {
+      "1": {
+        "sqlite": "sha256:8a0778721d6be2da6acb4c0c3324bff2fd93d81be008e5855d0ef7eae047b8e0",
+        "postgresql": "sha256:cad1976d162f7b2feb70c8c3621afd36f96841bca0280b13e9e891af33de1cef"
+      },
+      "2": {
+        "sqlite": "sha256:5140808ebabe415c2b8eed51cf6a96153aa0f9c39dd23086424f4f364bc13ff4",
+        "postgresql": "sha256:692475db28925fb483da0e49a2024ffaa4978dcbea5c6f31b33f56ab1b416166"
+      },
+      "3": {
+        "sqlite": "sha256:32d694cc7c3007223e837fe6709f6bf7a6890c81b7fafccda7c23e918378d8df",
+        "postgresql": "sha256:90b6427dfd7099c68efdb2e7c870c5be81152923869367028601962ce728d87b"
+      },
+      "4": {
+        "sqlite": "sha256:62516993eb967c06d07778a14abeb5935f1da3e78cf5753b2b51247495642231",
+        "postgresql": "sha256:796f69cdc62b1d9257f4339ea085167ec8cad3eff9c7b4dc3c140e92b93496b8"
+      },
+      "5": {
+        "sqlite": "sha256:31d6bd391cdf79374c65117b40d8a3eaf23925f91e353bff5b3b4f6da9176c68",
+        "postgresql": "sha256:2f4ff41705201a7b70abc6c65b7d74695bb090a22159f696b70162cc2eb59f7d"
+      },
+      "6": {
+        "sqlite": "sha256:756480f8c46c3dc540a49a7e4d1fb72ad4e7aba7048a8077c246e2d7b5d18ec3",
+        "postgresql": "sha256:784cf5483370f2e690b78ddbf46a8165a65d8eb5f60a28c619eafeb5e15aae56"
+      },
+      "7": {
+        "sqlite": "sha256:4e653211c3bb615f8455a04aca91fc992a104f890226a3a3f10473765a00e179",
+        "postgresql": "sha256:49414cf849a465ebab6de20e90efb7f2b75f1f65eb0e46b86c91345bf9a1034e"
+      },
+      "8": {
+        "sqlite": "sha256:cc97230c6f967c521e29ff91d51976e4a3185f17dee7e3d86b27bf71ebbacb0e",
+        "postgresql": "sha256:b061ff07680d1c2efe73badf179aa6ec6f54253548f4f116a6219cc4f3076844"
+      },
+      "9": {
+        "sqlite": "sha256:acd7a834e2e33fe0d8c67ae9df0e7afbfc73a2d0e771beec295d2532667f0fb0",
+        "postgresql": "sha256:ff183bc0ff4fbd0f1c8eeaa29e6e0602e3b91ed51779e72dcb1c5b89e20dbaee"
+      },
+      "10": {
+        "sqlite": "sha256:aed28dda074a4d02db12982896288fd5743cc06010b38be4671663e20f3acbc8",
+        "postgresql": "sha256:a01bb87d6de0ce935f771f39966328296e562d1cd6169cf4e7f0fe02f151e6ea"
+      },
+      "11": {
+        "sqlite": "sha256:f98b27aa80d9829db869f024f1dc0a4ece591993c5b464f91fb786a791dd68ea",
+        "postgresql": "sha256:fc097d6b87ba2bcb3af09a0c118916dca23b6d4916ead9f5976b39fe94b9da8e"
+      },
+      "12": {
+        "sqlite": "sha256:066ae684b0dc8450f195f35265b580f3a2f1f9ad7b595461f1dabcb45cb33913",
+        "postgresql": "sha256:6485aa439c8a7cf17d5673a075295ff85208957ec1a94ec47b10b442489e476b"
+      },
+      "13": {
+        "sqlite": "sha256:820f109dbe3e626363e475a16a0caa3fac638fa4e7b15139976d328a303e4334",
+        "postgresql": "sha256:f86fbbb9e9ca9fb84f7a5f102251b26ef7b6df28a0336f011ed64b257cb8ca90"
+      }
+    },
+    "POSTCONDITION_ARTIFACT_REVISION": "execution-postconditions-v2",
+    "MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256": {
+      "_verify_migration_v1_postconditions": "sha256:dc73db43009963308b455d1803967ea23257132a22443738beaaa10df6a47caf",
+      "_verify_migration_v2_postconditions": "sha256:dc73db43009963308b455d1803967ea23257132a22443738beaaa10df6a47caf",
+      "_verify_migration_v3_postconditions": "sha256:f374c82515fece05f9e59878df78d73dbf438dcf212ef2b737e934ccb487b8fd",
+      "_verify_migration_v4_postconditions": "sha256:1c6679cd32bf744ba3043927449ff67a0690d6f52b9a4b02afb17d288621af7b",
+      "_verify_migration_v5_postconditions": "sha256:dc73db43009963308b455d1803967ea23257132a22443738beaaa10df6a47caf",
+      "_verify_migration_v6_postconditions": "sha256:637314d1088d968cc45d62cd8fb330f41e94b50b3777c7f31616d7894c6708f5",
+      "_verify_migration_v7_postconditions": "sha256:acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
+      "_verify_migration_v8_postconditions": "sha256:fa3a73f138323ac681b97bfddfeabe3ed4eb8dd329c8d3f0df522264a6b39462",
+      "_verify_migration_v9_postconditions": "sha256:a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e",
+      "_verify_migration_v10_postconditions": "sha256:0c9dbfd369deee0e3240845793bb61be9bc8e66ac9eeaf2e9612e1dcc00c52f7",
+      "_verify_migration_v11_postconditions": "sha256:0a003056bb9f0e8146d5a77bcaee3217a68480ad61ecc840f3c7c63cbb2d9a37",
+      "_verify_migration_v12_postconditions": "sha256:0ea8bd639bab55719af06ce499a27cc7a8758a96a495eff7f422f5db07652cfe",
+      "_verify_migration_v13_postconditions": "sha256:43de748c65e83754eb85910846957ca3b1ef7c9f74b27aa7606376f22e54f840"
+    },
+    "POSTCONDITION_SOURCE_SHA256": {
+      "_verify_migration_v1_postconditions": "sha256:d73742acf78163c4bf6647db7250016d73ca397a541b5bfdd4eae7e3d0db04a9",
+      "_verify_migration_v2_postconditions": "sha256:6adf5f0d0145218249381d84c8981d5eb189dd12d80495696ab68cfa3c178d88",
+      "_verify_migration_v3_postconditions": "sha256:1b88df9388f8b16288771f432b249265bdf52124ea9eef5cd05cec50d1da4b8a",
+      "_verify_migration_v4_postconditions": "sha256:87d0466913eee934c6a398cfbdc7299be47a5b384ec40f986891bea4896538d2",
+      "_verify_migration_v5_postconditions": "sha256:4be32c13dc44103de82f61eb3cbe1fcee13008ff70b28c2ad4c21598ffdc5049",
+      "_verify_migration_v6_postconditions": "sha256:b5e03446462e26b5eba0a4d6fb9c40a9f6f0581c3629d7a84e52350740f57c49",
+      "_verify_migration_v7_postconditions": "sha256:acb4d1fe5a68075271e719e48ee98989ef357de4af73c389088ea3df6ae5465a",
+      "_verify_migration_v8_postconditions": "sha256:0b7993600559646c79dc2d56bdbf4ab6c9b1154495767f02c4269b4b98e873fd",
+      "_verify_migration_v9_postconditions": "sha256:a887d95175bda9cf1a5b7b49c223e1f3880d1d0cd19219a9091a62333fcde03e",
+      "_verify_migration_v10_postconditions": "sha256:f7c6b70bc95fe5ee2bb1c1062454a8b4db5121fa483926794c1708b06c211ae8",
+      "_verify_migration_v11_postconditions": "sha256:371741f9a54764ad5d7b7293489c6ceb6d8827d9ba4e177410bae73aa99194f0",
+      "_verify_migration_v12_postconditions": "sha256:0abd928081cdb9bc79056ab97f28d9d095c44450ab1d34ae0a0a13b96fa1e005",
+      "_verify_migration_v13_postconditions": "sha256:a32915d2520b4add71e3e756b03c87ff4dbcaffbd7a47d80fabee42dec078e9e"
+    },
+    "REGISTRY_REVISION": "migration-registry-v1",
+    "_DESCRIPTORS": [
+      [
+        1,
+        "execution-runs-tenant-binding",
+        "Execution runs tenant binding",
+        null,
+        "execution_runs tenant composite request binding"
+      ],
+      [
+        2,
+        "execution-runs-tenant-binding-remediation",
+        "Execution runs tenant binding remediation",
+        1,
+        "execution_runs legacy binding remediation"
+      ],
+      [
+        3,
+        "execution-runs-snapshot-metadata",
+        "Execution runs snapshot metadata",
+        2,
+        "execution_runs immutable snapshot columns"
+      ],
+      [
+        4,
+        "execution-authority-tenant-binding",
+        "Execution authority tenant binding",
+        3,
+        "execution_runs decision composite binding"
+      ],
+      [
+        5,
+        "execution-authority-parent-key-cleanup",
+        "Execution authority parent-key cleanup",
+        4,
+        "migration-owned duplicate parent cleanup"
+      ],
+      [
+        6,
+        "execution-compatibility-columns",
+        "Execution compatibility columns",
+        5,
+        "decision/request compatibility columns"
+      ],
+      [
+        7,
+        "execution-dispatch-intents",
+        "Execution dispatch intents",
+        6,
+        "durable execution dispatch intent table"
+      ],
+      [
+        8,
+        "execution-dispatch-tenant-binding",
+        "Execution dispatch tenant binding",
+        7,
+        "tenant-bound dispatch lease columns and foreign keys"
+      ],
+      [
+        9,
+        "execution-parent-index-repair",
+        "Execution parent index repair",
+        8,
+        "remove only the proven migration-owned duplicate parent index"
+      ],
+      [
+        10,
+        "execution-process-ownership-and-recovery",
+        "Execution process ownership and recovery",
+        9,
+        "tenant-bound process ownership and immutable recovery evidence"
+      ],
+      [
+        11,
+        "scan-authorization-manifest",
+        "Normalized scan authorization manifest",
+        10,
+        "tenant-bound scan authorization parent, operations, and fleet snapshot"
+      ],
+      [
+        12,
+        "scan-authorization-bindings",
+        "Scan authorization approval bindings",
+        11,
+        "parent approval, child execution links, and worker generation"
+      ],
+      [
+        13,
+        "scan-authorization-parent-scoped-operations",
+        "Parent-scoped scan authorization operations",
+        12,
+        "parent-scoped operation identity and canonical request material"
+      ]
+    ],
+    "_EXPECTED_CHECKSUMS": {
+      "1": "sha256:d67b1f1dd9149120504c946f5d514b155f0b685ff0983b058c97a169bc0ceb1c",
+      "2": "sha256:cb581847722adabb6b9fbdfa38f962790e0842dfa10eb0d1cd8c89f58c5eac64",
+      "3": "sha256:cd6e1b03a386049a28e2a9c1d8b33db6ec4f302d0d27e9a438629a63160e14e2",
+      "4": "sha256:245a6167393211c34f6963b3f2b1d78098fb5b5c7a47750ef446801e35e5d97a",
+      "5": "sha256:bdc72fda90958fd58509c0e4afdcfc2079c82689db98abe49aeb0e41d0f8f869",
+      "6": "sha256:85cb5bbf7ffe327bd97633dc72e107f31470be4ef28f50527adad3f481a53f18",
+      "7": "sha256:fb0be1cafc6be8f45ff0e9237e5b375ea29fa657d2fa9768204fd2174695609f",
+      "8": "sha256:34b28b5ea61df1d3fab89d000b871040858deb9cc5b923c0d8e32f776428ee6f",
+      "9": "sha256:f6967da3ce7cf80ddd1531f0922c7bf3398cccb0d89a0b61909427bbafe42765",
+      "10": "sha256:183a54fa2111427dd3f4671ab27cb1037d2628df9eef90e19900807f99d1c17a",
+      "11": "sha256:496fcf71e1cef64e16dd45c924b618b089bd593ca16911d433ec36144347b9c0",
+      "12": "sha256:6f6fc71110864fe3547c8343775190298b432ed02b03a818bcaf57b5ae02e783",
+      "13": "sha256:7b73b874eec59e17e4a32db21dc81701b5663fbfd933fac3eaed398eed95efdc"
+    }
+  },
+  "existing_differences": {
+    "metadata": [
+      "FORWARD_APPLY_MANIFESTS",
+      "FORWARD_APPLY_SOURCE_SHA256",
+      "POSTCONDITION_SOURCE_SHA256",
+      "_DESCRIPTORS",
+      "_EXPECTED_CHECKSUMS"
+    ],
+    "source_sha256": [
+      "_init_db",
+      "_verify_migration_v11_postconditions",
+      "_verify_migration_v12_postconditions"
+    ]
+  },
+  "v12_to_v13_fixture": {
+    "status": "PROVENANCE_BLOCKED",
+    "source_commit": "a1c4fc43e1e225b9131333f5c05ccdcc830af256",
+    "test": "tests/security/test_scan_request_migration.py::test_genuine_frozen_pre_v13_source_upgrades_once_to_v13",
+    "execution": "Executed; skipped only after the legacy subprocess returned the exact committed v1 artifact mismatch.",
+    "reason": "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch",
+    "recovery_attempts": [
+      "git archive a1c4fc4 used to reconstruct the committed fixture"
+    ],
+    "acceptance": "No pass claim; release-blocking owner escalation remains required if the accepted v1 baseline cannot be recovered."
+  },
+  "head": "a1c4fc43e1e225b9131333f5c05ccdcc830af256",
+  "purpose": "Frozen pre-v13 evidence; records existing drift, not acceptance"
+}

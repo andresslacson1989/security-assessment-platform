@@ -431,6 +431,7 @@ class NmapAdapter(BaseToolAdapter):
 
         returncode, stdout, _ = await self.execute_command(
             [path, "--version"], timeout=5.0, pre_launch_check=pre_launch_check, env=env if env else None,
+            non_scan_context=self._version_probe_context(),
         )
         if returncode == 0 and stdout:
             first_line = stdout.splitlines()[0].strip()
@@ -777,6 +778,8 @@ class NmapAdapter(BaseToolAdapter):
             emit_log=emit_log,
             pre_launch_check=managed_check,
             env=env if env else None,
+            execution_authority_provider=kwargs.get("execution_authority_provider"),
+            operation_id=kwargs.get("operation_id"),
         )
 
         # Handle Timeout & Cancellation

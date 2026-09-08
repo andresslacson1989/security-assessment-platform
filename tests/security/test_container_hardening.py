@@ -1,6 +1,10 @@
 """Deployment regression checks for the hardened execution containers."""
 
 from pathlib import Path
+import os
+import re
+import subprocess
+import sys
 
 import yaml
 
@@ -78,6 +82,183 @@ def test_ci_verifies_the_hash_locked_runtime_dependency_set():
     assert "cache-dependency-path: backend/requirements.lock" in workflow
     assert "pip install --require-hashes --requirement backend/requirements.lock" in workflow
     assert "backend/requirements.txt" not in workflow
+
+
+def test_ci_workflow_static_contract_is_complete():
+    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml"
+    workflow_text = workflow_path.read_text().replace("\r\n", "\n")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow.get("on") or workflow.get(True) or {}
+
+    assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+    for trigger_name in ("push", "pull_request"):
+        assert triggers[trigger_name]["branches"] == ["main", "security/nmap-installer-closure"]
+
+    assert set(workflow["jobs"]) == {
+        "compile-backend",
+        "focused-contract-verification",
+        "full-repository-verification",
+        "postgres-schema-assurance",
+        "container",
+    }
+    assert re.search(r"^permissions:\s*$\n\s+contents:\s+read\s*$", workflow_text, re.MULTILINE)
+
+    action_refs = re.findall(r"^\s+uses:\s+([^\s#]+)", workflow_text, re.MULTILINE)
+    assert action_refs
+    action_names_and_shas = [reference.rsplit("@", 1) for reference in action_refs]
+    assert all(len(parts) == 2 for parts in action_names_and_shas)
+    assert {parts[0] for parts in action_names_and_shas} == {
+        "actions/checkout",
+        "actions/setup-python",
+        "actions/upload-artifact",
+    }
+    assert all(re.fullmatch(r"[0-9a-f]{40}", parts[1]) for parts in action_names_and_shas)
+
+    assert "CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-focused-${{ github.run_id }}.db" in workflow_text
+    assert "CYBERASSESS_DB_PATH: ${{ runner.temp }}/cyberassess-full-${{ github.run_id }}.db" in workflow_text
+    assert "CYBERASSESS_POSTGRES_TEST_URL: postgresql://" in workflow_text
+    assert "focused-contract.xml" in workflow_text
+    assert "full-suite.xml" in workflow_text
+    assert "postgres-suite.xml" in workflow_text
+    assert workflow_text.count("if-no-files-found: error") == 3
+    assert workflow_text.count("retention-days: 14") == 3
+
+
+def _extract_workflow_guard(workflow: str, step_name: str) -> str:
+    lines = workflow.replace("\r\n", "\n").splitlines()
+    step_start = next(index for index, line in enumerate(lines) if line.strip() == f"- name: {step_name}")
+    next_step = next(
+        (index for index in range(step_start + 1, len(lines)) if lines[index].startswith("      - name:")),
+        len(lines),
+    )
+    start = next(index for index in range(step_start, next_step) if lines[index].strip() == "python - <<'PY'")
+    end = next(index for index in range(start + 1, next_step) if lines[index].strip() == "PY")
+    return "\n".join(line[10:] if line.startswith("          ") else line for line in lines[start + 1:end])
+
+
+def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_guard(tmp_path):
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml").read_text()
+    assert "branches: [main, security/nmap-installer-closure]" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "raise SystemExit(f\"PostgreSQL assurance contained {skipped} skipped test(s)\") if skipped else None" not in workflow
+    assert "Reject unexpected focused-test skips" in workflow
+    assert "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch" in workflow
+    assert "backend/tests/test_execution_launch_inventory.py" in workflow
+    assert "tests/security/test_execution_decision_authority.py" in workflow
+    assert "tests/security/test_scan_request_migration.py" in workflow
+
+    guard = _extract_workflow_guard(workflow, "Reject dependency-gated PostgreSQL skips")
+    compile(guard, "contract-verification-postgres-skip-guard", "exec")
+
+    evidence_dir = tmp_path / "postgres-evidence"
+    evidence_dir.mkdir()
+    environment = os.environ.copy()
+    environment["POSTGRES_EVIDENCE_DIR"] = str(evidence_dir)
+
+    (evidence_dir / "postgres-suite.xml").write_text('<testsuite tests="1" skipped="0" failures="0"/>')
+    zero_skips = subprocess.run(
+        [sys.executable, "-c", guard],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert zero_skips.returncode == 0, zero_skips.stderr
+
+    (evidence_dir / "postgres-suite.xml").write_text('<testsuite tests="1" skipped="1" failures="0"/>')
+    one_skip = subprocess.run(
+        [sys.executable, "-c", guard],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert one_skip.returncode != 0
+    assert "PostgreSQL assurance contained 1 skipped test(s)" in one_skip.stderr
+
+    focused_guard = _extract_workflow_guard(workflow, "Reject unexpected focused-test skips")
+    compile(focused_guard, "contract-verification-focused-skip-guard", "exec")
+    focused_dir = tmp_path / "cyberassess-focused-reports"
+    focused_dir.mkdir()
+    focused_environment = os.environ.copy()
+    focused_environment["RUNNER_TEMP"] = str(tmp_path)
+    focused_report_dir = focused_dir
+    (focused_report_dir / "focused-contract.xml").write_text(
+        '<testsuite tests="1" skipped="1" failures="0"><testcase><skipped '
+        'message="historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch"/>'
+        "</testcase></testsuite>"
+    )
+    allowed_skip = subprocess.run(
+        [sys.executable, "-c", focused_guard],
+        env=focused_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert allowed_skip.returncode == 0, allowed_skip.stderr
+
+    (focused_report_dir / "focused-contract.xml").write_text(
+        '<testsuite tests="1" skipped="1" failures="0"><testcase><skipped '
+        'message="new unexpected skip"/></testcase></testsuite>'
+    )
+    unexpected_skip = subprocess.run(
+        [sys.executable, "-c", focused_guard],
+        env=focused_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unexpected_skip.returncode != 0
+    assert "new unexpected skip" in unexpected_skip.stderr
+
+    full_guard = _extract_workflow_guard(workflow, "Classify full-suite skips")
+    compile(full_guard, "contract-verification-full-skip-classifier", "exec")
+    full_dir = tmp_path / "cyberassess-full-reports"
+    full_dir.mkdir()
+    full_environment = os.environ.copy()
+    full_environment["FULL_EVIDENCE_DIR"] = str(full_dir)
+    allowed_reasons = (
+        "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite",
+        "UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed",
+        "Managed nmap binary not present on this dev machine",
+        "Symlinks require elevated privileges on Windows",
+        "Symlink creation is unavailable in this environment",
+        "Unix process sessions are not available on Windows",
+        "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch",
+    )
+    skipped_cases = "".join(
+        f'<testcase><skipped message="{reason}"/></testcase>'
+        for reason in allowed_reasons
+    )
+    (full_dir / "full-suite.xml").write_text(
+        f"<testsuite tests=\"{len(allowed_reasons)}\" skipped=\"{len(allowed_reasons)}\">"
+        f"{skipped_cases}</testsuite>"
+    )
+    classified = subprocess.run(
+        [sys.executable, "-c", full_guard],
+        env=full_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert classified.returncode == 0, classified.stderr
+    classification = (full_dir / "full-suite-skip-classification.txt").read_text()
+    assert "total_skips=7" in classification
+    assert "PROVENANCE_BLOCKED_ESCALATION_REQUIRED" in classification
+
+    (full_dir / "full-suite.xml").write_text(
+        '<testsuite tests="1" skipped="1"><testcase><skipped message="unknown skip"/>'
+        "</testcase></testsuite>"
+    )
+    unclassified = subprocess.run(
+        [sys.executable, "-c", full_guard],
+        env=full_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unclassified.returncode != 0
+    assert "unknown skip" in unclassified.stderr
 
 
 def test_ci_builds_and_smoke_tests_the_hardened_production_image():

@@ -18,6 +18,7 @@ from app.core.process_supervisor import (
     VerifiedEgressProxy,
 )
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
+from app.core.execution_service import issue_non_scan_execution_context
 
 
 FORBIDDEN_IMPORTS = {"subprocess", "asyncio.subprocess"}
@@ -96,6 +97,7 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
         env=dangerous,
         timeout=10.0,
         max_output_bytes=1024 * 1024,
+        non_scan_context=issue_non_scan_execution_context("observation:test-reviewed-environment"),
     )
 
     assert result.execution_status is ProcessExecutionStatus.COMPLETED
@@ -235,7 +237,7 @@ async def test_invalid_egress_capability_is_typed_security_rejection():
 
     assert result.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
     assert result.returncode == 126
-    assert "invalid launch capability" in result.stderr
+    assert "governed or non-scan capability" in result.stderr
 
 
 def test_caller_cannot_override_supervisor_baseline(monkeypatch):

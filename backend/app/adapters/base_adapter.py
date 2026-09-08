@@ -9,7 +9,7 @@ import asyncio
 import os
 import re
 import shutil
-from typing import Any, Optional, List, Callable, Awaitable, Tuple
+from typing import Any, Optional, List, Callable, Awaitable, Tuple, TYPE_CHECKING
 
 from app.core.models import Target, Finding, ScanConfig, LogLevel, NormalizedExecutionState
 from app.core.binary_resolver import resolve_tool_binary, safe_execute_subprocess
@@ -21,6 +21,9 @@ from app.core.process_supervisor import (
 )
 from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
 
+if TYPE_CHECKING:
+    from app.core.scan_execution_authority import ScanExecutionAuthority
+
 
 class BaseToolAdapter(ABC):
     """
@@ -29,6 +32,14 @@ class BaseToolAdapter(ABC):
 
     safe_execute_subprocess = staticmethod(safe_execute_subprocess)
     last_execution_state = NormalizedExecutionState.COMPLETED_NO_FINDINGS
+
+    @staticmethod
+    def _is_version_probe(command: List[str]) -> bool:
+        """Recognize only the bounded, read-only version probe forms."""
+        return len(command) <= 3 and any(
+            argument.lower() in {"--version", "-version", "-v", "version"}
+            for argument in command[1:]
+        )
 
     @classmethod
     def _governed_environment(cls, supplied: Optional[dict], sensitive_keys: Optional[set[str]] = None) -> dict:
@@ -46,6 +57,7 @@ class BaseToolAdapter(ABC):
         """Translate a supervisor outcome into the platform execution taxonomy."""
         return {
             ProcessExecutionStatus.SECURITY_REJECTED: NormalizedExecutionState.EXECUTION_BLOCKED,
+            ProcessExecutionStatus.LAUNCH_UNCERTAIN: NormalizedExecutionState.EXECUTION_BLOCKED,
             ProcessExecutionStatus.CANCELLED: NormalizedExecutionState.EXECUTION_CANCELLED,
             ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED: NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING,
             ProcessExecutionStatus.TIMED_OUT: NormalizedExecutionState.EXECUTION_TIMED_OUT,
@@ -208,6 +220,12 @@ class BaseToolAdapter(ABC):
             self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
             return None
 
+    def _version_probe_context(self) -> NonScanExecutionContext:
+        """Create the explicit non-scan capability used by version probes."""
+        from app.core.execution_service import issue_non_scan_execution_context
+
+        return issue_non_scan_execution_context(f"observation:{self.tool_name}:version")
+
     @abstractmethod
     async def get_version(
         self,
@@ -253,6 +271,8 @@ class BaseToolAdapter(ABC):
         execution_id: Optional[str] = None,
         execution_context: Optional[GovernedExecutionContext] = None,
         non_scan_context: Optional[NonScanExecutionContext] = None,
+        execution_authority_provider: Optional["ScanExecutionAuthority"] = None,
+        operation_id: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         """
         Safe subprocess execution helper with bounded timeout (default 60s), non-blocking
@@ -266,12 +286,48 @@ class BaseToolAdapter(ABC):
             return -1, "", "Empty command provided"
 
         effective_execution_id = execution_id
+        effective_operation_family = operation_family
+        effective_operation_options = operation_options
+        effective_tool_id = tool_id or self.tool_name
         if execution_context is not None:
             if type(execution_context) is not GovernedExecutionContext:
                 return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid typed execution context"
             if effective_execution_id and effective_execution_id != execution_context.execution_id:
                 return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch"
             effective_execution_id = execution_context.execution_id
+        if execution_capability is None and execution_context is None and non_scan_context is None:
+            if self._is_version_probe(cmd):
+                from app.core.execution_service import issue_non_scan_execution_context
+                non_scan_context = issue_non_scan_execution_context(
+                    f"observation:{self.tool_name}:version",
+                )
+            elif execution_authority_provider is not None:
+                if not isinstance(operation_id, str) or not operation_id.strip():
+                    self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                    return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: exact operation identity is required"
+                try:
+                    execution_capability = execution_authority_provider.issue_capability(
+                        operation_id=operation_id,
+                        tool_id=tool_id or self.tool_name,
+                        operation_family=operation_family or None,
+                        operation_options=operation_options,
+                        command=cmd,
+                    )
+                    effective_execution_id = execution_capability.execution_id
+                except Exception as exc:
+                    self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                    return -1, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: authority resolution failed ({type(exc).__name__})"
+            else:
+                self.last_execution_state = NormalizedExecutionState.EXECUTION_BLOCKED
+                return -1, "", "PROCESS_LAUNCH_REJECTED_SECURITY: explicit scan authority provider is required"
+        if execution_capability is not None:
+            # The verifier-issued capability is the source of truth for the
+            # supervisor's durable revalidation fields.  Never forward adapter
+            # defaults such as an empty operation family after authority has
+            # already resolved the exact persisted operation.
+            effective_operation_family = execution_capability.operation_family
+            effective_operation_options = dict(execution_capability.decision.operation_options)
+            effective_tool_id = execution_capability.tool_id
         result = await self.safe_execute_subprocess(
             cmd=cmd,
             timeout=timeout,
@@ -283,9 +339,9 @@ class BaseToolAdapter(ABC):
             credential_handoff=credential_handoff,
             credential_context=credential_context,
             execution_capability=execution_capability,
-            operation_family=operation_family,
-            operation_options=operation_options,
-            tool_id=tool_id or self.tool_name,
+            operation_family=effective_operation_family,
+            operation_options=effective_operation_options,
+            tool_id=effective_tool_id,
             execution_id=effective_execution_id,
             execution_context=execution_context,
             non_scan_context=non_scan_context,

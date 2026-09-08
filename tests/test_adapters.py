@@ -10,6 +10,7 @@ import shutil
 import sys
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.core.models import (
@@ -24,6 +25,8 @@ from app.core.models import (
     NormalizedExecutionState,
 )
 from app.core.ssrf_protector import create_validated_target
+from app.core.execution_service import issue_non_scan_execution_context
+from app.core.execution_context import NonScanExecutionContext
 from app.adapters.base_adapter import BaseToolAdapter
 from app.adapters.nmap_adapter import NmapAdapter, extract_host
 from app.adapters.sslyze_adapter import SslyzeAdapter
@@ -56,6 +59,28 @@ class DummyAdapter(BaseToolAdapter):
 
     async def run(self, target, config, emit_log, emit_finding, **kwargs):
         return []
+
+
+class TestExecutionAuthorityProvider:
+    """Strict launch-authority test double for parser-focused adapter tests."""
+
+    def issue_capability(
+        self,
+        *,
+        operation_id,
+        tool_id=None,
+        operation_family=None,
+        operation_options=None,
+        command,
+    ):
+        assert isinstance(operation_id, str) and operation_id.strip()
+        assert isinstance(command, list) and command
+        return SimpleNamespace(
+            execution_id=f"test-execution:{operation_id}",
+            operation_family=operation_family or "TEST",
+            decision=SimpleNamespace(operation_options=dict(operation_options or {})),
+            tool_id=tool_id or command[0],
+        )
 
 
 # ============================================================================
@@ -99,6 +124,7 @@ class TestBaseToolAdapter:
         code, stdout, stderr = await adapter.execute_command(
             ["python", "-c", "import sys; print('hello'); sys.stderr.write('warn')"],
             timeout=5.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-adapter-success"),
         )
         assert code == 0
         assert "hello" in stdout
@@ -112,6 +138,7 @@ class TestBaseToolAdapter:
         code, stdout, stderr = await adapter.execute_command(
             [sys.executable, "-c", "import os; print(os.getenv('CYBERASSESS_TEST_SECRET', '')); print(os.getenv('HTTPS_PROXY', ''))"],
             timeout=5.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-adapter-environment"),
         )
 
         assert code == 0
@@ -137,6 +164,7 @@ class TestBaseToolAdapter:
             ["python", "-c", "import time; time.sleep(10)"],
             timeout=0.2,
             emit_log=mock_log,
+            non_scan_context=issue_non_scan_execution_context("observation:test-adapter-timeout"),
         )
         assert code == -1
         assert "timed out" in stderr
@@ -150,6 +178,7 @@ class TestBaseToolAdapter:
             ["python", "-c", "print('x' * 10000)"],
             timeout=5.0,
             max_output_bytes=128,
+            non_scan_context=issue_non_scan_execution_context("observation:test-adapter-output"),
         )
         assert code == -1
         assert len(stdout.encode("utf-8")) <= 128
@@ -164,7 +193,7 @@ class TestBaseToolAdapter:
             timeout=5.0,
             pre_launch_check=lambda: False,
         )
-        assert (code, stdout) == (126, "")
+        assert (code, stdout) == (-1, "")
         assert stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY")
         assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
 
@@ -174,6 +203,7 @@ class TestBaseToolAdapter:
         code, stdout, stderr = await adapter.execute_command(
             ["non_existent_binary_xyz_12345"],
             timeout=2.0,
+            non_scan_context=issue_non_scan_execution_context("observation:test-adapter-missing"),
         )
         assert code in (127, -1)
 
@@ -1008,11 +1038,14 @@ class TestCheckovAdapter:
             with patch.object(adapter, "execute_command", return_value=(0, "3.2.50\n", "")) as execute_command:
                 ver = await adapter.get_version()
                 assert "3.2.50" in ver
-                execute_command.assert_awaited_once_with(
-                    ["/usr/bin/checkov", "-v"],
-                    timeout=30.0,
-                    pre_launch_check=None,
-                )
+                execute_command.assert_awaited_once()
+                call_args, call_kwargs = execute_command.await_args
+                assert call_args == (["/usr/bin/checkov", "-v"],)
+                assert call_kwargs["timeout"] == 30.0
+                assert call_kwargs["pre_launch_check"] is None
+                context = call_kwargs["non_scan_context"]
+                assert type(context) is NonScanExecutionContext
+                assert context.purpose == "observation:checkov:version"
 
     @pytest.mark.asyncio
     async def test_run_checkov_json_findings(self):
@@ -1407,7 +1440,12 @@ class TestSubfinderAdapter:
              patch.object(adapter, "verify_managed_binary", return_value=True), \
              patch.object(adapter, "get_version", new=AsyncMock(return_value="subfinder v2.6.5")), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
-            findings = await adapter.run(target, config, emit_log, emit_finding, emit_subdomain=emit_subdomain)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                emit_subdomain=emit_subdomain,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="network:subfinder",
+            )
             assert len(findings) == 1
             assert len(discovered_subs) == 2
             assert discovered_subs[0].domain == "api.example.com"
@@ -1447,7 +1485,12 @@ class TestHttpxAdapter:
                  (0, "httpx v1.6.0", ""),
                  (0, mock_json_lines, ""),
              ])):
-            findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                emit_endpoint=emit_endpoint,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="network:httpx",
+            )
             assert len(findings) == 1
             assert len(endpoints) == 1
             assert endpoints[0].url == "https://example.com"
@@ -1470,7 +1513,11 @@ class TestHttpxAdapter:
                  (0, "httpx v1.6.0", ""),
                  (1, "", "connection failed"),
              ])):
-            findings = await adapter.run(target, config, AsyncMock(), AsyncMock())
+            findings = await adapter.run(
+                target, config, AsyncMock(), AsyncMock(),
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="network:httpx",
+            )
 
         assert findings == []
         assert adapter.last_execution_state == NormalizedExecutionState.TOOL_EXECUTION_FAILED
@@ -1494,7 +1541,12 @@ class TestHttpxAdapter:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/httpx"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(side_effect=execute)):
-            await adapter.run(target, config, AsyncMock(), AsyncMock(), validated_target=validated)
+            await adapter.run(
+                target, config, AsyncMock(), AsyncMock(),
+                validated_target=validated,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="network:httpx",
+            )
 
         scan_command = commands[-1]
         assert scan_command[2] == "https://93.184.216.34"
@@ -1532,7 +1584,12 @@ class TestKatanaAdapter:
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/katana"), \
              patch.object(adapter, "get_version", new=AsyncMock(return_value="katana v1.0.5")), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))) as execute_mock:
-            findings = await adapter.run(target, config, emit_log, emit_finding, emit_endpoint=emit_endpoint)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                emit_endpoint=emit_endpoint,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="web_dast:katana",
+            )
             assert len(findings) == 1
             assert len(endpoints) == 1
             assert endpoints[0].url == "https://spa.example.com/api/v1/users"
@@ -1574,7 +1631,11 @@ class TestSchemathesisAdapter:
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/schemathesis"), \
              patch.object(adapter, "get_version", new=AsyncMock(return_value="schemathesis 3.20.0")), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))) as execute_mock:
-            findings = await adapter.run(target, config, emit_log, emit_finding)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="web_dast:schemathesis",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "API-SCHEMA-001"
             assert findings[0].severity == Severity.HIGH
@@ -1610,7 +1671,11 @@ class TestTruffleHogAdapter:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/trufflehog"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_json_lines, ""))):
-            findings = await adapter.run(target, config, emit_log, emit_finding)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="code_sast:trufflehog",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "SAST-SEC-001"
             assert findings[0].severity == Severity.CRITICAL
@@ -1661,7 +1726,11 @@ class TestRetireJSAdapter:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/retire"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_report), ""))):
-            findings = await adapter.run(target, config, emit_log, emit_finding)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="code_sast:retire",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "SAST-DEP-001"
             assert "CVE-2019-11358" in findings[0].title
@@ -1707,7 +1776,12 @@ class TestSupplyChainAdapters:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/syft"), \
              patch.object(adapter, "safe_execute_subprocess", new=write_syft_output):
-            findings = await adapter.run(target, config, emit_log, emit_finding, record_sbom_report=record_sbom)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                record_sbom_report=record_sbom,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="code_sast:syft",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "SCA-SBOM-001"
             assert len(recorded_sbom) == 1
@@ -1744,7 +1818,11 @@ class TestSupplyChainAdapters:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/grype"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_grype), ""))) as execute_mock:
-            findings = await adapter.run(target, config, emit_log, emit_finding)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="code_sast:grype",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "SAST-DEP-001"
             assert "CVE-2023-9999" in findings[0].title
@@ -1787,7 +1865,11 @@ class TestSupplyChainAdapters:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/osv-scanner"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_osv), ""))) as execute_mock:
-            findings = await adapter.run(target, config, emit_log, emit_finding)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="code_sast:osv-scanner",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "SAST-DEP-001"
             assert execute_mock.await_args.kwargs["cmd"] == ["/bin/osv-scanner", "--json", "-r", str(tmp_path)]
@@ -1888,7 +1970,12 @@ class TestCISBenchmarkAdapters:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/dockle"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_dockle), ""))):
-            findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                record_cis_result=record_cis,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="infra_iac:dockle",
+            )
             assert len(findings) == 2
             assert findings[0].check_id == "IAC-DOCKER-001"
             assert findings[0].severity == Severity.HIGH
@@ -1939,7 +2026,12 @@ class TestCISBenchmarkAdapters:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(mock_kb), ""))):
-            findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                record_cis_result=record_cis,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="infra_iac:kube-bench",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "IAC-K8S-002"
             assert findings[0].severity == Severity.HIGH
@@ -1967,7 +2059,11 @@ class TestCISBenchmarkAdapters:
         }
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/kube-bench"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, json.dumps(payload), ""))):
-            await adapter.run(target, ScanConfig(), AsyncMock(), emit_finding)
+            await adapter.run(
+                target, ScanConfig(), AsyncMock(), emit_finding,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="infra_iac:kube-bench",
+            )
 
         assert [finding.severity for finding in findings] == [Severity.MEDIUM, Severity.LOW]
 
@@ -1996,7 +2092,12 @@ class TestCISBenchmarkAdapters:
 
         with patch.object(adapter, "resolve_binary_path", return_value="/bin/prowler"), \
              patch.object(adapter, "safe_execute_subprocess", new=AsyncMock(return_value=(0, mock_prowler_lines, ""))):
-            findings = await adapter.run(target, config, emit_log, emit_finding, record_cis_result=record_cis)
+            findings = await adapter.run(
+                target, config, emit_log, emit_finding,
+                record_cis_result=record_cis,
+                execution_authority_provider=TestExecutionAuthorityProvider(),
+                operation_id="infra_iac:prowler",
+            )
             assert len(findings) == 1
             assert findings[0].check_id == "IAC-CLOUD-001"
             assert len(recorded_cis) == 1

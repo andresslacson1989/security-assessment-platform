@@ -11,16 +11,14 @@ from typing import List, Optional
 from app.core.models import Finding, Evidence, Severity, mask_secret, calculate_fingerprint
 from app.engines.code_sast.secret_scanner import SECRET_RULES
 from app.core.process_supervisor import process_supervisor
-from app.core.execution_context import GovernedExecutionContext
-from app.core.execution_decision import ExecutionDecisionCapability
+from app.core.execution_context import NonScanExecutionContext
 from app.core.path_sandbox import safe_workspace_relative_path
 
 
 async def audit_git_commit_history(
     repo_path: str,
     max_commits: int = 100,
-    execution_context: Optional[GovernedExecutionContext] = None,
-    execution_capability: Optional[ExecutionDecisionCapability] = None,
+    non_scan_context: Optional[NonScanExecutionContext] = None,
 ) -> List[Finding]:
     """
     Scans git commit diff history for exposed secrets using regex rules and entropy checks.
@@ -45,9 +43,7 @@ async def audit_git_commit_history(
             timeout=8.0,
             max_output_bytes=10 * 1024 * 1024,
             env={"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
-            execution_id=execution_context.execution_id if execution_context else None,
-            execution_context=execution_context,
-            execution_capability=execution_capability,
+            non_scan_context=non_scan_context,
         )
         if returncode not in (0, 1):
             return findings

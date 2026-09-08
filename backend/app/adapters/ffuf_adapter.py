@@ -75,6 +75,7 @@ class FfufAdapter(BaseToolAdapter):
 
         returncode, stdout, stderr = await self.execute_command(
             [path, "-V"], timeout=5.0, pre_launch_check=pre_launch_check,
+            non_scan_context=self._version_probe_context(),
         )
         output = stdout.strip() or stderr.strip()
         if output:
@@ -163,6 +164,8 @@ class FfufAdapter(BaseToolAdapter):
                 timeout=float(min(60.0, config.timeout_seconds * 6)),
                 emit_log=emit_log,
                 pre_launch_check=(lambda: self.verify_managed_binary(ffuf_path)) if kwargs.get("require_managed_binary") else None,
+                execution_authority_provider=kwargs.get("execution_authority_provider"),
+                operation_id=kwargs.get("operation_id"),
             )
 
             if not stdout.strip():
