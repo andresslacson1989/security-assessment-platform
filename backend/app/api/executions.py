@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import UserProfile, UserRole, authorize_internal_target, decode_access_token, require_permission
 from app.core.db import db_manager
+from app.core.execution_service import ExecutionCancellationCoordinator
 from app.core.models import AssetType, ExecutionRequestRecord, Target, TargetType, utc_now
 from app.core.ssrf_protector import SSRFProtectionError, create_validated_target
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION, get_operation_policy
@@ -226,6 +227,24 @@ async def get_execution_request(request_id: str, current_user: UserProfile = Dep
 
 @router.post("/{request_id}/revoke")
 async def revoke_execution_request(request_id: str, current_user: UserProfile = Depends(require_permission(required_scope="execution:revoke", allowed_roles=[UserRole.ADMIN]))) -> Dict[str, Any]:
-    if not db_manager.revoke_execution_request(request_id, organization_id=current_user.organization_id, actor=current_user.username):
-        raise HTTPException(status_code=404, detail="Execution request or decision not found.")
-    return {"request_id": request_id, "revoked": True}
+    coordinator = ExecutionCancellationCoordinator(db_manager)
+    outcome = await coordinator.cancel_request(
+        request_id,
+        current_user.organization_id,
+        actor=current_user.username,
+    )
+    if not outcome.authority_revoked:
+        if outcome.error_code == "EXECUTION_REQUEST_NOT_FOUND":
+            raise HTTPException(status_code=404, detail="Execution request or decision not found.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Execution authority could not be revoked safely; no terminal state was published.",
+        )
+    return {
+        "request_id": request_id,
+        "execution_id": outcome.execution_id,
+        "revoked": True,
+        "cancellation_status": outcome.process_status,
+        "durable_terminal": outcome.durable_terminal,
+        "recovery_required": outcome.recovery_required,
+    }

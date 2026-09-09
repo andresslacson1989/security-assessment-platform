@@ -21,6 +21,7 @@ from app.core.models import (
     RejectedDiscovery,
     ToolFailureEvent,
     ToolExecutionMode,
+    EXECUTION_RUN_TERMINAL_STATES,
     utc_now,
     calculate_fingerprint,
     sanitize_sensitive_data,
@@ -70,6 +71,9 @@ class ScanOrchestrator:
         self._tasks: Dict[str, asyncio.Task] = {}
         self._subscribers: Dict[str, Set[asyncio.Queue]] = {}
         self._lock = asyncio.Lock()
+        from app.core.execution_service import ExecutionCancellationCoordinator
+
+        self._cancellation_coordinator = ExecutionCancellationCoordinator(db_manager)
 
     @staticmethod
     def _normalize_tool_state(state: str) -> str:
@@ -195,6 +199,27 @@ class ScanOrchestrator:
                 # The approval route may be retried while the first dispatch is
                 # still being accepted.  Returning the existing task preserves
                 # one dispatch per scan identity and avoids a second queue item.
+                if existing_task.done() and not existing_task.cancelled():
+                    dispatch_error = existing_task.exception()
+                    if dispatch_error is not None and not queue_manager.durable_enabled:
+                        # A local task is the scan execution itself.  Its
+                        # failure is an execution outcome, not a queue publish
+                        # failure, so an approval replay must not create a
+                        # second execution attempt.
+                        self._tasks.pop(scan_job.id, None)
+                        self._tasks[scan_job.id] = existing_task
+                        raise RuntimeError("previous scan execution failed; explicit recovery is required") from dispatch_error
+                    if dispatch_error is not None:
+                        # A durable enqueue task may be retried only when the
+                        # queue publication itself failed.  Redis governed
+                        # publication is atomic and idempotent by request ID.
+                        self._tasks.pop(scan_job.id, None)
+                        raise RuntimeError("previous durable dispatch failed") from dispatch_error
+                elif existing_task.cancelled():
+                    if queue_manager.durable_enabled:
+                        self._tasks.pop(scan_job.id, None)
+                        raise RuntimeError("previous durable dispatch was cancelled")
+                    raise RuntimeError("previous scan execution was cancelled; explicit recovery is required")
                 return existing_task
             self._active_jobs[scan_job.id] = scan_job
             scan_job.authorization_state = "DISPATCHABLE"
@@ -232,72 +257,81 @@ class ScanOrchestrator:
                 raise
         return task
 
-    async def cancel_scan(self, scan_id: str, organization_id: Optional[str] = None) -> bool:
+    async def cancel_scan(
+        self,
+        scan_id: str,
+        organization_id: Optional[str] = None,
+        *,
+        actor: str = "scan-cancellation-coordinator",
+    ) -> bool:
         """
-        Gracefully cancels an active scan job.
-        Enforces tenant isolation: if organization_id is provided, the scan must belong to that tenant.
+        Cancel one scan through the shared execution cancellation coordinator.
+
+        Enforces tenant isolation: if organization_id is provided, the scan must
+        belong to that tenant.  A scan is not reported as cancelled until every
+        durable child execution is terminal and every governed process outcome
+        is confirmed.  ``NOT_FOUND`` remains an operator-visible recovery state
+        unless the database has atomically recorded cancellation before dispatch.
         """
-        # 1. Authoritative lookup and tenant check
         job = self.get_active_job(scan_id, organization_id=organization_id)
         if not job:
             return False
 
-        # 2. Explicitly terminate every child process tracked by this scan's
-        # durable authorization manifest.  The parent scan ID is not a process
-        # identity and must never be used as a kill target.
-        from app.core.process_supervisor import process_supervisor
-        execution_ids = db_manager.list_scan_execution_ids(scan_id, job.organization_id or organization_id or "")
-        cancellations = [process_supervisor.cancel_execution(execution_id) for execution_id in execution_ids]
-
-        # 3. Cancel the owning scan task and wait for it to stop. A task
-        # cancellation request alone is not proof that the task or any
-        # supervised child has stopped.
-        task = self._tasks.get(scan_id)
-        task_cancel_requested = False
-        if task and not task.done():
-            task_cancel_requested = True
-            task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=_CANCELLATION_JOIN_TIMEOUT_SECONDS)
-            except asyncio.CancelledError:
-                pass
-            except asyncio.TimeoutError:
-                await self.emit_log(
-                    scan_id,
-                    LogLevel.WARNING,
-                    "orchestrator",
-                    "Scan cancellation is pending: the owning task did not stop within the cancellation deadline.",
-                )
-                return False
-            except Exception as exc:
-                await self.emit_log(
-                    scan_id,
-                    LogLevel.WARNING,
-                    "orchestrator",
-                    f"Scan cancellation is pending: task shutdown failed ({type(exc).__name__}).",
-                )
-                return False
-
-        # A NOT_FOUND result is accepted as a no-process proof only after the
-        # owning task has stopped and a second exact-ID lookup still finds no
-        # supervised execution. External launches are required to register
-        # under this same scan execution ID.
-        if any(not cancellation.confirmed for cancellation in cancellations):
-            no_process_proven = (
-                all(cancellation.status.value == "NOT_FOUND" for cancellation in cancellations)
-                and task is not None
-                and task.done()
+        tenant_id = job.organization_id or organization_id or ""
+        execution_ids = db_manager.list_scan_execution_ids(scan_id, tenant_id)
+        outcomes = []
+        for execution_id in execution_ids:
+            run = db_manager.get_execution_run(execution_id, tenant_id)
+            request_id = str(run.get("request_id") or "") if run else ""
+            outcome = await self._cancellation_coordinator.cancel_request(
+                request_id,
+                tenant_id,
+                actor=actor,
             )
-            if not no_process_proven:
+            outcomes.append(outcome)
+
+        # A task cancellation request alone is not proof that the task or any
+        # supervised child has stopped.  The coordinator owns the join, while
+        # this orchestrator remains responsible for the parent scan state.
+        task = self._tasks.get(scan_id)
+        task_stopped = await self._cancellation_coordinator.stop_task(
+            task,
+            timeout_seconds=_CANCELLATION_JOIN_TIMEOUT_SECONDS,
+        )
+        if not task_stopped:
+            await self.emit_log(
+                scan_id,
+                LogLevel.WARNING,
+                "orchestrator",
+                "Scan cancellation is pending: the owning task did not stop within the cancellation deadline.",
+            )
+            return False
+
+        unresolved = [outcome for outcome in outcomes if not outcome.confirmed]
+        if unresolved:
+            statuses = ", ".join(
+                f"{outcome.execution_id or outcome.request_id}:{outcome.process_status}"
+                for outcome in unresolved
+            )
+            await self.emit_log(
+                scan_id,
+                LogLevel.WARNING,
+                "orchestrator",
+                f"Scan cancellation is pending verified process termination or recovery: {statuses}",
+            )
+            return False
+
+        for execution_id in execution_ids:
+            final_run = db_manager.get_execution_run(execution_id, tenant_id)
+            if final_run is None or final_run.get("state") not in EXECUTION_RUN_TERMINAL_STATES:
                 await self.emit_log(
                     scan_id,
                     LogLevel.WARNING,
                     "orchestrator",
-                    "Scan cancellation is pending verified process termination.",
+                    f"Scan cancellation is pending durable settlement for execution {execution_id}.",
                 )
                 return False
 
-        # 4. Mark cancelled state if in cancellable state
         if job.status in {ScanStatus.PENDING, ScanStatus.RUNNING}:
             job.status = ScanStatus.CANCELLED
             job.completed_at = utc_now()
@@ -307,11 +341,7 @@ class ScanOrchestrator:
             await self.emit_progress(scan_id, job.progress_percent, "Scan cancelled.", ScanStatus.CANCELLED)
             await self.emit_cancelled(scan_id, "Scan job cancelled by user.")
             return True
-        # The owning task may have completed the authoritative cancellation
-        # transition while this method was joining it.  Treat that result as
-        # success for this cancellation request, while preserving idempotent
-        # false results for jobs cancelled before the request arrived.
-        if task_cancel_requested and job.status == ScanStatus.CANCELLED:
+        if task is not None and task.done() and job.status == ScanStatus.CANCELLED:
             return True
         return False
 
@@ -948,6 +978,39 @@ class ScanOrchestrator:
             await self.emit_completed(scan_id, job.summary)
 
         except asyncio.CancelledError:
+            # A task cancellation is not itself proof that every durable child
+            # execution and process container has settled.  Preserve a
+            # non-terminal parent state while the recovery coordinator owns
+            # any unresolved child, so a browser/API observer cannot mistake
+            # task cancellation for verified process termination.
+            unsettled_executions: list[str] = []
+            try:
+                for execution_id in db_manager.list_scan_execution_ids(
+                    scan_id,
+                    job.organization_id or "",
+                ):
+                    child_run = db_manager.get_execution_run(
+                        execution_id,
+                        job.organization_id or "",
+                    )
+                    if child_run is None or child_run.get("state") not in EXECUTION_RUN_TERMINAL_STATES:
+                        unsettled_executions.append(execution_id)
+            except Exception:
+                # Failure to enumerate authoritative child state is itself a
+                # recovery condition; never convert it to a clean cancellation.
+                unsettled_executions.append("execution-state-enumeration-failed")
+            if unsettled_executions:
+                job.status = ScanStatus.RUNNING
+                job.completed_at = None
+                job.current_stage = "Cancellation requested; durable execution recovery is pending."
+                save_scan(job)
+                await self.emit_log(
+                    scan_id,
+                    LogLevel.WARNING,
+                    "orchestrator",
+                    "Scan task stopped, but durable child execution settlement is still pending.",
+                )
+                raise
             job.summary.coverage.coverage_status = "COVERAGE_DEGRADED"
             job.summary.coverage.is_fully_assessed = False
             job.status = ScanStatus.CANCELLED

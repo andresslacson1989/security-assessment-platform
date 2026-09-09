@@ -170,6 +170,7 @@ def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_gua
     assert "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch" in workflow
     assert "backend/tests/test_execution_launch_inventory.py" in workflow
     assert "tests/security/test_execution_decision_authority.py" in workflow
+    assert "tests/security/test_execution_cancellation_coordinator.py" in workflow
     assert "tests/security/test_scan_request_migration.py" in workflow
 
     guard = _extract_workflow_guard(workflow, "Reject dependency-gated PostgreSQL skips")

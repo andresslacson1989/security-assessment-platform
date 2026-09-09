@@ -395,11 +395,23 @@ async def approve_scan_authorization(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Scan authorization was denied by the tenant authority boundary.")
     if result not in {"AUTHORIZED", "REPLAY"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Scan authorization cannot be approved in its current state.")
-    # Section A persists the administrator decision and immutable child
-    # authorities only.  Dispatch, worker handoff, and process launch are
-    # independently gated by Section B and must remain unreachable from this
-    # approval route until that section is explicitly accepted.
-    dispatch_state = "PENDING_IMPLEMENTATION"
+    # Approval is now the single control-plane transition into the real
+    # orchestrator.  The orchestrator performs the independent parent
+    # revalidation and owns the worker handoff; this route never launches a
+    # process and never treats the parent scan identifier as a process ID.
+    try:
+        await orchestrator.dispatch_approved_scan(scan_job)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approved scan could not be dispatched under its current durable authority state.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Approved scan could not be dispatched; no worker or external process was authorized.",
+        ) from exc
+    dispatch_state = "DISPATCHED"
     return {
         "scan_id": scan_id,
         "authorization_state": "DISPATCHABLE",
@@ -659,7 +671,11 @@ async def cancel_running_scan(
     if not authorize_scan_access(current_user, job, action="cancel"):
         raise HTTPException(status_code=403, detail=f"Unauthorized to cancel scan job '{scan_id}'.")
 
-    cancelled = await orchestrator.cancel_scan(scan_id, organization_id=_organization_scope(current_user))
+    cancelled = await orchestrator.cancel_scan(
+        scan_id,
+        organization_id=_organization_scope(current_user),
+        actor=current_user.username,
+    )
 
     db_manager.record_audit_event(
         AuditEvent(
@@ -668,15 +684,25 @@ async def cancel_running_scan(
             action=AuditAction.SCAN_CANCELLED,
             object_type="scan",
             object_id=scan_id,
-            result="SUCCESS",
+            result="SUCCESS" if cancelled else "PENDING",
+            details={
+                "cancelled": cancelled,
+                "reason_code": "SCAN_CANCELLED" if cancelled else "EXECUTION_RECOVERY_PENDING",
+            },
         )
     )
 
+    response_status = ScanStatus.CANCELLED.value if cancelled else job.status.value
     return {
         "scan_id": scan_id,
-        "status": ScanStatus.CANCELLED.value,
+        "status": response_status,
         "cancelled": cancelled,
-        "message": "Scan job cancellation processed.",
+        "cancellation_pending": not cancelled,
+        "message": (
+            "Scan job cancellation processed."
+            if cancelled
+            else "Cancellation requested; verified process termination or durable recovery is still pending."
+        ),
     }
 
 

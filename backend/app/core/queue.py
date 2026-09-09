@@ -6,6 +6,7 @@ Guarantees resource isolation, preventing server resource exhaustion or unconstr
 
 from __future__ import annotations
 import asyncio
+import hashlib
 import os
 import uuid
 from datetime import datetime, timezone
@@ -18,6 +19,33 @@ MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "5"))
 MAX_CONCURRENT_SCANS_PER_TENANT = int(os.getenv("MAX_CONCURRENT_SCANS_PER_TENANT", "2"))
 GLOBAL_SCAN_TIMEOUT_SECONDS = float(os.getenv("GLOBAL_SCAN_TIMEOUT_SECONDS", "300.0"))
 EXECUTION_QUEUE_URL = os.getenv("EXECUTION_QUEUE_URL", "").strip()
+
+# The parent scan authorization currently has a bounded 15-minute lifetime.
+# Retain a queue publication identity substantially longer than that lifetime so
+# an exact approval replay after an API/worker restart cannot create a second
+# Redis Stream entry.  The value is deliberately bounded and can only be
+# increased within the reviewed operational range.
+_QUEUE_DEDUPE_TTL_SECONDS = int(os.getenv("EXECUTION_QUEUE_DEDUPE_TTL_SECONDS", "86400"))
+if not 900 <= _QUEUE_DEDUPE_TTL_SECONDS <= 604800:
+    raise RuntimeError("EXECUTION_QUEUE_DEDUPE_TTL_SECONDS must be between 900 and 604800 seconds")
+
+
+_IDEMPOTENT_ENQUEUE_SCRIPT = """
+local existing = redis.call('GET', KEYS[1])
+if existing then
+    return existing
+end
+local message_id = redis.call(
+    'XADD', KEYS[2], '*',
+    'scan_id', ARGV[1],
+    'organization_id', ARGV[2],
+    'enqueued_at', ARGV[3],
+    'authorization_request_id', ARGV[4],
+    'credential_envelope', ARGV[5]
+)
+redis.call('SET', KEYS[1], message_id, 'EX', ARGV[6])
+return message_id
+"""
 
 
 class DurableQueueBackend(Protocol):
@@ -91,10 +119,11 @@ class RedisDurableQueue:
         if authorization_request_id and not organization_id:
             raise ValueError("execution intent authorization request requires a tenant")
         await self._ensure_group()
+        enqueued_at = datetime.now(timezone.utc).isoformat()
         fields = {
             "scan_id": scan_id,
             "organization_id": organization_id or "",
-            "enqueued_at": datetime.now(timezone.utc).isoformat(),
+            "enqueued_at": enqueued_at,
         }
         if authorization_request_id:
             fields["authorization_request_id"] = authorization_request_id.strip()
@@ -106,10 +135,29 @@ class RedisDurableQueue:
                 scan_id=scan_id,
                 organization_id=organization_id,
             )
-        message_id = await self._redis.xadd(
-            self.stream_name,
-            fields,
-        )
+        if authorization_request_id:
+            # The key contains only a one-way digest of the tenant and durable
+            # request identity.  The Lua transaction makes the GET/XADD/SET
+            # sequence atomic across multiple API processes and workers.
+            dedupe_material = f"{organization_id}\x00{authorization_request_id.strip()}".encode("utf-8")
+            dedupe_key = f"{self.stream_name}:dedupe:{hashlib.sha256(dedupe_material).hexdigest()}"
+            message_id = await self._redis.eval(
+                _IDEMPOTENT_ENQUEUE_SCRIPT,
+                2,
+                dedupe_key,
+                self.stream_name,
+                scan_id,
+                organization_id or "",
+                enqueued_at,
+                authorization_request_id.strip(),
+                fields.get("credential_envelope", ""),
+                str(_QUEUE_DEDUPE_TTL_SECONDS),
+            )
+        else:
+            # Preserve the legacy non-scan/diagnostic queue contract for calls
+            # that have no authoritative approval identity.  Governed scan
+            # dispatches always take the idempotent branch above.
+            message_id = await self._redis.xadd(self.stream_name, fields)
         return str(message_id)
 
     async def complete(self, message_id: str) -> None:

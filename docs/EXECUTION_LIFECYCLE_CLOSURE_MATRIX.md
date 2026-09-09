@@ -58,6 +58,28 @@ The implementation MUST distinguish these states at the run/process boundary:
 NOT be translated to `NO_EXTERNAL_PROCESS` without the corresponding durable
 proof.
 
+## Section B implementation checkpoint (not acceptance)
+
+The current implementation provides a shared
+`ExecutionCancellationCoordinator` in
+`backend/app/core/execution_service.py`. Scan cancellation and direct
+execution-request revocation use the same sequence: tenant-bound authority
+revocation, exact `execution_id` process cancellation, owning-task join, and
+durable child-run verification. The coordinator exposes typed process status
+and keeps `NOT_FOUND`, `FAILED`, missing runs, and unjoined tasks recoverable.
+Only the database's atomic `REQUESTED`/`PENDING` transition to
+`EXECUTION_CANCELLED_BEFORE_DISPATCH` is accepted as a no-process branch.
+Governed Redis publication is likewise idempotent by the tenant-bound durable
+authorization request identity, so an exact approval replay cannot create a
+second stream entry after an in-memory restart.
+
+Focused repository evidence exists in
+`tests/security/test_execution_cancellation_coordinator.py` and
+`tests/security/test_database_backend.py`, but this checkpoint does not close
+the matrix. Independent PostgreSQL concurrency evidence, platform-specific
+process-container evidence, restart attachment evidence, and final auditor
+acceptance remain required.
+
 ## Acceptance gate
 
 The lifecycle section is accepted only when every row is marked complete with

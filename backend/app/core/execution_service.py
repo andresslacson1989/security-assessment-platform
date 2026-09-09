@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -36,6 +38,338 @@ def get_worker_identity() -> str:
 def get_worker_generation() -> str:
     """Return the process/deployment generation bound to durable execution evidence."""
     return _PROCESS_WORKER_GENERATION
+
+
+@dataclass(frozen=True)
+class ExecutionCancellationOutcome:
+    """Evidence returned by the single execution cancellation coordinator."""
+
+    execution_id: Optional[str]
+    request_id: str
+    authority_revoked: bool
+    process_status: str
+    process_confirmed: bool
+    durable_terminal: bool
+    task_stopped: bool
+    recovery_required: bool
+    reason_code: Optional[str] = None
+    error_code: Optional[str] = None
+
+    @property
+    def confirmed(self) -> bool:
+        """Return true only when no process or a durable terminal run is proven."""
+        return self.task_stopped and self.durable_terminal and (
+            self.process_confirmed
+            or self.reason_code == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+            or self.execution_id is None
+        )
+
+
+class ExecutionCancellationCoordinator:
+    """Own revocation, exact process cancellation, task shutdown, and settlement checks.
+
+    All callers use this boundary instead of independently revoking a request,
+    signalling a PID, or publishing a terminal result.  A missing in-memory
+    process mapping is deliberately surfaced as ``NOT_FOUND`` and remains
+    recoverable unless the durable database transition proves that the run was
+    cancelled before any dispatch claim could occur.
+    """
+
+    _TERMINAL_RUN_STATES = frozenset({
+        "SUCCEEDED",
+        "PARTIAL_RESULTS_WITH_WARNING",
+        "FAILED",
+        "TIMED_OUT",
+        "CANCELLED",
+        "EXECUTION_BLOCKED",
+    })
+
+    def __init__(self, database: Any, supervisor: Any = None) -> None:
+        self._database = database
+        self._supervisor = supervisor
+
+    @property
+    def supervisor(self) -> Any:
+        if self._supervisor is None:
+            from app.core.process_supervisor import process_supervisor
+
+            self._supervisor = process_supervisor
+        return self._supervisor
+
+    @staticmethod
+    async def stop_task(task: Optional[asyncio.Task], *, timeout_seconds: float = 5.0) -> bool:
+        """Stop one owning task and wait for its cancellation acknowledgement."""
+        if task is None or task.done():
+            return True
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+        except asyncio.CancelledError:
+            return True
+        except asyncio.TimeoutError:
+            return False
+        except Exception:
+            return False
+        return task.done()
+
+    @staticmethod
+    def _outcome(
+        *,
+        execution_id: Optional[str],
+        request_id: str,
+        authority_revoked: bool,
+        process_status: str,
+        process_confirmed: bool,
+        durable_terminal: bool,
+        task_stopped: bool,
+        reason_code: Optional[str] = None,
+        error_code: Optional[str] = None,
+    ) -> ExecutionCancellationOutcome:
+        outcome = ExecutionCancellationOutcome(
+            execution_id=execution_id,
+            request_id=request_id,
+            authority_revoked=authority_revoked,
+            process_status=process_status,
+            process_confirmed=process_confirmed,
+            durable_terminal=durable_terminal,
+            task_stopped=task_stopped,
+            recovery_required=not (
+                task_stopped
+                and durable_terminal
+                and (process_confirmed or reason_code == "EXECUTION_CANCELLED_BEFORE_DISPATCH" or execution_id is None)
+            ),
+            reason_code=reason_code,
+            error_code=error_code,
+        )
+        return outcome
+
+    async def cancel_request(
+        self,
+        request_id: str,
+        organization_id: str,
+        *,
+        actor: str,
+        owning_task: Optional[asyncio.Task] = None,
+    ) -> ExecutionCancellationOutcome:
+        """Cancel one exact tenant-bound execution request.
+
+        Revocation is committed before process cancellation, preventing a
+        concurrent worker from creating a new governed process.  The process
+        supervisor is then called by exact execution identity.  Only a durable
+        terminal run plus a confirmed process outcome (or an atomic
+        pre-dispatch cancellation) is reported as confirmed.
+        """
+        if not isinstance(request_id, str) or not request_id.strip() or not isinstance(organization_id, str) or not organization_id.strip() or not isinstance(actor, str) or not actor.strip():
+            return self._outcome(
+                execution_id=None,
+                request_id=str(request_id or ""),
+                authority_revoked=False,
+                process_status="INVALID_REQUEST",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=False,
+                error_code="INVALID_CANCELLATION_REQUEST",
+            )
+
+        try:
+            run = await asyncio.to_thread(
+                self._database.get_execution_run_for_request,
+                request_id,
+                organization_id,
+            )
+        except Exception as exc:
+            return self._outcome(
+                execution_id=None,
+                request_id=request_id,
+                authority_revoked=False,
+                process_status="FAILED",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=False,
+                error_code=type(exc).__name__,
+            )
+
+        if run is None:
+            try:
+                revoked = await asyncio.to_thread(
+                    self._database.revoke_execution_request,
+                    request_id,
+                    organization_id,
+                    actor,
+                )
+            except Exception as exc:
+                return self._outcome(
+                    execution_id=None,
+                    request_id=request_id,
+                    authority_revoked=False,
+                    process_status="FAILED",
+                    process_confirmed=False,
+                    durable_terminal=False,
+                    task_stopped=False,
+                    error_code=type(exc).__name__,
+                )
+            task_stopped = await self.stop_task(owning_task)
+            return self._outcome(
+                execution_id=None,
+                request_id=request_id,
+                authority_revoked=bool(revoked),
+                process_status="NOT_FOUND" if revoked else "FAILED",
+                process_confirmed=False,
+                durable_terminal=bool(revoked),
+                task_stopped=task_stopped,
+                reason_code="EXECUTION_CANCELLED_BEFORE_DISPATCH" if revoked else None,
+                error_code=None if revoked else "EXECUTION_REQUEST_NOT_FOUND",
+            )
+
+        execution_id = str(run.get("execution_id") or "")
+        if not execution_id:
+            return self._outcome(
+                execution_id=None,
+                request_id=request_id,
+                authority_revoked=False,
+                process_status="FAILED",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=False,
+                error_code="EXECUTION_IDENTITY_MISSING",
+            )
+        if run.get("state") in self._TERMINAL_RUN_STATES:
+            try:
+                revoked = await asyncio.to_thread(
+                    self._database.revoke_execution_request,
+                    request_id,
+                    organization_id,
+                    actor,
+                )
+            except Exception as exc:
+                return self._outcome(
+                    execution_id=execution_id,
+                    request_id=request_id,
+                    authority_revoked=False,
+                    process_status="FAILED",
+                    process_confirmed=False,
+                    durable_terminal=True,
+                    task_stopped=False,
+                    reason_code=run.get("reason_code"),
+                    error_code=type(exc).__name__,
+                )
+            task_stopped = await self.stop_task(owning_task)
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=bool(revoked),
+                process_status="ALREADY_EXITED" if revoked else "FAILED",
+                process_confirmed=bool(revoked),
+                durable_terminal=True,
+                task_stopped=task_stopped,
+                reason_code=run.get("reason_code"),
+                error_code=None if revoked else "EXECUTION_AUTHORITY_NOT_REVOKED",
+            )
+
+        try:
+            revoked = await asyncio.to_thread(
+                self._database.revoke_execution_request,
+                request_id,
+                organization_id,
+                actor,
+            )
+        except Exception as exc:
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=False,
+                process_status="FAILED",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=False,
+                error_code=type(exc).__name__,
+            )
+        if not revoked:
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=False,
+                process_status="FAILED",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=False,
+                error_code="EXECUTION_AUTHORITY_NOT_REVOKED",
+            )
+
+        try:
+            after_revoke = await asyncio.to_thread(
+                self._database.get_execution_run,
+                execution_id,
+                organization_id,
+            )
+        except Exception as exc:
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=True,
+                process_status="FAILED",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=False,
+                error_code=type(exc).__name__,
+            )
+
+        # revoke_execution_request atomically closes a REQUESTED/PENDING child
+        # before any dispatch claim.  That database transition is the only
+        # accepted no-process proof for a missing supervisor mapping.
+        if (
+            after_revoke
+            and after_revoke.get("state") == "CANCELLED"
+            and after_revoke.get("reason_code") == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+        ):
+            task_stopped = await self.stop_task(owning_task)
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=True,
+                process_status="NOT_FOUND",
+                process_confirmed=False,
+                durable_terminal=True,
+                task_stopped=task_stopped,
+                reason_code="EXECUTION_CANCELLED_BEFORE_DISPATCH",
+            )
+
+        try:
+            cancellation = await asyncio.to_thread(
+                self.supervisor.cancel_execution,
+                execution_id,
+            )
+            process_status = getattr(getattr(cancellation, "status", None), "value", str(getattr(cancellation, "status", "UNKNOWN")))
+            process_confirmed = bool(getattr(cancellation, "confirmed", False))
+        except Exception as exc:
+            process_status = "FAILED"
+            process_confirmed = False
+            error_code = type(exc).__name__
+        else:
+            error_code = None
+
+        task_stopped = await self.stop_task(owning_task)
+        try:
+            final_run = await asyncio.to_thread(
+                self._database.get_execution_run,
+                execution_id,
+                organization_id,
+            )
+        except Exception as exc:
+            final_run = None
+            error_code = error_code or type(exc).__name__
+        durable_terminal = bool(final_run and final_run.get("state") in self._TERMINAL_RUN_STATES)
+        return self._outcome(
+            execution_id=execution_id,
+            request_id=request_id,
+            authority_revoked=True,
+            process_status=process_status,
+            process_confirmed=process_confirmed,
+            durable_terminal=durable_terminal,
+            task_stopped=task_stopped,
+            reason_code=final_run.get("reason_code") if final_run else None,
+            error_code=error_code,
+        )
 
 
 def issue_non_scan_execution_context(purpose: str, *, ttl_seconds: int = 300):
@@ -232,4 +566,12 @@ def settle_execution(
     return True
 
 
-__all__ = ["record_no_process", "record_posix_launch", "record_launch_uncertain", "record_terminal", "settle_execution"]
+__all__ = [
+    "ExecutionCancellationCoordinator",
+    "ExecutionCancellationOutcome",
+    "record_no_process",
+    "record_posix_launch",
+    "record_launch_uncertain",
+    "record_terminal",
+    "settle_execution",
+]

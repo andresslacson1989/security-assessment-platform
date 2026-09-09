@@ -634,7 +634,10 @@ async def test_tenant_admin_real_request_and_approval_chain_is_tenant_scoped():
         asset_id = asset_response.json()["id"]
         start_response = await ac.post(
             "/api/scans/start",
-            json={"target_type": "DOMAIN", "target_value": "example.com", "asset_id": asset_id, "enabled_engines": []},
+            # Select an engine that is not applicable to this domain so the
+            # real dispatch path can be awaited without running an external
+            # assessment tool.
+            json={"target_type": "DOMAIN", "target_value": "example.com", "asset_id": asset_id, "enabled_engines": ["infra_iac"]},
             headers={**headers, "Idempotency-Key": "tenant-chain-request"},
         )
         assert start_response.status_code == 201, start_response.text
@@ -649,41 +652,53 @@ async def test_tenant_admin_real_request_and_approval_chain_is_tenant_scoped():
             assert persisted_data["authorization_request_id"] == started["scan_request_id"]
             sanitized = sanitize_sensitive_data({"authorization_request_id": started["scan_request_id"], "bearer_token": "secret"})
             assert sanitized == {"authorization_request_id": "[REDACTED]", "bearer_token": "[REDACTED]"}
-        approval_response = await ac.post(
-            f"/api/scans/{started['scan_id']}/approve",
-            json={"manifest_hash": started["manifest_hash"], "confirm_owned_target": True},
-            headers={**headers, "Idempotency-Key": "tenant-chain-approval"},
-        )
-        assert approval_response.status_code == 202, approval_response.text
-        assert approval_response.json()["authorization_state"] == "DISPATCHABLE"
-        assert approval_response.json()["dispatch_state"] == "PENDING_IMPLEMENTATION"
-        assert approval_response.json()["execution_started"] is False
-        assert db_manager.get_scan_record(started["scan_id"], organization_id=organization_id) is not None
-        with db_manager._connection_scope() as conn:
-            before_replay = {
-                table: conn.execute(
-                    f"SELECT COUNT(*) AS count FROM {table} WHERE organization_id=?",
-                    (organization_id,),
-                ).fetchone()["count"]
-                for table in ("scan_authorization_operations", "execution_requests", "execution_decisions", "execution_runs", "execution_dispatch_intents")
-            }
-        exact_replay = await ac.post(
-            f"/api/scans/{started['scan_id']}/approve",
-            json={"manifest_hash": started["manifest_hash"], "confirm_owned_target": True},
-            headers={**headers, "Idempotency-Key": "tenant-chain-approval"},
-        )
-        assert exact_replay.status_code == 202, exact_replay.text
-        assert exact_replay.json()["dispatch_state"] == "PENDING_IMPLEMENTATION"
-        assert exact_replay.json()["idempotent_replay"] is True
-        with db_manager._connection_scope() as conn:
-            after_replay = {
-                table: conn.execute(
-                    f"SELECT COUNT(*) AS count FROM {table} WHERE organization_id=?",
-                    (organization_id,),
-                ).fetchone()["count"]
-                for table in before_replay
-            }
-        assert after_replay == before_replay
+        # The approval route must exercise the real API/orchestrator boundary,
+        # while capability probing remains deterministic and external-tool free.
+        # This keeps the assertion about dispatch, rather than host tool
+        # installation latency or availability.
+        with patch(
+            "app.core.orchestrator.discover_system_capabilities",
+            new=AsyncMock(return_value=SystemCapabilities(tools=[])),
+        ):
+            approval_response = await ac.post(
+                f"/api/scans/{started['scan_id']}/approve",
+                json={"manifest_hash": started["manifest_hash"], "confirm_owned_target": True},
+                headers={**headers, "Idempotency-Key": "tenant-chain-approval"},
+            )
+            assert approval_response.status_code == 202, approval_response.text
+            assert approval_response.json()["authorization_state"] == "DISPATCHABLE"
+            assert approval_response.json()["dispatch_state"] == "DISPATCHED"
+            assert approval_response.json()["execution_started"] is False
+            dispatched_task = orchestrator._tasks.get(started["scan_id"])
+            assert dispatched_task is not None
+            await asyncio.wait_for(asyncio.shield(dispatched_task), timeout=5)
+            assert dispatched_task.done()
+            assert db_manager.get_scan_record(started["scan_id"], organization_id=organization_id) is not None
+            with db_manager._connection_scope() as conn:
+                before_replay = {
+                    table: conn.execute(
+                        f"SELECT COUNT(*) AS count FROM {table} WHERE organization_id=?",
+                        (organization_id,),
+                    ).fetchone()["count"]
+                    for table in ("scan_authorization_operations", "execution_requests", "execution_decisions", "execution_runs", "execution_dispatch_intents")
+                }
+            exact_replay = await ac.post(
+                f"/api/scans/{started['scan_id']}/approve",
+                json={"manifest_hash": started["manifest_hash"], "confirm_owned_target": True},
+                headers={**headers, "Idempotency-Key": "tenant-chain-approval"},
+            )
+            assert exact_replay.status_code == 202, exact_replay.text
+            assert exact_replay.json()["dispatch_state"] == "DISPATCHED"
+            assert exact_replay.json()["idempotent_replay"] is True
+            with db_manager._connection_scope() as conn:
+                after_replay = {
+                    table: conn.execute(
+                        f"SELECT COUNT(*) AS count FROM {table} WHERE organization_id=?",
+                        (organization_id,),
+                    ).fetchone()["count"]
+                    for table in before_replay
+                }
+            assert after_replay == before_replay
 
         wrong_user = UserProfile(
             id="unprovisioned-approver", username="unprovisioned", email="unprovisioned@example.test",

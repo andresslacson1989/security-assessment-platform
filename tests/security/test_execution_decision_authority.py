@@ -987,6 +987,9 @@ def test_revoke_route_resolves_request_id_to_linked_decision():
         def __init__(self):
             self.called = None
 
+        def get_execution_run_for_request(self, *args, **kwargs):
+            return None
+
         def revoke_execution_request(self, *args, **kwargs):
             self.called = (args, kwargs)
             return True
@@ -999,8 +1002,15 @@ def test_revoke_route_resolves_request_id_to_linked_decision():
         result = asyncio.run(executions.revoke_execution_request("request-1", user))
     finally:
         executions.db_manager = original
-    assert result == {"request_id": "request-1", "revoked": True}
-    assert store.called == (("request-1",), {"organization_id": "org-a", "actor": "admin"})
+    assert result == {
+        "request_id": "request-1",
+        "execution_id": None,
+        "revoked": True,
+        "cancellation_status": "NOT_FOUND",
+        "durable_terminal": True,
+        "recovery_required": False,
+    }
+    assert store.called == (("request-1", "org-a", "admin"), {})
 
 
 def test_approval_session_must_match_authenticated_principal(monkeypatch):

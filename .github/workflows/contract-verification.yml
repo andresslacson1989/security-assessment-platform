@@ -87,6 +87,7 @@ jobs:
             tests/security/test_database_backend.py \
             tests/security/test_auth_admin_boundaries.py \
             tests/security/test_execution_decision_authority.py \
+            tests/security/test_execution_cancellation_coordinator.py \
             tests/security/test_scan_request_migration.py \
             tests/security/test_process_launch_boundary.py \
             tests/security/test_container_hardening.py \

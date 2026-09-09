@@ -378,6 +378,43 @@ async def test_queue_manager_enqueue_only_requires_and_uses_durable_backend():
 
 
 @pytest.mark.asyncio
+async def test_redis_enqueue_is_idempotent_per_tenant_authorization_request():
+    """Governed replay must reuse one stream identity, including after a restart."""
+    from app.core.queue import RedisDurableQueue
+
+    class FakeRedis:
+        def __init__(self):
+            self.dedupe = {}
+            self.eval_calls = []
+
+        async def eval(self, script, number_of_keys, *keys_and_args):
+            self.eval_calls.append((script, number_of_keys, keys_and_args))
+            assert number_of_keys == 2
+            assert "GET" in script and "XADD" in script and "SET" in script
+            dedupe_key = keys_and_args[0]
+            if dedupe_key in self.dedupe:
+                return self.dedupe[dedupe_key]
+            message_id = f"message-{len(self.dedupe) + 1}"
+            self.dedupe[dedupe_key] = message_id
+            return message_id
+
+    queue = object.__new__(RedisDurableQueue)
+    queue._redis = FakeRedis()
+    queue._consumer_name = "worker-test"
+    queue._group_ready = True
+    queue._group_lock = asyncio.Lock()
+
+    first = await queue.enqueue("scan-a", "org-a", authorization_request_id="request-a")
+    replay = await queue.enqueue("scan-a", "org-a", authorization_request_id="request-a")
+    other_tenant = await queue.enqueue("scan-a", "org-b", authorization_request_id="request-a")
+
+    assert first == replay == "message-1"
+    assert other_tenant == "message-2"
+    assert len(queue._redis.eval_calls) == 3
+    assert queue._redis.eval_calls[0][2][0] != queue._redis.eval_calls[2][2][0]
+
+
+@pytest.mark.asyncio
 async def test_redis_consumer_claims_new_intent_and_acknowledges_after_handler():
     from app.core.queue import RedisDurableQueue
 

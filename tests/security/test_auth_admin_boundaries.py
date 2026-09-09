@@ -13,7 +13,7 @@ from app.core.models import PrincipalType, UserRole
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("approval_result", ["AUTHORIZED", "REPLAY"])
-async def test_scan_approval_persists_only_and_replay_is_noop(monkeypatch, approval_result):
+async def test_scan_approval_dispatches_through_orchestrator_and_replay_is_idempotent(monkeypatch, approval_result):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
     from app.api import scans
@@ -39,10 +39,10 @@ async def test_scan_approval_persists_only_and_replay_is_noop(monkeypatch, appro
     )
 
     assert result["execution_started"] is False
-    assert result["dispatch_state"] == "PENDING_IMPLEMENTATION"
+    assert result["dispatch_state"] == "DISPATCHED"
     assert result["idempotent_replay"] is (approval_result == "REPLAY")
     approve.assert_called_once()
-    dispatch.assert_not_awaited()
+    dispatch.assert_awaited_once_with(job)
     save.assert_not_called()
 
 

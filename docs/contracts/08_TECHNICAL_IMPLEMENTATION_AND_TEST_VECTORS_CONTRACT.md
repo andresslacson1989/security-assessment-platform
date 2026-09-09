@@ -17,6 +17,18 @@ One authenticated administrator session may approve one exact manifest after an 
 
 The approved-scan dispatch vector MUST exercise `POST /api/scans/{scan_id}/approve` through the real orchestrator path. It MUST prove that every external adapter launch resolves the selected child authority using the server-owned operation policy and exact command, that the process supervisor issues the typed context only after durable claim, and that a scan parent ID cannot be used as a process identity. Worker identity and generation MUST be derived from the service runtime and match the durable child run; caller-supplied generation or reconstructed capability/context objects MUST be rejected.
 
+Dispatch acceptance is a control-plane result, not a process-start result. The
+approved-scan route MUST return `DISPATCHED` only after the bounded worker task
+has been scheduled or the durable queue has accepted the tenant-bound
+publication; it MUST retain `execution_started: false` until a child authority
+has been claimed and the launch handshake has committed. Durable Redis
+publication MUST use an atomic, tenant-scoped idempotency key derived from the
+immutable authorization-request identity. An exact approval replay after an
+API or worker restart MUST reuse the existing queue message identity and MUST
+not create a second stream entry. A changed manifest remains a conflict and
+cannot reuse the first request's queue identity. Queue publication failure MUST
+be visible to the caller and MUST NOT be reported as `DISPATCHED`.
+
 Negative vectors MUST cover missing policy rows, undeclared or duplicate engine/tool ownership, manual-only Hydra, native-only CI/CD, cross-tenant targets, forged/reconstructed contexts, stale worker generations, revoked sessions, request replay with a changed manifest, and direct API/orchestrator launches without a typed authority lease.
 
 Manifest-integrity vectors MUST additionally prove deep immutability of every
@@ -223,12 +235,30 @@ To achieve deterministic CI verification across environments without requiring e
   MUST persist bounded retry/backoff/escalation state and expose it through
   operator health/audit. Database operations that outlive an async timeout
   MUST be tracked and prevented from causing an unobserved late mutation.
+- The shared cancellation coordinator MUST be the execution boundary used by
+  both scan cancellation and direct execution-request revocation. It MUST
+  revoke the tenant-bound child authority before attempting exact-ID process
+  termination, wait for the owning task when one exists, and verify the
+  durable child run before allowing the parent scan or API response to claim
+  cancellation. `KILLED` and `ALREADY_EXITED` are confirmations only when the
+  linked durable run is terminal. `NOT_FOUND`, `FAILED`, a missing child run,
+  or an unjoined task MUST remain visibly recoverable. The sole no-process
+  exception is the atomic `REQUESTED`/`PENDING` revocation transition recorded
+  as `EXECUTION_CANCELLED_BEFORE_DISPATCH`; task shutdown alone is never that
+  proof.
 - Recovery tests MUST exercise `GET /api/system/executions/recovery/health`
   through the authenticated administrator boundary, verify tenant isolation,
   and prove that `LAUNCH_UNCERTAIN` is not terminalized by `NOT_FOUND`, missing
   in-memory state, or a worker restart. A supervisor-confirmed termination
   MUST create a digest-bound `NO_EXTERNAL_PROCESS` recovery proof and atomically
   close ownership, dispatch, run, and recovery projection records.
+
+The shared cancellation boundary is exercised by
+`tests/security/test_execution_cancellation_coordinator.py`; this test must
+run in the focused contract-verification job, not only in the full repository
+suite. Its evidence is bounded to coordinator behavior and does not replace
+the required PostgreSQL, restart, and platform-specific process-container
+evidence.
 
 ### 6.1.3 Scan authorization manifest integrity vectors
 
