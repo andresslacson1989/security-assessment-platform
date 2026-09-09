@@ -1,10 +1,12 @@
 """Adversarial tests for the durable worker execution-decision boundary."""
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 import hashlib
 import inspect
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -1257,6 +1259,426 @@ def test_execution_run_transition_matrix_and_terminal_immutability(tmp_path):
     assert database.transition_execution_run("run-a", "org-a", "STARTING", "RUNNING", worker_identity="worker-a", dispatch_claim_token=lease.token)
     assert database.transition_execution_run("run-a", "org-a", "RUNNING", "SUCCEEDED", worker_identity="worker-a", dispatch_claim_token=lease.token)
     assert not database.transition_execution_run("run-a", "org-a", "SUCCEEDED", "RUNNING")
+
+
+def _seed_execution_for_termination_settlement(
+    database: DatabaseManager,
+    *,
+    execution_id: str,
+    request_id: str,
+    decision_id: str,
+    claim_dispatch: bool = True,
+    running: bool = True,
+    no_external_process: bool = False,
+):
+    """Create one realistic authorized execution lifecycle for DAL tests."""
+    from app.core.execution_service import record_no_process, record_posix_launch
+    from app.core.models import ExecutionRunRecord
+
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    expires_at = (now + timedelta(minutes=5)).isoformat()
+    operation_options = json.dumps(
+        {"output_format": "json-asff", "provider": "aws", "quiet": True},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
+            ("org-settlement", "Settlement Org", "org-settlement", created_at),
+        )
+        conn.execute(
+            "INSERT INTO assets (id, organization_id, name, type, target_value, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'CLOUD_ACCOUNT', ?, ?, ?)",
+            ("asset-settlement", "org-settlement", "settlement-account", "aws://123456789012", created_at, created_at),
+        )
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, 'hash', 'ADMIN', ?, 1, ?)",
+            ("admin-settlement", "admin-settlement", "settlement@example.test", "org-settlement", created_at),
+        )
+        conn.execute(
+            """INSERT INTO execution_requests
+               (id, idempotency_key, request_fingerprint, organization_id, asset_id,
+                target_id, authorization_decision_id, target_policy_version, tool_id,
+                operation_family, operation_options_json, operation_policy_revision,
+                requested_by_user_id, state, created_at, expires_at, approved_decision_id)
+               VALUES (?, ?, ?, 'org-settlement', 'asset-settlement', 'target-settlement',
+                       'auth-settlement', 'v1', 'prowler', 'cloud_audit', ?, ?,
+                       'admin-settlement', 'AUTHORIZED', ?, ?, ?)""",
+            (request_id, f"idem-{request_id}", "f" * 64, operation_options,
+             OPERATION_POLICY_REVISION, created_at, expires_at, decision_id),
+        )
+        conn.execute(
+            """INSERT INTO execution_decisions
+               (id, organization_id, project_id, asset_id, target_id,
+                authorization_decision_id, target_policy_version, tool_id,
+                operation_family, operation_options_json, operation_policy_revision,
+                approval_state, approver_user_id, session_jti, worker_identity,
+                created_at, expires_at)
+               VALUES (?, 'org-settlement', NULL, 'asset-settlement', 'target-settlement',
+                       'auth-settlement', 'v1', 'prowler', 'cloud_audit', ?, ?,
+                       'APPROVED', 'admin-settlement', 'session-settlement',
+                       'worker-settlement', ?, ?)""",
+            (decision_id, operation_options, OPERATION_POLICY_REVISION, created_at, expires_at),
+        )
+
+    database.create_execution_run(
+        ExecutionRunRecord(
+            execution_id=execution_id,
+            request_id=request_id,
+            organization_id="org-settlement",
+            worker_identity="worker-settlement",
+            worker_generation="generation-settlement",
+            correlation_id=f"corr-{execution_id}",
+        )
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO execution_dispatch_intents "
+            "(execution_id, organization_id, state, attempt_count, created_at) "
+            "VALUES (?, 'org-settlement', 'PENDING', 0, ?)",
+            (execution_id, created_at),
+        )
+
+    authority = None
+    if claim_dispatch:
+        authority = database.claim_execution_authority(
+            decision_id,
+            "org-settlement",
+            "session-settlement",
+            "worker-settlement",
+            OPERATION_POLICY_REVISION,
+        )
+        assert authority is not None
+        if running:
+            assert database.transition_execution_run(
+                execution_id,
+                "org-settlement",
+                "STARTING",
+                "RUNNING",
+                worker_identity="worker-settlement",
+                dispatch_claim_token=authority.dispatch.token,
+            )
+
+    capability = SimpleNamespace(
+        execution_id=execution_id,
+        decision=SimpleNamespace(id=decision_id, organization_id="org-settlement"),
+        claim_token=authority.decision.token if authority is not None else "unclaimed",
+        dispatch_claim_token=authority.dispatch.token if authority is not None else "unclaimed",
+        worker_identity="worker-settlement",
+        worker_generation="generation-settlement",
+        database=database,
+    )
+    identity = None
+    if no_external_process:
+        assert record_no_process(
+            capability,
+            proof_code="TEST_PRE_POPEN_CANCELLATION",
+            reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+        )
+    elif claim_dispatch:
+        identity = record_posix_launch(
+            capability,
+            pid=4242,
+            process_group_id=4242,
+            session_id=4242,
+            start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+        )
+
+    return authority, identity
+
+
+def test_confirmed_termination_settlement_requires_revocation_and_exact_identity(tmp_path):
+    from app.core.execution_service import load_durable_process_identity
+    from app.core.process_supervisor import ProcessIdentity
+
+    database = DatabaseManager(tmp_path / "confirmed-termination.db")
+    _authority, _attestation = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-settlement",
+        request_id="request-settlement",
+        decision_id="decision-settlement",
+    )
+    identity = ProcessIdentity(
+        pid=4242,
+        process_group_id=4242,
+        start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+        session_id=4242,
+    )
+    assert load_durable_process_identity(
+        database, "run-settlement", "org-settlement"
+    ) == identity
+
+    settlement_args = {
+        "terminal_state": "CANCELLED",
+        "reason_code": "EXECUTION_CANCELLED",
+        "termination_status": "KILLED",
+        "process_id": identity.pid,
+        "process_group_id": str(identity.process_group_id),
+        "process_start_token": identity.start_token,
+        "session_id": identity.session_id,
+        "worker_generation": "generation-settlement",
+    }
+    # The dedicated post-revocation primitive cannot replace the ordinary
+    # authority-held terminal transition.
+    assert database.settle_execution_after_confirmed_termination(
+        "run-settlement", "org-settlement", **settlement_args
+    ) is False
+    with database._connection_scope() as conn:
+        active = conn.execute(
+            "SELECT p.ownership_state, r.state, i.state, s.status "
+            "FROM execution_process_ownership p "
+            "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
+            "WHERE p.execution_id=? AND p.organization_id=?",
+            ("run-settlement", "org-settlement"),
+        ).fetchone()
+    assert tuple(active) == ("EXTERNAL_PROCESS_GOVERNED", "RUNNING", "CLAIMED", "REQUESTED")
+
+    assert database.revoke_execution_request(
+        "request-settlement", "org-settlement", "admin-settlement"
+    ) is True
+    mismatched = replace(identity, process_group_id=identity.process_group_id + 1)
+    assert database.settle_execution_after_confirmed_termination(
+        "run-settlement",
+        "org-settlement",
+        **{
+            **settlement_args,
+            "process_group_id": str(mismatched.process_group_id),
+        },
+    ) is False
+    with database._connection_scope() as conn:
+        still_active = conn.execute(
+            "SELECT ownership_state FROM execution_process_ownership "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-settlement", "org-settlement"),
+        ).fetchone()
+    assert still_active["ownership_state"] == "EXTERNAL_PROCESS_GOVERNED"
+
+    assert database.settle_execution_after_confirmed_termination(
+        "run-settlement", "org-settlement", **settlement_args
+    ) is True
+    # Replays return the same result without adding a second terminalization.
+    assert database.settle_execution_after_confirmed_termination(
+        "run-settlement", "org-settlement", **settlement_args
+    ) is True
+    with database._connection_scope() as conn:
+        final = conn.execute(
+            "SELECT p.ownership_state, p.no_process_proof, r.state AS run_state, "
+            "r.reason_code, i.state AS dispatch_state, i.last_error, "
+            "s.status, s.owner, s.lease_token "
+            "FROM execution_process_ownership p "
+            "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
+            "WHERE p.execution_id=? AND p.organization_id=?",
+            ("run-settlement", "org-settlement"),
+        ).fetchone()
+        attempts = conn.execute(
+            "SELECT COUNT(*) AS count FROM execution_recovery_attempts "
+            "WHERE execution_id=? AND organization_id=? AND status='CONFIRMED_TERMINATED'",
+            ("run-settlement", "org-settlement"),
+        ).fetchone()
+    assert final["ownership_state"] == "TERMINAL"
+    assert final["no_process_proof"].startswith("TERMINATION_CONFIRMED:v1:")
+    assert final["run_state"] == "CANCELLED"
+    assert final["reason_code"] == "EXECUTION_CANCELLED"
+    assert final["dispatch_state"] == "BLOCKED"
+    assert final["last_error"] == "EXECUTION_CANCELLED"
+    assert final["status"] == "CONFIRMED_TERMINATED"
+    assert final["owner"] is None and final["lease_token"] is None
+    assert attempts["count"] == 1
+
+
+def test_no_external_process_and_pre_dispatch_settlement_are_durable(tmp_path):
+    database = DatabaseManager(tmp_path / "no-process-settlement.db")
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-no-process",
+        request_id="request-no-process",
+        decision_id="decision-no-process",
+        running=False,
+        no_external_process=True,
+    )
+    assert database.revoke_execution_request(
+        "request-no-process", "org-settlement", "admin-settlement"
+    ) is True
+    assert database.settle_execution_after_confirmed_termination(
+        "run-no-process",
+        "org-settlement",
+        terminal_state="CANCELLED",
+        reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+        termination_status="NO_EXTERNAL_PROCESS",
+        worker_generation="generation-settlement",
+    ) is True
+
+    # A request cancelled before the dispatch claim uses a distinct proof and
+    # cannot be confused with a worker's pre-Popen no-process assertion.  Use
+    # a separate database so each fixture has one tenant-owned identity set.
+    database = DatabaseManager(tmp_path / "pre-dispatch-settlement.db")
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-pre-dispatch",
+        request_id="request-pre-dispatch",
+        decision_id="decision-pre-dispatch",
+        claim_dispatch=False,
+    )
+    assert database.revoke_execution_request(
+        "request-pre-dispatch", "org-settlement", "admin-settlement"
+    ) is True
+    assert database.settle_execution_after_confirmed_termination(
+        "run-pre-dispatch",
+        "org-settlement",
+        terminal_state="CANCELLED",
+        reason_code="EXECUTION_CANCELLED_BEFORE_DISPATCH",
+        termination_status="PRE_DISPATCH",
+        worker_generation="generation-settlement",
+    ) is True
+    with database._connection_scope() as conn:
+        states = conn.execute(
+            "SELECT p.ownership_state, r.state, i.state, s.status "
+            "FROM execution_process_ownership p "
+            "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
+            "WHERE p.organization_id=? ORDER BY p.execution_id",
+            ("org-settlement",),
+        ).fetchall()
+    assert [tuple(row) for row in states] == [
+        ("TERMINAL", "CANCELLED", "BLOCKED", "CONFIRMED_TERMINATED"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_governed_process_rejection_is_durably_settled_after_authority_claim(tmp_path, monkeypatch):
+    from app.core.correlation import reset_correlation_id, set_correlation_id
+    from app.core.execution_decision import issue_execution_capability
+    from app.core.execution_service import get_worker_generation
+    from app.core.models import ExecutionRequestRecord
+    from app.core.process_supervisor import ProcessSupervisor
+
+    database = DatabaseManager(tmp_path / "governed-process-rejection.db")
+    now = datetime.now(timezone.utc)
+    target = create_validated_target(
+        Target(
+            name="Governed test account",
+            type=TargetType.CLOUD_ACCOUNT,
+            value="aws://123456789012",
+        ),
+        organization_id="org-process",
+        asset_id="asset-process",
+        active_probing_granted=True,
+    )
+    operation_options = {"provider": "aws", "output_format": "json-asff", "quiet": True}
+    resource_budget = {"timeout_seconds": 120, "max_output_bytes": 10485760}
+    account_impact_budget = {"read_only": 1}
+    credential_scope = {"provider": "aws"}
+    created_at = now.isoformat()
+    expires_at = (now + timedelta(minutes=5)).isoformat()
+
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
+            ("org-process", "Process Org", "process-org", created_at),
+        )
+        conn.execute(
+            "INSERT INTO assets (id, organization_id, name, type, target_value, active_probing_granted, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'CLOUD_ACCOUNT', ?, 1, ?, ?)",
+            ("asset-process", "org-process", "process-account", "aws://123456789012", created_at, created_at),
+        )
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, 'hash', 'ADMIN', ?, 1, ?)",
+            ("admin-process", "admin-process", "process@example.test", "org-process", created_at),
+        )
+
+    request = ExecutionRequestRecord(
+        id="request-process",
+        idempotency_key="idempotency-process",
+        request_fingerprint="e" * 64,
+        organization_id="org-process",
+        project_id=None,
+        asset_id="asset-process",
+        target_id=target.target_id,
+        authorization_decision_id=target.authorization_decision_id,
+        target_policy_version=target.policy_version,
+        tool_id="prowler",
+        operation_family="cloud_audit",
+        operation_options=operation_options,
+        operation_policy_revision=OPERATION_POLICY_REVISION,
+        resource_budget=resource_budget,
+        account_impact_budget=account_impact_budget,
+        credential_scope=credential_scope,
+        requested_by_user_id="admin-process",
+        expires_at=now + timedelta(minutes=5),
+    )
+    database.create_execution_request(request)
+
+    worker_identity = "worker-process"
+    worker_generation = get_worker_generation()
+    monkeypatch.setenv("CYBERASSESS_WORKER_IDENTITY", worker_identity)
+    correlation_token = set_correlation_id("corr-process-rejection")
+    try:
+        approval = database.approve_execution_request(
+            "request-process",
+            "org-process",
+            "e" * 64,
+            "approval-process",
+            "admin-process",
+            "session-process",
+            worker_identity,
+            worker_generation,
+        )
+    finally:
+        reset_correlation_id(correlation_token)
+    assert approval[0] == "AUTHORIZED"
+    decision_id, execution_id = approval[1], approval[2]
+
+    command = ["process-test", "--bounded"]
+    capability = issue_execution_capability(
+        decision_id=decision_id,
+        validated_target=target,
+        tool_id="prowler",
+        operation_family="cloud_audit",
+        operation_options=operation_options,
+        command=command,
+        database=database,
+    )
+    monkeypatch.setenv("OPERATING_MODE", "STANDALONE")
+    monkeypatch.setenv("ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED", "false")
+
+    result = await ProcessSupervisor().execute(
+        command,
+        timeout=5,
+        max_output_bytes=1024,
+        pre_launch_check=lambda: False,
+        execution_capability=capability,
+        operation_family="cloud_audit",
+        operation_options=operation_options,
+        tool_id="prowler",
+    )
+
+    assert result.returncode in {126, -1}
+    assert result.execution_status.value == "SECURITY_REJECTED"
+    assert "PROCESS_LAUNCH_REJECTED_SECURITY" in result.stderr
+    with database._connection_scope() as conn:
+        states = conn.execute(
+            "SELECT r.state, r.reason_code, p.ownership_state, i.state "
+            "FROM execution_runs r "
+            "JOIN execution_process_ownership p ON p.execution_id=r.execution_id AND p.organization_id=r.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=r.execution_id AND i.organization_id=r.organization_id "
+            "WHERE r.execution_id=? AND r.organization_id=?",
+            (execution_id, "org-process"),
+        ).fetchone()
+    assert tuple(states) == (
+        "EXECUTION_BLOCKED",
+        "PROCESS_LAUNCH_REJECTED_SECURITY",
+        "NO_EXTERNAL_PROCESS",
+        "BLOCKED",
+    )
 
 
 def test_execution_run_rejects_request_decision_authority_mismatch(tmp_path):

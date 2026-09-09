@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,118 @@ def get_worker_generation() -> str:
     return _PROCESS_WORKER_GENERATION
 
 
+def load_durable_process_identity(
+    database: Any,
+    execution_id: str,
+    organization_id: str,
+):
+    """Reload the exact persisted POSIX identity for one active execution.
+
+    The returned identity is suitable for the supervisor only after the
+    tenant-bound run and ownership rows agree on every persisted field.  A
+    current worker generation is deliberately *not* required: recovery after a
+    worker restart must be able to use the previous worker's durable identity.
+    The old generation is still checked for internal consistency, and malformed
+    or Windows records fail closed.
+    """
+    from app.core.process_supervisor import ProcessIdentity
+
+    if (
+        not isinstance(execution_id, str)
+        or not execution_id.strip()
+        or not isinstance(organization_id, str)
+        or not organization_id.strip()
+    ):
+        return None
+    try:
+        run = database.get_execution_run(execution_id, organization_id)
+        ownership = database.get_process_ownership(execution_id, organization_id)
+    except Exception:
+        return None
+    if not run or not ownership:
+        return None
+    if run.get("organization_id") != organization_id or ownership.get("organization_id") != organization_id:
+        return None
+    if run.get("execution_id") != execution_id or ownership.get("execution_id") != execution_id:
+        return None
+    if run.get("state") not in {"REQUESTED", "STARTING", "RUNNING"}:
+        return None
+    if ownership.get("ownership_state") in {"TERMINAL", "UNKNOWN", "NO_EXTERNAL_PROCESS"}:
+        return None
+
+    # Governed Windows execution is intentionally unsupported until the
+    # supervisor has a verified Job Object implementation.  Do not turn a
+    # legacy Windows-shaped row into an unbound PID operation.
+    if ownership.get("container_type") != ProcessContainerType.POSIX_SESSION.value:
+        return None
+    if ownership.get("launch_commit_state") not in {
+        LaunchCommitState.COMMITTED.value,
+        LaunchCommitState.UNCERTAIN.value,
+    }:
+        return None
+    try:
+        pid = int(ownership.get("root_process_id"))
+        group_id = int(str(ownership.get("process_group_id")))
+        session_id = int(str(ownership.get("session_id")))
+    except (TypeError, ValueError):
+        return None
+    if pid <= 1 or group_id <= 1 or session_id < 0:
+        return None
+    if ownership.get("container_identity") != f"posix-session:{session_id}:group:{group_id}":
+        return None
+    if run.get("process_id") is not None and int(run["process_id"]) != pid:
+        return None
+    if run.get("process_group_id") is not None and str(run["process_group_id"]) != str(group_id):
+        return None
+
+    start_token = ownership.get("root_process_start_token")
+    if not isinstance(start_token, str):
+        return None
+    token_parts = start_token.split(":")
+    if (
+        len(token_parts) != 3
+        or token_parts[0] != "posix"
+        or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "")
+        or not token_parts[2].isdigit()
+    ):
+        return None
+
+    ownership_generation = str(ownership.get("worker_generation") or "")
+    run_generation = str(run.get("worker_generation") or "")
+    if not ownership_generation or not run_generation or ownership_generation != run_generation:
+        return None
+
+    attestation_json = ownership.get("identity_attestation")
+    if ownership.get("ownership_state") == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value:
+        if not isinstance(attestation_json, str) or not attestation_json.strip():
+            return None
+        try:
+            attestation = PosixProcessAttestation.model_validate_json(attestation_json)
+        except Exception:
+            return None
+        if (
+            attestation.verification_result != "VERIFIED"
+            or attestation.worker_generation != ownership_generation
+            or attestation.boot_id != token_parts[1]
+            or attestation.root_start_ticks != int(token_parts[2])
+            or attestation.session_id != session_id
+            or attestation.process_group_id != group_id
+        ):
+            return None
+    elif ownership.get("ownership_state") not in {
+        ProcessOwnershipState.LAUNCH_UNCERTAIN.value,
+        ProcessOwnershipState.RECOVERY_BLOCKED.value,
+    }:
+        return None
+
+    return ProcessIdentity(
+        pid=pid,
+        process_group_id=group_id,
+        start_token=start_token,
+        session_id=session_id,
+    )
+
+
 @dataclass(frozen=True)
 class ExecutionCancellationOutcome:
     """Evidence returned by the single execution cancellation coordinator."""
@@ -61,6 +174,7 @@ class ExecutionCancellationOutcome:
         return self.task_stopped and self.durable_terminal and (
             self.process_confirmed
             or self.reason_code == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+            or self.reason_code == "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION"
             or self.execution_id is None
         )
 
@@ -136,7 +250,14 @@ class ExecutionCancellationCoordinator:
             recovery_required=not (
                 task_stopped
                 and durable_terminal
-                and (process_confirmed or reason_code == "EXECUTION_CANCELLED_BEFORE_DISPATCH" or execution_id is None)
+                and (
+                    process_confirmed
+                    or reason_code in {
+                        "EXECUTION_CANCELLED_BEFORE_DISPATCH",
+                        "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+                    }
+                    or execution_id is None
+                )
             ),
             reason_code=reason_code,
             error_code=error_code,
@@ -323,22 +444,140 @@ class ExecutionCancellationCoordinator:
             and after_revoke.get("reason_code") == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
         ):
             task_stopped = await self.stop_task(owning_task)
+            settlement = getattr(
+                self._database,
+                "settle_execution_after_confirmed_termination",
+                None,
+            )
+            durable_terminal = True
+            if callable(settlement):
+                durable_terminal = bool(await asyncio.to_thread(
+                    settlement,
+                    execution_id,
+                    organization_id,
+                    terminal_state="CANCELLED",
+                    reason_code="EXECUTION_CANCELLED_BEFORE_DISPATCH",
+                    termination_status="PRE_DISPATCH",
+                    worker_generation=after_revoke.get("worker_generation"),
+                    actor="execution-cancellation-coordinator",
+                ))
             return self._outcome(
                 execution_id=execution_id,
                 request_id=request_id,
                 authority_revoked=True,
                 process_status="NOT_FOUND",
                 process_confirmed=False,
-                durable_terminal=True,
+                durable_terminal=durable_terminal,
                 task_stopped=task_stopped,
                 reason_code="EXECUTION_CANCELLED_BEFORE_DISPATCH",
             )
 
         try:
-            cancellation = await asyncio.to_thread(
-                self.supervisor.cancel_execution,
+            ownership = await asyncio.to_thread(
+                self._database.get_process_ownership,
                 execution_id,
+                organization_id,
             )
+        except (AttributeError, NotImplementedError):
+            # Minimal fakes and legacy non-durable stores have no ownership
+            # projection.  They retain the old supervisor-only test seam, but
+            # the real database always exposes this method and therefore cannot
+            # silently bypass durable identity reattachment.
+            ownership = None
+        except Exception as exc:
+            ownership = None
+            identity_error = type(exc).__name__
+        else:
+            identity_error = None
+
+        durable_ownership_api = callable(getattr(self._database, "get_process_ownership", None))
+        durable_identity = None
+        if ownership is not None:
+            durable_identity = await asyncio.to_thread(
+                load_durable_process_identity,
+                self._database,
+                execution_id,
+                organization_id,
+            )
+
+        settlement = getattr(
+            self._database,
+            "settle_execution_after_confirmed_termination",
+            None,
+        )
+        ownership_state = str(ownership.get("ownership_state")) if ownership else None
+
+        # A durable NO_EXTERNAL_PROCESS state is a positive no-process fact,
+        # not permission to ask the supervisor to infer safety from a missing
+        # PID mapping.  It is only safe to close an active run before process
+        # creation, and only through the atomic DAL settlement.
+        if (
+            ownership_state == ProcessOwnershipState.NO_EXTERNAL_PROCESS.value
+            and after_revoke
+            and after_revoke.get("state") == "STARTING"
+            and callable(settlement)
+        ):
+            durable_terminal = bool(await asyncio.to_thread(
+                settlement,
+                execution_id,
+                organization_id,
+                terminal_state="CANCELLED",
+                reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+                termination_status="NO_EXTERNAL_PROCESS",
+                worker_generation=ownership.get("worker_generation"),
+                actor="execution-cancellation-coordinator",
+            ))
+            task_stopped = await self.stop_task(owning_task)
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=True,
+                process_status="NO_EXTERNAL_PROCESS" if durable_terminal else "FAILED",
+                process_confirmed=False,
+                durable_terminal=durable_terminal,
+                task_stopped=task_stopped,
+                reason_code=("EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION" if durable_terminal else None),
+                error_code=None if durable_terminal else "EXECUTION_NO_PROCESS_SETTLEMENT_FAILED",
+            )
+
+        # A live/uncertain durable ownership row without a valid persisted
+        # identity is an escalation condition.  Never fall back to a raw PID or
+        # to an in-memory mapping that has not been reconciled with the tenant
+        # record after a restart.
+        durable_identity_required = (
+            durable_ownership_api
+            and after_revoke
+            and after_revoke.get("state") in {"STARTING", "RUNNING"}
+        ) or ownership_state in {
+            ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value,
+            ProcessOwnershipState.LAUNCH_UNCERTAIN.value,
+            ProcessOwnershipState.RECOVERY_BLOCKED.value,
+        }
+        if durable_identity_required and durable_identity is None:
+            task_stopped = await self.stop_task(owning_task)
+            return self._outcome(
+                execution_id=execution_id,
+                request_id=request_id,
+                authority_revoked=True,
+                process_status="IDENTITY_UNAVAILABLE",
+                process_confirmed=False,
+                durable_terminal=False,
+                task_stopped=task_stopped,
+                error_code=identity_error or "DURABLE_PROCESS_IDENTITY_UNAVAILABLE",
+            )
+
+        try:
+            if durable_identity is not None:
+                cancellation = await asyncio.to_thread(
+                    self.supervisor.cancel_execution,
+                    execution_id,
+                    process_identity=durable_identity,
+                )
+            else:
+                cancellation = await asyncio.to_thread(
+                    self.supervisor.cancel_execution,
+                    execution_id,
+                )
             process_status = getattr(getattr(cancellation, "status", None), "value", str(getattr(cancellation, "status", "UNKNOWN")))
             process_confirmed = bool(getattr(cancellation, "confirmed", False))
         except Exception as exc:
@@ -347,6 +586,28 @@ class ExecutionCancellationCoordinator:
             error_code = type(exc).__name__
         else:
             error_code = None
+
+        durable_settlement = False
+        if process_confirmed and callable(settlement):
+            if durable_identity is None:
+                error_code = error_code or "DURABLE_PROCESS_IDENTITY_REQUIRED_FOR_SETTLEMENT"
+            else:
+                durable_settlement = bool(await asyncio.to_thread(
+                    settlement,
+                    execution_id,
+                    organization_id,
+                    terminal_state="CANCELLED",
+                    reason_code="EXECUTION_CANCELLED",
+                    termination_status=process_status,
+                    process_id=durable_identity.pid,
+                    process_group_id=str(durable_identity.process_group_id),
+                    process_start_token=durable_identity.start_token,
+                    session_id=durable_identity.session_id,
+                    worker_generation=ownership.get("worker_generation") if ownership else None,
+                    actor="execution-cancellation-coordinator",
+                ))
+                if not durable_settlement:
+                    error_code = error_code or "CONFIRMED_TERMINATION_SETTLEMENT_FAILED"
 
         task_stopped = await self.stop_task(owning_task)
         try:
@@ -358,7 +619,10 @@ class ExecutionCancellationCoordinator:
         except Exception as exc:
             final_run = None
             error_code = error_code or type(exc).__name__
-        durable_terminal = bool(final_run and final_run.get("state") in self._TERMINAL_RUN_STATES)
+        if callable(settlement):
+            durable_terminal = durable_settlement
+        else:
+            durable_terminal = bool(final_run and final_run.get("state") in self._TERMINAL_RUN_STATES)
         return self._outcome(
             execution_id=execution_id,
             request_id=request_id,
@@ -367,7 +631,11 @@ class ExecutionCancellationCoordinator:
             process_confirmed=process_confirmed,
             durable_terminal=durable_terminal,
             task_stopped=task_stopped,
-            reason_code=final_run.get("reason_code") if final_run else None,
+            reason_code=(
+                final_run.get("reason_code")
+                if final_run and final_run.get("reason_code")
+                else ("EXECUTION_CANCELLED" if durable_settlement else None)
+            ),
             error_code=error_code,
         )
 
@@ -528,6 +796,9 @@ def settle_execution(
     reason_code: str,
     process_id: Optional[int] = None,
     process_group_id: Optional[str] = None,
+    process_start_token: Optional[str] = None,
+    session_id: Optional[int] = None,
+    termination_status: Optional[str] = None,
 ) -> bool:
     """Coordinate durable ownership evidence and canonical run settlement."""
     if not capability.execution_id or not capability.dispatch_claim_token:
@@ -562,6 +833,45 @@ def settle_execution(
             finally:
                 _ACTIVE_DATABASE_CONNECTION.reset(token)
     except _SettlementRejected:
+        # A cancellation coordinator revokes authority before it asks the
+        # supervisor to terminate the process.  The normal authority-held
+        # transition above must reject that stale capability; the exact
+        # persisted identity then uses the dedicated post-revocation DAL
+        # settlement instead.  This fallback is deliberately restricted to
+        # cancellation outcomes and complete identity/no-process evidence.
+        fallback = getattr(
+            capability.database,
+            "settle_execution_after_confirmed_termination",
+            None,
+        )
+        if not callable(fallback):
+            return False
+        if reason_code == "EXECUTION_CANCELLED" and process_id is not None:
+            if termination_status not in {"KILLED", "ALREADY_EXITED"}:
+                return False
+            return bool(fallback(
+                capability.execution_id,
+                capability.decision.organization_id,
+                terminal_state=terminal_state,
+                reason_code=reason_code,
+                termination_status=termination_status,
+                process_id=process_id,
+                process_group_id=process_group_id,
+                process_start_token=process_start_token,
+                session_id=session_id,
+                worker_generation=capability.worker_generation,
+                actor="process-supervisor",
+            ))
+        if reason_code == "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION" and process_id is None:
+            return bool(fallback(
+                capability.execution_id,
+                capability.decision.organization_id,
+                terminal_state=terminal_state,
+                reason_code=reason_code,
+                termination_status="NO_EXTERNAL_PROCESS",
+                worker_generation=capability.worker_generation,
+                actor="process-supervisor",
+            ))
         return False
     return True
 
@@ -569,6 +879,7 @@ def settle_execution(
 __all__ = [
     "ExecutionCancellationCoordinator",
     "ExecutionCancellationOutcome",
+    "load_durable_process_identity",
     "record_no_process",
     "record_posix_launch",
     "record_launch_uncertain",

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 import json
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -14,6 +17,7 @@ from app.core.process_supervisor import (
     CredentialEnvironmentHandoff,
     CredentialExecutionContext,
     ProcessExecutionStatus,
+    ProcessIdentity,
     ProcessSupervisor,
     VerifiedEgressProxy,
 )
@@ -276,3 +280,71 @@ def test_direct_caller_environment_inputs_are_explicit():
         assert "os.environ.items()" not in source
     source_build = (repository_root / "backend/app/installers/source_build_installer.py").read_text(encoding="utf-8")
     assert 'env = {"HOME": temp, "PATH": os.environ.get("PATH", "")}' not in source_build
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+def test_fresh_supervisor_uses_persisted_identity_after_worker_restart() -> None:
+    """A new supervisor may cancel only the exact persisted process tree."""
+    root = None
+    identity = None
+    try:
+        root_code = (
+            "import subprocess,sys,time; "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+            "print(child.pid, flush=True); time.sleep(30)"
+        )
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        child_line = root.stdout.readline() if root.stdout is not None else ""
+        assert child_line.strip().isdigit()
+        child_pid = int(child_line.strip())
+        identity = ProcessSupervisor._capture_process_identity(root.pid, root.pid)
+        assert identity is not None
+        assert identity.session_id == os.getsid(root.pid)
+
+        restarted_supervisor = ProcessSupervisor()
+        forged_identity = replace(
+            identity,
+            start_token=identity.start_token.rsplit(":", 1)[0] + ":999999999999",
+        )
+        rejected = restarted_supervisor.cancel_execution(
+            "execution-restart-proof",
+            process_identity=forged_identity,
+        )
+        assert rejected.status.value == "FAILED"
+        assert root.poll() is None
+        assert ProcessSupervisor._pid_exists(child_pid)
+
+        cancelled = restarted_supervisor.cancel_execution(
+            "execution-restart-proof",
+            process_identity=identity,
+        )
+        assert cancelled.confirmed is True
+        root.wait(timeout=5)
+        assert not ProcessSupervisor._pid_exists(root.pid)
+        assert not ProcessSupervisor._pid_exists(child_pid)
+        assert not ProcessSupervisor._process_group_exists(identity.process_group_id)
+    finally:
+        if root is not None:
+            if root.poll() is None:
+                if identity is not None:
+                    ProcessSupervisor().cancel_execution(
+                        "execution-restart-proof-cleanup",
+                        process_identity=identity,
+                    )
+                try:
+                    root.kill()
+                except OSError:
+                    pass
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            if root.stdout is not None:
+                root.stdout.close()

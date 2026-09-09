@@ -123,3 +123,102 @@ def test_launch_inventory_rejects_ungoverned_scan_fixture() -> None:
     assert len(launches) == 1
     with pytest.raises(AssertionError, match="explicit authority"):
         _assert_adapter_launch_contract("ungoverned_scan_fixture.py", launches[0])
+
+
+def test_production_worker_uses_the_public_post_consume_handoff() -> None:
+    """The Redis consumer must not bypass the orchestrator authority boundary."""
+    worker_path = ROOT.parent / "run_worker.py"
+    tree = ast.parse(worker_path.read_text(encoding="utf-8"), filename=str(worker_path))
+    public_handoffs = []
+    forbidden = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            callee = ast.unparse(node.func)
+            if callee == "orchestrator.execute_dispatched_scan":
+                public_handoffs.append(node)
+            if callee == "local_executor.execute_bounded":
+                forbidden.append(f"direct executor call at line {node.lineno}")
+        elif isinstance(node, ast.Attribute) and node.attr in {"_execute_scan", "_active_jobs"}:
+            forbidden.append(f"private execution state {node.attr} at line {node.lineno}")
+
+    assert len(public_handoffs) == 1
+    handoff = public_handoffs[0]
+    assert {keyword.arg for keyword in handoff.keywords} >= {
+        "cloud_credentials", "executor",
+    }
+    executor_keyword = next(keyword for keyword in handoff.keywords if keyword.arg == "executor")
+    assert isinstance(executor_keyword.value, ast.Name)
+    assert executor_keyword.value.id == "local_executor"
+    assert forbidden == []
+
+
+@pytest.mark.asyncio
+async def test_production_worker_runtime_handler_calls_public_handoff(monkeypatch) -> None:
+    """Exercise the actual nested Redis handler without launching a scan."""
+    import importlib
+    import run_worker
+
+    import app.core.orchestrator as orchestrator_module
+    import app.core.queue as queue_module
+
+    class StopWorker(Exception):
+        pass
+
+    class FakeOrchestrator:
+        instances = []
+
+        def __init__(self):
+            self.engines = []
+            self.handoffs = []
+            self.__class__.instances.append(self)
+
+        def register_engine(self, engine):
+            self.engines.append(engine)
+
+        async def execute_dispatched_scan(self, *args, **kwargs):
+            self.handoffs.append((args, kwargs))
+
+    class FakeExecutor:
+        durable_enabled = False
+
+    class FakeQueue:
+        instance = None
+
+        def __init__(self, url):
+            self.url = url
+            self.closed = False
+            self.__class__.instance = self
+
+        async def consume_once(self, handler, **_kwargs):
+            await handler("scan-runtime", "org-runtime", "request-runtime", None)
+            raise StopWorker
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(orchestrator_module, "ScanOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(queue_module, "EXECUTION_QUEUE_URL", "redis://runtime-test")
+    monkeypatch.setattr(queue_module, "RedisDurableQueue", FakeQueue)
+    monkeypatch.setattr(queue_module, "ScanQueueManager", FakeExecutor)
+    for module_name, class_name in (
+        ("app.engines.network.engine", "NetworkAssessmentEngine"),
+        ("app.engines.web_dast.engine", "WebDastAssessmentEngine"),
+        ("app.engines.code_sast.engine", "CodeSastAssessmentEngine"),
+        ("app.engines.infra_iac.engine", "InfraIacAssessmentEngine"),
+        ("app.engines.cicd_audit.engine", "CicdAuditAssessmentEngine"),
+    ):
+        module = importlib.import_module(module_name)
+        monkeypatch.setattr(module, class_name, lambda: object())
+
+    with pytest.raises(StopWorker):
+        await run_worker.run_worker()
+
+    assert len(FakeOrchestrator.instances) == 1
+    orchestrator = FakeOrchestrator.instances[0]
+    assert len(orchestrator.engines) == 5
+    assert len(orchestrator.handoffs) == 1
+    args, kwargs = orchestrator.handoffs[0]
+    assert args == ("scan-runtime", "org-runtime", "request-runtime")
+    assert kwargs["cloud_credentials"] is None
+    assert isinstance(kwargs["executor"], FakeExecutor)
+    assert FakeQueue.instance is not None and FakeQueue.instance.closed is True

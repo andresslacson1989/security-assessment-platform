@@ -275,18 +275,53 @@ class ProcessSupervisor:
     def _unregister_pid(self, pid: int) -> None:
         self._unregister_execution(pid)
 
-    def cancel_execution(self, execution_id: str) -> ProcessCancellationResult:
+    def cancel_execution(
+        self,
+        execution_id: str,
+        *,
+        process_identity: Optional[ProcessIdentity] = None,
+    ) -> ProcessCancellationResult:
         """
         Safely cancels a specific execution by execution_id without affecting sibling executions.
         Returns a typed result.  Durable callers may close an execution only
         when ``confirmed`` is true; NOT_FOUND is not proof of process exit.
+
+        ``process_identity`` is the restart-safe durable handoff.  When it is
+        supplied, it must agree with any in-memory mapping; if the mapping was
+        lost during a worker restart, the durable identity becomes the only
+        permitted process target.  A raw PID is never accepted as a substitute.
         """
         if not execution_id or not isinstance(execution_id, str):
             return ProcessCancellationResult(str(execution_id or ""), ProcessCancellationStatus.INVALID_REQUEST)
+        if process_identity is not None and (
+            type(process_identity) is not ProcessIdentity
+            or process_identity.pid <= 1
+            or process_identity.process_group_id is None
+            or process_identity.process_group_id <= 1
+            or not isinstance(process_identity.start_token, str)
+            or not process_identity.start_token.strip()
+            or process_identity.session_id is None
+            or process_identity.session_id < 0
+        ):
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.INVALID_REQUEST)
         with self._lock:
-            pid = self._execution_pids.get(execution_id)
-            group_id = self._execution_groups.get(execution_id)
-            identity = self._execution_identities.get(execution_id)
+            mapped_pid = self._execution_pids.get(execution_id)
+            mapped_group_id = self._execution_groups.get(execution_id)
+            mapped_identity = self._execution_identities.get(execution_id)
+        if process_identity is not None:
+            if mapped_pid is not None and mapped_pid != process_identity.pid:
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, mapped_pid)
+            if mapped_group_id is not None and mapped_group_id != process_identity.process_group_id:
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, process_identity.pid)
+            if mapped_identity is not None and mapped_identity != process_identity:
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, process_identity.pid)
+            pid = process_identity.pid
+            group_id = process_identity.process_group_id
+            identity = process_identity
+        else:
+            pid = mapped_pid
+            group_id = mapped_group_id
+            identity = mapped_identity
         if pid is None:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
         root_exists = self._pid_exists(pid)
@@ -295,9 +330,15 @@ class ProcessSupervisor:
             # A missing launch identity is an uncertainty condition, never
             # permission to signal a possibly reused PID or process group.
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
+        # A live root must pass its own start-token check.  Do not let a
+        # matching session/group mask a root PID reuse or start-token
+        # mismatch.  Group-only validation is reserved for the narrow case
+        # where the original root has exited but descendants remain in the
+        # persisted POSIX container.
         identity_valid = identity is not None and (
-            (root_exists and self._identity_matches(identity))
-            or (group_exists and self._process_group_identity_matches(identity))
+            self._identity_matches(identity)
+            if root_exists
+            else (group_exists and self._process_group_identity_matches(identity))
         )
         if identity is not None and not identity_valid and (root_exists or group_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
@@ -331,8 +372,9 @@ class ProcessSupervisor:
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
         identity_valid = identity is not None and (
-            (root_exists and self._identity_matches(identity))
-            or (group_exists and self._process_group_identity_matches(identity))
+            self._identity_matches(identity)
+            if root_exists
+            else (group_exists and self._process_group_identity_matches(identity))
         )
         if identity is not None and not identity_valid and (root_exists or group_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
@@ -646,9 +688,13 @@ class ProcessSupervisor:
             return False
         if identity is not None and identity.pid != pid:
             return False
-        identity_matches = identity is not None and ProcessSupervisor._identity_matches(identity)
-        group_matches = identity is not None and ProcessSupervisor._process_group_identity_matches(identity)
-        if identity is not None and not identity_matches and not group_matches and (
+        root_exists = ProcessSupervisor._pid_exists(pid)
+        identity_matches = identity is not None and (
+            ProcessSupervisor._identity_matches(identity)
+            if root_exists
+            else ProcessSupervisor._process_group_identity_matches(identity)
+        )
+        if identity is not None and not identity_matches and (
             ProcessSupervisor._pid_exists(pid) or ProcessSupervisor._process_group_exists(process_group_id)
         ):
             logger.error("Refusing to terminate process with mismatched launch identity PID=%s", pid)
@@ -859,44 +905,13 @@ class ProcessSupervisor:
             return ProcessExecutionResult(-1, "", "Empty command provided")
         if max_output_bytes <= 0:
             return ProcessExecutionResult(-1, "", "Invalid maximum output size")
-        if sys.platform == "win32" and execution_capability is not None:
-            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: Windows Job Object implementation is required for governed execution")
-        if execution_capability is not None:
-            if execution_context is not None:
-                if type(execution_context) is not GovernedExecutionContext:
-                    return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: typed governed execution context is required")
-                try:
-                    execution_context.assert_bound_to_capability(execution_capability)
-                    execution_context.assert_launch(
-                        execution_id=execution_id or "",
-                        organization_id=execution_capability.decision.organization_id,
-                        command=cmd,
-                    )
-                except Exception as exc:
-                    return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid execution context ({type(exc).__name__})")
-        elif non_scan_context is not None:
-            if execution_id is not None:
-                return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: non-scan capability cannot carry scan execution identity")
-            if type(non_scan_context) is not NonScanExecutionContext:
-                return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context")
-            try:
-                non_scan_context.assert_issued()
-                non_scan_context.assert_live()
-            except Exception as exc:
-                return ProcessExecutionResult(126, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid non-scan context ({type(exc).__name__})")
-        else:
+        if execution_capability is None and non_scan_context is None:
             return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: launch must declare governed or non-scan capability")
 
         # R3.2: Enterprise external-tool execution fails closed unconditionally when
         # enterprise egress enforcement is required until an authoritative network verifier interface exists.
         operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "").strip().upper()
         egress_required = operating_mode == "ENTERPRISE" or os.environ.get("ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED", "").lower() in {"1", "true", "yes"}
-        if egress_required:
-            return ProcessExecutionResult(
-                -1,
-                "",
-                "PROCESS_LAUNCH_REJECTED_SECURITY: Enterprise egress network enforcement facility is not configured or verifiably available.",
-            )
 
         creationflags = 0
         start_new_session = False
@@ -910,6 +925,7 @@ class ProcessSupervisor:
             renew_lease: Optional[Callable[[], bool]] = None,
             process_identity: Optional[ProcessIdentity] = None,
             process_group_id: Optional[int] = None,
+            cancellation_requested: Optional[threading.Event] = None,
         ) -> Tuple[str, str, bool, bool]:
             """Drain both pipes concurrently while enforcing a combined byte cap."""
             output_lock = threading.Lock()
@@ -946,8 +962,17 @@ class ProcessSupervisor:
             next_lease_renewal = time.monotonic() + 10.0
             lease_lost = False
             timed_out = False
+            cancellation_seen = False
             termination_confirmed = True
             while proc.poll() is None:
+                if cancellation_requested is not None and cancellation_requested.is_set():
+                    cancellation_seen = True
+                    termination_confirmed = self.kill_process_tree(
+                        proc.pid,
+                        process_group_id=process_group_id,
+                        identity=process_identity,
+                    )
+                    break
                 if limit_reached.is_set():
                     termination_confirmed = self.kill_process_tree(proc.pid, process_group_id=process_group_id, identity=process_identity)
                     break
@@ -988,23 +1013,31 @@ class ProcessSupervisor:
                 stderr = f"Execution timed out after {timeout} seconds" + (f"\n{stderr}" if stderr else "")
             if lease_lost:
                 stderr = "Execution lease renewal failed" + (f"\n{stderr}" if stderr else "")
-            return stdout, stderr, limit_reached.is_set() or timed_out or lease_lost, termination_confirmed
+            return stdout, stderr, limit_reached.is_set() or timed_out or lease_lost or cancellation_seen, termination_confirmed
 
         proc_ref: list[Optional[subprocess.Popen]] = [None]
         process_identity_ref: list[Optional[ProcessIdentity]] = [None]
         process_group_ref: list[Optional[int]] = [None]
         retain_execution_ref = [False]
         cancellation_requested = threading.Event()
+        requested_execution_id = execution_id
 
         def _run_sync() -> ProcessExecutionResult:
-            nonlocal proc_ref, execution_context
+            nonlocal proc_ref, execution_context, execution_id
             proc = None
             launch_committed = False
+            authority_claimed = False
 
-            def _settle_durable(terminal_state: str, reason_code: str, process_id: Optional[int] = None, process_group_id: Optional[str] = None) -> bool:
+            def _settle_durable(
+                terminal_state: str,
+                reason_code: str,
+                process_id: Optional[int] = None,
+                process_group_id: Optional[str] = None,
+                termination_status: Optional[str] = None,
+            ) -> bool:
                 if execution_capability is None:
                     return True
-                if execution_id != execution_capability.execution_id:
+                if not authority_claimed or execution_id != execution_capability.execution_id:
                     return False
                 from app.core.execution_service import settle_execution
                 return settle_execution(
@@ -1013,9 +1046,22 @@ class ProcessSupervisor:
                     reason_code=reason_code,
                     process_id=process_id,
                     process_group_id=process_group_id,
+                    process_start_token=(
+                        process_identity_ref[0].start_token
+                        if process_identity_ref[0] is not None else None
+                    ),
+                    session_id=(
+                        process_identity_ref[0].session_id
+                        if process_identity_ref[0] is not None else None
+                    ),
+                    termination_status=termination_status,
                 )
 
-            def _finish_durable(terminal_state: str, reason_code: Optional[str] = None) -> Optional[ProcessExecutionResult]:
+            def _finish_durable(
+                terminal_state: str,
+                reason_code: Optional[str] = None,
+                termination_status: Optional[str] = None,
+            ) -> Optional[ProcessExecutionResult]:
                 if execution_capability is None:
                     return None
                 if execution_id != execution_capability.execution_id:
@@ -1024,17 +1070,36 @@ class ProcessSupervisor:
                     terminal_state, reason_code or "PROCESS_TERMINALIZED",
                     process_id=proc.pid if proc else None,
                     process_group_id=str(proc.pid) if proc and start_new_session else None,
+                    termination_status=termination_status,
                 ):
                     return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable terminal state was not committed")
                 return None
 
+            def _settle_no_process(
+                terminal_state: str,
+                reason_code: str,
+                result: ProcessExecutionResult,
+            ) -> ProcessExecutionResult:
+                """Return a rejection only after a claimed run is durably closed."""
+                if execution_capability is not None:
+                    try:
+                        settled = authority_claimed and _settle_durable(terminal_state, reason_code)
+                    except Exception as exc:
+                        logger.warning(
+                            "Durable no-process settlement failed: execution_id=%s error_type=%s",
+                            execution_id,
+                            type(exc).__name__,
+                        )
+                        settled = False
+                    if not settled:
+                        return ProcessExecutionResult(
+                            -1,
+                            "",
+                            "PROCESS_FINALIZATION_FAILED: durable no-process outcome was not committed",
+                        )
+                return result
+
             try:
-                if pre_launch_check is not None and not pre_launch_check():
-                    return ProcessExecutionResult(
-                        126,
-                        "",
-                        "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
-                    )
                 try:
                     if execution_capability is not None and type(execution_capability) is not ExecutionDecisionCapability:
                         raise TypeError("execution capability type is not approved")
@@ -1050,20 +1115,57 @@ class ProcessSupervisor:
                             timeout=timeout,
                             max_output_bytes=max_output_bytes,
                         )
+                        authority_claimed = True
+                        execution_id = execution_capability.execution_id
+                        if requested_execution_id is not None and requested_execution_id != execution_id:
+                            return _settle_no_process(
+                                "EXECUTION_BLOCKED",
+                                "EXECUTION_IDENTITY_MISMATCH",
+                                ProcessExecutionResult(
+                                    126,
+                                    "",
+                                    "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch",
+                                ),
+                            )
                         if execution_context is None:
                             execution_context = execution_capability.issue_execution_context(command=cmd)
+                        if type(execution_context) is not GovernedExecutionContext:
+                            raise TypeError("typed governed execution context is required")
                         execution_context.assert_bound_to_capability(execution_capability)
                         execution_context.assert_launch(
                             execution_id=execution_capability.execution_id,
                             organization_id=execution_capability.decision.organization_id,
                             command=cmd,
                         )
-                        if not execution_id or execution_id != execution_capability.execution_id:
-                            _settle_durable("EXECUTION_BLOCKED", "EXECUTION_IDENTITY_MISMATCH")
-                            return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: execution identity mismatch")
-                        if cancellation_requested.is_set():
-                            _settle_durable("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
-                            return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
+                    elif non_scan_context is not None:
+                        if execution_id is not None:
+                            raise ValueError("non-scan capability cannot carry scan execution identity")
+                        if type(non_scan_context) is not NonScanExecutionContext:
+                            raise TypeError("invalid non-scan context")
+                        non_scan_context.assert_issued()
+                        non_scan_context.assert_live()
+                    else:
+                        raise ExecutionDecisionError("launch must declare governed or non-scan capability")
+                    if sys.platform == "win32" and execution_capability is not None:
+                        return _settle_no_process(
+                            "EXECUTION_BLOCKED",
+                            "PROCESS_LAUNCH_REJECTED_SECURITY",
+                            ProcessExecutionResult(
+                                126,
+                                "",
+                                "PROCESS_LAUNCH_REJECTED_SECURITY: Windows Job Object implementation is required for governed execution",
+                            ),
+                        )
+                    if egress_required:
+                        return _settle_no_process(
+                            "EXECUTION_BLOCKED",
+                            "PROCESS_LAUNCH_REJECTED_SECURITY",
+                            ProcessExecutionResult(
+                                -1,
+                                "",
+                                "PROCESS_LAUNCH_REJECTED_SECURITY: Enterprise egress network enforcement facility is not configured or verifiably available.",
+                            ),
+                        )
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")
                     if credential_handoff is not None and type(credential_handoff) is not CredentialEnvironmentHandoff:
@@ -1090,18 +1192,59 @@ class ProcessSupervisor:
                         if not is_canonical_operation_policy_revision(credential_context.operation_policy_revision):
                             raise ValueError("operation policy revision is not canonical")
                         clean_env.update(credential_handoff.materialize())
+
+                    if cancellation_requested.is_set():
+                        return _settle_no_process(
+                            "CANCELLED",
+                            "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+                            ProcessExecutionResult(
+                                130,
+                                "",
+                                "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation",
+                            ),
+                        )
+                    if pre_launch_check is not None:
+                        try:
+                            pre_launch_ok = bool(pre_launch_check())
+                        except Exception as exc:
+                            return _settle_no_process(
+                                "EXECUTION_BLOCKED",
+                                "PROCESS_LAUNCH_REJECTED_SECURITY",
+                                ProcessExecutionResult(
+                                    126,
+                                    "",
+                                    f"PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed ({type(exc).__name__})",
+                                ),
+                            )
+                        if not pre_launch_ok:
+                            return _settle_no_process(
+                                "EXECUTION_BLOCKED",
+                                "PROCESS_LAUNCH_REJECTED_SECURITY",
+                                ProcessExecutionResult(
+                                    126,
+                                    "",
+                                    "PROCESS_LAUNCH_REJECTED_SECURITY: pre-launch security verification failed",
+                                ),
+                            )
                 except (AttributeError, TypeError, ValueError) as exc:
-                    if execution_capability is not None:
-                        _settle_durable("EXECUTION_BLOCKED", "PROCESS_LAUNCH_REJECTED_SECURITY")
+                    if execution_capability is not None and authority_claimed:
+                        if not _settle_durable("EXECUTION_BLOCKED", "PROCESS_LAUNCH_REJECTED_SECURITY"):
+                            return ProcessExecutionResult(
+                                -1,
+                                "",
+                                "PROCESS_FINALIZATION_FAILED: security rejection outcome was not committed",
+                            )
                     return ProcessExecutionResult(
                         126,
                         "",
                         f"PROCESS_LAUNCH_REJECTED_SECURITY: invalid launch capability ({type(exc).__name__})",
                     )
                 if cancellation_requested.is_set():
-                    if execution_capability is not None:
-                        _settle_durable("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
-                    return ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation")
+                    return _settle_no_process(
+                        "CANCELLED",
+                        "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+                        ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation"),
+                    )
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -1200,6 +1343,7 @@ class ProcessSupervisor:
                     renew_lease=(execution_capability.renew if execution_capability is not None else None),
                     process_identity=process_identity,
                     process_group_id=process_group_id,
+                    cancellation_requested=cancellation_requested,
                 )
                 if bounded_failure and not termination_confirmed:
                     retain_execution_ref[0] = True
@@ -1232,8 +1376,21 @@ class ProcessSupervisor:
                             )
                         return ProcessExecutionResult(
                             -1, stdout,
-                            "PROCESS_LAUNCH_UNCERTAIN: owned process container is not empty",
+                                "PROCESS_LAUNCH_UNCERTAIN: owned process container is not empty",
                         )
+                if cancellation_requested.is_set():
+                    finalization = _finish_durable(
+                        "CANCELLED",
+                        "EXECUTION_CANCELLED",
+                        termination_status="ALREADY_EXITED" if proc.poll() is not None else "KILLED",
+                    )
+                    if finalization:
+                        return finalization
+                    return ProcessExecutionResult(
+                        130,
+                        stdout,
+                        "PROCESS_LAUNCH_CANCELLED: cancellation was requested" + (f"\n{stderr}" if stderr else ""),
+                    )
                 if "Output exceeded maximum" in stderr:
                     finalization = _finish_durable("PARTIAL_RESULTS_WITH_WARNING", "OUTPUT_LIMIT_EXCEEDED")
                     if finalization:
@@ -1257,13 +1414,17 @@ class ProcessSupervisor:
                     return finalization
                 return ProcessExecutionResult(proc.returncode, stdout, stderr)
             except FileNotFoundError as e:
-                if execution_capability is not None:
-                    _settle_durable("FAILED", "EXECUTABLE_NOT_FOUND")
-                return ProcessExecutionResult(127, "", f"Executable not found: {e}")
+                return _settle_no_process(
+                    "FAILED",
+                    "EXECUTABLE_NOT_FOUND",
+                    ProcessExecutionResult(127, "", f"Executable not found: {e}"),
+                )
             except PermissionError as e:
-                if execution_capability is not None:
-                    _settle_durable("EXECUTION_BLOCKED", "EXECUTABLE_PERMISSION_DENIED")
-                return ProcessExecutionResult(126, "", f"Permission denied: {e}")
+                return _settle_no_process(
+                    "EXECUTION_BLOCKED",
+                    "EXECUTABLE_PERMISSION_DENIED",
+                    ProcessExecutionResult(126, "", f"Permission denied: {e}"),
+                )
             except Exception as e:
                 termination_confirmed = True
                 if proc and proc.pid:
@@ -1310,31 +1471,60 @@ class ProcessSupervisor:
                 if proc and proc.pid and not retain_execution_ref[0]:
                     self._unregister_execution(proc.pid, execution_id=execution_id)
 
+        worker_task = asyncio.create_task(
+            asyncio.to_thread(_run_sync),
+            name=f"process-supervisor:{execution_id or 'non-scan'}",
+        )
+
+        def _consume_late_worker_result(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except BaseException as exc:
+                logger.error(
+                    "Late process-supervisor worker failed after caller cancellation: error_type=%s",
+                    type(exc).__name__,
+                )
+
         try:
-            return await asyncio.to_thread(_run_sync)
+            return await asyncio.shield(worker_task)
         except asyncio.CancelledError:
+            # The caller's cancellation is only a request.  The worker thread
+            # remains the owner of process-tree verification and durable
+            # settlement; this task may signal the exact identity to shorten
+            # the wait, but it must never publish a terminal DB state itself.
             cancellation_requested.set()
+            termination_confirmed = True
             if proc_ref[0] and proc_ref[0].pid:
                 if process_identity_ref[0] is None:
-                    retain_execution_ref[0] = True
-                    raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process identity unavailable; governed cleanup refused")
-                termination_confirmed = self.kill_process_tree(
-                    proc_ref[0].pid,
-                    process_group_id=process_group_ref[0],
-                    identity=process_identity_ref[0],
+                    termination_confirmed = False
+                else:
+                    termination_confirmed = self.kill_process_tree(
+                        proc_ref[0].pid,
+                        process_group_id=process_group_ref[0],
+                        identity=process_identity_ref[0],
+                    )
+            if not termination_confirmed:
+                retain_execution_ref[0] = True
+            try:
+                await asyncio.wait_for(asyncio.shield(worker_task), timeout=5.0)
+            except asyncio.TimeoutError:
+                retain_execution_ref[0] = True
+                worker_task.add_done_callback(_consume_late_worker_result)
+                raise RuntimeError(
+                    "PROCESS_TERMINATION_UNCONFIRMED: process supervisor worker did not settle before the cancellation deadline"
                 )
-                if not termination_confirmed:
-                    retain_execution_ref[0] = True
-                    raise RuntimeError("PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
-                if execution_capability is not None:
-                    if not _settle_durable(
-                        "CANCELLED", "EXECUTION_CANCELLED",
-                        process_id=proc_ref[0].pid,
-                        process_group_id=str(process_group_ref[0]) if process_group_ref[0] else None,
-                    ):
-                        raise RuntimeError("PROCESS_FINALIZATION_FAILED: durable cancellation outcome was not committed")
-            elif execution_capability is not None:
-                _settle_durable("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
+            except BaseException as exc:
+                if not isinstance(exc, asyncio.CancelledError):
+                    raise
+                retain_execution_ref[0] = True
+                worker_task.add_done_callback(_consume_late_worker_result)
+                raise RuntimeError(
+                    "PROCESS_TERMINATION_UNCONFIRMED: process supervisor worker cancellation was not joined"
+                ) from exc
+            if not termination_confirmed:
+                raise RuntimeError(
+                    "PROCESS_TERMINATION_UNCONFIRMED: process identity-bound termination was not confirmed"
+                )
             raise
 
 

@@ -5,8 +5,10 @@ Unit tests for Engine Plugin Interface, Token Bucket Rate Limiter, Circuit Break
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-import pytest
+from types import SimpleNamespace
 from typing import List
+
+import pytest
 
 from app.core.models import (
     Target,
@@ -60,6 +62,96 @@ async def _dispatch_authorized_scan(monkeypatch, orchestrator, scan_job):
     monkeypatch.setattr("app.core.queue.queue_manager", ScanQueueManager())
 
     return await orchestrator.dispatch_approved_scan(scan_job)
+
+
+@pytest.mark.asyncio
+async def test_worker_handoff_rejects_revoked_child_before_entering_executor(monkeypatch):
+    """A stale child decision must not reach native or external scan work."""
+    import app.core.orchestrator as orchestrator_module
+
+    job = ScanJob(
+        id="scan-child-revoked",
+        organization_id="org-a",
+        authorization_request_id="parent-a",
+        target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),
+        profile=ScanProfile.QUICK,
+        status=ScanStatus.PENDING,
+    )
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    binding = {
+        "parent_state": "DISPATCHABLE",
+        "scan_id": job.id,
+        "organization_id": "org-a",
+        "operation_id": "network:nmap",
+        "operation_selection_state": "SELECTED",
+        "child_request_id": "request-child",
+        "child_decision_id": "decision-child",
+        "child_execution_id": "execution-child",
+        "child_request_organization_id": "org-a",
+        "child_decision_organization_id": "org-a",
+        "child_run_organization_id": "org-a",
+        "child_run_request_id": "request-child",
+        "child_run_approved_decision_id": "decision-child",
+        "child_request_state": "AUTHORIZED",
+        "child_decision_approval_state": "APPROVED",
+        "child_decision_session_jti": "session-a",
+        "child_decision_worker_identity": "worker-a",
+        "child_decision_revoked_at": "revoked-at",
+        "child_decision_consumed_at": None,
+        "child_request_expires_at": expires_at,
+        "child_decision_expires_at": expires_at,
+        "child_run_snapshot_completeness": "COMPLETE",
+        "child_run_worker_identity": "worker-a",
+        "child_run_worker_generation": "generation-a",
+        "dispatch_state": "PENDING",
+    }
+    parent = {
+        "scan_id": job.id,
+        "organization_id": "org-a",
+        "state": "DISPATCHABLE",
+        "expires_at": expires_at,
+        "revoked_at": None,
+        "consumed_at": None,
+    }
+
+    class Executor:
+        durable_enabled = False
+
+        async def execute_bounded(self, *args, **kwargs):
+            raise AssertionError("revoked child authority must not enter the executor")
+
+    fake_database = SimpleNamespace(
+        get_scan_authorization_request=lambda request_id, organization_id: parent,
+        list_scan_authorization_operation_ids=lambda request_id, organization_id, selected_only=False: ["network:nmap"],
+        get_scan_authorization_launch_binding=lambda request_id, organization_id, operation_id: binding,
+        get_execution_run=lambda execution_id, organization_id: {
+            "execution_id": execution_id,
+            "organization_id": organization_id,
+            "state": "REQUESTED",
+        },
+        is_token_revoked=lambda session_jti: False,
+    )
+    monkeypatch.setattr(orchestrator_module, "get_scan", lambda scan_id, organization_id=None: job)
+    monkeypatch.setattr(orchestrator_module, "db_manager", fake_database)
+
+    with pytest.raises(RuntimeError, match="child execution decision is revoked"):
+        await orchestrator_module.ScanOrchestrator().execute_dispatched_scan(
+            job.id,
+            "org-a",
+            "parent-a",
+            executor=Executor(),
+        )
+
+    binding["child_decision_revoked_at"] = None
+    binding["child_run_worker_generation"] = "generation-from-another-worker"
+    monkeypatch.setenv("CYBERASSESS_WORKER_IDENTITY", "worker-a")
+    with pytest.raises(RuntimeError, match="another worker generation"):
+        await orchestrator_module.ScanOrchestrator().execute_dispatched_scan(
+            job.id,
+            "org-a",
+            "parent-a",
+            executor=Executor(),
+        )
 
 
 class MockSuccessfulEngine(BaseAssessmentEngine):

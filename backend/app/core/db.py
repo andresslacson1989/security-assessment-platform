@@ -4136,6 +4136,7 @@ class DatabaseManager:
                            r.process_group_id, r.correlation_id,
                            p.ownership_state, p.root_process_id,
                            p.process_group_id AS ownership_process_group_id,
+                           i.state AS dispatch_state,
                            s.status AS recovery_status, s.attempt_number,
                            s.next_retry_at, s.escalation_level,
                            CASE
@@ -5001,6 +5002,373 @@ class DatabaseManager:
                 result="SUCCESS", correlation_id=row["correlation_id"] or f"corr-recovery-{execution_id}",
                 details={"to": terminal_state, "reason_code": reason_code,
                          "no_process_proof": no_process_proof},
+            ))
+            return True
+
+    def settle_execution_after_confirmed_termination(
+        self,
+        execution_id: str,
+        organization_id: str,
+        *,
+        terminal_state: str,
+        reason_code: str,
+        termination_status: str,
+        process_id: Optional[int] = None,
+        process_group_id: Optional[str] = None,
+        process_start_token: Optional[str] = None,
+        session_id: Optional[int] = None,
+        worker_generation: Optional[str] = None,
+        actor: str = "execution-cancellation-coordinator",
+    ) -> bool:
+        """Atomically close a revoked execution after an exact termination proof.
+
+        This is intentionally separate from the normal authority-held terminal
+        transitions.  Once revocation has committed, those transitions must
+        reject the old authority; cancellation still needs one narrowly scoped
+        durable operation that can close the already-owned process record after
+        the supervisor proves the exact process identity is gone.  No schema
+        change is required: the existing ownership proof column stores a
+        digest-bound termination fact and the append-only audit/recovery tables
+        retain the full lifecycle evidence.
+
+        ``termination_status`` is a closed vocabulary.  Process outcomes must
+        carry the complete persisted identity tuple; ``PRE_DISPATCH`` and
+        ``NO_EXTERNAL_PROCESS`` are accepted only for the corresponding
+        durable no-process states.  A PID, a missing in-memory mapping, or a
+        terminal scan row alone is never sufficient.
+        """
+        process_statuses = frozenset({"KILLED", "ALREADY_EXITED"})
+        no_process_statuses = frozenset({"PRE_DISPATCH", "NO_EXTERNAL_PROCESS"})
+        safe_terminal_states = frozenset({"CANCELLED", "TIMED_OUT", "FAILED", "EXECUTION_BLOCKED"})
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (execution_id, organization_id, terminal_state, reason_code, termination_status, actor)
+        ):
+            return False
+        if terminal_state not in safe_terminal_states or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
+            raise ValueError("confirmed-termination settlement requires a reviewed safe terminal outcome")
+        if termination_status not in process_statuses | no_process_statuses:
+            raise ValueError("confirmed-termination settlement status is not allowlisted")
+        if termination_status in process_statuses:
+            if (
+                not isinstance(process_id, int)
+                or process_id <= 0
+                or not isinstance(process_group_id, str)
+                or not process_group_id.isdigit()
+                or int(process_group_id) <= 1
+                or not isinstance(process_start_token, str)
+                or not process_start_token.startswith("posix:")
+                or not isinstance(session_id, int)
+                or session_id < 0
+            ):
+                return False
+        elif any(value is not None for value in (process_id, process_group_id, process_start_token, session_id)):
+            return False
+
+        now = utc_now()
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                """SELECT p.*, r.request_id, r.approved_decision_id,
+                          r.state AS run_state, r.reason_code AS run_reason_code,
+                          r.process_id AS run_process_id,
+                          r.process_group_id AS run_process_group_id,
+                          r.correlation_id,
+                          q.state AS request_state, q.expires_at AS request_expires_at,
+                          d.approval_state, d.revoked_at AS decision_revoked_at,
+                          d.expires_at AS decision_expires_at, d.session_jti,
+                          i.state AS dispatch_state,
+                          s.status AS recovery_status,
+                          s.attempt_number AS recovery_attempt_number,
+                          s.worker_generation AS recovery_worker_generation
+                     FROM execution_process_ownership p
+                     JOIN execution_runs r
+                       ON r.execution_id=p.execution_id
+                      AND r.organization_id=p.organization_id
+                     JOIN execution_requests q
+                       ON q.id=r.request_id
+                      AND q.organization_id=r.organization_id
+                     JOIN execution_decisions d
+                       ON d.id=r.approved_decision_id
+                      AND d.organization_id=r.organization_id
+                     JOIN execution_dispatch_intents i
+                       ON i.execution_id=r.execution_id
+                      AND i.organization_id=r.organization_id
+                     JOIN execution_recovery_state s
+                       ON s.execution_id=r.execution_id
+                      AND s.organization_id=r.organization_id
+                    WHERE p.execution_id=? AND p.organization_id=?""" + lock,
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row:
+                return False
+
+            current_ownership = str(row["ownership_state"])
+            if current_ownership == ProcessOwnershipState.TERMINAL.value:
+                return (
+                    row["run_state"] == terminal_state
+                    and row["run_reason_code"] == reason_code
+                    and row["recovery_status"] == "CONFIRMED_TERMINATED"
+                )
+
+            active_run_states = {"REQUESTED", "STARTING", "RUNNING"}
+            if termination_status in process_statuses:
+                if current_ownership not in {
+                    ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value,
+                    ProcessOwnershipState.LAUNCH_UNCERTAIN.value,
+                    ProcessOwnershipState.RECOVERY_BLOCKED.value,
+                }:
+                    return False
+                if (
+                    int(row["root_process_id"] or 0) != process_id
+                    or str(row["process_group_id"] or "") != process_group_id
+                    or str(row["root_process_start_token"] or "") != process_start_token
+                    or str(row["session_id"] or "") != str(session_id)
+                    or (row["run_process_id"] is not None and int(row["run_process_id"]) != process_id)
+                    or (row["run_process_group_id"] is not None and str(row["run_process_group_id"]) != process_group_id)
+                    or row["dispatch_state"] not in {"CLAIMED", "BLOCKED"}
+                ):
+                    return False
+            elif termination_status == "PRE_DISPATCH":
+                if current_ownership not in {
+                    ProcessOwnershipState.UNKNOWN.value,
+                    ProcessOwnershipState.NO_EXTERNAL_PROCESS.value,
+                }:
+                    return False
+                if not (
+                    (
+                        row["run_state"] == "REQUESTED"
+                        and row["dispatch_state"] == "PENDING"
+                        and (
+                            (
+                                terminal_state == "CANCELLED"
+                                and reason_code == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+                            )
+                            or (
+                                terminal_state == "EXECUTION_BLOCKED"
+                                and reason_code == "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED"
+                            )
+                        )
+                    )
+                    or (
+                        row["run_state"] == "CANCELLED"
+                        and row["run_reason_code"] == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+                        and row["dispatch_state"] == "BLOCKED"
+                        and reason_code == "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+                    )
+                ):
+                    return False
+            else:  # NO_EXTERNAL_PROCESS
+                if current_ownership not in {
+                    ProcessOwnershipState.UNKNOWN.value,
+                    ProcessOwnershipState.NO_EXTERNAL_PROCESS.value,
+                }:
+                    return False
+                if row["run_state"] != "STARTING" or row["dispatch_state"] not in {"CLAIMED", "BLOCKED"}:
+                    return False
+                if (terminal_state, reason_code) not in {
+                    ("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION"),
+                    ("EXECUTION_BLOCKED", "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED"),
+                    ("TIMED_OUT", "EXECUTION_AUTHORITY_EXPIRED"),
+                }:
+                    return False
+                if current_ownership == ProcessOwnershipState.UNKNOWN.value:
+                    # Only the process-launch worker can assert that its
+                    # pre-Popen cancellation check completed without creating
+                    # an external process.  A coordinator must first consume
+                    # the persisted NO_EXTERNAL_PROCESS projection.
+                    if (
+                        actor != "process-supervisor"
+                        or row["dispatch_state"] != "CLAIMED"
+                        or (terminal_state, reason_code)
+                        != ("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
+                    ):
+                        return False
+                    expected_generation = str(row["worker_generation"] or "")
+                    if not worker_generation or str(worker_generation) != expected_generation:
+                        return False
+
+            run_is_active = row["run_state"] in active_run_states
+            run_is_same_terminal_pre_dispatch = (
+                termination_status == "PRE_DISPATCH"
+                and row["run_state"] == terminal_state
+                and row["run_reason_code"] == reason_code
+            )
+            if not run_is_active and not run_is_same_terminal_pre_dispatch:
+                return False
+            if row["recovery_status"] not in {"REQUESTED", "CONFIRMED_TERMINATED"}:
+                # An active recovery lease is owned by its lease holder and
+                # must be settled through settle_recovery_execution.  Do all
+                # validation before the first write so a rejected caller can
+                # never leave a partial lifecycle transition committed.
+                return False
+            if row["recovery_status"] == "CONFIRMED_TERMINATED":
+                return False
+            # This method is a post-revocation settlement primitive.  It must
+            # never become a second terminal-transition API while the durable
+            # request, decision, session, and expiry checks still authorize
+            # execution.  The ordinary authority-held finish path owns that
+            # state transition; this path may proceed only after authority is
+            # demonstrably invalid or revoked.
+            try:
+                request_expired = (
+                    row["request_expires_at"] is None
+                    or datetime.fromisoformat(row["request_expires_at"]) <= now
+                )
+                decision_expired = (
+                    row["decision_expires_at"] is None
+                    or datetime.fromisoformat(row["decision_expires_at"]) <= now
+                )
+            except (TypeError, ValueError):
+                return False
+            authority_invalid = (
+                row["request_state"] != "AUTHORIZED"
+                or row["approval_state"] != "APPROVED"
+                or row["decision_revoked_at"] is not None
+                or request_expired
+                or decision_expired
+                or not row["session_jti"]
+                or conn.execute(
+                    "SELECT 1 FROM revoked_tokens WHERE jti=?",
+                    (row["session_jti"],),
+                ).fetchone() is not None
+            )
+            if not authority_invalid:
+                return False
+            expected_worker_generation = str(row["worker_generation"] or "")
+            if termination_status in process_statuses:
+                if (
+                    not expected_worker_generation
+                    or not worker_generation
+                    or str(worker_generation) != expected_worker_generation
+                ):
+                    return False
+            dispatch_state = "BLOCKED" if terminal_state in {"CANCELLED", "EXECUTION_BLOCKED"} else "FAILED"
+            if row["dispatch_state"] in {"PENDING", "CLAIMED"}:
+                pass
+            elif row["dispatch_state"] != "BLOCKED" or dispatch_state != "BLOCKED":
+                return False
+
+            proof_material = {
+                "schema_version": "execution-termination-proof-v1",
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "termination_status": termination_status,
+                "terminal_state": terminal_state,
+                "reason_code": reason_code,
+                "process_id": process_id,
+                "process_group_id": process_group_id,
+                "process_start_token": process_start_token,
+                "session_id": session_id,
+                "worker_generation": worker_generation or row["worker_generation"] or row["recovery_worker_generation"],
+                "observed_at": now.isoformat(),
+            }
+            proof_digest = hashlib.sha256(
+                json.dumps(proof_material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+            ).hexdigest()
+            termination_proof = f"TERMINATION_CONFIRMED:v1:{proof_digest}"
+
+            ownership_update = conn.execute(
+                """UPDATE execution_process_ownership
+                      SET ownership_state='TERMINAL', no_process_proof=?,
+                          terminalized_at=?, updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND ownership_state=?""",
+                (termination_proof, now.isoformat(), now.isoformat(),
+                 execution_id, organization_id, current_ownership),
+            )
+            if ownership_update.rowcount != 1:
+                return False
+
+            if row["dispatch_state"] in {"PENDING", "CLAIMED"}:
+                dispatch_update = conn.execute(
+                    """UPDATE execution_dispatch_intents
+                          SET state=?, completed_at=?, last_error=?,
+                              claimed_by=NULL, claim_token=NULL, lease_expires_at=NULL
+                        WHERE execution_id=? AND organization_id=?
+                          AND state IN ('PENDING','CLAIMED')""",
+                    (dispatch_state, now.isoformat(), reason_code, execution_id, organization_id),
+                )
+                if dispatch_update.rowcount != 1:
+                    raise RuntimeError("confirmed-termination settlement lost its dispatch fence")
+
+            if run_is_active:
+                run_update = conn.execute(
+                    """UPDATE execution_runs
+                          SET state=?, reason_code=?, finished_at=?
+                        WHERE execution_id=? AND organization_id=?
+                          AND state IN ('REQUESTED','STARTING','RUNNING')""",
+                    (terminal_state, reason_code, now.isoformat(), execution_id, organization_id),
+                )
+                if run_update.rowcount != 1:
+                    raise RuntimeError("confirmed-termination settlement lost its run fence")
+
+            if row["approved_decision_id"]:
+                conn.execute(
+                    """UPDATE execution_decisions
+                          SET claim_owner=NULL, claim_expires_at=NULL, claim_token=NULL
+                        WHERE id=? AND organization_id=?""",
+                    (row["approved_decision_id"], organization_id),
+                )
+
+            recovery_update = conn.execute(
+                """UPDATE execution_recovery_state
+                      SET status='CONFIRMED_TERMINATED', last_outcome=?,
+                          last_error=NULL, owner=NULL, lease_token=NULL,
+                          lease_expires_at=NULL, next_retry_at=NULL,
+                          updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND status='REQUESTED'""",
+                (termination_proof, now.isoformat(), execution_id, organization_id),
+            )
+            if recovery_update.rowcount != 1:
+                raise RuntimeError("confirmed-termination settlement lost its recovery fence")
+
+            attempt_number = max(1, int(row["recovery_attempt_number"] or 0) + 1)
+            recovery_worker_generation = (
+                worker_generation
+                or row["worker_generation"]
+                or row["recovery_worker_generation"]
+                or "unknown-worker-generation"
+            )
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                   (attempt_id, execution_id, organization_id, worker_identity,
+                    worker_generation, attempt_number, status, cancellation_status,
+                    reason_code, correlation_id, requested_at, started_at,
+                    completed_at, error_code, escalation_level, health_reference)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    f"termination-{uuid.uuid4().hex}", execution_id, organization_id,
+                    actor, recovery_worker_generation, attempt_number,
+                    "CONFIRMED_TERMINATED", termination_status, reason_code,
+                    row["correlation_id"] or f"corr-execution-{execution_id}",
+                    now.isoformat(), now.isoformat(), now.isoformat(), None,
+                    0, f"termination-proof:{proof_digest}",
+                ),
+            )
+            correlation_id = row["correlation_id"] or f"corr-execution-{execution_id}"
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED,
+                object_type="execution_process_ownership", object_id=execution_id,
+                result="SUCCESS", correlation_id=correlation_id,
+                details={
+                    "from": current_ownership,
+                    "to": ProcessOwnershipState.TERMINAL.value,
+                    "termination_status": termination_status,
+                    "termination_proof": termination_proof,
+                    "reason_code": reason_code,
+                },
+            ))
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_RUN_TRANSITIONED,
+                object_type="execution_run", object_id=execution_id,
+                result="SUCCESS", correlation_id=correlation_id,
+                details={"to": terminal_state, "reason_code": reason_code},
             ))
             return True
 

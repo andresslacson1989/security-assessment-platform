@@ -148,6 +148,112 @@ async def test_reaper_keeps_process_backlog_open_when_termination_is_unconfirmed
 
 
 @pytest.mark.asyncio
+async def test_reaper_settles_durable_no_process_without_supervisor_inference(monkeypatch):
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+
+    closed = []
+
+    class FakeDatabase:
+        def list_execution_recovery_candidates(self):
+            return [{
+                "execution_id": "run-no-process",
+                "organization_id": "org-a",
+                "process_id": None,
+                "run_state": "STARTING",
+                "dispatch_state": "CLAIMED",
+                "ownership_state": "NO_EXTERNAL_PROCESS",
+                "terminal_state": "CANCELLED",
+                "reason_code": "EXECUTION_CANCELLED",
+            }]
+
+        def get_process_ownership(self, execution_id, organization_id):
+            assert (execution_id, organization_id) == ("run-no-process", "org-a")
+            return {
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "ownership_state": "NO_EXTERNAL_PROCESS",
+                "worker_generation": "generation-a",
+            }
+
+        def get_execution_run(self, execution_id, organization_id):
+            return {
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "state": "STARTING",
+            }
+
+        def settle_execution_after_confirmed_termination(self, execution_id, organization_id, **kwargs):
+            closed.append((execution_id, organization_id, kwargs))
+            return True
+
+    class FakeSupervisor:
+        def cancel_execution(self, *_args, **_kwargs):
+            raise AssertionError("positive no-process evidence must not call the supervisor")
+
+    monkeypatch.setattr(db_module, "db_manager", FakeDatabase())
+    monkeypatch.setattr(supervisor_module, "process_supervisor", FakeSupervisor())
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 1
+    assert closed == [(
+        "run-no-process",
+        "org-a",
+        {
+            "terminal_state": "CANCELLED",
+            "reason_code": "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+            "termination_status": "NO_EXTERNAL_PROCESS",
+            "worker_generation": "generation-a",
+            "actor": "execution-reaper",
+        },
+    )]
+
+
+@pytest.mark.asyncio
+async def test_reaper_defers_starting_unknown_ownership_without_supervisor_inference(monkeypatch):
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+
+    class FakeDatabase:
+        def list_execution_recovery_candidates(self):
+            return [{
+                "execution_id": "run-starting-unknown",
+                "organization_id": "org-a",
+                "process_id": None,
+                "run_state": "STARTING",
+                "dispatch_state": "CLAIMED",
+                "ownership_state": "UNKNOWN",
+                "terminal_state": "CANCELLED",
+                "reason_code": "EXECUTION_CANCELLED",
+            }]
+
+        def get_process_ownership(self, execution_id, organization_id):
+            return {
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "ownership_state": "UNKNOWN",
+            }
+
+        def get_execution_run(self, execution_id, organization_id):
+            return {
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "state": "STARTING",
+            }
+
+    class FakeSupervisor:
+        def cancel_execution(self, *_args, **_kwargs):
+            raise AssertionError("STARTING/UNKNOWN recovery must not infer process absence")
+
+    monkeypatch.setattr(db_module, "db_manager", FakeDatabase())
+    monkeypatch.setattr(supervisor_module, "process_supervisor", FakeSupervisor())
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 0
+    assert "durable process identity unavailable" in service.state.last_recovery_error
+
+
+@pytest.mark.asyncio
 async def test_reaper_enumeration_failure_isolated_in_observation_state(monkeypatch):
     from app.core import db as db_module
 

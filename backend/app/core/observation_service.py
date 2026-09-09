@@ -131,11 +131,15 @@ class BackendObservationService:
         """Terminate and durably close authority-lost executions by exact ID."""
         from app.core.db import db_manager
         from app.core.process_supervisor import process_supervisor
-        from app.core.execution_service import get_worker_generation
+        from app.core.execution_service import (
+            get_worker_generation,
+            load_durable_process_identity,
+        )
 
         recovery_owner = "execution-recovery-coordinator"
         recovery_worker_generation = get_worker_generation()
         max_recovery_attempts = 5
+        durable_identity_api = callable(getattr(db_manager, "get_process_ownership", None))
 
         try:
             candidates = await asyncio.wait_for(
@@ -177,8 +181,45 @@ class BackendObservationService:
                     )
                     if not lease:
                         continue
+                    durable_identity = None
+                    if durable_identity_api:
+                        durable_identity = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                load_durable_process_identity,
+                                db_manager,
+                                execution_id,
+                                candidate["organization_id"],
+                            ),
+                            timeout=self.refresh_timeout_seconds,
+                        )
+                        if durable_identity is None:
+                            attempt_number = int(lease["attempt_number"])
+                            status = "EXHAUSTED" if attempt_number >= max_recovery_attempts else "DEFERRED"
+                            retry_at = None if status == "EXHAUSTED" else datetime.now(timezone.utc) + timedelta(
+                                seconds=min(300, 5 * (2 ** min(attempt_number - 1, 6)))
+                            )
+                            await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    db_manager.complete_recovery,
+                                    execution_id,
+                                    candidate["organization_id"],
+                                    recovery_owner,
+                                    lease["lease_token"],
+                                    recovery_worker_generation,
+                                    status=status,
+                                    outcome="durable_identity_unavailable",
+                                    error="persisted process identity could not be validated; recovery remains fenced",
+                                    next_retry_at=retry_at,
+                                ),
+                                timeout=self.refresh_timeout_seconds,
+                            )
+                            continue
                     cancellation_task = asyncio.create_task(
-                        asyncio.to_thread(process_supervisor.cancel_execution, execution_id)
+                        asyncio.to_thread(
+                            process_supervisor.cancel_execution,
+                            execution_id,
+                            **({"process_identity": durable_identity} if durable_identity_api else {}),
+                        )
                     )
                     self._recovery_workers.add(cancellation_task)
                     cancellation_task.add_done_callback(self._recovery_workers.discard)
@@ -239,10 +280,147 @@ class BackendObservationService:
                     )
                 continue
             # The supervisor registry is keyed by the durable execution ID;
-            # cancellation cannot target an arbitrary PID or a sibling job.
+            # after a worker restart, the persisted process identity must be
+            # reloaded and supplied explicitly.  A missing identity leaves an
+            # active execution open for operator/recovery evidence; it is never
+            # treated as proof that a PID no longer exists.
             try:
+                ownership = None
+                durable_identity = None
+                if durable_identity_api:
+                    ownership = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.get_process_ownership,
+                            execution_id,
+                            candidate["organization_id"],
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                    durable_identity = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            load_durable_process_identity,
+                            db_manager,
+                            execution_id,
+                            candidate["organization_id"],
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+
+                candidate_run_state = candidate.get("run_state")
+                candidate_dispatch_state = candidate.get("dispatch_state")
+                ownership_state = candidate.get("ownership_state")
+
+                # A pending dispatch has not acquired a process authority.  It
+                # can be closed only with the explicit pre-dispatch proof.
+                if (
+                    durable_identity_api
+                    and ownership_state in {"UNKNOWN", "NO_EXTERNAL_PROCESS"}
+                    and candidate_run_state == "REQUESTED"
+                    and candidate_dispatch_state == "PENDING"
+                ):
+                    pre_dispatch_terminal_state = (
+                        "CANCELLED"
+                        if candidate["terminal_state"] == "CANCELLED"
+                        else "EXECUTION_BLOCKED"
+                    )
+                    pre_dispatch_reason = (
+                        "EXECUTION_CANCELLED_BEFORE_DISPATCH"
+                        if pre_dispatch_terminal_state == "CANCELLED"
+                        else "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED"
+                    )
+                    closed = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.settle_execution_after_confirmed_termination,
+                            execution_id,
+                            candidate["organization_id"],
+                            terminal_state=pre_dispatch_terminal_state,
+                            reason_code=pre_dispatch_reason,
+                            termination_status="PRE_DISPATCH",
+                            worker_generation=(ownership or {}).get("worker_generation"),
+                            actor="execution-reaper",
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                    if closed:
+                        reaped += 1
+                    continue
+
+                # A launch worker may have durably proved that the process
+                # was never created while the run was STARTING.  After a
+                # restart, that positive no-process evidence is the only
+                # safe path; do not ask a fresh supervisor to infer safety
+                # from a missing in-memory PID mapping.
+                if (
+                    durable_identity_api
+                    and ownership_state == "NO_EXTERNAL_PROCESS"
+                    and candidate_run_state == "STARTING"
+                    and candidate_dispatch_state in {"CLAIMED", "BLOCKED"}
+                ):
+                    no_process_outcome = {
+                        ("CANCELLED", "EXECUTION_CANCELLED"): (
+                            "CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
+                        ),
+                        ("EXECUTION_BLOCKED", "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED"): (
+                            "EXECUTION_BLOCKED", "EXECUTION_AUTHORITY_REVOKED_OR_EXPIRED",
+                        ),
+                        ("TIMED_OUT", "EXECUTION_AUTHORITY_EXPIRED"): (
+                            "TIMED_OUT", "EXECUTION_AUTHORITY_EXPIRED",
+                        ),
+                    }.get((candidate["terminal_state"], candidate["reason_code"]))
+                    if no_process_outcome is not None:
+                        closed = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                db_manager.settle_execution_after_confirmed_termination,
+                                execution_id,
+                                candidate["organization_id"],
+                                terminal_state=no_process_outcome[0],
+                                reason_code=no_process_outcome[1],
+                                termination_status="NO_EXTERNAL_PROCESS",
+                                worker_generation=(ownership or {}).get("worker_generation"),
+                                actor="execution-reaper",
+                            ),
+                            timeout=self.refresh_timeout_seconds,
+                        )
+                        if closed:
+                            reaped += 1
+                        continue
+
+                # If a process launch was fenced but no process identity can be
+                # reattached, defer rather than risking a reused PID.  The
+                # uncertain ownership branch above applies its own recovery
+                # lease; this branch is for authority expiry/revocation.
+                if durable_identity_api and (
+                    candidate_run_state == "STARTING"
+                    or
+                    candidate_run_state == "RUNNING"
+                    or candidate.get("process_id") is not None
+                    or ownership_state in {"EXTERNAL_PROCESS_GOVERNED", "LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}
+                ) and durable_identity is None:
+                    message = "durable process identity unavailable; execution recovery remains fenced"
+                    logger.warning(
+                        "Execution recovery deferred: identity unavailable execution_id=%s",
+                        execution_id,
+                    )
+                    self._state = ObservationState(
+                        last_started_at=self._state.last_started_at,
+                        last_completed_at=self._state.last_completed_at,
+                        last_error=self._state.last_error,
+                        last_recovery_error=message,
+                        last_recovered_count=reaped,
+                    )
+                    continue
+
+                cancellation_kwargs = (
+                    {"process_identity": durable_identity}
+                    if durable_identity_api and durable_identity is not None
+                    else {}
+                )
                 cancellation_task = asyncio.create_task(
-                    asyncio.to_thread(process_supervisor.cancel_execution, execution_id)
+                    asyncio.to_thread(
+                        process_supervisor.cancel_execution,
+                        execution_id,
+                        **cancellation_kwargs,
+                    )
                 )
                 self._recovery_workers.add(cancellation_task)
                 cancellation_task.add_done_callback(self._recovery_workers.discard)
@@ -253,7 +431,8 @@ class BackendObservationService:
                 confirmed = getattr(cancellation, "confirmed", bool(cancellation))
                 if (
                     candidate.get("process_id") is not None
-                    or candidate.get("run_state") == "RUNNING"
+                    or candidate_run_state == "RUNNING"
+                    or durable_identity_api
                 ) and not confirmed:
                     message = (
                         f"unconfirmed process termination: execution_id={execution_id} "
@@ -271,17 +450,42 @@ class BackendObservationService:
                         last_recovered_count=reaped,
                     )
                     continue
-                closed = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        db_manager.reap_execution_dispatch,
-                        execution_id,
-                        candidate["organization_id"],
-                        terminal_state=candidate["terminal_state"],
-                        reason_code=candidate["reason_code"],
-                        actor="execution-reaper",
-                    ),
-                    timeout=self.refresh_timeout_seconds,
-                )
+
+                if durable_identity_api:
+                    termination_status = getattr(
+                        getattr(cancellation, "status", None),
+                        "value",
+                        str(getattr(cancellation, "status", "UNKNOWN")),
+                    )
+                    closed = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.settle_execution_after_confirmed_termination,
+                            execution_id,
+                            candidate["organization_id"],
+                            terminal_state=candidate["terminal_state"],
+                            reason_code=candidate["reason_code"],
+                            termination_status=termination_status,
+                            process_id=durable_identity.pid,
+                            process_group_id=str(durable_identity.process_group_id),
+                            process_start_token=durable_identity.start_token,
+                            session_id=durable_identity.session_id,
+                            worker_generation=(ownership or {}).get("worker_generation"),
+                            actor="execution-reaper",
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                else:
+                    closed = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.reap_execution_dispatch,
+                            execution_id,
+                            candidate["organization_id"],
+                            terminal_state=candidate["terminal_state"],
+                            reason_code=candidate["reason_code"],
+                            actor="execution-reaper",
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
                 if closed:
                     reaped += 1
             except asyncio.CancelledError:

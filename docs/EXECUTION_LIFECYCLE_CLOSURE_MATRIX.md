@@ -1,6 +1,7 @@
 # Execution Lifecycle Closure Matrix
 
-Status: OPEN — implementation and independent acceptance are incomplete.
+Status: OPEN — the Section B implementation rework has current local evidence,
+but independent acceptance and several platform/runtime gates remain incomplete.
 
 This matrix is the authoritative implementation checklist for the execution-
 lifecycle hardening work. It supplements Contracts 04 and 08; it does not
@@ -60,25 +61,52 @@ proof.
 
 ## Section B implementation checkpoint (not acceptance)
 
-The current implementation provides a shared
-`ExecutionCancellationCoordinator` in
-`backend/app/core/execution_service.py`. Scan cancellation and direct
-execution-request revocation use the same sequence: tenant-bound authority
-revocation, exact `execution_id` process cancellation, owning-task join, and
-durable child-run verification. The coordinator exposes typed process status
-and keeps `NOT_FOUND`, `FAILED`, missing runs, and unjoined tasks recoverable.
-Only the database's atomic `REQUESTED`/`PENDING` transition to
-`EXECUTION_CANCELLED_BEFORE_DISPATCH` is accepted as a no-process branch.
-Governed Redis publication is likewise idempotent by the tenant-bound durable
-authorization request identity, so an exact approval replay cannot create a
-second stream entry after an in-memory restart.
+The current candidate closes the production handoff and durable settlement
+gaps identified by the independent auditor, while deliberately leaving the
+matrix open for independent acceptance.
 
-Focused repository evidence exists in
-`tests/security/test_execution_cancellation_coordinator.py` and
-`tests/security/test_database_backend.py`, but this checkpoint does not close
-the matrix. Independent PostgreSQL concurrency evidence, platform-specific
-process-container evidence, restart attachment evidence, and final auditor
-acceptance remain required.
+The production Redis worker in `run_worker.py` now calls only the public
+`ScanOrchestrator.execute_dispatched_scan()` handoff after message
+consumption. The handoff reloads the tenant, parent authorization, selected
+operation, child request/decision/run, dispatch, session, expiry, token
+revocation, worker identity/generation, and snapshot-completeness bindings
+before entering the local bounded executor. A revoked, expired, consumed,
+cross-tenant, incomplete, or otherwise mismatched child is rejected before
+native or external scan work begins.
+
+The worker-owned lifecycle now has explicit durable no-process and exact
+process-identity paths. `ProcessSupervisor` claims the durable execution
+authority before governed validation and process creation, records explicit
+`NO_EXTERNAL_PROCESS` evidence for pre-`Popen` rejection/cancellation, and
+keeps the worker thread responsible for late settlement after caller
+cancellation. Cancellation and observation recovery use a persisted
+`ProcessIdentity`; a missing in-memory mapping or a raw PID is not sufficient.
+`DatabaseManager.settle_execution_after_confirmed_termination()` performs the
+post-revocation transition only after authority invalidity, tenant, identity,
+dispatch, run, and recovery fences have all been validated. SQLite and
+PostgreSQL execute the durable mutation within their existing transaction
+boundaries; no schema or migration change is part of this checkpoint.
+
+The observation/reaper path does not infer a process from positive
+`NO_EXTERNAL_PROCESS` evidence and defers `STARTING`/`UNKNOWN` ownership when
+the persisted identity cannot be reloaded. The launch inventory and worker
+runtime tests exercise the actual worker entry point and reject direct private
+executor bypasses. These are implementation claims only; the acceptance gate
+still requires the evidence listed below and independent auditor review.
+
+Current implementation files are limited to the audited execution boundary:
+`backend/app/core/db.py`, `backend/app/core/execution_service.py`,
+`backend/app/core/observation_service.py`, `backend/app/core/orchestrator.py`,
+`backend/app/core/process_supervisor.py`, and `run_worker.py`, with the
+corresponding launch, authority, cancellation, observation, process, and
+orchestrator tests. Contracts, migrations, `AGENTS.md`, the protected
+database, `.ci/`, and `.project-temp/` are not part of this rework.
+
+The required acceptance evidence is now recorded in the dated Section B
+addendum. The matrix remains open because the worker-generation deployment
+binding, broader PID-reuse/membership-race evidence, Windows kernel-container
+implementation, managed-tool runtime evidence, and independent auditor
+acceptance are not all closed by local tests.
 
 ## Acceptance gate
 

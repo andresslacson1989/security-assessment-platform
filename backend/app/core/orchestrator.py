@@ -8,7 +8,7 @@ import inspect
 import logging
 from datetime import datetime, timezone
 import time
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from app.core.models import (
     ScanJob,
     ScanStatus,
@@ -56,6 +56,105 @@ _ENGINE_TOOL_IDS = {
 _MANUAL_TOOL_IDS = {"hydra"}
 _TOOL_EXECUTION_SCOPE_IDS = {**_ENGINE_TOOL_IDS, "manual": _MANUAL_TOOL_IDS}
 _CANONICAL_TOOL_IDS = set().union(*_TOOL_EXECUTION_SCOPE_IDS.values())
+
+
+def _parse_dispatched_authority_timestamp(value: Any, field_name: str) -> datetime:
+    """Parse one durable child-authority timestamp without accepting ambiguity."""
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"dispatched child authority {field_name} is missing")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"dispatched child authority {field_name} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RuntimeError(f"dispatched child authority {field_name} must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_dispatched_child_authority(
+    binding: dict[str, Any],
+    *,
+    scan_id: str,
+    organization_id: str,
+    operation_id: str,
+) -> None:
+    """Validate the child authority before any worker-owned scan execution.
+
+    External adapters repeat the complete validation in
+    ``ScanExecutionAuthority`` immediately before capability issuance.  The
+    worker boundary must still reject an invalid child before entering the
+    engine, because native/in-process work does not necessarily reach an
+    adapter launch boundary.
+    """
+    if binding.get("parent_state") != "DISPATCHABLE":
+        raise RuntimeError("dispatched scan parent binding is not dispatchable")
+    if binding.get("operation_id") != operation_id:
+        raise RuntimeError("dispatched scan operation identity does not match")
+    if binding.get("operation_selection_state") != "SELECTED":
+        raise RuntimeError("dispatched scan operation is not selected")
+    if binding.get("organization_id") != organization_id:
+        raise RuntimeError("dispatched scan binding tenant does not match")
+    if binding.get("scan_id") != scan_id:
+        raise RuntimeError("dispatched scan binding scan identity does not match")
+
+    required_identities = (
+        ("child_request_id", binding.get("child_request_id")),
+        ("child_decision_id", binding.get("child_decision_id")),
+        ("child_execution_id", binding.get("child_execution_id")),
+        ("child_request_organization_id", binding.get("child_request_organization_id")),
+        ("child_decision_organization_id", binding.get("child_decision_organization_id")),
+        ("child_run_organization_id", binding.get("child_run_organization_id")),
+        ("child_run_request_id", binding.get("child_run_request_id")),
+        ("child_run_approved_decision_id", binding.get("child_run_approved_decision_id")),
+    )
+    if any(not isinstance(value, str) or not value.strip() for _, value in required_identities):
+        raise RuntimeError("dispatched scan child authority identity is incomplete")
+    if any(
+        value != organization_id
+        for field_name, value in required_identities
+        if field_name.endswith("organization_id")
+    ):
+        raise RuntimeError("dispatched scan child authority tenant binding failed")
+    if binding["child_run_request_id"] != binding["child_request_id"]:
+        raise RuntimeError("dispatched scan child run request binding failed")
+    if binding["child_run_approved_decision_id"] != binding["child_decision_id"]:
+        raise RuntimeError("dispatched scan child run decision binding failed")
+
+    if binding.get("child_request_state") != "AUTHORIZED":
+        raise RuntimeError("dispatched scan child execution request is not authorized")
+    if binding.get("child_decision_approval_state") != "APPROVED":
+        raise RuntimeError("dispatched scan child execution decision is not approved")
+    session_jti = binding.get("child_decision_session_jti")
+    if not isinstance(session_jti, str) or not session_jti.strip():
+        raise RuntimeError("dispatched scan child decision session identity is missing")
+    if binding.get("child_decision_revoked_at") is not None:
+        raise RuntimeError("dispatched scan child execution decision is revoked")
+    if binding.get("child_decision_consumed_at") is not None:
+        raise RuntimeError("dispatched scan child execution decision is already consumed")
+    if db_manager.is_token_revoked(session_jti):
+        raise RuntimeError("dispatched scan approving administrator session is revoked")
+
+    now = datetime.now(timezone.utc)
+    for field_name in ("child_request_expires_at", "child_decision_expires_at"):
+        if _parse_dispatched_authority_timestamp(binding.get(field_name), field_name) <= now:
+            raise RuntimeError(f"dispatched scan child authority {field_name} is expired")
+
+    if binding.get("child_run_snapshot_completeness") != "COMPLETE":
+        raise RuntimeError("dispatched scan child execution snapshot is incomplete")
+    if not isinstance(binding.get("child_run_worker_identity"), str) or not binding["child_run_worker_identity"].strip():
+        raise RuntimeError("dispatched scan child run worker identity is missing")
+    if binding.get("child_run_worker_identity") != binding.get("child_decision_worker_identity"):
+        raise RuntimeError("dispatched scan child worker identity binding failed")
+    if not isinstance(binding.get("child_run_worker_generation"), str) or not binding["child_run_worker_generation"].strip():
+        raise RuntimeError("dispatched scan child worker generation is missing")
+    from app.core.execution_service import get_worker_generation, get_worker_identity
+
+    if binding["child_run_worker_identity"] != get_worker_identity():
+        raise RuntimeError("dispatched scan child is bound to another worker identity")
+    if binding["child_run_worker_generation"] != get_worker_generation():
+        raise RuntimeError("dispatched scan child is bound to another worker generation")
+    if binding.get("dispatch_state") not in {"PENDING", "CLAIMED"}:
+        raise RuntimeError("dispatched scan child dispatch intent is not launchable")
 
 
 class ScanOrchestrator:
@@ -256,6 +355,144 @@ class ScanOrchestrator:
                         self._tasks.pop(scan_job.id, None)
                 raise
         return task
+
+    async def execute_dispatched_scan(
+        self,
+        scan_id: str,
+        organization_id: str,
+        authorization_request_id: str,
+        *,
+        cloud_credentials: Any = None,
+        executor: Any = None,
+    ) -> Any:
+        """Execute one already-consumed durable dispatch intent.
+
+        This is the only worker handoff after Redis consumption.  It reloads
+        tenant, parent-approval, operation, child-run, and dispatch identities
+        from authoritative storage, then invokes the private scan executor
+        through the bounded executor supplied by the worker.  A replay that
+        observes any child already STARTING, RUNNING, or terminal is an
+        idempotent no-op; it never re-runs the scan from a queue payload.
+        """
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (scan_id, organization_id, authorization_request_id)
+        ):
+            raise ValueError("dispatched scan handoff identities are required")
+        job = get_scan(scan_id, organization_id=organization_id)
+        if job is None:
+            raise RuntimeError("dispatched scan no longer exists in authoritative storage")
+        if job.organization_id != organization_id:
+            raise RuntimeError("dispatched scan tenant binding failed")
+        if job.authorization_request_id != authorization_request_id:
+            raise RuntimeError("dispatched scan authorization request binding failed")
+
+        parent = db_manager.get_scan_authorization_request(
+            authorization_request_id,
+            organization_id,
+        )
+        if (
+            not parent
+            or parent.get("scan_id") != scan_id
+            or parent.get("organization_id") != organization_id
+            or parent.get("state") != "DISPATCHABLE"
+            or parent.get("revoked_at")
+            or parent.get("consumed_at")
+        ):
+            raise RuntimeError("dispatched scan parent authority is not dispatchable")
+        try:
+            expires_at = datetime.fromisoformat(parent["expires_at"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("dispatched scan parent expiry is invalid") from exc
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            raise RuntimeError("dispatched scan parent expiry must be timezone-aware")
+        if expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            raise RuntimeError("dispatched scan parent authority is expired")
+
+        operation_ids = db_manager.list_scan_authorization_operation_ids(
+            authorization_request_id,
+            organization_id,
+            selected_only=True,
+        )
+        for operation_id in operation_ids:
+            binding = db_manager.get_scan_authorization_launch_binding(
+                authorization_request_id,
+                organization_id,
+                operation_id,
+            )
+            if not binding:
+                raise RuntimeError("dispatched scan operation binding is missing")
+            child_execution_id = str(binding.get("child_execution_id") or "")
+            if (
+                binding.get("scan_id") != scan_id
+                or binding.get("organization_id") != organization_id
+                or not binding.get("child_request_id")
+                or not binding.get("child_decision_id")
+                or not child_execution_id
+            ):
+                raise RuntimeError("dispatched scan child authority binding failed")
+            _validate_dispatched_child_authority(
+                binding,
+                scan_id=scan_id,
+                organization_id=organization_id,
+                operation_id=operation_id,
+            )
+            child_run = db_manager.get_execution_run(child_execution_id, organization_id)
+            if child_run is None:
+                raise RuntimeError("dispatched scan child execution run is missing")
+            dispatch_state = str(binding.get("dispatch_state") or "")
+            child_state = str(child_run.get("state") or binding.get("child_run_state") or "")
+            if child_state == "REQUESTED" and dispatch_state == "PENDING":
+                continue
+            if child_state in {"STARTING", "RUNNING"} or dispatch_state == "CLAIMED":
+                # A replay may have arrived after another worker acquired the
+                # child authority.  Do not execute a second copy.
+                return None
+            if child_state in EXECUTION_RUN_TERMINAL_STATES:
+                return None
+            raise RuntimeError("dispatched scan child execution state is not runnable")
+
+        if cloud_credentials is not None:
+            if getattr(cloud_credentials, "organization_id", None) != organization_id:
+                raise RuntimeError("dispatched credential envelope tenant binding failed")
+            job.cloud_credentials = cloud_credentials
+        if job.status in {ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED}:
+            return None
+        if executor is None:
+            from app.core.queue import ScanQueueManager
+
+            executor = ScanQueueManager()
+        execute_bounded = getattr(executor, "execute_bounded", None)
+        if not callable(execute_bounded):
+            raise RuntimeError("dispatched scan executor is unavailable")
+        if getattr(executor, "durable_enabled", False):
+            raise RuntimeError("worker handoff requires a local bounded executor after queue consumption")
+
+        existing_task = None
+        async with self._lock:
+            existing_task = self._tasks.get(scan_id)
+            if existing_task is None or existing_task.done():
+                self._active_jobs[scan_id] = job
+                task = asyncio.create_task(
+                    execute_bounded(
+                        scan_id,
+                        self._execute_scan,
+                        scan_id,
+                        organization_id=organization_id,
+                        authorization_request_id=authorization_request_id,
+                    ),
+                    name=f"scan-execution:{scan_id}",
+                )
+                self._tasks[scan_id] = task
+            else:
+                task = existing_task
+
+        try:
+            return await asyncio.shield(task)
+        finally:
+            async with self._lock:
+                if self._tasks.get(scan_id) is task:
+                    self._tasks.pop(scan_id, None)
 
     async def cancel_scan(
         self,

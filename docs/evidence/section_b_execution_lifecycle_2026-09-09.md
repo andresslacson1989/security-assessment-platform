@@ -1,42 +1,104 @@
 # Section B Execution-Lifecycle Evidence — 2026-09-09
 
-Status: implementation evidence recorded; independent acceptance remains open.
+Status: implementation evidence recorded for the current Section B rework
+candidate; independent acceptance remains open.
 
 This addendum records the durable approval-to-dispatch and cancellation-
-coordination implementation pass. It is evidence for the Section B review and
-does not claim that the execution-lifecycle closure matrix is accepted.
+coordination implementation pass, including the subsequent authority-to-launch
+preflight and exact identity settlement rework. It is evidence for the
+Section B review and does not claim that the execution-lifecycle closure matrix
+is accepted.
 
 ## Scope
 
 The implementation binds approved scan dispatch to the real orchestrator,
 retains the distinction between queue acceptance and process creation, and
 uses an atomic tenant-scoped Redis publication identity for exact approval
-replays. Scan cancellation and direct execution-request revocation use the
-same `ExecutionCancellationCoordinator`. The coordinator revokes authority
-before exact execution-identity cancellation, joins an owning task when one is
-available, verifies the durable child run, and preserves a recoverable state
-for `NOT_FOUND`, `FAILED`, missing mappings, or an unjoined task. Only the
-durable `EXECUTION_CANCELLED_BEFORE_DISPATCH` transition is accepted as a
-no-process proof.
+replays. The production worker no longer calls the private scan executor
+directly; after Redis consumption it invokes the public
+`execute_dispatched_scan()` handoff with the local bounded executor.
+
+Before that executor is entered, the handoff validates the durable parent and
+every selected child binding: tenant and scan identity, operation selection,
+request/decision/run identity joins, authorization and approval state, session
+JTI and revocation, expiry, snapshot completeness, worker identity/generation,
+and dispatch state. This prevents a revoked or expired child decision from
+reaching native work that might not later call an external adapter.
+
+Scan cancellation and direct execution-request revocation use the same
+`ExecutionCancellationCoordinator`. The coordinator revokes authority before
+exact execution-identity cancellation, joins an owning task when one is
+available, reloads the durable process identity after a worker restart, and
+preserves a recoverable state for `NOT_FOUND`, `FAILED`, missing mappings, or
+an unjoined task. Positive `NO_EXTERNAL_PROCESS` evidence is settled through a
+durable no-process path and is never inferred from a missing PID. Only the
+durable `EXECUTION_CANCELLED_BEFORE_DISPATCH` transition is accepted as the
+pre-dispatch no-process proof.
+
+The post-revocation settlement primitive validates all authority, tenant,
+identity, dispatch, run, and recovery fences before its first write and records
+an auditable termination-proof digest. A current, still-valid authorization
+cannot use that primitive as a replacement for the ordinary authority-held
+finish path. No schema or migration change is part of this section.
+
+The changed implementation files in this candidate are:
+
+- `backend/app/core/db.py`
+- `backend/app/core/execution_service.py`
+- `backend/app/core/observation_service.py`
+- `backend/app/core/orchestrator.py`
+- `backend/app/core/process_supervisor.py`
+- `backend/tests/test_execution_launch_inventory.py`
+- `run_worker.py`
+- `tests/security/test_execution_cancellation_coordinator.py`
+- `tests/security/test_execution_decision_authority.py`
+- `tests/security/test_process_launch_boundary.py`
+- `tests/test_observation_service.py`
+- `tests/test_orchestrator.py`
+
+The two documentation files in this addendum are the only evidence updates.
+Contracts, migrations, `AGENTS.md`, the protected database, `.ci/`, and
+`.project-temp/` remain outside the candidate delivery scope.
 
 No migration or runtime database change is part of this section.
 
-## Local verification
+## Current local verification
 
-The following checks completed successfully:
+The following checks completed successfully against the current uncommitted
+candidate. Every disposable SQLite database was created under the
+project-local `.project-temp/` tree; the runtime database was not used.
 
-- Focused execution/authority/API/security set: **275 passed, 1 documented
-  platform skip, 7 warnings**. The new cancellation-coordinator vectors were
-  included.
-- Full local repository suite: **820 passed, 39 platform/dependency skips,
-  14 warnings**.
+- Focused Section B suite, including the worker handoff, authority,
+  cancellation, observation, process, and launch-inventory tests:
+  **107 passed, 1 platform skip**.
+- Full local repository suite from a fresh unique disposable SQLite path,
+  excluding only the preserved historical worktree snapshot assertion:
+  **829 passed, 40 classified skips, 1 deselected, 14 warnings**.
 - Real PostgreSQL 16 integration suite against a newly created disposable
-  loopback `_ci` database: **29 passed**. The container was removed after the
-  run.
-- Python compilation of the backend and changed lifecycle test module: passed.
+  loopback `cyberassess_ci` database: **29 passed**. The container was removed
+  after the run.
+- POSIX fresh-supervisor restart-attachment proof in a newly named disposable
+  container using a container-local source copy: **1 passed, 9 deselected**.
+  The proof captured the root/session/start-token identity, rejected a forged
+  start token while the root and child were alive, and terminated the exact
+  persisted tree. The disposable container was removed afterward.
+- Python compilation of `backend/app` and `run_worker.py`: passed.
+- AST parsing of all 12 changed code/test files: passed.
 - `git diff --check`: passed.
-- Mirrored Contract 04 copies: byte-identical.
-- Mirrored Contract 08 copies: byte-identical.
+- Contract 04 and Contract 08 mirror checks from the existing assurance suite:
+  byte-identical.
+
+An earlier full-suite attempt reused a non-empty temporary database and
+produced ten idempotency/tenant fixture collisions. That run is not treated
+as application evidence. The unique-path rerun above completed without those
+collisions. The preserved historical worktree snapshot assertion remains
+excluded because its recorded `.ci/` inventory is stale; that user-owned
+evidence tree was not changed or removed.
+
+The current Windows host cannot execute the POSIX proof natively. The
+container-local proof is the available local OS-level evidence; Windows
+governed execution remains fail-closed until its Job Object implementation and
+independent platform evidence exist.
 
 ## GitHub Actions verification
 
@@ -115,12 +177,32 @@ The file was not modified, staged, committed, mirrored, archived, or used as
 the test database. All SQLite tests used project-local disposable paths under
 `.project-temp/`; the PostgreSQL suite used a separate disposable container.
 
+## Runtime and deployment limitations
+
+- No real security scan or unrestricted external target activity was run.
+- The local POSIX proof is process-container evidence only; it does not prove
+  PID-reuse or every membership-race permutation, and it does not provide the
+  missing Windows Job Object evidence.
+- `CYBERASSESS_WORKER_GENERATION` is deployment-configured. The current
+  Compose definition does not itself demonstrate that the API approval process
+  and the separate worker process receive the same generation value. A
+  production deployment must provision and verify that binding; otherwise the
+  durable launch fence is expected to reject the mismatch. This remains an
+  explicit runtime verification item, not a claim of deployment assurance.
+- Managed Nmap and Subfinder runtime/artifact evidence remains environment
+  dependent and is not established by this Section B lifecycle pass.
+- Docker Compose network separation is not destination-level egress
+  enforcement; the existing enterprise egress limitation remains documented.
+
 ## Delivery and remaining gates
 
-The implementation changes were delivered as one grouped GitHub-first
-publication in `af65432c6ceae7e2b925e92b1b3ef9678ad46763`. This documentation
-update records the subsequent verification evidence and does not change the
-implementation or the lifecycle acceptance status.
+The previously accepted baseline implementation was delivered as one grouped
+GitHub-first publication in `af65432c6ceae7e2b925e92b1b3ef9678ad46763`.
+The current Section B rework candidate is the grouped delivery scope for this
+section. Its exact commit, GitHub ref, GitHub Actions results, and any
+GitLab-mirror result must be recorded in the final delivery report before the
+section can be considered for independent acceptance. This evidence update
+does not change the implementation or lifecycle acceptance status.
 `AGENTS.md`, the pre-existing `.ci/` evidence tree, and other pre-existing
 `.project-temp/` artifacts remain outside the staged delivery scope. Their
 presence means the working directory is not a policy-clean tree for GitLab
@@ -129,8 +211,13 @@ resolved without deleting or relocating those artifacts.
 
 The following evidence remains required before lifecycle acceptance:
 
+- Independent review of the current worker preflight and settlement diff,
+  including the absence of direct worker bypasses.
+- Deployment evidence for a shared, explicitly provisioned worker generation
+  between approval and worker processes.
 - Independent OS-level process-container, restart-attachment, PID-reuse,
-  membership-race, and Windows fail-closed evidence.
+  membership-race, and Windows fail-closed evidence beyond the local POSIX
+  vector.
 - Managed Nmap/Subfinder runtime and artifact-provenance evidence where the
   environment permits it.
 - Independent auditor review of the exact published commit, test artifacts,

@@ -55,6 +55,58 @@ async def test_missing_process_mapping_does_not_confirm_an_active_run():
 
 
 @pytest.mark.asyncio
+async def test_durable_active_run_without_identity_never_uses_supervisor_inference():
+    from app.core.execution_service import ExecutionCancellationCoordinator
+
+    run = {
+        "execution_id": "execution-unknown",
+        "request_id": "request-unknown",
+        "organization_id": "org-a",
+        "state": "RUNNING",
+        "reason_code": None,
+        "worker_generation": "generation-a",
+    }
+
+    class Database:
+        def get_execution_run_for_request(self, request_id, organization_id):
+            assert (request_id, organization_id) == ("request-unknown", "org-a")
+            return dict(run)
+
+        def revoke_execution_request(self, request_id, organization_id, actor):
+            assert (request_id, organization_id, actor) == ("request-unknown", "org-a", "admin-a")
+            return True
+
+        def get_execution_run(self, execution_id, organization_id):
+            assert (execution_id, organization_id) == ("execution-unknown", "org-a")
+            return dict(run)
+
+        def get_process_ownership(self, execution_id, organization_id):
+            assert (execution_id, organization_id) == ("execution-unknown", "org-a")
+            return {
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "ownership_state": "UNKNOWN",
+            }
+
+    class Supervisor:
+        def cancel_execution(self, *_args, **_kwargs):
+            raise AssertionError("a durable active run without identity must not infer cancellation from the supervisor")
+
+    outcome = await ExecutionCancellationCoordinator(Database(), Supervisor()).cancel_request(
+        "request-unknown",
+        "org-a",
+        actor="admin-a",
+    )
+
+    assert outcome.authority_revoked is True
+    assert outcome.process_status == "IDENTITY_UNAVAILABLE"
+    assert outcome.process_confirmed is False
+    assert outcome.durable_terminal is False
+    assert outcome.recovery_required is True
+    assert outcome.error_code == "DURABLE_PROCESS_IDENTITY_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
 async def test_pre_dispatch_revocation_is_the_only_accepted_no_process_proof():
     from app.core.execution_service import ExecutionCancellationCoordinator
 
