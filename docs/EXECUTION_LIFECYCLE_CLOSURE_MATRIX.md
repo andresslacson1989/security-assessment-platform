@@ -79,8 +79,10 @@ process-identity paths. `ProcessSupervisor` claims the durable execution
 authority before governed validation and process creation, records explicit
 `NO_EXTERNAL_PROCESS` evidence for pre-`Popen` rejection/cancellation, and
 keeps the worker thread responsible for late settlement after caller
-cancellation. Cancellation and observation recovery use a persisted
-`ProcessIdentity`; a missing in-memory mapping or a raw PID is not sufficient.
+cancellation. POSIX completion checks now require both the owned process group
+and captured session to be empty. Cancellation and observation recovery use a
+persisted `ProcessIdentity`; a missing in-memory mapping or a raw PID is not
+sufficient.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and
@@ -97,7 +99,8 @@ still requires the evidence listed below and independent auditor review.
 Current implementation files are limited to the audited execution boundary:
 `backend/app/core/db.py`, `backend/app/core/execution_service.py`,
 `backend/app/core/observation_service.py`, `backend/app/core/orchestrator.py`,
-`backend/app/core/process_supervisor.py`, and `run_worker.py`, with the
+`backend/app/core/process_supervisor.py`, `run_worker.py`, and the execution
+identity/lifecycle invariant in `docker-compose.yml`, with the
 corresponding launch, authority, cancellation, observation, process, and
 orchestrator tests. Contracts, migrations, `AGENTS.md`, the protected
 database, `.ci/`, and `.project-temp/` are not part of this rework.

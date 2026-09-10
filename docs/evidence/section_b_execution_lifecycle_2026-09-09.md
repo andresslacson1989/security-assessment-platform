@@ -5,8 +5,9 @@ candidate; independent acceptance remains open.
 
 This addendum records the durable approval-to-dispatch and cancellation-
 coordination implementation pass, including the subsequent authority-to-launch
-preflight, exact identity settlement rework, and the PostgreSQL settlement
-correction at code baseline `0e56c766ca96b046a5392d5e92e48dd02122c4f3`.
+preflight, exact identity settlement rework, PostgreSQL settlement correction,
+explicit deployment identity/generation binding, and process-session emptiness
+check at the current code baseline `dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7`.
 It is evidence for the Section B review and does not claim that the
 execution-lifecycle closure matrix is accepted.
 
@@ -82,11 +83,14 @@ No migration or runtime database change is part of this section.
 
 ## Current local verification
 
-The prior baseline checks below were executed against
-`0e56c766ca96b046a5392d5e92e48dd02122c4f3`; the generation-binding checks
-were executed against the current working-tree candidate before its grouped
-delivery commit. Every disposable SQLite database was created under the
-project-local `.project-temp/` tree; the runtime database was not used.
+The prior baseline checks below are retained as historical evidence for
+`0e56c766ca96b046a5392d5e92e48dd02122c4f3`. The current focused verification
+was executed against the grouped implementation at
+`dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7`; the earlier generation-binding
+run at `89 passed, 1 skipped` is retained only as the pre-publication
+checkpoint. Every disposable SQLite database was created under the
+project-local `.project-temp/` tree; the protected runtime database was not
+used.
 
 - Focused contract command against the previously published `0e56c766`
   baseline, including the worker handoff, authority,
@@ -104,17 +108,19 @@ project-local `.project-temp/` tree; the runtime database was not used.
   The authoritative PostgreSQL evidence for this baseline is the successful
   GitHub Actions PostgreSQL 16 job recorded below; no local substitute is
   claimed.
-- Current Section B generation-binding candidate command, with an explicit
-  disposable SQLite path: **89 passed, 1 skipped**, exit code **0**. This
-  covered the launch inventory, worker handoff, decision authority,
-  cancellation coordinator, process boundary, and the new production
-  fail-closed worker-identity/generation vector.
+- Current Section B focused command at `dcde19c`, with an explicit disposable
+  SQLite path: **153 passed, 40 skipped**, exit code **0**. This covered the
+  launch inventory, worker handoff, decision authority, cancellation
+  coordinator, process boundary, real dispatch assurance, observation, and
+  orchestrator tests. The newly added POSIX root-exit/multiple-descendant
+  test is correctly skipped on this Windows host; it is intended for the
+  Linux CI environment.
 - A prior exploratory invocation without `CYBERASSESS_DB_PATH` exited with
   code **2** during module collection on the protected database's existing
   migration-ledger mismatch; no test body ran. A subsequent exploratory
   invocation exited with code **1** because the new test was temporarily
   inserted inside an existing parameterized test and raised `NameError`.
-  Both conditions were corrected before the final `89 passed` run. The
+  Both conditions were corrected before the final pre-publication run. The
   protected database fingerprint was rechecked unchanged after the first
   invocation; neither exploratory command is acceptance evidence.
 - POSIX fresh-supervisor restart-attachment proof in a newly named disposable
@@ -138,17 +144,18 @@ evidence tree was not changed or removed.
 The current Windows host cannot execute the POSIX proof natively. The
 container-local proof is the available local OS-level evidence; Windows
 governed execution remains fail-closed until its Job Object implementation and
-independent platform evidence exist.
+independent platform evidence exist. The local session-emptiness assertion is
+therefore recorded as an environment skip, not as a Windows pass.
 
 ## GitHub Actions verification
 
 The current code baseline was published first to GitHub as:
 
 ```text
-commit: 0e56c766ca96b046a5392d5e92e48dd02122c4f3
+commit: dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7
 ref:    security/nmap-installer-closure
-run:    34532439910
-url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34532439910
+run:    34539737401
+url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34539737401
 ```
 
 The required GitHub Actions workflow completed successfully for that exact
@@ -156,11 +163,17 @@ commit. The independently inspected job records were:
 
 | Job | Job ID | Result | Evidence |
 | --- | ---: | --- | --- |
-| Compile backend | 103056157028 | success | backend compilation completed |
-| Focused contract verification | 103056156862 | success | focused contract suite and skip policy completed |
-| Full repository verification | 103056157116 | success | full repository suite and skip classification completed |
-| PostgreSQL 16 schema assurance | 103056156938 | success | PostgreSQL schema assurance completed |
-| Hardened production image verification | 103056156569 | success | hardened image and health smoke checks completed |
+| Compile backend | 103079443368 | success | backend compilation completed |
+| Focused contract verification | 103079443377 | success | focused contract suite and skip policy completed |
+| Full repository verification | 103079443056 | success | full repository suite and skip classification completed |
+| PostgreSQL 16 schema assurance | 103079443242 | success | PostgreSQL schema assurance completed |
+| Hardened production image verification | 103079443161 | success | hardened image and health smoke checks completed |
+
+The run's retained, non-expired artifacts are `focused-contract-evidence-
+34539737401` (artifact `10176843126`), `full-repository-evidence-34539737401`
+(artifact `10176900192`), and `postgres-schema-evidence-34539737401`
+(artifact `10176816802`). Each artifact was produced by the same GitHub run
+and is bound to the commit above.
 
 The GitHub result is CI evidence for the exact code baseline. It does not
 close the independent platform and deployment gates listed in this addendum.
@@ -227,12 +240,14 @@ the test database. All SQLite tests used project-local disposable paths under
 - The local POSIX proof is process-container evidence only; it does not prove
   PID-reuse or every membership-race permutation, and it does not provide the
   missing Windows Job Object evidence.
-- `CYBERASSESS_WORKER_GENERATION` is deployment-configured. The current
-  Compose definition does not itself demonstrate that the API approval process
-  and the separate worker process receive the same generation value. A
-  production deployment must provision and verify that binding; otherwise the
-  durable launch fence is expected to reject the mismatch. This remains an
-  explicit runtime verification item, not a claim of deployment assurance.
+- `CYBERASSESS_WORKER_GENERATION` and `CYBERASSESS_WORKER_IDENTITY` are
+  deployment-configured. The enterprise Compose definition requires the same
+  explicit values for the API and worker services, and the process boundary
+  revalidates non-scan contexts against the active deployment binding. A
+  production deployment must still provision and verify those values;
+  otherwise the durable launch fence is expected to reject the mismatch. This
+  remains an explicit runtime verification item, not a claim of deployment
+  assurance.
 - Managed Nmap and Subfinder runtime/artifact evidence remains environment
   dependent and is not established by this Section B lifecycle pass.
 - Docker Compose network separation is not destination-level egress
@@ -240,13 +255,12 @@ the test database. All SQLite tests used project-local disposable paths under
 
 ## Delivery and remaining gates
 
-The previously accepted baseline implementation was delivered as one grouped
-GitHub-first publication in `af65432c6ceae7e2b925e92b1b3ef9678ad46763`.
-The current Section B rework candidate is the grouped delivery scope for this
-section. Its exact commit, GitHub ref, GitHub Actions results, and any
-GitLab-mirror result must be recorded in the final delivery report before the
-section can be considered for independent acceptance. This evidence update
-does not change the implementation or lifecycle acceptance status.
+The current Section B rework was delivered as one grouped GitHub-first
+publication at `dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7` on
+`security/nmap-installer-closure`, with the successful run and job records
+above. GitLab was intentionally not promoted for this auditor-bounded pass.
+This evidence update does not change the implementation or lifecycle
+acceptance status.
 `AGENTS.md`, the pre-existing `.ci/` evidence tree, and other pre-existing
 `.project-temp/` artifacts remain outside the staged delivery scope. Their
 presence means the working directory is not a policy-clean tree for GitLab

@@ -348,3 +348,62 @@ def test_fresh_supervisor_uses_persisted_identity_after_worker_restart() -> None
                 pass
             if root.stdout is not None:
                 root.stdout.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+def test_root_exit_with_multiple_descendants_requires_session_and_group_empty() -> None:
+    """A dead root does not make a surviving multi-child session terminal."""
+    root = None
+    identity = None
+    child_pids: list[int] = []
+    try:
+        root_code = (
+            "import subprocess,sys,time; "
+            "children=[subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']) for _ in range(2)]; "
+            "print(' '.join(str(child.pid) for child in children), flush=True); "
+            "time.sleep(1)"
+        )
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        child_line = root.stdout.readline() if root.stdout is not None else ""
+        child_pids = [int(value) for value in child_line.split()]
+        assert len(child_pids) == 2
+        identity = ProcessSupervisor._capture_process_identity(root.pid, root.pid)
+        assert identity is not None
+        root.wait(timeout=5)
+        assert not ProcessSupervisor._pid_exists(root.pid)
+        assert any(ProcessSupervisor._pid_exists(pid) for pid in child_pids)
+        assert ProcessSupervisor._process_group_exists(identity.process_group_id)
+        assert ProcessSupervisor._process_session_exists(identity.session_id)
+
+        cancelled = ProcessSupervisor().cancel_execution(
+            "execution-root-exited-multi-child",
+            process_identity=identity,
+        )
+        assert cancelled.confirmed is True
+        assert not any(ProcessSupervisor._pid_exists(pid) for pid in child_pids)
+        assert not ProcessSupervisor._process_group_exists(identity.process_group_id)
+        assert not ProcessSupervisor._process_session_exists(identity.session_id)
+    finally:
+        if root is not None and root.poll() is None:
+            if identity is not None:
+                ProcessSupervisor().cancel_execution(
+                    "execution-root-exited-multi-child-cleanup",
+                    process_identity=identity,
+                )
+            try:
+                root.kill()
+            except OSError:
+                pass
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        if root is not None and root.stdout is not None:
+            root.stdout.close()

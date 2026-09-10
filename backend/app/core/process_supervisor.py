@@ -589,6 +589,44 @@ class ProcessSupervisor:
             return False
 
     @staticmethod
+    def _process_session_exists(session_id: Optional[int]) -> bool:
+        """Return whether a live process remains in an owned POSIX session.
+
+        A process group is the primary termination container, but a child can
+        change its process group while remaining in the launch session.  The
+        supervisor therefore checks both identities before it treats a
+        governed execution as empty.  Failure to enumerate the session is
+        conservative: recovery must remain open instead of being converted to
+        a false terminal result.
+        """
+        if os.name == "nt" or not session_id or session_id <= 1:
+            return False
+        try:
+            result = subprocess.run(
+                ["ps", "-e", "-o", "pid=", "-o", "sid="],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            if result.returncode != 0:
+                return True
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) != 2:
+                    continue
+                try:
+                    member_pid, member_session_id = (int(value) for value in fields)
+                except ValueError:
+                    continue
+                if member_pid > 1 and member_session_id == session_id:
+                    return True
+            return False
+        except (OSError, subprocess.SubprocessError):
+            return True
+
+    @staticmethod
     def _capture_process_identity(pid: int, process_group_id: Optional[int]) -> Optional[ProcessIdentity]:
         start_token = _read_posix_start_token(pid)
         if start_token is None:
@@ -746,12 +784,21 @@ class ProcessSupervisor:
         tracked_pids = [pid, *descendants]
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            if not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids) and not ProcessSupervisor._process_group_exists(group_id):
+            if (
+                not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids)
+                and not ProcessSupervisor._process_group_exists(group_id)
+                and not ProcessSupervisor._process_session_exists(
+                    identity.session_id if identity is not None else None
+                )
+            ):
                 return True
             time.sleep(0.02)
         return (
             not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids)
             and not ProcessSupervisor._process_group_exists(group_id)
+            and not ProcessSupervisor._process_session_exists(
+                identity.session_id if identity is not None else None
+            )
         )
 
     # Complete reviewed baseline inherited from the worker process. Credentials,
