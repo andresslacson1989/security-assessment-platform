@@ -1,13 +1,14 @@
-# Section B Execution-Lifecycle Evidence — 2026-09-09
+# Section B Execution-Lifecycle Evidence — 2026-09-11
 
 Status: implementation evidence recorded for the current Section B rework
 candidate; independent acceptance remains open.
 
 This addendum records the durable approval-to-dispatch and cancellation-
 coordination implementation pass, including the subsequent authority-to-launch
-preflight and exact identity settlement rework. It is evidence for the
-Section B review and does not claim that the execution-lifecycle closure matrix
-is accepted.
+preflight, exact identity settlement rework, and the PostgreSQL settlement
+correction at code baseline `0e56c766ca96b046a5392d5e92e48dd02122c4f3`.
+It is evidence for the Section B review and does not claim that the
+execution-lifecycle closure matrix is accepted.
 
 ## Scope
 
@@ -64,19 +65,25 @@ No migration or runtime database change is part of this section.
 
 ## Current local verification
 
-The following checks completed successfully against the current uncommitted
-candidate. Every disposable SQLite database was created under the
-project-local `.project-temp/` tree; the runtime database was not used.
+The following checks were executed against code baseline
+`0e56c766ca96b046a5392d5e92e48dd02122c4f3`. Every disposable SQLite database
+was created under the project-local `.project-temp/` tree; the runtime
+database was not used.
 
-- Focused Section B suite, including the worker handoff, authority,
+- Focused contract command, including the worker handoff, authority,
   cancellation, observation, process, and launch-inventory tests:
-  **107 passed, 1 platform skip**.
+  **250 passed, 40 skipped**. The command also encountered the preserved
+  historical worktree-inventory assertion; that assertion is the known
+  user-owned `.ci/` evidence mismatch documented below and is not an
+  application failure.
 - Full local repository suite from a fresh unique disposable SQLite path,
-  excluding only the preserved historical worktree snapshot assertion:
-  **829 passed, 40 classified skips, 1 deselected, 14 warnings**.
-- Real PostgreSQL 16 integration suite against a newly created disposable
-  loopback `cyberassess_ci` database: **29 passed**. The container was removed
-  after the run.
+  excluding only that preserved historical worktree snapshot assertion:
+  **881 passed, 78 skipped, 1 deselected, 15 warnings**.
+- Local PostgreSQL and Redis integration could not be rerun because Docker is
+  unavailable on this host and no approved local service URLs were provided.
+  The authoritative PostgreSQL evidence for this baseline is the successful
+  GitHub Actions PostgreSQL 16 job recorded below; no local substitute is
+  claimed.
 - POSIX fresh-supervisor restart-attachment proof in a newly named disposable
   container using a container-local source copy: **1 passed, 9 deselected**.
   The proof captured the root/session/start-token identity, rejected a forged
@@ -102,13 +109,13 @@ independent platform evidence exist.
 
 ## GitHub Actions verification
 
-The grouped implementation commit was published first to GitHub as:
+The current code baseline was published first to GitHub as:
 
 ```text
-commit: af65432c6ceae7e2b925e92b1b3ef9678ad46763
+commit: 0e56c766ca96b046a5392d5e92e48dd02122c4f3
 ref:    security/nmap-installer-closure
-run:    34297542097
-url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34297542097
+run:    34532439910
+url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34532439910
 ```
 
 The required GitHub Actions workflow completed successfully for that exact
@@ -116,11 +123,14 @@ commit. The independently inspected job records were:
 
 | Job | Job ID | Result | Evidence |
 | --- | ---: | --- | --- |
-| Compile backend | 102297309995 | success | backend compilation completed |
-| Focused contract verification | 102297310227 | success | 193 passed, 1 allowlisted historical-provenance skip |
-| Full repository verification | 102297310077 | success | 827 passed, 33 classified skips, 14 warnings |
-| PostgreSQL 16 schema assurance | 102297310156 | success | 29 passed, 0 skipped |
-| Hardened production image verification | 102297309878 | success | hardened image and health smoke checks completed |
+| Compile backend | 103056157028 | success | backend compilation completed |
+| Focused contract verification | 103056156862 | success | focused contract suite and skip policy completed |
+| Full repository verification | 103056157116 | success | full repository suite and skip classification completed |
+| PostgreSQL 16 schema assurance | 103056156938 | success | PostgreSQL schema assurance completed |
+| Hardened production image verification | 103056156569 | success | hardened image and health smoke checks completed |
+
+The GitHub result is CI evidence for the exact code baseline. It does not
+close the independent platform and deployment gates listed in this addendum.
 
 The GitHub full-suite skip classification was:
 
@@ -135,8 +145,9 @@ Subfinder v2.6.5 runtime vectors. The one provenance skip is the historical
 `a1c4fc4` fixture whose committed v1 artifact mismatch remains an explicit
 escalation condition. These are classified skips, not passes.
 
-The downloaded GitHub evidence files were retained under the pre-existing,
-project-local `.project-temp/section-b-gh-evidence-34297542097/` directory.
+The downloaded evidence files from the earlier `34297542097` run remain
+retained under the pre-existing, project-local
+`.project-temp/section-b-gh-evidence-34297542097/` directory.
 Their SHA-256 digests are:
 
 | Evidence file | SHA-256 |
