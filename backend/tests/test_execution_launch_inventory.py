@@ -144,7 +144,7 @@ def test_production_worker_uses_the_public_post_consume_handoff() -> None:
     assert len(public_handoffs) == 1
     handoff = public_handoffs[0]
     assert {keyword.arg for keyword in handoff.keywords} >= {
-        "cloud_credentials", "executor",
+        "cloud_credentials", "executor", "queue_binding",
     }
     executor_keyword = next(keyword for keyword in handoff.keywords if keyword.arg == "executor")
     assert isinstance(executor_keyword.value, ast.Name)
@@ -181,6 +181,17 @@ async def test_production_worker_runtime_handler_calls_public_handoff(monkeypatc
     class FakeExecutor:
         durable_enabled = False
 
+    from app.core.queue import QueueDispatchBinding
+
+    queue_binding = QueueDispatchBinding.create(
+        scan_id="scan-runtime",
+        organization_id="org-runtime",
+        authorization_request_id="request-runtime",
+        manifest_hash="a" * 64,
+        execution_ids=("execution-runtime",),
+        operation_ids=("network:nmap",),
+    )
+
     class FakeQueue:
         instance = None
 
@@ -190,7 +201,7 @@ async def test_production_worker_runtime_handler_calls_public_handoff(monkeypatc
             self.__class__.instance = self
 
         async def consume_once(self, handler, **_kwargs):
-            await handler("scan-runtime", "org-runtime", "request-runtime", None)
+            await handler("scan-runtime", "org-runtime", "request-runtime", None, queue_binding)
             raise StopWorker
 
         async def close(self):
@@ -221,4 +232,5 @@ async def test_production_worker_runtime_handler_calls_public_handoff(monkeypatc
     assert args == ("scan-runtime", "org-runtime", "request-runtime")
     assert kwargs["cloud_credentials"] is None
     assert isinstance(kwargs["executor"], FakeExecutor)
+    assert kwargs["queue_binding"] == queue_binding
     assert FakeQueue.instance is not None and FakeQueue.instance.closed is True

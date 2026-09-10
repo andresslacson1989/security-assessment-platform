@@ -29,6 +29,22 @@ not create a second stream entry. A changed manifest remains a conflict and
 cannot reuse the first request's queue identity. Queue publication failure MUST
 be visible to the caller and MUST NOT be reported as `DISPATCHED`.
 
+Authoritative queue vectors MUST cover the canonical
+`queue-dispatch-binding-v1` fields (tenant, scan, authorization request,
+manifest hash, ordered execution IDs, ordered operation IDs, and digest),
+including rejection of a missing binding, malformed identity lists, duplicate
+identities, stale or cross-tenant identity, digest mismatch, and any conflict
+between typed binding and compatibility metadata. Tests MUST verify that the
+worker receives the typed binding through the real consumer handoff. Parsing,
+preflight, decryption, and handler failures for an authoritative message MUST
+remain in the pending-entry list, record tenant/request-attributed failure
+evidence and delivery count, and stop at the configured bounded attempt limit
+by creating an observable quarantine/escalation marker. A quarantined message
+MUST not invoke the handler automatically on subsequent reclaim cycles, and
+repeated inspection MUST not append unbounded duplicate failure events. Legacy
+messages without an authorization request may retain their compatibility ACK
+behavior but are not evidence of governed scan dispatch.
+
 Negative vectors MUST cover missing policy rows, undeclared or duplicate engine/tool ownership, manual-only Hydra, native-only CI/CD, cross-tenant targets, forged/reconstructed contexts, stale worker generations, revoked sessions, request replay with a changed manifest, and direct API/orchestrator launches without a typed authority lease.
 
 Manifest-integrity vectors MUST additionally prove deep immutability of every
@@ -42,7 +58,38 @@ target-policy revalidation; complete child-authority replay validation; and
 transaction rollback when any child insert fails. A failed integrity check MUST
 leave the parent request and all child authority tables unchanged.
 
-Process-lifecycle vectors MUST cover a post-`Popen()` identity-capture failure persisting `LAUNCH_UNCERTAIN` with a recovery record, normal root exit with a surviving descendant or process-group member, exact-ID cancellation of every selected child execution, retry/backoff and operator-visible recovery states, cryptographically bound `NO_EXTERNAL_PROCESS` evidence, and explicit Windows governed-execution rejection until a verified Job Object implementation is deployed.
+Process-lifecycle vectors MUST cover a post-`Popen()` identity-capture failure persisting `LAUNCH_UNCERTAIN` with a recovery record, normal root exit with a surviving descendant or process-group member, exact-ID cancellation of every selected child execution, retry/backoff and operator-visible recovery states, cryptographically bound `NO_EXTERNAL_PROCESS` evidence, and explicit Windows governed-execution rejection until a verified Job Object implementation is deployed. Additional vectors MUST prove that persisted process identity, container type/identity, worker generation, launch-commit state, and identity attestation cannot be replaced by a late callback; a committed governed row becomes `RECOVERY_BLOCKED` without losing its identity; incomplete uncertain identity cannot be treated as attachable; ordinary terminalization requires the exact persisted proof tuple; uncertain/recovery settlement uses only the confirmed-termination primitive; and an absent uncertain/recovery attestation is not replaced by a fabricated value.
+
+Terminal-replay vectors MUST exercise the actual worker handoff and remain
+strictly read-only:
+
+- **A — exact terminal proof:** persist a terminal child run, its mapped
+  terminal dispatch state, and a complete matching process-ownership proof
+  (including the explicit no-process proof shape). Redeliver the same typed
+  queue/worker handoff and prove that it returns without engine entry,
+  authority reacquisition, claim/renewal, reclaim, settlement, terminal
+  rewrite, audit event, or any durable-state change.
+- **B — incomplete or mismatched proof/binding:** remove or alter one proof
+  field, worker-generation/identity binding, manifest/tenant binding, or typed
+  queue binding and prove rejection before any process or executor entry. The
+  persisted run, dispatch, ownership, recovery, scan, and audit projections
+  MUST remain unchanged by the rejected replay.
+- **C — authority no longer active:** after vector A, consume or expire the
+  parent/child authority and invalidate the approving session through the
+  durable revocation path. An exact terminal replay MUST remain the same
+  read-only no-op; it MUST not reacquire authority or mutate the terminal
+  projections.
+- **D — not a terminal replay:** exercise nonterminal/partial child state,
+  inconsistent terminal dispatch mapping, `LAUNCH_UNCERTAIN`,
+  `RECOVERY_BLOCKED`, missing ownership, and ambiguous process identity. Each
+  case MUST fail closed under the existing recovery/dispatch rules and MUST
+  never be accepted as a terminal replay.
+
+Repeated and concurrent equivalent deliveries MUST produce at most one
+execution attempt and must preserve the same durable terminal proof. The
+implementation MUST keep terminal replay separate from normal capability
+issuance: a replay may observe an already-closed result, but it can never
+authorize, renew, or launch new work.
 
 Capability discovery, cached status, installed version, or fallback readiness MUST never satisfy these authorization vectors.
 

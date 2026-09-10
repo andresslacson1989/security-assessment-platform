@@ -96,6 +96,14 @@ from app.core.migration_artifacts import (
 )
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
 from app.core.correlation import get_correlation_id
+from app.core.execution_context import (
+    EXECUTION_PROOF_NO_PROCESS_KEYS,
+    EXECUTION_PROOF_TERMINATION_KEYS,
+    PosixProcessAttestation,
+    canonical_binding_digest,
+    decode_execution_proof,
+    encode_execution_proof,
+)
 
 
 _DURABLE_SECRET_KEY_PATTERN = re.compile(
@@ -4334,14 +4342,34 @@ class DatabaseManager:
             if not row:
                 return None
             binding = dict(row)
-            for prefix in ("operation", "child_request", "child_decision", "child_run"):
-                for suffix in (
-                    "options_json",
-                    "resource_budget_json",
-                    "account_impact_budget_json",
-                    "credential_scope_json",
-                ):
-                    field = f"{prefix}_{suffix}"
+            json_fields_by_prefix = {
+                "operation": (
+                    "operation_options_json",
+                    "operation_resource_budget_json",
+                    "operation_account_impact_budget_json",
+                    "operation_credential_scope_json",
+                ),
+                "child_request": (
+                    "child_request_operation_options_json",
+                    "child_request_resource_budget_json",
+                    "child_request_account_impact_budget_json",
+                    "child_request_credential_scope_json",
+                ),
+                "child_decision": (
+                    "child_decision_operation_options_json",
+                    "child_decision_resource_budget_json",
+                    "child_decision_account_impact_budget_json",
+                    "child_decision_credential_scope_json",
+                ),
+                "child_run": (
+                    "child_run_operation_options_json",
+                    "child_run_resource_budget_json",
+                    "child_run_account_impact_budget_json",
+                    "child_run_credential_scope_json",
+                ),
+            }
+            for suffixes in json_fields_by_prefix.values():
+                for field in suffixes:
                     binding[field.removesuffix("_json")] = json.loads(binding.pop(field) or "{}")
             return binding
 
@@ -4369,6 +4397,153 @@ class DatabaseManager:
                 (scan_request_id, organization_id),
             ).fetchone()
             return dict(row) if row else None
+
+    def transition_scan_authorization_request(
+        self,
+        scan_request_id: str,
+        organization_id: str,
+        target_state: str,
+        actor: str,
+        *,
+        reason_code: Optional[str] = None,
+    ) -> bool:
+        """Apply one tenant-scoped durable parent-authority transition.
+
+        This is the public lifecycle API for parent revocation, expiry, and
+        consumption. It locks the parent before child updates, validates the
+        state machine, propagates invalidity to linked child authority rows,
+        and records one sanitized audit event in the same transaction.
+        Repeating the already-applied target state is an idempotent read-only
+        success.
+        """
+        if not all(
+            isinstance(value, str) and value.strip() and len(value) <= 256
+            for value in (scan_request_id, organization_id, actor)
+        ):
+            return False
+        if target_state not in {"REVOKED", "EXPIRED", "CONSUMED"}:
+            return False
+        if reason_code is None:
+            reason_code = {
+                "REVOKED": "EXECUTION_CANCELLED",
+                "EXPIRED": "EXECUTION_AUTHORITY_EXPIRED",
+                "CONSUMED": "SCAN_AUTHORIZATION_CONSUMED",
+            }[target_state]
+        if (
+            not isinstance(reason_code, str)
+            or not reason_code.strip()
+            or len(reason_code) > 128
+            or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", reason_code) is None
+        ):
+            return False
+
+        allowed_sources = {
+            "REVOKED": frozenset({"REQUESTED", "APPROVED", "DISPATCHABLE"}),
+            "EXPIRED": frozenset({"REQUESTED", "APPROVED", "DISPATCHABLE"}),
+            "CONSUMED": frozenset({"DISPATCHABLE"}),
+        }
+        audit_actions = {
+            "REVOKED": AuditAction.SCAN_AUTHORIZATION_REVOKED,
+            "EXPIRED": AuditAction.SCAN_AUTHORIZATION_EXPIRED,
+            "CONSUMED": AuditAction.SCAN_AUTHORIZATION_CONSUMED,
+        }
+        now = utc_now().isoformat()
+        with self._connection_scope() as conn:
+            lock_suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            parent = conn.execute(
+                "SELECT * FROM scan_authorization_requests "
+                "WHERE scan_request_id=? AND organization_id=?" + lock_suffix,
+                (scan_request_id, organization_id),
+            ).fetchone()
+            if not parent:
+                return False
+            current_state = str(parent["state"])
+            if current_state == target_state:
+                return True
+            if current_state not in allowed_sources[target_state]:
+                return False
+
+            if target_state == "REVOKED":
+                parent_update = conn.execute(
+                    "UPDATE scan_authorization_requests "
+                    "SET state='REVOKED', revoked_at=COALESCE(revoked_at, ?) "
+                    "WHERE scan_request_id=? AND organization_id=? AND state=?",
+                    (now, scan_request_id, organization_id, current_state),
+                )
+                conn.execute(
+                    "UPDATE execution_decisions SET revoked_at=COALESCE(revoked_at, ?) "
+                    "WHERE organization_id=? AND id IN ("
+                    "SELECT child_decision_id FROM scan_authorization_operations "
+                    "WHERE scan_request_id=? AND organization_id=? AND child_decision_id IS NOT NULL)",
+                    (now, organization_id, scan_request_id, organization_id),
+                )
+                conn.execute(
+                    "UPDATE execution_requests SET state='REVOKED' "
+                    "WHERE organization_id=? AND approved_decision_id IN ("
+                    "SELECT child_decision_id FROM scan_authorization_operations "
+                    "WHERE scan_request_id=? AND organization_id=? AND child_decision_id IS NOT NULL) "
+                    "AND state='AUTHORIZED'",
+                    (organization_id, scan_request_id, organization_id),
+                )
+            elif target_state == "EXPIRED":
+                parent_update = conn.execute(
+                    "UPDATE scan_authorization_requests "
+                    "SET state='EXPIRED', expires_at=? "
+                    "WHERE scan_request_id=? AND organization_id=? AND state=?",
+                    (now, scan_request_id, organization_id, current_state),
+                )
+                conn.execute(
+                    "UPDATE execution_requests SET expires_at=? "
+                    "WHERE organization_id=? AND approved_decision_id IN ("
+                    "SELECT child_decision_id FROM scan_authorization_operations "
+                    "WHERE scan_request_id=? AND organization_id=? AND child_decision_id IS NOT NULL)",
+                    (now, organization_id, scan_request_id, organization_id),
+                )
+                conn.execute(
+                    "UPDATE execution_decisions SET expires_at=? "
+                    "WHERE organization_id=? AND id IN ("
+                    "SELECT child_decision_id FROM scan_authorization_operations "
+                    "WHERE scan_request_id=? AND organization_id=? AND child_decision_id IS NOT NULL)",
+                    (now, organization_id, scan_request_id, organization_id),
+                )
+            else:
+                parent_update = conn.execute(
+                    "UPDATE scan_authorization_requests "
+                    "SET state='CONSUMED', consumed_at=COALESCE(consumed_at, ?) "
+                    "WHERE scan_request_id=? AND organization_id=? AND state=?",
+                    (now, scan_request_id, organization_id, current_state),
+                )
+                conn.execute(
+                    "UPDATE execution_decisions SET consumed_at=COALESCE(consumed_at, ?), "
+                    "claim_owner=NULL, claim_expires_at=NULL, claim_token=NULL "
+                    "WHERE organization_id=? AND id IN ("
+                    "SELECT child_decision_id FROM scan_authorization_operations "
+                    "WHERE scan_request_id=? AND organization_id=? AND child_decision_id IS NOT NULL)",
+                    (now, organization_id, scan_request_id, organization_id),
+                )
+
+            if parent_update.rowcount != 1:
+                raise RuntimeError("scan authorization transition lost its serialization fence")
+            self._insert_audit_event_conn(
+                conn,
+                AuditEvent(
+                    id=f"aud-{uuid.uuid4().hex[:12]}",
+                    actor=actor.strip(),
+                    organization_id=organization_id,
+                    action=audit_actions[target_state],
+                    object_type="scan_authorization_request",
+                    object_id=scan_request_id,
+                    result="SUCCESS",
+                    correlation_id=parent["correlation_id"],
+                    details={
+                        "from": current_state,
+                        "to": target_state,
+                        "reason_code": reason_code,
+                        "scan_id": parent["scan_id"],
+                    },
+                ),
+            )
+            return True
 
     def list_scan_authorization_operation_ids(
         self,
@@ -4656,9 +4831,137 @@ class DatabaseManager:
             ).fetchone()
             return dict(row) if row else None
 
+    def get_execution_replay_evidence(
+        self,
+        execution_id: str,
+        organization_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """Read the complete durable evidence set required for terminal replay.
+
+        This method is intentionally read-only.  It returns the run,
+        ownership, recovery projection, latest confirmed recovery fact, and
+        non-secret claim fingerprints as one tenant-scoped snapshot.  Terminal
+        replay callers must validate this snapshot before entering any
+        executor; the method never grants, renews, consumes, or mutates
+        authority.
+        """
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (execution_id, organization_id)
+        ):
+            return None
+        with self._connection_scope() as conn:
+            run_row = conn.execute(
+                "SELECT * FROM execution_runs WHERE execution_id=? AND organization_id=?",
+                (execution_id, organization_id),
+            ).fetchone()
+            ownership_row = conn.execute(
+                "SELECT * FROM execution_process_ownership WHERE execution_id=? AND organization_id=?",
+                (execution_id, organization_id),
+            ).fetchone()
+            recovery_row = conn.execute(
+                "SELECT * FROM execution_recovery_state WHERE execution_id=? AND organization_id=?",
+                (execution_id, organization_id),
+            ).fetchone()
+            dispatch_row = conn.execute(
+                "SELECT * FROM execution_dispatch_intents WHERE execution_id=? AND organization_id=?",
+                (execution_id, organization_id),
+            ).fetchone()
+            if not run_row or not ownership_row or not recovery_row or not dispatch_row:
+                return None
+
+            run = dict(run_row)
+            for field in (
+                "operation_options_json",
+                "resource_budget_json",
+                "account_impact_budget_json",
+                "credential_scope_json",
+            ):
+                if field in run:
+                    run[field.removesuffix("_json")] = json.loads(run.pop(field) or "{}")
+
+            latest_attempt_row = conn.execute(
+                """
+                SELECT * FROM execution_recovery_attempts
+                 WHERE execution_id=? AND organization_id=?
+                   AND status='CONFIRMED_TERMINATED'
+                 ORDER BY completed_at DESC, attempt_id DESC
+                 LIMIT 1
+                """,
+                (execution_id, organization_id),
+            ).fetchone()
+
+            decision_id = run.get("approved_decision_id")
+            claim_digests: dict[str, Optional[str]] = {
+                "decision": None,
+                "dispatch": None,
+            }
+            if isinstance(decision_id, str) and decision_id.strip():
+                claim_rows = conn.execute(
+                    """
+                    SELECT action, object_id, details_json
+                      FROM audit_events
+                     WHERE organization_id=?
+                       AND (
+                            (action='EXECUTION_DECISION_CLAIMED' AND object_id=?)
+                            OR
+                            (action='EXECUTION_DISPATCH_CLAIMED' AND object_id=?)
+                       )
+                     ORDER BY sequence_number DESC, timestamp DESC, id DESC
+                    """,
+                    (organization_id, decision_id, execution_id),
+                ).fetchall()
+                for claim_row in claim_rows:
+                    action = str(claim_row["action"])
+                    if action == AuditAction.EXECUTION_DECISION_CLAIMED.value and claim_digests["decision"] is not None:
+                        continue
+                    if action == AuditAction.EXECUTION_DISPATCH_CLAIMED.value and claim_digests["dispatch"] is not None:
+                        continue
+                    try:
+                        details = json.loads(claim_row["details_json"] or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(details, dict):
+                        continue
+                    if action == AuditAction.EXECUTION_DECISION_CLAIMED.value:
+                        decision_digest = details.get("claim_identity_digest")
+                        dispatch_digest = details.get("dispatch_identity_digest")
+                        if decision_digest is None and isinstance(details.get("claim_token"), str):
+                            decision_digest = hashlib.sha256(
+                                details["claim_token"].encode("utf-8")
+                            ).hexdigest()
+                        if dispatch_digest is None and isinstance(details.get("dispatch_claim_token"), str):
+                            dispatch_digest = hashlib.sha256(
+                                details["dispatch_claim_token"].encode("utf-8")
+                            ).hexdigest()
+                        if isinstance(decision_digest, str) and re.fullmatch(r"[0-9a-f]{64}", decision_digest):
+                            claim_digests["decision"] = decision_digest
+                        if isinstance(dispatch_digest, str) and re.fullmatch(r"[0-9a-f]{64}", dispatch_digest):
+                            claim_digests["dispatch"] = dispatch_digest
+                    elif action == AuditAction.EXECUTION_DISPATCH_CLAIMED.value:
+                        dispatch_digest = details.get("dispatch_identity_digest")
+                        if dispatch_digest is None and isinstance(details.get("claim_token"), str):
+                            dispatch_digest = hashlib.sha256(
+                                details["claim_token"].encode("utf-8")
+                            ).hexdigest()
+                        if isinstance(dispatch_digest, str) and re.fullmatch(r"[0-9a-f]{64}", dispatch_digest):
+                            claim_digests["dispatch"] = dispatch_digest
+
+            return {
+                "run": run,
+                "ownership": dict(ownership_row),
+                "dispatch": dict(dispatch_row),
+                "recovery": dict(recovery_row),
+                "latest_confirmed_recovery": (
+                    dict(latest_attempt_row) if latest_attempt_row else None
+                ),
+                "claim_digests": claim_digests,
+            }
+
     def transition_process_ownership(
         self, record: ExecutionProcessOwnershipRecord, expected_state: ProcessOwnershipState,
         *, actor: str = "system", reason_code: str = "PROCESS_OWNERSHIP_TRANSITION",
+        worker_identity: Optional[str] = None,
     ) -> bool:
         """Atomically create/transition ownership state with tenant and evidence binding.
 
@@ -4674,28 +4977,79 @@ class DatabaseManager:
             raise ValueError("NO_EXTERNAL_PROCESS requires explicit no-process proof")
         if record.ownership_state == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED and not record.identity_attestation:
             raise ValueError("governed process ownership requires identity attestation")
+        if (
+            not isinstance(worker_identity, str)
+            or not worker_identity.strip()
+            or len(worker_identity) > 256
+            or not isinstance(record.worker_generation, str)
+            or not record.worker_generation.strip()
+            or len(record.worker_generation) > 256
+            or not isinstance(record.correlation_id, str)
+            or not record.correlation_id.strip()
+        ):
+            return False
         with self._connection_scope() as conn:
             if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
                 conn.execute("BEGIN IMMEDIATE")
             lock_suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
             authority = conn.execute(
                 """SELECT r.execution_id, r.organization_id, r.state AS run_state,
+                    r.worker_identity AS run_worker_identity,
+                    r.worker_generation AS run_worker_generation,
                     q.state AS request_state, d.approval_state, d.revoked_at,
-                    i.state AS dispatch_state
+                    d.worker_identity AS decision_worker_identity,
+                    i.state AS dispatch_state,
+                    s.worker_generation AS recovery_worker_generation,
+                    (SELECT a.worker_identity FROM execution_recovery_attempts a
+                      WHERE a.execution_id=r.execution_id AND a.organization_id=r.organization_id
+                      ORDER BY a.completed_at DESC, a.attempt_id DESC LIMIT 1) AS latest_recovery_worker_identity,
+                    (SELECT a.worker_generation FROM execution_recovery_attempts a
+                      WHERE a.execution_id=r.execution_id AND a.organization_id=r.organization_id
+                      ORDER BY a.completed_at DESC, a.attempt_id DESC LIMIT 1) AS latest_recovery_worker_generation
                     FROM execution_runs r
                     JOIN execution_requests q ON q.id=r.request_id AND q.organization_id=r.organization_id
-                    LEFT JOIN execution_decisions d ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
-                    LEFT JOIN execution_dispatch_intents i ON i.execution_id=r.execution_id AND i.organization_id=r.organization_id
+                    JOIN execution_decisions d ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                    JOIN execution_dispatch_intents i ON i.execution_id=r.execution_id AND i.organization_id=r.organization_id
+                    JOIN execution_recovery_state s ON s.execution_id=r.execution_id AND s.organization_id=r.organization_id
                     WHERE r.execution_id=? AND r.organization_id=?""" + lock_suffix,
                 (record.execution_id, record.organization_id),
             ).fetchone()
             if not authority or authority["organization_id"] != record.organization_id:
                 return False
+            durable_worker_identity = authority["run_worker_identity"]
+            durable_worker_generation = authority["run_worker_generation"]
+            if (
+                not isinstance(durable_worker_identity, str)
+                or not durable_worker_identity.strip()
+                or durable_worker_identity != authority["decision_worker_identity"]
+                or worker_identity.strip() != durable_worker_identity
+                or not isinstance(durable_worker_generation, str)
+                or not durable_worker_generation.strip()
+                or record.worker_generation != durable_worker_generation
+                or (
+                    authority["recovery_worker_generation"] is not None
+                    and authority["recovery_worker_generation"] != durable_worker_generation
+                )
+                or (
+                    authority["latest_recovery_worker_identity"] is not None
+                    and authority["latest_recovery_worker_identity"] != durable_worker_identity
+                )
+                or (
+                    authority["latest_recovery_worker_generation"] is not None
+                    and authority["latest_recovery_worker_generation"] != durable_worker_generation
+                )
+            ):
+                return False
+            allowed_authority_dispatch_states = {
+                "CLAIMED", "COMPLETED", "FAILED", "BLOCKED",
+            } if expected_state == ProcessOwnershipState.TERMINAL else {
+                "CLAIMED", "COMPLETED",
+            }
             if expected_state != ProcessOwnershipState.UNKNOWN and (
                 authority["request_state"] != "AUTHORIZED"
                 or authority["approval_state"] != "APPROVED"
                 or authority["revoked_at"] is not None
-                or authority["dispatch_state"] not in {"CLAIMED", "COMPLETED"}
+                or authority["dispatch_state"] not in allowed_authority_dispatch_states
             ):
                 return False
             existing = conn.execute(
@@ -4706,9 +5060,98 @@ class DatabaseManager:
                 return False
             else:
                 current = ProcessOwnershipState(existing["ownership_state"])
+                if not isinstance(existing["correlation_id"], str) or not existing["correlation_id"].strip():
+                    # A process-ownership record without its first immutable
+                    # correlation cannot be safely completed or repaired.
+                    return False
+                immutable_mismatches: list[str] = []
+                if current == ProcessOwnershipState.UNKNOWN:
+                    # A newly created row has one explicitly empty shape. It
+                    # may be initialized once, but an UNKNOWN row that already
+                    # carries identity must not be overwritten by a callback.
+                    if existing["container_type"] != ProcessContainerType.NONE.value:
+                        immutable_mismatches.append("container_type")
+                    if existing["launch_commit_state"] != LaunchCommitState.NOT_ATTEMPTED.value:
+                        immutable_mismatches.append("launch_commit_state")
+                    for field_name in (
+                        "root_process_id", "root_process_start_token", "process_group_id",
+                        "session_id", "container_identity", "worker_generation",
+                        "identity_attestation", "no_process_proof",
+                    ):
+                        if existing[field_name] is not None:
+                            immutable_mismatches.append(field_name)
+                else:
+                    for field_name in (
+                        "root_process_id", "root_process_start_token", "process_group_id",
+                        "session_id", "container_type", "container_identity", "worker_generation",
+                        "identity_attestation",
+                    ):
+                        persisted = existing[field_name]
+                        supplied = getattr(record, field_name)
+                        if hasattr(supplied, "value"):
+                            supplied = supplied.value
+                        if persisted is None:
+                            continue
+                        if field_name in {"root_process_id", "process_group_id", "session_id"}:
+                            matches = str(persisted) == str(supplied)
+                        else:
+                            matches = persisted == supplied
+                        if not matches:
+                            immutable_mismatches.append(field_name)
+                    if (
+                        existing["launch_commit_state"] == LaunchCommitState.COMMITTED.value
+                        and record.launch_commit_state != LaunchCommitState.COMMITTED
+                    ):
+                        immutable_mismatches.append("launch_commit_state")
+                if immutable_mismatches:
+                    if current == ProcessOwnershipState.TERMINAL:
+                        # Terminal replay mismatch handling is deliberately
+                        # read-only. The caller must not manufacture a new
+                        # audit success or mutate the immutable evidence just
+                        # to report a conflicting proof.
+                        return False
+                    self._record_dispatch_rejection_conn(
+                        conn,
+                        record.execution_id,
+                        record.organization_id,
+                        actor,
+                        AuditAction.EXECUTION_DISPATCH_FAILED,
+                        "EXECUTION_IDENTITY_MISMATCH",
+                        details={"mismatched_fields": sorted(set(immutable_mismatches))},
+                    )
+                    return False
                 if current == ProcessOwnershipState.TERMINAL:
-                    return current == record.ownership_state
+                    comparable_fields = (
+                        "ownership_state", "container_type", "container_identity",
+                        "root_process_id", "root_process_start_token", "process_group_id",
+                        "session_id", "worker_generation", "launch_commit_state",
+                        "no_process_proof", "identity_attestation", "correlation_id",
+                        "last_verified_at", "terminalized_at",
+                    )
+                    if current != record.ownership_state:
+                        return False
+                    mismatched_fields: list[str] = []
+                    for field_name in comparable_fields:
+                        supplied = getattr(record, field_name)
+                        if hasattr(supplied, "value"):
+                            supplied = supplied.value
+                        if field_name in {"last_verified_at", "terminalized_at"}:
+                            supplied = supplied.isoformat() if supplied else None
+                        if field_name == "ownership_state":
+                            persisted = str(existing[field_name])
+                        else:
+                            persisted = existing[field_name]
+                        if field_name in {"root_process_id", "process_group_id", "session_id"}:
+                            if str(persisted) != str(supplied):
+                                mismatched_fields.append(field_name)
+                        elif persisted != supplied:
+                            mismatched_fields.append(field_name)
+                    if mismatched_fields:
+                        return False
+                    return True
                 if current != expected_state:
+                    return False
+                if existing["correlation_id"] != record.correlation_id:
                     return False
                 updated = conn.execute(
                     """UPDATE execution_process_ownership SET ownership_state=?, container_type=?,
@@ -4906,14 +5349,19 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
             row = conn.execute(
-                """SELECT p.ownership_state, s.status AS recovery_status,
-                          s.attempt_number, r.request_id, r.approved_decision_id,
-                          r.correlation_id, i.state AS dispatch_state
+                """SELECT p.*, s.status AS recovery_status, s.attempt_number,
+                          r.request_id, r.approved_decision_id, r.worker_identity AS run_worker_identity,
+                          d.worker_identity AS decision_worker_identity,
+                          p.correlation_id AS ownership_correlation_id,
+                          r.correlation_id AS run_correlation_id,
+                          i.state AS dispatch_state
                      FROM execution_process_ownership p
                      JOIN execution_recovery_state s
                        ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id
                      JOIN execution_runs r
                        ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id
+                     JOIN execution_decisions d
+                       ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
                      JOIN execution_dispatch_intents i
                        ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id
                     WHERE p.execution_id=? AND p.organization_id=?
@@ -4923,26 +5371,124 @@ class DatabaseManager:
             ).fetchone()
             if not row or row["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
                 return False
-            proof_material = {
-                "schema_version": "recovery-no-process-proof-v1",
+            if (
+                not isinstance(row["run_worker_identity"], str)
+                or not row["run_worker_identity"].strip()
+                or row["run_worker_identity"] != owner
+                or row["decision_worker_identity"] != row["run_worker_identity"]
+            ):
+                return False
+            if (
+                not isinstance(row["ownership_correlation_id"], str)
+                or not row["ownership_correlation_id"].strip()
+                or not isinstance(row["run_correlation_id"], str)
+                or not row["run_correlation_id"].strip()
+                or row["ownership_correlation_id"] != row["run_correlation_id"]
+            ):
+                return False
+            if (
+                row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                or row["launch_commit_state"] != LaunchCommitState.UNCERTAIN.value
+                or not row["identity_attestation"]
+                or not row["root_process_id"]
+                or not row["root_process_start_token"]
+                or not row["process_group_id"]
+                or not row["session_id"]
+                or row["worker_generation"] != worker_generation
+            ):
+                # An uncertain row without a complete, verified identity is
+                # not safe to classify as terminated after a restart.
+                return False
+            try:
+                attestation = PosixProcessAttestation.model_validate_json(row["identity_attestation"])
+            except Exception:
+                return False
+            start_parts = str(row["root_process_start_token"]).split(":", 2)
+            if len(start_parts) != 3 or start_parts[0] != "posix" or not start_parts[1] or not start_parts[2].isdigit():
+                return False
+            if (
+                attestation.verification_result != "VERIFIED"
+                or attestation.worker_generation != worker_generation
+                or attestation.boot_id != start_parts[1]
+                or attestation.root_start_ticks != int(start_parts[2])
+                or attestation.session_id != int(str(row["session_id"]))
+                or attestation.process_group_id != int(str(row["process_group_id"]))
+                or row["container_identity"]
+                != f"posix-session:{row['session_id']}:group:{row['process_group_id']}"
+            ):
+                return False
+
+            claim_digests = {"decision": None, "dispatch": None}
+            claim_rows = conn.execute(
+                """SELECT action, object_id, details_json FROM audit_events
+                   WHERE organization_id=? AND
+                     ((action='EXECUTION_DECISION_CLAIMED' AND object_id=?) OR
+                      (action='EXECUTION_DISPATCH_CLAIMED' AND object_id=?))
+                   ORDER BY sequence_number DESC, timestamp DESC, id DESC""",
+                (organization_id, row["approved_decision_id"], execution_id),
+            ).fetchall()
+            for claim_row in claim_rows:
+                action = str(claim_row["action"])
+                key = "decision" if action == AuditAction.EXECUTION_DECISION_CLAIMED.value else "dispatch"
+                if key not in claim_digests or claim_digests[key] is not None:
+                    continue
+                try:
+                    details = json.loads(claim_row["details_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(details, dict):
+                    continue
+                candidate = details.get("claim_identity_digest" if key == "decision" else "dispatch_identity_digest")
+                if isinstance(candidate, str) and re.fullmatch(r"[0-9a-f]{64}", candidate):
+                    claim_digests[key] = candidate
+            if not claim_digests["decision"] or not claim_digests["dispatch"]:
+                return False
+
+            attempt_number = int(row["attempt_number"] or 0)
+            if attempt_number < 1 or row["recovery_status"] != "IN_PROGRESS":
+                return False
+            attempt_id = f"{lease_token}-settled"
+            correlation_id = row["run_correlation_id"]
+            if not isinstance(correlation_id, str) or not correlation_id.strip():
+                return False
+            payload = {
+                "schema_version": "execution-proof-v2",
+                "proof_type": "TERMINATION_CONFIRMED",
                 "execution_id": execution_id,
                 "organization_id": organization_id,
-                "lease_token": lease_token,
-                "attempt_number": int(row["attempt_number"]),
+                "request_id": row["request_id"],
+                "decision_id": row["approved_decision_id"],
+                "terminal_state": terminal_state,
+                "dispatch_state": "FAILED",
+                "ownership_state": ProcessOwnershipState.TERMINAL.value,
+                "container_type": row["container_type"],
+                "launch_commit_state": LaunchCommitState.COMMITTED.value,
+                "worker_identity": row["run_worker_identity"],
                 "worker_generation": worker_generation,
+                "correlation_id": correlation_id,
+                "claim_identity_digest": claim_digests["decision"],
+                "dispatch_identity_digest": claim_digests["dispatch"],
+                "reason_code": reason_code,
                 "observed_at": now.isoformat(),
+                "recovery_status": "CONFIRMED_TERMINATED",
+                "recovery_attempt_number": attempt_number,
+                "recovery_attempt_id": attempt_id,
+                "termination_status": "ALREADY_EXITED",
+                "process_id": int(row["root_process_id"]),
+                "process_group_id": str(row["process_group_id"]),
+                "process_start_token": row["root_process_start_token"],
+                "session_id": int(str(row["session_id"])),
+                "identity_attestation": row["identity_attestation"],
+                "identity_attestation_digest": canonical_binding_digest(row["identity_attestation"]),
             }
-            proof_digest = hashlib.sha256(
-                json.dumps(proof_material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-            ).hexdigest()
-            no_process_proof = f"NO_EXTERNAL_PROCESS:recovery:v1:{proof_digest}"
+            termination_proof = encode_execution_proof("TERMINATION_CONFIRMED", payload)
             ownership = conn.execute(
                 """UPDATE execution_process_ownership
                       SET ownership_state='TERMINAL', no_process_proof=?,
                           terminalized_at=?, updated_at=?
                     WHERE execution_id=? AND organization_id=?
                       AND ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')""",
-                (no_process_proof, now.isoformat(), now.isoformat(), execution_id, organization_id),
+                (termination_proof, now.isoformat(), now.isoformat(), execution_id, organization_id),
             )
             dispatch = conn.execute(
                 """UPDATE execution_dispatch_intents
@@ -4973,7 +5519,7 @@ class DatabaseManager:
                     WHERE execution_id=? AND organization_id=?
                       AND owner=? AND lease_token=? AND worker_generation=?
                       AND status='IN_PROGRESS'""",
-                (no_process_proof, now.isoformat(), execution_id, organization_id,
+                (termination_proof, now.isoformat(), execution_id, organization_id,
                  owner, lease_token, worker_generation),
             )
             if any(result.rowcount != 1 for result in (ownership, dispatch, run, recovery)):
@@ -4984,24 +5530,20 @@ class DatabaseManager:
                     worker_generation, attempt_number, status, cancellation_status,
                     reason_code, correlation_id, requested_at, started_at,
                     completed_at, error_code, escalation_level, health_reference)
-                   SELECT ?, execution_id, organization_id, ?, worker_generation,
-                          attempt_number, 'CONFIRMED_TERMINATED', 'CONFIRMED', ?, ?,
-                          ?, ?, ?, NULL, escalation_level, ?
-                     FROM execution_recovery_state
-                    WHERE execution_id=? AND organization_id=?""",
-                (f"{lease_token}-settled", owner, reason_code,
-                 row["correlation_id"] or f"corr-recovery-{execution_id}",
-                 now.isoformat(), now.isoformat(), now.isoformat(),
-                 f"recovery-health:{execution_id}", execution_id, organization_id),
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (attempt_id, execution_id, organization_id, owner, worker_generation,
+                 attempt_number, "CONFIRMED_TERMINATED", "CONFIRMED", reason_code,
+                 correlation_id, now.isoformat(), now.isoformat(), now.isoformat(),
+                 None, 0, f"recovery-proof:{hashlib.sha256(termination_proof.encode('utf-8')).hexdigest()}"),
             )
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=owner,
                 organization_id=organization_id,
                 action=AuditAction.EXECUTION_RUN_TRANSITIONED,
                 object_type="execution_run", object_id=execution_id,
-                result="SUCCESS", correlation_id=row["correlation_id"] or f"corr-recovery-{execution_id}",
+                result="SUCCESS", correlation_id=correlation_id,
                 details={"to": terminal_state, "reason_code": reason_code,
-                         "no_process_proof": no_process_proof},
+                         "termination_proof": termination_proof},
             ))
             return True
 
@@ -5018,6 +5560,8 @@ class DatabaseManager:
         process_start_token: Optional[str] = None,
         session_id: Optional[int] = None,
         worker_generation: Optional[str] = None,
+        worker_identity: Optional[str] = None,
+        identity_attestation: Optional[str] = None,
         actor: str = "execution-cancellation-coordinator",
     ) -> bool:
         """Atomically close a revoked execution after an exact termination proof.
@@ -5042,7 +5586,16 @@ class DatabaseManager:
         safe_terminal_states = frozenset({"CANCELLED", "TIMED_OUT", "FAILED", "EXECUTION_BLOCKED"})
         if not all(
             isinstance(value, str) and value.strip()
-            for value in (execution_id, organization_id, terminal_state, reason_code, termination_status, actor)
+            for value in (
+                execution_id,
+                organization_id,
+                terminal_state,
+                reason_code,
+                termination_status,
+                worker_generation,
+                worker_identity,
+                actor,
+            )
         ):
             return False
         if terminal_state not in safe_terminal_states or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
@@ -5052,17 +5605,26 @@ class DatabaseManager:
         if termination_status in process_statuses:
             if (
                 not isinstance(process_id, int)
-                or process_id <= 0
+                or process_id <= 1
                 or not isinstance(process_group_id, str)
                 or not process_group_id.isdigit()
                 or int(process_group_id) <= 1
                 or not isinstance(process_start_token, str)
-                or not process_start_token.startswith("posix:")
+                or len(process_start_token.split(":", 2)) != 3
+                or process_start_token.split(":", 2)[0] != "posix"
+                or re.fullmatch(
+                    r"[0-9a-fA-F-]{8,128}",
+                    process_start_token.split(":", 2)[1],
+                ) is None
+                or not process_start_token.split(":", 2)[2].isdigit()
+                or int(process_start_token.split(":", 2)[2]) <= 0
                 or not isinstance(session_id, int)
                 or session_id < 0
             ):
                 return False
         elif any(value is not None for value in (process_id, process_group_id, process_start_token, session_id)):
+            return False
+        elif identity_attestation is not None:
             return False
 
         now = utc_now()
@@ -5073,14 +5635,25 @@ class DatabaseManager:
                           r.state AS run_state, r.reason_code AS run_reason_code,
                           r.process_id AS run_process_id,
                           r.process_group_id AS run_process_group_id,
-                          r.correlation_id,
+                          r.worker_identity AS run_worker_identity,
+                          r.worker_generation AS run_worker_generation,
+                          d.worker_identity AS decision_worker_identity,
+                          p.correlation_id AS ownership_correlation_id,
+                          r.correlation_id AS run_correlation_id,
                           q.state AS request_state, q.expires_at AS request_expires_at,
                           d.approval_state, d.revoked_at AS decision_revoked_at,
                           d.expires_at AS decision_expires_at, d.session_jti,
                           i.state AS dispatch_state,
                           s.status AS recovery_status,
                           s.attempt_number AS recovery_attempt_number,
-                          s.worker_generation AS recovery_worker_generation
+                          s.worker_generation AS recovery_worker_generation,
+                          s.last_outcome AS recovery_last_outcome,
+                          s.last_error AS recovery_last_error,
+                          s.owner AS recovery_owner,
+                          s.lease_token AS recovery_lease_token,
+                          s.lease_expires_at AS recovery_lease_expires_at,
+                          s.next_retry_at AS recovery_next_retry_at,
+                          s.escalation_level AS recovery_escalation_level
                      FROM execution_process_ownership p
                      JOIN execution_runs r
                        ON r.execution_id=p.execution_id
@@ -5102,14 +5675,274 @@ class DatabaseManager:
             ).fetchone()
             if not row:
                 return False
+            if (
+                not isinstance(row["ownership_correlation_id"], str)
+                or not row["ownership_correlation_id"].strip()
+                or not isinstance(row["run_correlation_id"], str)
+                or not row["run_correlation_id"].strip()
+                or row["ownership_correlation_id"] != row["run_correlation_id"]
+            ):
+                return False
+            if (
+                row["run_worker_identity"] != row["decision_worker_identity"]
+                or worker_identity != row["run_worker_identity"]
+                or not isinstance(row["run_worker_generation"], str)
+                or not row["run_worker_generation"].strip()
+                or worker_generation != row["run_worker_generation"]
+                or (
+                    row["worker_generation"] is not None
+                    and row["worker_generation"] != row["run_worker_generation"]
+                )
+                or (
+                    row["recovery_worker_generation"] is not None
+                    and row["recovery_worker_generation"] != row["run_worker_generation"]
+                )
+            ):
+                return False
+
+            if termination_status in process_statuses:
+                if identity_attestation is None:
+                    identity_attestation = row["identity_attestation"]
+                if not isinstance(identity_attestation, str) or identity_attestation != row["identity_attestation"]:
+                    return False
+                if row["container_type"] != ProcessContainerType.POSIX_SESSION.value:
+                    return False
+                try:
+                    attestation = PosixProcessAttestation.model_validate_json(identity_attestation)
+                    process_group = int(str(row["process_group_id"]))
+                    process_session = int(str(row["session_id"]))
+                except Exception:
+                    return False
+                start_parts = str(row["root_process_start_token"] or "").split(":", 2)
+                if (
+                    len(start_parts) != 3
+                    or start_parts[0] != "posix"
+                    or re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "") is None
+                    or not start_parts[2].isdigit()
+                    or process_group <= 1
+                    or process_session < 0
+                ):
+                    return False
+                if (
+                    attestation.verification_result != "VERIFIED"
+                    or attestation.worker_generation != str(row["worker_generation"] or "")
+                    or attestation.boot_id != start_parts[1]
+                    or attestation.root_start_ticks != int(start_parts[2])
+                    or attestation.session_id != process_session
+                    or attestation.process_group_id != process_group
+                    or row["container_identity"]
+                    != f"posix-session:{process_session}:group:{process_group}"
+                ):
+                    return False
 
             current_ownership = str(row["ownership_state"])
             if current_ownership == ProcessOwnershipState.TERMINAL.value:
-                return (
+                proof_type = (
+                    "TERMINATION_CONFIRMED"
+                    if termination_status in process_statuses
+                    else "NO_EXTERNAL_PROCESS"
+                )
+                try:
+                    payload = decode_execution_proof(
+                        row["no_process_proof"],
+                        expected_proof_type=proof_type,
+                    )
+                except Exception:
+                    return False
+                expected_proof_keys = (
+                    EXECUTION_PROOF_TERMINATION_KEYS
+                    if proof_type == "TERMINATION_CONFIRMED"
+                    else EXECUTION_PROOF_NO_PROCESS_KEYS
+                )
+                if set(payload) != set(expected_proof_keys):
+                    return False
+                expected_dispatch = "BLOCKED" if terminal_state in {"CANCELLED", "EXECUTION_BLOCKED"} else "FAILED"
+                if not (
                     row["run_state"] == terminal_state
                     and row["run_reason_code"] == reason_code
+                    and row["dispatch_state"] == expected_dispatch
                     and row["recovery_status"] == "CONFIRMED_TERMINATED"
+                    and payload.get("execution_id") == execution_id
+                    and payload.get("organization_id") == organization_id
+                    and payload.get("terminal_state") == terminal_state
+                    and payload.get("dispatch_state") == expected_dispatch
+                    and payload.get("reason_code") == reason_code
+                    and payload.get("ownership_state") == ProcessOwnershipState.TERMINAL.value
+                ):
+                    return False
+                if (
+                    row["recovery_last_error"] is not None
+                    or row["recovery_owner"] is not None
+                    or row["recovery_lease_token"] is not None
+                    or row["recovery_lease_expires_at"] is not None
+                    or row["recovery_next_retry_at"] is not None
+                    or row["recovery_last_outcome"] != row["no_process_proof"]
+                ):
+                    return False
+                try:
+                    recovery_attempt_number = int(row["recovery_attempt_number"])
+                except (TypeError, ValueError):
+                    return False
+                if recovery_attempt_number < 1:
+                    return False
+                latest_attempt = conn.execute(
+                    """SELECT * FROM execution_recovery_attempts
+                       WHERE execution_id=? AND organization_id=?
+                         AND status='CONFIRMED_TERMINATED'
+                       ORDER BY completed_at DESC, attempt_id DESC
+                       LIMIT 1""",
+                    (execution_id, organization_id),
+                ).fetchone()
+                if not latest_attempt:
+                    return False
+                if not all(
+                    isinstance(latest_attempt[field], str) and latest_attempt[field].strip()
+                    for field in (
+                        "attempt_id", "worker_identity", "reason_code", "correlation_id",
+                        "requested_at", "started_at", "completed_at", "health_reference",
+                    )
+                ):
+                    return False
+                try:
+                    recovery_timestamps = tuple(
+                        datetime.fromisoformat(latest_attempt[field])
+                        for field in ("requested_at", "started_at", "completed_at")
+                    )
+                except (TypeError, ValueError):
+                    return False
+                if (
+                    any(timestamp.tzinfo is None or timestamp.utcoffset() is None for timestamp in recovery_timestamps)
+                    or not recovery_timestamps[0] <= recovery_timestamps[1] <= recovery_timestamps[2]
+                ):
+                    return False
+                if (
+                    latest_attempt["execution_id"] != execution_id
+                    or latest_attempt["organization_id"] != organization_id
+                    or latest_attempt["worker_identity"] != row["run_worker_identity"]
+                    or latest_attempt["worker_generation"] != row["recovery_worker_generation"]
+                    or not isinstance(row["recovery_worker_generation"], str)
+                    or not row["recovery_worker_generation"].strip()
+                    or row["recovery_worker_generation"] != row["run_worker_generation"]
+                    or latest_attempt["attempt_number"] != recovery_attempt_number
+                    or latest_attempt["status"] != "CONFIRMED_TERMINATED"
+                    or latest_attempt["cancellation_status"] != termination_status
+                    or latest_attempt["reason_code"] != reason_code
+                    or latest_attempt["correlation_id"] != row["run_correlation_id"]
+                ):
+                    return False
+                if latest_attempt["error_code"] is not None or latest_attempt["next_retry_at"] is not None:
+                    return False
+                if row["recovery_escalation_level"] != latest_attempt["escalation_level"]:
+                    return False
+                if latest_attempt["attempt_id"] != payload.get("recovery_attempt_id"):
+                    return False
+                claim_digests: dict[str, Optional[str]] = {"decision": None, "dispatch": None}
+                claim_rows = conn.execute(
+                    """SELECT action, object_id, details_json FROM audit_events
+                       WHERE organization_id=? AND
+                         ((action='EXECUTION_DECISION_CLAIMED' AND object_id=?) OR
+                          (action='EXECUTION_DISPATCH_CLAIMED' AND object_id=?))
+                       ORDER BY sequence_number DESC, timestamp DESC, id DESC""",
+                    (organization_id, row["approved_decision_id"], execution_id),
+                ).fetchall()
+                for claim_row in claim_rows:
+                    action = str(claim_row["action"])
+                    key = "decision" if action == AuditAction.EXECUTION_DECISION_CLAIMED.value else "dispatch"
+                    if claim_digests[key] is not None:
+                        continue
+                    try:
+                        details = json.loads(claim_row["details_json"] or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(details, dict):
+                        continue
+                    candidate = details.get(
+                        "claim_identity_digest" if key == "decision" else "dispatch_identity_digest"
+                    )
+                    if candidate is None and isinstance(details.get("claim_token"), str):
+                        candidate = hashlib.sha256(details["claim_token"].encode("utf-8")).hexdigest()
+                    if isinstance(candidate, str) and re.fullmatch(r"[0-9a-f]{64}", candidate):
+                        claim_digests[key] = candidate
+                if proof_type == "TERMINATION_CONFIRMED" and not all(claim_digests.values()):
+                    return False
+                if proof_type == "NO_EXTERNAL_PROCESS" and (
+                    claim_digests["decision"] is None
+                ) != (claim_digests["dispatch"] is None):
+                    return False
+                expected_common = (
+                    ("execution_id", execution_id),
+                    ("organization_id", organization_id),
+                    ("request_id", row["request_id"]),
+                    ("decision_id", row["approved_decision_id"]),
+                    ("terminal_state", terminal_state),
+                    ("dispatch_state", expected_dispatch),
+                    ("worker_identity", row["run_worker_identity"]),
+                    ("worker_generation", row["run_worker_generation"]),
+                    ("correlation_id", row["run_correlation_id"]),
+                    ("claim_identity_digest", claim_digests["decision"]),
+                    ("dispatch_identity_digest", claim_digests["dispatch"]),
+                    ("reason_code", reason_code),
+                    ("recovery_status", "CONFIRMED_TERMINATED"),
+                    ("recovery_attempt_number", recovery_attempt_number),
+                    ("recovery_attempt_id", latest_attempt["attempt_id"]),
+                    ("observed_at", row["terminalized_at"]),
                 )
+                if any(payload.get(field) != expected for field, expected in expected_common):
+                    return False
+                try:
+                    observed_at = datetime.fromisoformat(str(payload.get("observed_at")))
+                    terminalized_at = datetime.fromisoformat(str(row["terminalized_at"]))
+                except (TypeError, ValueError):
+                    return False
+                if (
+                    observed_at.tzinfo is None
+                    or observed_at.utcoffset() is None
+                    or terminalized_at.tzinfo is None
+                    or terminalized_at.utcoffset() is None
+                    or payload.get("observed_at") != row["terminalized_at"]
+                ):
+                    return False
+                if proof_type == "TERMINATION_CONFIRMED":
+                    try:
+                        expected_pid = int(row["root_process_id"])
+                        expected_group = str(row["process_group_id"])
+                        expected_session = int(str(row["session_id"]))
+                    except (TypeError, ValueError):
+                        return False
+                    if (
+                        row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                        or row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
+                        or payload.get("termination_status") != termination_status
+                        or payload.get("process_id") != expected_pid
+                        or payload.get("process_group_id") != expected_group
+                        or payload.get("process_start_token") != row["root_process_start_token"]
+                        or payload.get("session_id") != expected_session
+                        or payload.get("identity_attestation") != row["identity_attestation"]
+                        or payload.get("identity_attestation_digest") != canonical_binding_digest(row["identity_attestation"])
+                    ):
+                        return False
+                else:
+                    if (
+                        row["container_type"] != ProcessContainerType.NONE.value
+                        or row["launch_commit_state"] != LaunchCommitState.NOT_ATTEMPTED.value
+                        or payload.get("proof_code") != reason_code
+                        or any(
+                            row[field] is not None
+                            for field in (
+                                "container_identity", "root_process_id", "root_process_start_token",
+                                "process_group_id", "session_id", "identity_attestation",
+                            )
+                        )
+                        or any(
+                            payload.get(field) is not None
+                            for field in (
+                                "process_id", "process_group_id", "process_start_token",
+                                "session_id", "identity_attestation",
+                            )
+                        )
+                    ):
+                        return False
+                return True
 
             active_run_states = {"REQUESTED", "STARTING", "RUNNING"}
             if termination_status in process_statuses:
@@ -5184,7 +6017,7 @@ class DatabaseManager:
                         != ("CANCELLED", "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION")
                     ):
                         return False
-                    expected_generation = str(row["worker_generation"] or "")
+                    expected_generation = str(row["run_worker_generation"] or "")
                     if not worker_generation or str(worker_generation) != expected_generation:
                         return False
 
@@ -5235,7 +6068,7 @@ class DatabaseManager:
             )
             if not authority_invalid:
                 return False
-            expected_worker_generation = str(row["worker_generation"] or "")
+            expected_worker_generation = str(row["run_worker_generation"] or "")
             if termination_status in process_statuses:
                 if (
                     not expected_worker_generation
@@ -5249,34 +6082,157 @@ class DatabaseManager:
             elif row["dispatch_state"] != "BLOCKED" or dispatch_state != "BLOCKED":
                 return False
 
-            proof_material = {
-                "schema_version": "execution-termination-proof-v1",
+            if termination_status in process_statuses:
+                if current_ownership != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value:
+                    # Uncertain/recovery-blocked identity is owned by the
+                    # dedicated recovery primitive, which requires its lease
+                    # and an independently confirmed termination.
+                    return False
+                proof_type = "TERMINATION_CONFIRMED"
+                proof_worker_generation = str(row["run_worker_generation"] or "")
+                if not proof_worker_generation or str(worker_generation) != proof_worker_generation:
+                    return False
+                if not isinstance(row["run_worker_identity"], str) or not row["run_worker_identity"].strip():
+                    return False
+            else:
+                proof_type = "NO_EXTERNAL_PROCESS"
+                proof_worker_generation = str(
+                    row["run_worker_generation"]
+                    or row["recovery_worker_generation"]
+                    or worker_generation
+                    or ""
+                )
+                if worker_generation is not None and str(worker_generation) != proof_worker_generation:
+                    return False
+                if not isinstance(row["run_worker_identity"], str) or not row["run_worker_identity"].strip():
+                    return False
+                if any(
+                    row[field] is not None
+                    for field in (
+                        "container_identity", "root_process_id", "root_process_start_token",
+                        "process_group_id", "session_id", "identity_attestation",
+                    )
+                ):
+                    return False
+
+            attempt_number = max(1, int(row["recovery_attempt_number"] or 0) + 1)
+            attempt_id = f"termination-{uuid.uuid4().hex}"
+            correlation_id = row["run_correlation_id"]
+            if not isinstance(correlation_id, str) or not correlation_id.strip():
+                return False
+
+            claim_digests = {"decision": None, "dispatch": None}
+            claim_rows = conn.execute(
+                """SELECT action, object_id, details_json FROM audit_events
+                   WHERE organization_id=? AND
+                     ((action='EXECUTION_DECISION_CLAIMED' AND object_id=?) OR
+                      (action='EXECUTION_DISPATCH_CLAIMED' AND object_id=?))
+                   ORDER BY sequence_number DESC, timestamp DESC, id DESC""",
+                (organization_id, row["approved_decision_id"], execution_id),
+            ).fetchall()
+            for claim_row in claim_rows:
+                action = str(claim_row["action"])
+                key = "decision" if action == AuditAction.EXECUTION_DECISION_CLAIMED.value else "dispatch"
+                if key not in claim_digests or claim_digests[key] is not None:
+                    continue
+                try:
+                    details = json.loads(claim_row["details_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(details, dict):
+                    continue
+                candidate = details.get(
+                    "claim_identity_digest" if key == "decision" else "dispatch_identity_digest"
+                )
+                if candidate is None and isinstance(details.get("claim_token"), str):
+                    candidate = hashlib.sha256(details["claim_token"].encode("utf-8")).hexdigest()
+                if isinstance(candidate, str) and re.fullmatch(r"[0-9a-f]{64}", candidate):
+                    claim_digests[key] = candidate
+            if termination_status in process_statuses and (
+                not claim_digests["decision"] or not claim_digests["dispatch"]
+            ):
+                return False
+            if termination_status == "NO_EXTERNAL_PROCESS" and (
+                claim_digests["decision"] is None
+            ) != (claim_digests["dispatch"] is None):
+                return False
+            if termination_status == "PRE_DISPATCH" and any(claim_digests.values()):
+                return False
+
+            common_proof = {
+                "schema_version": "execution-proof-v2",
+                "proof_type": proof_type,
                 "execution_id": execution_id,
                 "organization_id": organization_id,
-                "termination_status": termination_status,
+                "request_id": row["request_id"],
+                "decision_id": row["approved_decision_id"],
                 "terminal_state": terminal_state,
+                "dispatch_state": dispatch_state,
+                "ownership_state": ProcessOwnershipState.TERMINAL.value,
+                "container_type": (
+                    ProcessContainerType.NONE.value
+                    if proof_type == "NO_EXTERNAL_PROCESS"
+                    else row["container_type"]
+                ),
+                "launch_commit_state": (
+                    LaunchCommitState.NOT_ATTEMPTED.value
+                    if proof_type == "NO_EXTERNAL_PROCESS"
+                    else row["launch_commit_state"]
+                ),
+                "worker_identity": row["run_worker_identity"],
+                "worker_generation": proof_worker_generation,
+                "correlation_id": correlation_id,
+                "claim_identity_digest": claim_digests["decision"],
+                "dispatch_identity_digest": claim_digests["dispatch"],
                 "reason_code": reason_code,
-                "process_id": process_id,
-                "process_group_id": process_group_id,
-                "process_start_token": process_start_token,
-                "session_id": session_id,
-                "worker_generation": worker_generation or row["worker_generation"] or row["recovery_worker_generation"],
                 "observed_at": now.isoformat(),
+                "recovery_status": "CONFIRMED_TERMINATED",
+                "recovery_attempt_number": attempt_number,
+                "recovery_attempt_id": attempt_id,
             }
-            proof_digest = hashlib.sha256(
-                json.dumps(proof_material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-            ).hexdigest()
-            termination_proof = f"TERMINATION_CONFIRMED:v1:{proof_digest}"
+            if proof_type == "NO_EXTERNAL_PROCESS":
+                proof_payload = {
+                    **common_proof,
+                    "proof_code": reason_code,
+                }
+                _expected_keys = EXECUTION_PROOF_NO_PROCESS_KEYS
+            else:
+                proof_payload = {
+                    **common_proof,
+                    "termination_status": termination_status,
+                    "process_id": int(row["root_process_id"]),
+                    "process_group_id": str(row["process_group_id"]),
+                    "process_start_token": row["root_process_start_token"],
+                    "session_id": int(str(row["session_id"])),
+                    "identity_attestation": row["identity_attestation"],
+                    "identity_attestation_digest": canonical_binding_digest(row["identity_attestation"]),
+                }
+                _expected_keys = EXECUTION_PROOF_TERMINATION_KEYS
+            if set(proof_payload) != set(_expected_keys):
+                return False
+            termination_proof = encode_execution_proof(proof_type, proof_payload)
+            proof_digest = hashlib.sha256(termination_proof.encode("utf-8")).hexdigest()
 
-            ownership_update = conn.execute(
-                """UPDATE execution_process_ownership
-                      SET ownership_state='TERMINAL', no_process_proof=?,
-                          terminalized_at=?, updated_at=?
-                    WHERE execution_id=? AND organization_id=?
-                      AND ownership_state=?""",
-                (termination_proof, now.isoformat(), now.isoformat(),
-                 execution_id, organization_id, current_ownership),
-            )
+            if proof_type == "NO_EXTERNAL_PROCESS":
+                ownership_update = conn.execute(
+                    """UPDATE execution_process_ownership
+                          SET ownership_state='TERMINAL', no_process_proof=?,
+                              last_verified_at=?, terminalized_at=?, updated_at=?
+                        WHERE execution_id=? AND organization_id=?
+                          AND ownership_state=?""",
+                    (termination_proof, now.isoformat(), now.isoformat(), now.isoformat(),
+                     execution_id, organization_id, current_ownership),
+                )
+            else:
+                ownership_update = conn.execute(
+                    """UPDATE execution_process_ownership
+                          SET ownership_state='TERMINAL', no_process_proof=?,
+                              terminalized_at=?, updated_at=?
+                        WHERE execution_id=? AND organization_id=?
+                          AND ownership_state=?""",
+                    (termination_proof, now.isoformat(), now.isoformat(),
+                     execution_id, organization_id, current_ownership),
+                )
             if ownership_update.rowcount != 1:
                 return False
 
@@ -5313,24 +6269,22 @@ class DatabaseManager:
 
             recovery_update = conn.execute(
                 """UPDATE execution_recovery_state
-                      SET status='CONFIRMED_TERMINATED', last_outcome=?,
+                      SET status='CONFIRMED_TERMINATED', worker_generation=?,
+                          attempt_number=?, last_outcome=?,
                           last_error=NULL, owner=NULL, lease_token=NULL,
                           lease_expires_at=NULL, next_retry_at=NULL,
                           updated_at=?
                     WHERE execution_id=? AND organization_id=?
                       AND status='REQUESTED'""",
-                (termination_proof, now.isoformat(), execution_id, organization_id),
+                (
+                    proof_worker_generation, attempt_number, termination_proof,
+                    now.isoformat(), execution_id, organization_id,
+                ),
             )
             if recovery_update.rowcount != 1:
                 raise RuntimeError("confirmed-termination settlement lost its recovery fence")
 
-            attempt_number = max(1, int(row["recovery_attempt_number"] or 0) + 1)
-            recovery_worker_generation = (
-                worker_generation
-                or row["worker_generation"]
-                or row["recovery_worker_generation"]
-                or "unknown-worker-generation"
-            )
+            recovery_worker_generation = proof_worker_generation
             conn.execute(
                 """INSERT INTO execution_recovery_attempts
                    (attempt_id, execution_id, organization_id, worker_identity,
@@ -5339,15 +6293,15 @@ class DatabaseManager:
                     completed_at, error_code, escalation_level, health_reference)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    f"termination-{uuid.uuid4().hex}", execution_id, organization_id,
-                    actor, recovery_worker_generation, attempt_number,
+                    attempt_id, execution_id, organization_id,
+                    worker_identity, recovery_worker_generation, attempt_number,
                     "CONFIRMED_TERMINATED", termination_status, reason_code,
-                    row["correlation_id"] or f"corr-execution-{execution_id}",
+                    row["run_correlation_id"] or f"corr-execution-{execution_id}",
                     now.isoformat(), now.isoformat(), now.isoformat(), None,
                     0, f"termination-proof:{proof_digest}",
                 ),
             )
-            correlation_id = row["correlation_id"] or f"corr-execution-{execution_id}"
+            correlation_id = row["run_correlation_id"] or f"corr-execution-{execution_id}"
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor,
                 organization_id=organization_id,
@@ -5646,13 +6600,26 @@ class DatabaseManager:
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DECISION_CLAIMED, object_type="execution_decision",
                 object_id=decision_id, result="SUCCESS", correlation_id=correlation_id,
-                details={"execution_id": row["execution_id"], "claim_token": decision_token, "dispatch_claim_token": dispatch_token},
+                details={
+                    "execution_id": row["execution_id"],
+                    "claim_identity_digest": hashlib.sha256(
+                        decision_token.encode("utf-8")
+                    ).hexdigest(),
+                    "dispatch_identity_digest": hashlib.sha256(
+                        dispatch_token.encode("utf-8")
+                    ).hexdigest(),
+                },
             ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
                 action=AuditAction.EXECUTION_DISPATCH_CLAIMED, object_type="execution_dispatch_intent",
                 object_id=row["execution_id"], result="SUCCESS", correlation_id=correlation_id,
-                details={"attempt_count": attempt_count, "claim_token": dispatch_token},
+                details={
+                    "attempt_count": attempt_count,
+                    "dispatch_identity_digest": hashlib.sha256(
+                        dispatch_token.encode("utf-8")
+                    ).hexdigest(),
+                },
             ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=worker_identity, organization_id=organization_id,
@@ -7364,6 +8331,13 @@ class DatabaseManager:
             # the tenant-scoped parent without falling back to export data.
             if scan_job.authorization_request_id:
                 persisted_scan["authorization_request_id"] = scan_job.authorization_request_id
+            # These are non-secret control-plane values.  The generic output
+            # sanitizer intentionally treats the word "authorization" as
+            # sensitive in external payloads, but replacing these fields in
+            # the authoritative scan record would destroy the manifest/state
+            # binding needed by a worker after an API restart.
+            persisted_scan["authorization_state"] = scan_job.authorization_state
+            persisted_scan["authorization_manifest_hash"] = scan_job.authorization_manifest_hash
             data_json = json.dumps(
                 persisted_scan,
                 separators=(",", ":"),

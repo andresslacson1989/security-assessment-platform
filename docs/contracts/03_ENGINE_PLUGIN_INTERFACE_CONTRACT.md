@@ -199,6 +199,65 @@ bounded retry/backoff, and expose `DEFERRED`, `RECOVERY_BLOCKED`, or
 termination may atomically transition ownership to `TERMINAL` and the run to
 its reviewed safe terminal outcome.
 
+Process-ownership evidence is append-and-compare state, not caller-replaceable
+metadata. Once an ownership row contains a root PID, start token, process
+group, session, container type, container identity, worker generation, or
+identity attestation, later launch or settlement callbacks MUST preserve that
+exact value. A
+callback MAY fill an identity field that is still absent only when the
+resulting record remains bound to the same execution, tenant, worker
+generation, and process container; it MUST reject a conflicting value. A
+committed `EXTERNAL_PROCESS_GOVERNED` record that cannot complete its launch
+handshake MUST transition directly to `RECOVERY_BLOCKED` while preserving its
+committed container identity, worker generation, and attestation. An existing
+`LAUNCH_UNCERTAIN` record may remain attachable only when its complete POSIX
+identity is present and syntactically valid; incomplete identity remains
+`RECOVERY_BLOCKED`.
+
+Ordinary authority-held terminal settlement MUST accept only a governed or
+already-terminal record and MUST carry the exact persisted PID, process group,
+start token, session, worker generation, and non-empty identity attestation.
+`LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED` MUST be terminalized only by the
+confirmed-termination recovery primitive. That primitive MAY omit an
+identity attestation only when the durable uncertain/recovery record has none;
+when an attestation is persisted, the supplied value MUST match it exactly.
+Terminal replay MUST be idempotent only for the same complete proof tuple and
+MUST reject attempts to rewrite identity, attestation, worker generation, or
+launch-commit state.
+
+A worker may classify an already-terminal delivery as a read-only terminal
+replay only when all of the following are true: the durable child run is in a
+terminal execution state; the dispatch intent maps exactly to that state
+(`SUCCEEDED`/`PARTIAL_RESULTS_WITH_WARNING` to `COMPLETED`,
+`CANCELLED`/`EXECUTION_BLOCKED` to `BLOCKED`, and `FAILED`/`TIMED_OUT` to
+`FAILED`); the tenant, scan, authorization-request, operation, child request,
+child decision, execution, manifest, target-policy, worker-identity, and
+worker-generation bindings are mutually consistent; and the complete
+tenant-scoped run and process-ownership records are present and consistent.
+The process-ownership proof MUST be either a no-process shape with
+`launch_commit_state=NOT_ATTEMPTED`, `container_type=NONE`, no process
+identity fields, and a non-empty versioned `NO_EXTERNAL_PROCESS` or
+`TERMINATION_CONFIRMED` proof, or a governed shape with
+`ownership_state=TERMINAL`, `launch_commit_state=COMMITTED`, a non-`NONE`
+container, complete container/root/process-group/session identity, and a
+non-empty identity attestation that matches the persisted run identity.
+`NO_EXTERNAL_PROCESS` is a valid replay proof when the durable run and
+dispatch are terminal even if the ownership row has not yet been folded into
+the separate `TERMINAL` ownership label; it is valid only with the complete
+no-process shape above.
+
+An exact terminal replay is an observation-only worker return. It MUST NOT
+reacquire, refresh, renew, claim, reclaim, or issue authority; create or launch
+a process; settle or rewrite a run, dispatch, ownership, recovery, audit, or
+scan record; or create a second terminal transition. This read-only exception
+may remain a no-op after the parent or child authority was consumed, expired,
+revoked, or its approving session was invalidated because it does not authorize
+new work. Capability issuance MUST continue to reject expired, revoked, or
+consumed authority. Any missing, partial, nonterminal, uncertain,
+recovery-blocked, ambiguous, cross-tenant, worker-generation-mismatched, or
+proof-mismatched record MUST fail closed through the existing recovery or
+dispatch-rejection rules and MUST NOT be treated as a terminal replay.
+
 On Windows, governed external execution is explicitly unsupported until a
 verified kernel-owned Job Object implementation and its runtime evidence are
 deployed. Rejection is durable/observable and MUST NOT be represented as a

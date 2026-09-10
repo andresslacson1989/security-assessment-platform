@@ -12,10 +12,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.core.execution_context import (
+    EXECUTION_PROOF_TERMINATION_KEYS,
     PosixProcessAttestation,
     _ISSUER_TOKEN,
+    decode_execution_proof,
     _issue_non_scan_execution_context,
     canonical_binding_digest,
+    encode_execution_proof,
+    execution_claim_digest,
 )
 from app.core.db import _ACTIVE_DATABASE_CONNECTION
 from app.core.models import (
@@ -24,6 +28,7 @@ from app.core.models import (
     ProcessContainerType,
     ProcessOwnershipState,
     LaunchCommitState,
+    is_valid_execution_terminal_outcome,
     utc_now,
 )
 
@@ -657,35 +662,226 @@ def issue_non_scan_execution_context(purpose: str, *, ttl_seconds: int = 300):
     )
 
 
-def record_no_process(capability: Any, *, proof_code: str, reason_code: str) -> bool:
-    """Persist an explicit no-process result before terminal settlement."""
-    if reason_code not in EXECUTION_REASON_CODES or not capability.execution_id:
+def _expected_terminal_dispatch(terminal_state: str) -> str:
+    if terminal_state in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING"}:
+        return "COMPLETED"
+    if terminal_state in {"CANCELLED", "EXECUTION_BLOCKED"}:
+        return "BLOCKED"
+    return "FAILED"
+
+
+def _durable_execution_evidence(capability: Any) -> Optional[dict[str, Any]]:
+    if not capability.execution_id:
+        return None
+    reader = getattr(capability.database, "get_execution_replay_evidence", None)
+    if not callable(reader):
+        return None
+    evidence = reader(capability.execution_id, capability.decision.organization_id)
+    if not isinstance(evidence, dict):
+        return None
+    run = evidence.get("run")
+    if not isinstance(run, dict):
+        return None
+    if run.get("execution_id") != capability.execution_id or run.get("organization_id") != capability.decision.organization_id:
+        return None
+    if run.get("worker_identity") != capability.worker_identity or run.get("worker_generation") != capability.worker_generation:
+        return None
+    if run.get("approved_decision_id") != capability.decision.id:
+        return None
+    return evidence
+
+
+def _claim_digests(capability: Any) -> tuple[str, str]:
+    if not isinstance(capability.claim_token, str) or not isinstance(capability.dispatch_claim_token, str):
+        raise ValueError("execution claims are incomplete")
+    return (
+        execution_claim_digest(capability.claim_token),
+        execution_claim_digest(capability.dispatch_claim_token),
+    )
+
+
+def _parse_aware_timestamp(value: Any, field_name: str) -> datetime:
+    """Parse a durable lifecycle timestamp without accepting local-time input."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is missing")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _proof_recovery_fields(evidence: dict[str, Any]) -> tuple[str, int, Optional[str]]:
+    recovery = evidence.get("recovery")
+    if not isinstance(recovery, dict) or recovery.get("status") not in {
+        "REQUESTED", "CONFIRMED_TERMINATED",
+    }:
+        raise ValueError("execution recovery projection is not replayable")
+    try:
+        attempt_number = int(recovery.get("attempt_number") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("execution recovery attempt number is invalid") from exc
+    if attempt_number < 0:
+        raise ValueError("execution recovery attempt number is invalid")
+    if (
+        type(recovery.get("escalation_level")) is not int
+        or recovery["escalation_level"] < 0
+    ):
+        raise ValueError("execution recovery escalation level is invalid")
+    if recovery.get("last_error") is not None:
+        raise ValueError("execution recovery projection retains an unresolved error")
+    if any(
+        recovery.get(field_name) is not None
+        for field_name in ("owner", "lease_token", "lease_expires_at", "next_retry_at")
+    ):
+        raise ValueError("execution recovery projection retains an active lease")
+    attempt = evidence.get("latest_confirmed_recovery")
+    attempt_id = attempt.get("attempt_id") if isinstance(attempt, dict) else None
+    if recovery.get("status") == "REQUESTED":
+        if (
+            attempt is not None
+            or attempt_id is not None
+            or attempt_number != 0
+            or recovery.get("last_outcome") is not None
+            or recovery.get("escalation_level") != 0
+        ):
+            raise ValueError("requested recovery projection has terminal evidence")
+    else:
+        if not isinstance(attempt, dict) or not isinstance(attempt_id, str) or not attempt_id.strip() or attempt_number < 1:
+            raise ValueError("confirmed recovery projection has no attempt evidence")
+        run = evidence.get("run")
+        if not isinstance(run, dict) or not isinstance(recovery.get("last_outcome"), str) or not recovery["last_outcome"].strip():
+            raise ValueError("confirmed recovery projection has no outcome evidence")
+        required_text = (
+            "attempt_id", "worker_identity", "reason_code", "correlation_id",
+            "requested_at", "started_at", "completed_at", "health_reference",
+        )
+        if any(
+            not isinstance(attempt.get(field_name), str) or not attempt[field_name].strip()
+            for field_name in required_text
+        ):
+            raise ValueError("confirmed recovery attempt evidence is incomplete")
+        try:
+            recovery_timestamps = tuple(
+                _parse_aware_timestamp(attempt[field_name], field_name)
+                for field_name in ("requested_at", "started_at", "completed_at")
+            )
+        except ValueError:
+            raise ValueError("confirmed recovery attempt timestamps are invalid") from None
+        if not recovery_timestamps[0] <= recovery_timestamps[1] <= recovery_timestamps[2]:
+            raise ValueError("confirmed recovery attempt timestamps are invalid")
+        if (
+            type(attempt.get("attempt_number")) is not int
+            or type(attempt.get("escalation_level")) is not int
+            or attempt.get("escalation_level") < 0
+        ):
+            raise ValueError("confirmed recovery attempt counters are invalid")
+        if (
+            attempt.get("execution_id") != run.get("execution_id")
+            or attempt.get("organization_id") != run.get("organization_id")
+            or attempt.get("worker_identity") != run.get("worker_identity")
+            or attempt.get("worker_generation") != run.get("worker_generation")
+            or attempt.get("attempt_number") != attempt_number
+            or attempt.get("status") != "CONFIRMED_TERMINATED"
+            or attempt.get("correlation_id") != run.get("correlation_id")
+            or attempt.get("reason_code") != run.get("reason_code")
+            or attempt.get("cancellation_status") not in {
+                "CONFIRMED", "KILLED", "ALREADY_EXITED", "NO_EXTERNAL_PROCESS", "PRE_DISPATCH",
+            }
+            or attempt.get("error_code") is not None
+            or attempt.get("next_retry_at") is not None
+            or attempt.get("escalation_level") != recovery.get("escalation_level")
+        ):
+            raise ValueError("confirmed recovery attempt evidence is inconsistent")
+    return str(recovery["status"]), attempt_number, attempt_id
+
+
+def record_no_process(
+    capability: Any,
+    *,
+    proof_code: str,
+    reason_code: str,
+    terminal_state: Optional[str] = None,
+    dispatch_state: Optional[str] = None,
+) -> bool:
+    """Persist an exact, digest-bound no-process result before run settlement."""
+    if (
+        reason_code not in EXECUTION_REASON_CODES
+        or proof_code != reason_code
+        or not capability.execution_id
+    ):
         return False
-    proof_material = {
-        "schema_version": "no-process-proof-v1",
-        "execution_id": capability.execution_id,
-        "decision_id": capability.decision.id,
-        "claim_token": capability.claim_token,
-        "dispatch_claim_token": capability.dispatch_claim_token,
-        "worker_identity": capability.worker_identity,
-        "worker_generation": capability.worker_generation,
-        "proof_code": proof_code,
-        "reason_code": reason_code,
-        "observed_at": utc_now().isoformat(),
-    }
-    proof_digest = canonical_binding_digest(proof_material)
-    record = ExecutionProcessOwnershipRecord(
-        execution_id=capability.execution_id,
-        organization_id=capability.decision.organization_id,
-        ownership_state=ProcessOwnershipState.NO_EXTERNAL_PROCESS,
-        container_type=ProcessContainerType.NONE,
-        launch_commit_state=LaunchCommitState.NOT_ATTEMPTED,
-        no_process_proof=f"NO_EXTERNAL_PROCESS:v1:{proof_digest}",
-        correlation_id=f"corr-execution-{capability.execution_id}",
+    terminal_state = terminal_state or (
+        "CANCELLED"
+        if reason_code.startswith("EXECUTION_CANCELLED")
+        else "EXECUTION_BLOCKED"
     )
-    return capability.database.transition_process_ownership(
-        record, ProcessOwnershipState.UNKNOWN, reason_code=reason_code,
-    )
+    expected_dispatch = _expected_terminal_dispatch(terminal_state)
+    if dispatch_state is None:
+        dispatch_state = expected_dispatch
+    if terminal_state not in {"CANCELLED", "EXECUTION_BLOCKED", "FAILED", "TIMED_OUT"} or dispatch_state != expected_dispatch:
+        return False
+    try:
+        evidence = _durable_execution_evidence(capability)
+        if evidence is None:
+            return False
+        run = evidence["run"]
+        dispatch = evidence.get("dispatch")
+        if not isinstance(dispatch, dict) or dispatch.get("state") not in {"CLAIMED", "PENDING", "BLOCKED"}:
+            return False
+        decision_digest, dispatch_digest = _claim_digests(capability)
+        recovery_status, recovery_attempt_number, recovery_attempt_id = _proof_recovery_fields(evidence)
+        observed_at = utc_now()
+        correlation_id = run.get("correlation_id")
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            return False
+        payload = {
+            "schema_version": "execution-proof-v2",
+            "proof_type": "NO_EXTERNAL_PROCESS",
+            "execution_id": capability.execution_id,
+            "organization_id": capability.decision.organization_id,
+            "request_id": run["request_id"],
+            "decision_id": capability.decision.id,
+            "terminal_state": terminal_state,
+            "dispatch_state": dispatch_state,
+            "ownership_state": ProcessOwnershipState.NO_EXTERNAL_PROCESS.value,
+            "container_type": ProcessContainerType.NONE.value,
+            "launch_commit_state": LaunchCommitState.NOT_ATTEMPTED.value,
+            "worker_identity": capability.worker_identity,
+            "worker_generation": capability.worker_generation,
+            "correlation_id": correlation_id,
+            "claim_identity_digest": decision_digest,
+            "dispatch_identity_digest": dispatch_digest,
+            "proof_code": proof_code,
+            "reason_code": reason_code,
+            "observed_at": observed_at.isoformat(),
+            "recovery_status": recovery_status,
+            "recovery_attempt_number": recovery_attempt_number,
+            "recovery_attempt_id": recovery_attempt_id,
+        }
+        proof = encode_execution_proof("NO_EXTERNAL_PROCESS", payload)
+        record = ExecutionProcessOwnershipRecord(
+            execution_id=capability.execution_id,
+            organization_id=capability.decision.organization_id,
+            ownership_state=ProcessOwnershipState.NO_EXTERNAL_PROCESS,
+            container_type=ProcessContainerType.NONE,
+            launch_commit_state=LaunchCommitState.NOT_ATTEMPTED,
+            no_process_proof=proof,
+            correlation_id=correlation_id,
+            worker_generation=capability.worker_generation,
+            last_verified_at=observed_at,
+            updated_at=observed_at,
+        )
+        return capability.database.transition_process_ownership(
+            record,
+            ProcessOwnershipState.UNKNOWN,
+            reason_code=reason_code,
+            worker_identity=capability.worker_identity,
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def record_posix_launch(capability: Any, *, pid: int, process_group_id: Optional[int], session_id: int, start_token: str) -> str:
@@ -713,6 +909,9 @@ def record_posix_launch(capability: Any, *, pid: int, process_group_id: Optional
     }
     digest = canonical_binding_digest(values)
     attestation = PosixProcessAttestation(**values, digest=digest)
+    evidence = _durable_execution_evidence(capability)
+    if evidence is None or not isinstance(evidence["run"].get("correlation_id"), str):
+        raise RuntimeError("durable execution correlation is unavailable")
     record = ExecutionProcessOwnershipRecord(
         execution_id=capability.execution_id,
         organization_id=capability.decision.organization_id,
@@ -726,12 +925,15 @@ def record_posix_launch(capability: Any, *, pid: int, process_group_id: Optional
         worker_generation=attestation.worker_generation,
         launch_commit_state=LaunchCommitState.COMMITTED,
         identity_attestation=attestation.model_dump_json(exclude_none=True),
-        correlation_id=f"corr-execution-{capability.execution_id}",
+        correlation_id=evidence["run"]["correlation_id"],
         launched_at=captured,
         last_verified_at=captured,
     )
     if not capability.database.transition_process_ownership(
-        record, ProcessOwnershipState.UNKNOWN, reason_code="PROCESS_LAUNCH_COMMITTED",
+        record,
+        ProcessOwnershipState.UNKNOWN,
+        reason_code="PROCESS_LAUNCH_COMMITTED",
+        worker_identity=capability.worker_identity,
     ):
         raise RuntimeError("durable process ownership commit failed")
     return attestation.model_dump_json(exclude_none=True)
@@ -747,6 +949,9 @@ def record_launch_uncertain(
     """Persist post-creation uncertainty before any recovery decision."""
     if not capability.execution_id:
         return False
+    evidence = _durable_execution_evidence(capability)
+    if evidence is None or not isinstance(evidence["run"].get("correlation_id"), str):
+        return False
     record = ExecutionProcessOwnershipRecord(
         execution_id=capability.execution_id,
         organization_id=capability.decision.organization_id,
@@ -758,16 +963,29 @@ def record_launch_uncertain(
         process_group_id=str(process_group_id) if process_group_id else None,
         worker_generation=capability.worker_generation,
         launch_commit_state=LaunchCommitState.UNCERTAIN,
-        correlation_id=f"corr-execution-{capability.execution_id}",
+        correlation_id=evidence["run"]["correlation_id"],
         last_verified_at=utc_now(),
     )
     return capability.database.transition_process_ownership(
-        record, ProcessOwnershipState.UNKNOWN, reason_code="PROCESS_LAUNCH_UNCERTAIN",
+        record,
+        ProcessOwnershipState.UNKNOWN,
+        reason_code="PROCESS_LAUNCH_UNCERTAIN",
+        worker_identity=capability.worker_identity,
     )
 
 
-def record_terminal(capability: Any, *, reason_code: str) -> bool:
-    """Transition process ownership to terminal only after platform cleanup."""
+def record_terminal(
+    capability: Any,
+    *,
+    terminal_state: str,
+    reason_code: str,
+    process_id: Optional[int] = None,
+    process_group_id: Optional[str] = None,
+    process_start_token: Optional[str] = None,
+    session_id: Optional[int] = None,
+    termination_status: Optional[str] = None,
+) -> bool:
+    """Transition governed process ownership with a complete terminal proof."""
     if not capability.execution_id:
         return False
     existing = capability.database.get_process_ownership(
@@ -777,16 +995,292 @@ def record_terminal(capability: Any, *, reason_code: str) -> bool:
         return False
     current = ProcessOwnershipState(existing["ownership_state"])
     if current == ProcessOwnershipState.TERMINAL:
+        if (
+            terminal_state not in {"FAILED", "TIMED_OUT", "CANCELLED"}
+            or not is_valid_execution_terminal_outcome(terminal_state, reason_code)
+        ):
+            return False
+        # A terminal replay is idempotent only when the caller presents the
+        # complete persisted process proof.  Do not allow a caller to omit an
+        # identity field and have the replay validator silently substitute the
+        # durable value from the database.
+        if (
+            type(process_id) is not int
+            or process_id <= 1
+            or not isinstance(process_group_id, str)
+            or not process_group_id.isdigit()
+            or int(process_group_id) <= 1
+            or not isinstance(process_start_token, str)
+            or not process_start_token.strip()
+            or type(session_id) is not int
+            or session_id < 0
+            or termination_status not in {"KILLED", "ALREADY_EXITED"}
+        ):
+            return False
+        proof = existing.get("no_process_proof")
+        if not isinstance(proof, str) or not proof.strip():
+            return False
+        try:
+            payload = decode_execution_proof(
+                proof,
+                expected_proof_type="TERMINATION_CONFIRMED",
+            )
+        except (TypeError, ValueError):
+            return False
+        if set(payload) != set(EXECUTION_PROOF_TERMINATION_KEYS):
+            return False
+        if payload.get("terminal_state") != terminal_state or payload.get("reason_code") != reason_code:
+            return False
+        if payload.get("termination_status") != termination_status:
+            return False
+        if payload.get("termination_status") not in {"KILLED", "ALREADY_EXITED"}:
+            return False
+        for supplied, stored, field_name in (
+            (process_id, payload.get("process_id"), "process_id"),
+            (process_group_id, payload.get("process_group_id"), "process_group_id"),
+            (process_start_token, payload.get("process_start_token"), "process_start_token"),
+            (session_id, payload.get("session_id"), "session_id"),
+        ):
+            if field_name in {"process_group_id", "process_start_token"}:
+                if str(supplied) != str(stored):
+                    return False
+            elif supplied != stored:
+                return False
+        for field_name, stored_field in (
+            ("process_id", "root_process_id"),
+            ("process_group_id", "process_group_id"),
+            ("process_start_token", "root_process_start_token"),
+            ("session_id", "session_id"),
+            ("identity_attestation", "identity_attestation"),
+        ):
+            payload_value = payload.get(field_name)
+            stored_value = existing.get(stored_field)
+            if field_name in {"process_group_id", "session_id"}:
+                matches = str(payload_value) == str(stored_value)
+            else:
+                matches = payload_value == stored_value
+            if not matches:
+                return False
+        evidence = _durable_execution_evidence(capability)
+        if evidence is None:
+            return False
+        run = evidence["run"]
+        if (
+            not isinstance(existing.get("correlation_id"), str)
+            or not existing["correlation_id"].strip()
+            or existing["correlation_id"] != run.get("correlation_id")
+        ):
+            return False
+        try:
+            decision_digest, dispatch_digest = _claim_digests(capability)
+            recovery_status, recovery_attempt_number, recovery_attempt_id = _proof_recovery_fields(evidence)
+        except (KeyError, TypeError, ValueError):
+            return False
+        for field_name, expected in (
+            ("execution_id", capability.execution_id),
+            ("organization_id", capability.decision.organization_id),
+            ("request_id", run.get("request_id")),
+            ("decision_id", capability.decision.id),
+            ("dispatch_state", _expected_terminal_dispatch(terminal_state)),
+            ("ownership_state", ProcessOwnershipState.TERMINAL.value),
+            ("container_type", existing.get("container_type")),
+            ("launch_commit_state", existing.get("launch_commit_state")),
+            ("worker_identity", capability.worker_identity),
+            ("worker_generation", capability.worker_generation),
+            ("correlation_id", run.get("correlation_id")),
+            ("claim_identity_digest", decision_digest),
+            ("dispatch_identity_digest", dispatch_digest),
+            ("recovery_status", recovery_status),
+            ("recovery_attempt_number", recovery_attempt_number),
+            ("recovery_attempt_id", recovery_attempt_id),
+            ("identity_attestation_digest", canonical_binding_digest(existing["identity_attestation"])),
+        ):
+            if payload.get(field_name) != expected:
+                return False
+        try:
+            attestation = PosixProcessAttestation.model_validate_json(existing["identity_attestation"])
+            expected_pid = int(str(existing.get("root_process_id")))
+            expected_group = int(str(existing.get("process_group_id")))
+            expected_session = int(str(existing.get("session_id")))
+        except Exception:
+            return False
+        token_parts = str(existing.get("root_process_start_token") or "").split(":", 2)
+        if (
+            expected_pid <= 1
+            or expected_group <= 1
+            or expected_session < 0
+            or attestation.verification_result != "VERIFIED"
+            or attestation.worker_generation != str(existing.get("worker_generation") or "")
+            or len(token_parts) != 3
+            or token_parts[0] != "posix"
+            or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "")
+            or not token_parts[2].isdigit()
+            or int(token_parts[2]) <= 0
+            or attestation.boot_id != token_parts[1]
+            or attestation.root_start_ticks != int(token_parts[2])
+            or attestation.root_start_ticks <= 0
+            or attestation.session_id != expected_session
+            or attestation.process_group_id != expected_group
+            or attestation.process_group_id <= 1
+            or existing.get("container_identity")
+            != f"posix-session:{expected_session}:group:{expected_group}"
+        ):
+            return False
+        try:
+            observed_at = datetime.fromisoformat(str(payload.get("observed_at")))
+            terminalized_at = datetime.fromisoformat(str(existing.get("terminalized_at")))
+        except (TypeError, ValueError):
+            return False
+        if (
+            observed_at.tzinfo is None
+            or observed_at.utcoffset() is None
+            or terminalized_at.tzinfo is None
+            or terminalized_at.utcoffset() is None
+            or payload.get("observed_at") != existing.get("terminalized_at")
+        ):
+            return False
+        recovery = evidence.get("recovery")
+        latest_recovery = evidence.get("latest_confirmed_recovery")
+        if recovery_status == "CONFIRMED_TERMINATED" and (
+            not isinstance(recovery, dict)
+            or not isinstance(latest_recovery, dict)
+            or recovery.get("last_outcome") != proof
+            or latest_recovery.get("cancellation_status") != payload.get("termination_status")
+        ):
+            return False
         return True
+    if current != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED:
+        return False
+    if (
+        terminal_state not in {"SUCCEEDED", "PARTIAL_RESULTS_WITH_WARNING", "FAILED", "TIMED_OUT", "CANCELLED"}
+        or not is_valid_execution_terminal_outcome(terminal_state, reason_code)
+    ):
+        return False
+    if termination_status is None:
+        termination_status = "ALREADY_EXITED"
+    if termination_status not in {"KILLED", "ALREADY_EXITED"}:
+        return False
+    try:
+        expected_pid = int(existing["root_process_id"])
+        expected_group = str(existing["process_group_id"])
+        expected_session = int(str(existing["session_id"]))
+    except (TypeError, ValueError):
+        return False
+    if (
+        expected_pid <= 1
+        or not expected_group.isdigit()
+        or int(expected_group) <= 1
+        or expected_session < 0
+    ):
+        return False
+    if (
+        type(process_id) is not int
+        or process_id <= 1
+        or not isinstance(process_group_id, str)
+        or not process_group_id.isdigit()
+        or int(process_group_id) <= 1
+        or not isinstance(process_start_token, str)
+        or not process_start_token.strip()
+        or type(session_id) is not int
+        or session_id < 0
+        or termination_status not in {"KILLED", "ALREADY_EXITED"}
+    ):
+        return False
+    if process_id != expected_pid:
+        return False
+    if str(process_group_id) != expected_group:
+        return False
+    if session_id != expected_session:
+        return False
+    if process_start_token != existing.get("root_process_start_token"):
+        return False
+    attestation_json = existing.get("identity_attestation")
+    if not isinstance(attestation_json, str) or not attestation_json.strip():
+        return False
+    try:
+        attestation = PosixProcessAttestation.model_validate_json(attestation_json)
+    except Exception:
+        return False
+    start_parts = str(existing.get("root_process_start_token") or "").split(":", 2)
+    if (
+        attestation.verification_result != "VERIFIED"
+        or attestation.worker_generation != str(existing.get("worker_generation") or "")
+        or len(start_parts) != 3
+        or start_parts[0] != "posix"
+        or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "")
+        or not start_parts[2].isdigit()
+        or int(start_parts[2]) <= 0
+        or int(expected_group) <= 1
+        or attestation.boot_id != start_parts[1]
+        or attestation.root_start_ticks != int(start_parts[2])
+        or attestation.root_start_ticks <= 0
+        or attestation.session_id != int(str(existing.get("session_id")))
+        or attestation.process_group_id != int(str(existing.get("process_group_id")))
+        or attestation.process_group_id <= 1
+        or existing.get("container_identity")
+        != f"posix-session:{existing.get('session_id')}:group:{existing.get('process_group_id')}"
+    ):
+        return False
+    evidence = _durable_execution_evidence(capability)
+    if evidence is None:
+        return False
+    run = evidence["run"]
+    correlation_id = run.get("correlation_id")
+    if not isinstance(correlation_id, str) or not correlation_id.strip():
+        return False
+    try:
+        decision_digest, dispatch_digest = _claim_digests(capability)
+        recovery_status, recovery_attempt_number, recovery_attempt_id = _proof_recovery_fields(evidence)
+        observed_at = utc_now()
+        payload = {
+            "schema_version": "execution-proof-v2",
+            "proof_type": "TERMINATION_CONFIRMED",
+            "execution_id": capability.execution_id,
+            "organization_id": capability.decision.organization_id,
+            "request_id": run["request_id"],
+            "decision_id": capability.decision.id,
+            "terminal_state": terminal_state,
+            "dispatch_state": _expected_terminal_dispatch(terminal_state),
+            "ownership_state": ProcessOwnershipState.TERMINAL.value,
+            "container_type": existing["container_type"],
+            "launch_commit_state": existing["launch_commit_state"],
+            "worker_identity": capability.worker_identity,
+            "worker_generation": capability.worker_generation,
+            "correlation_id": correlation_id,
+            "claim_identity_digest": decision_digest,
+            "dispatch_identity_digest": dispatch_digest,
+            "reason_code": reason_code,
+            "observed_at": observed_at.isoformat(),
+            "recovery_status": recovery_status,
+            "recovery_attempt_number": recovery_attempt_number,
+            "recovery_attempt_id": recovery_attempt_id,
+            "termination_status": termination_status,
+            "process_id": expected_pid,
+            "process_group_id": expected_group,
+            "process_start_token": existing["root_process_start_token"],
+            "session_id": expected_session,
+            "identity_attestation": attestation_json,
+            "identity_attestation_digest": canonical_binding_digest(attestation_json),
+        }
+        proof = encode_execution_proof("TERMINATION_CONFIRMED", payload)
+    except (KeyError, TypeError, ValueError):
+        return False
     record = ExecutionProcessOwnershipRecord(**{
         **existing,
         "ownership_state": ProcessOwnershipState.TERMINAL,
         "container_type": ProcessContainerType(existing["container_type"]),
         "launch_commit_state": LaunchCommitState(existing["launch_commit_state"]),
-        "updated_at": utc_now(),
-        "terminalized_at": utc_now(),
+        "no_process_proof": proof,
+        "correlation_id": correlation_id,
+        "updated_at": observed_at,
+        "terminalized_at": observed_at,
     })
-    return capability.database.transition_process_ownership(record, current, reason_code=reason_code)
+    return capability.database.transition_process_ownership(
+        record,
+        current,
+        reason_code=reason_code,
+        worker_identity=capability.worker_identity,
+    )
 
 
 def settle_execution(
@@ -811,7 +1305,13 @@ def settle_execution(
             token = _ACTIVE_DATABASE_CONNECTION.set(conn)
             try:
                 if process_id is None:
-                    if not record_no_process(capability, proof_code=reason_code, reason_code=reason_code):
+                    if not record_no_process(
+                        capability,
+                        proof_code=reason_code,
+                        reason_code=reason_code,
+                        terminal_state=terminal_state,
+                        dispatch_state=_expected_terminal_dispatch(terminal_state),
+                    ):
                         raise _SettlementRejected
                     settled = capability.database.abort_execution_start(
                         capability.decision.id, capability.decision.organization_id,
@@ -820,7 +1320,20 @@ def settle_execution(
                         reason_code=reason_code,
                     )
                 else:
-                    if not record_terminal(capability, reason_code=reason_code):
+                    if termination_status is None:
+                        # Ordinary process completion has an explicit
+                        # persisted outcome even though no kill was needed.
+                        termination_status = "ALREADY_EXITED"
+                    if not record_terminal(
+                        capability,
+                        terminal_state=terminal_state,
+                        reason_code=reason_code,
+                        process_id=process_id,
+                        process_group_id=process_group_id,
+                        process_start_token=process_start_token,
+                        session_id=session_id,
+                        termination_status=termination_status,
+                    ):
                         raise _SettlementRejected
                     settled = capability.database.finish_execution(
                         capability.execution_id, capability.decision.organization_id,
@@ -849,6 +1362,11 @@ def settle_execution(
         if reason_code == "EXECUTION_CANCELLED" and process_id is not None:
             if termination_status not in {"KILLED", "ALREADY_EXITED"}:
                 return False
+            existing = capability.database.get_process_ownership(
+                capability.execution_id, capability.decision.organization_id,
+            )
+            if not isinstance(existing, dict):
+                return False
             return bool(fallback(
                 capability.execution_id,
                 capability.decision.organization_id,
@@ -859,7 +1377,9 @@ def settle_execution(
                 process_group_id=process_group_id,
                 process_start_token=process_start_token,
                 session_id=session_id,
+                identity_attestation=existing.get("identity_attestation"),
                 worker_generation=capability.worker_generation,
+                worker_identity=capability.worker_identity,
                 actor="process-supervisor",
             ))
         if reason_code == "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION" and process_id is None:
@@ -870,6 +1390,7 @@ def settle_execution(
                 reason_code=reason_code,
                 termination_status="NO_EXTERNAL_PROCESS",
                 worker_generation=capability.worker_generation,
+                worker_identity=capability.worker_identity,
                 actor="process-supervisor",
             ))
         return False

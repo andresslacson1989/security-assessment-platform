@@ -33,10 +33,43 @@ def should_process_scan(status: object) -> bool:
     }
 
 
+async def handle_consumed_scan(
+    orchestrator: object,
+    local_executor: object,
+    scan_id: str,
+    organization_id: str | None,
+    authorization_request_id: str | None,
+    cloud_credentials=None,
+    queue_binding=None,
+) -> None:
+    """Apply the production post-consume authority handoff.
+
+    Keeping this boundary module-level makes the exact worker callback
+    independently testable while leaving Redis consumption and orchestration
+    as the production implementations. No queue payload is allowed to bypass
+    the typed binding requirement.
+    """
+    if not organization_id or not authorization_request_id:
+        raise RuntimeError("queued scan is missing its authoritative tenant/request identity")
+    from app.core.queue import QueueDispatchBinding
+
+    if type(queue_binding) is not QueueDispatchBinding:
+        raise RuntimeError("queued scan is missing its authoritative queue binding")
+    await orchestrator.execute_dispatched_scan(
+        scan_id,
+        organization_id,
+        authorization_request_id,
+        cloud_credentials=cloud_credentials,
+        executor=local_executor,
+        queue_binding=queue_binding,
+    )
+
+
 async def run_worker() -> None:
     from app.core.orchestrator import ScanOrchestrator
     from app.core.queue import (
         EXECUTION_QUEUE_URL,
+        QueueDispatchBinding,
         RedisDurableQueue,
         ScanQueueManager,
     )
@@ -72,19 +105,20 @@ async def run_worker() -> None:
         organization_id: str | None,
         authorization_request_id: str | None,
         cloud_credentials=None,
+        queue_binding: QueueDispatchBinding | None = None,
     ) -> None:
-        if not organization_id or not authorization_request_id:
-            raise RuntimeError("queued scan is missing its authoritative tenant/request identity")
-        # Redis has already consumed the durable intent.  The orchestrator is
+        # Redis has already consumed the durable intent. The orchestrator is
         # the sole post-consume authority boundary; it reloads all tenant and
         # child identities and invokes the private scan executor only through
         # this worker-owned bounded executor.
-        await orchestrator.execute_dispatched_scan(
+        await handle_consumed_scan(
+            orchestrator,
+            local_executor,
             scan_id,
             organization_id,
             authorization_request_id,
-            cloud_credentials=cloud_credentials,
-            executor=local_executor,
+            cloud_credentials,
+            queue_binding,
         )
 
     try:

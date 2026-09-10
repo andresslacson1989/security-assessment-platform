@@ -79,8 +79,9 @@ def test_managed_trust_records_are_readable_but_immutable():
 def test_ci_verifies_the_hash_locked_runtime_dependency_set():
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml").read_text()
     assert 'python-version: "3.11"' in workflow
-    assert "cache-dependency-path: backend/requirements.lock" in workflow
-    assert "pip install --require-hashes --requirement backend/requirements.lock" in workflow
+    assert "cache: pip" not in workflow
+    assert "cache-dependency-path:" not in workflow
+    assert "python -m pip install --no-cache-dir --require-hashes --requirement backend/requirements.lock" in workflow
     assert "backend/requirements.txt" not in workflow
 
 
@@ -101,6 +102,18 @@ def test_ci_workflow_static_contract_is_complete():
         "postgres-schema-assurance",
         "container",
     }
+    focused_job = workflow["jobs"]["focused-contract-verification"]
+    assert focused_job["services"]["redis"]["image"] == "redis:7.2-alpine"
+    assert focused_job["services"]["redis"]["ports"] == ["6379:6379"]
+    assert focused_job["services"]["postgres"]["image"] == "postgres:16-alpine"
+    assert focused_job["services"]["postgres"]["ports"] == ["5432:5432"]
+    assert "--health-cmd=\"redis-cli ping\"" in workflow_text
+    assert "--health-cmd=\"pg_isready -U cyberassess_ci -d cyberassess_ci\"" in workflow_text
+    assert focused_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/15"
+    assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_URL"].endswith("/cyberassess_ci")
+    assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_ACK"] == "I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION"
+    assert workflow["jobs"]["full-repository-verification"]["services"]["postgres"]["image"] == "postgres:16-alpine"
+    assert "tests/security/test_real_dispatch_authority_assurance.py" in workflow_text
     for job_id in ("focused-contract-verification", "full-repository-verification"):
         checkout_step = next(
             step for step in workflow["jobs"][job_id]["steps"]
@@ -120,24 +133,45 @@ def test_ci_workflow_static_contract_is_complete():
     }
     assert all(re.fullmatch(r"[0-9a-f]{40}", parts[1]) for parts in action_names_and_shas)
 
-    assert "runner.temp" not in "\n".join(
-        str(value)
-        for job in workflow["jobs"].values()
-        for value in (job.get("env") or {}).values()
-    )
-    assert 'CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-focused-${GITHUB_RUN_ID}.db' in workflow_text
-    assert 'CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-full-${GITHUB_RUN_ID}.db' in workflow_text
-    assert 'FULL_EVIDENCE_DIR=${RUNNER_TEMP}/cyberassess-full-reports' in workflow_text
-    assert 'CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-postgres-${GITHUB_RUN_ID}.db' in workflow_text
-    assert 'POSTGRES_EVIDENCE_DIR=${RUNNER_TEMP}/cyberassess-postgres-reports' in workflow_text
-    assert workflow_text.count('>> "$GITHUB_ENV"') == 5
-    for job_id, step_name in (
-        ("focused-contract-verification", "Set isolated focused paths"),
-        ("full-repository-verification", "Set isolated full-suite paths"),
-        ("postgres-schema-assurance", "Set isolated PostgreSQL paths"),
+    assert "RUNNER_TEMP" not in workflow_text
+    assert "runner.temp" not in workflow_text
+    assert not re.search(r"^\s+cache:", workflow_text, re.MULTILINE)
+    assert not re.search(r"^\s+cache-dependency-path:", workflow_text, re.MULTILINE)
+    project_template = "${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/"
+    for job_id in (
+        "compile-backend",
+        "focused-contract-verification",
+        "full-repository-verification",
+        "postgres-schema-assurance",
+    ):
+        job_env = workflow["jobs"][job_id]["env"]
+        job_root = project_template + job_id
+        assert job_env["CI_ROOT"] == job_root
+        assert job_env["CI_REPORT_DIR"] == f"{job_root}/reports"
+        assert job_env["CI_PYTEST_BASETEMP"] == f"{job_root}/pytest"
+        assert any(
+            step.get("name") == "Set project-local CI paths"
+            for step in workflow["jobs"][job_id]["steps"]
+            if isinstance(step, dict)
+        )
+        for key, value in job_env.items():
+            if key in {"CYBERASSESS_DB_PATH", "FULL_EVIDENCE_DIR", "POSTGRES_EVIDENCE_DIR"}:
+                assert str(value).startswith(job_root + "/")
+    assert workflow_text.count('>> "$GITHUB_ENV"') == 4
+    assert workflow_text.count('python -m pytest -p no:cacheprovider -q') == 3
+    assert workflow_text.count('--basetemp="$PYTEST_BASETEMP"') == 3
+    assert workflow_text.count('path: ${{ env.CI_REPORT_DIR }}/') == 3
+    assert "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite" not in workflow_text
+    for line in workflow_text.splitlines():
+        if "/tmp" in line:
+            assert "--tmpfs /tmp:" in line or "$CI_ROOT/tmp" in line
+    for job_id in (
+        "focused-contract-verification",
+        "full-repository-verification",
+        "postgres-schema-assurance",
     ):
         assert any(
-            step.get("name") == step_name
+            step.get("name") == "Set project-local CI paths"
             for step in workflow["jobs"][job_id]["steps"]
             if isinstance(step, dict)
         )
@@ -207,7 +241,7 @@ def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_gua
     focused_dir = tmp_path / "cyberassess-focused-reports"
     focused_dir.mkdir()
     focused_environment = os.environ.copy()
-    focused_environment["RUNNER_TEMP"] = str(tmp_path)
+    focused_environment["CI_REPORT_DIR"] = str(focused_dir)
     focused_report_dir = focused_dir
     (focused_report_dir / "focused-contract.xml").write_text(
         '<testsuite tests="1" skipped="1" failures="0"><testcase><skipped '
@@ -244,7 +278,6 @@ def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_gua
     full_environment = os.environ.copy()
     full_environment["FULL_EVIDENCE_DIR"] = str(full_dir)
     allowed_reasons = (
-        "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite",
         "UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed",
         "Managed nmap binary not present on this dev machine",
         "Symlinks require elevated privileges on Windows",
@@ -269,11 +302,12 @@ def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_gua
     )
     assert classified.returncode == 0, classified.stderr
     classification = (full_dir / "full-suite-skip-classification.txt").read_text()
-    assert "total_skips=7" in classification
+    assert "total_skips=6" in classification
     assert "PROVENANCE_BLOCKED_ESCALATION_REQUIRED" in classification
 
     (full_dir / "full-suite.xml").write_text(
-        '<testsuite tests="1" skipped="1"><testcase><skipped message="unknown skip"/>'
+        '<testsuite tests="1" skipped="1"><testcase><skipped '
+        'message="CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite"/>'
         "</testcase></testsuite>"
     )
     unclassified = subprocess.run(
@@ -284,7 +318,7 @@ def test_contract_workflow_has_governed_trigger_and_executable_postgres_skip_gua
         check=False,
     )
     assert unclassified.returncode != 0
-    assert "unknown skip" in unclassified.stderr
+    assert "CYBERASSESS_POSTGRES_TEST_URL" in unclassified.stderr
 
 
 def test_ci_builds_and_smoke_tests_the_hardened_production_image():

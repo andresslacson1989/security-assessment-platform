@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+import base64
 import hashlib
+import hmac
 import json
+import re
 import uuid
 from typing import Any, Dict, Optional, Tuple, Literal
 
@@ -143,6 +146,133 @@ def _freeze_value(value: Any) -> Any:
 def canonical_binding_digest(value: Any) -> str:
     frozen = _freeze_value(value)
     return hashlib.sha256(json.dumps(frozen, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+_EXECUTION_PROOF_SCHEMA_VERSION = "execution-proof-v2"
+_EXECUTION_PROOF_TYPES = frozenset({"NO_EXTERNAL_PROCESS", "TERMINATION_CONFIRMED"})
+_EXECUTION_PROOF_MAX_LENGTH = 16_384
+_EXECUTION_PROOF_RE = re.compile(
+    r"^(NO_EXTERNAL_PROCESS|TERMINATION_CONFIRMED):v2:([0-9a-f]{64}):([A-Za-z0-9_-]+)$"
+)
+
+# These key sets define the versioned durable proof contract.  The codec below
+# validates the envelope and canonical digest; the database and authority
+# layers additionally require one of these exact payload shapes before a proof
+# can affect lifecycle handling.
+EXECUTION_PROOF_COMMON_KEYS = frozenset({
+    "schema_version", "proof_type", "execution_id", "organization_id",
+    "request_id", "decision_id", "terminal_state", "dispatch_state",
+    "ownership_state", "container_type", "launch_commit_state",
+    "worker_identity", "worker_generation", "correlation_id",
+    "claim_identity_digest", "dispatch_identity_digest", "reason_code",
+    "observed_at", "recovery_status", "recovery_attempt_number",
+    "recovery_attempt_id",
+})
+EXECUTION_PROOF_NO_PROCESS_KEYS = EXECUTION_PROOF_COMMON_KEYS | {"proof_code"}
+EXECUTION_PROOF_TERMINATION_KEYS = EXECUTION_PROOF_COMMON_KEYS | {
+    "termination_status", "process_id", "process_group_id",
+    "process_start_token", "session_id", "identity_attestation",
+    "identity_attestation_digest",
+}
+
+
+def execution_claim_digest(token: str) -> str:
+    """Return a non-secret fingerprint for one ephemeral execution claim."""
+    if not isinstance(token, str) or not token.strip() or len(token) > 512:
+        raise ExecutionContextMismatchError("execution claim token is invalid")
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _canonical_execution_proof_bytes(payload: Dict[str, Any]) -> bytes:
+    if not isinstance(payload, dict):
+        raise ExecutionContextMismatchError("execution proof payload must be an object")
+    try:
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ExecutionContextMismatchError("execution proof payload is not canonical JSON") from exc
+
+
+def encode_execution_proof(proof_type: str, payload: Dict[str, Any]) -> str:
+    """Encode one self-contained, digest-bound terminal execution proof.
+
+    The payload is intentionally stored in the existing ownership proof TEXT
+    column.  It contains no live claim token; ephemeral claims are represented
+    only by one-way digests.  The strict envelope makes altered payloads,
+    unsupported versions, and alternate JSON encodings fail closed.
+    """
+    if proof_type not in _EXECUTION_PROOF_TYPES:
+        raise ExecutionContextMismatchError("execution proof type is unsupported")
+    if not isinstance(payload, dict):
+        raise ExecutionContextMismatchError("execution proof payload must be an object")
+    if payload.get("schema_version") != _EXECUTION_PROOF_SCHEMA_VERSION:
+        raise ExecutionContextMismatchError("execution proof schema version is unsupported")
+    if payload.get("proof_type") != proof_type:
+        raise ExecutionContextMismatchError("execution proof type does not match its payload")
+    canonical = _canonical_execution_proof_bytes(payload)
+    encoded_payload = base64.urlsafe_b64encode(canonical).decode("ascii").rstrip("=")
+    digest = hashlib.sha256(canonical).hexdigest()
+    proof = f"{proof_type}:v2:{digest}:{encoded_payload}"
+    if len(proof) > _EXECUTION_PROOF_MAX_LENGTH:
+        raise ExecutionContextMismatchError("execution proof exceeds the bounded storage limit")
+    return proof
+
+
+def decode_execution_proof(
+    proof: str,
+    *,
+    expected_proof_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Strictly decode and verify one terminal execution proof envelope."""
+    if not isinstance(proof, str) or len(proof) > _EXECUTION_PROOF_MAX_LENGTH:
+        raise ExecutionContextMismatchError("execution proof is missing or oversized")
+    match = _EXECUTION_PROOF_RE.fullmatch(proof)
+    if match is None:
+        raise ExecutionContextMismatchError("execution proof grammar or version is invalid")
+    proof_type, supplied_digest, encoded_payload = match.groups()
+    if expected_proof_type is not None and proof_type != expected_proof_type:
+        raise ExecutionContextMismatchError("execution proof type is not the expected terminal proof")
+    padding = "=" * ((4 - len(encoded_payload) % 4) % 4)
+    try:
+        canonical = base64.b64decode(
+            (encoded_payload + padding).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        if base64.urlsafe_b64encode(canonical).decode("ascii").rstrip("=") != encoded_payload:
+            raise ValueError("noncanonical base64")
+        payload = json.loads(
+            canonical.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+    except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ExecutionContextMismatchError("execution proof payload encoding is invalid") from exc
+    if not isinstance(payload, dict):
+        raise ExecutionContextMismatchError("execution proof payload is not an object")
+    if _canonical_execution_proof_bytes(payload) != canonical:
+        raise ExecutionContextMismatchError("execution proof payload is not canonically encoded")
+    expected_digest = hashlib.sha256(canonical).hexdigest()
+    if not hmac.compare_digest(supplied_digest, expected_digest):
+        raise ExecutionContextMismatchError("execution proof digest does not match its payload")
+    if payload.get("schema_version") != _EXECUTION_PROOF_SCHEMA_VERSION:
+        raise ExecutionContextMismatchError("execution proof payload version is unsupported")
+    if payload.get("proof_type") != proof_type:
+        raise ExecutionContextMismatchError("execution proof payload type is inconsistent")
+    return payload
+
+
+def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate execution proof payload key")
+        result[key] = value
+    return result
 
 
 class GovernedExecutionContext(BaseModel):
@@ -307,6 +437,12 @@ __all__ = [
     "UnsupportedNonScanContextError", "GovernedExecutionContext", "NonScanExecutionContext",
     "canonical_command_digest",
     "canonical_binding_digest",
+    "execution_claim_digest",
+    "EXECUTION_PROOF_COMMON_KEYS",
+    "EXECUTION_PROOF_NO_PROCESS_KEYS",
+    "EXECUTION_PROOF_TERMINATION_KEYS",
+    "encode_execution_proof",
+    "decode_execution_proof",
     "PosixProcessAttestation", "WindowsJobAttestation",
     "_issue_non_scan_execution_context",
     "_register_issued_context",

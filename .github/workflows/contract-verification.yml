@@ -19,22 +19,37 @@ jobs:
     name: Compile backend
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/compile-backend
+      CI_REPORT_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/compile-backend/reports
+      CI_PYTEST_BASETEMP: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/compile-backend/pytest
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set project-local CI paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_ROOT/tmp" "$CI_REPORT_DIR" "$CI_PYTEST_BASETEMP" "$CI_ROOT/pycache"
+          {
+            echo "TEMP=$CI_ROOT/tmp"
+            echo "TMP=$CI_ROOT/tmp"
+            echo "TMPDIR=$CI_ROOT/tmp"
+            echo "PYTHONPYCACHEPREFIX=$CI_ROOT/pycache"
+            echo "PYTEST_BASETEMP=$CI_PYTEST_BASETEMP"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.lock
 
       - name: Install locked dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --require-hashes --requirement backend/requirements.lock
+          python -m pip install --no-cache-dir --require-hashes --requirement backend/requirements.lock
 
       - name: Compile backend modules
         shell: bash
@@ -49,38 +64,98 @@ jobs:
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_LIVE_REDIS_TEST_URL: redis://127.0.0.1:6379/15
+      CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
+      CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
+      CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/focused-contract-verification
+      CI_REPORT_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/focused-contract-verification/reports
+      CI_PYTEST_BASETEMP: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/focused-contract-verification/pytest
+      CYBERASSESS_DB_PATH: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/focused-contract-verification/cyberassess.db
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cyberassess_ci
+          POSTGRES_PASSWORD: cyberassess_ci_only
+          POSTGRES_DB: cyberassess_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cyberassess_ci -d cyberassess_ci"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      - name: Set project-local CI paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_ROOT/tmp" "$CI_REPORT_DIR" "$CI_PYTEST_BASETEMP" "$CI_ROOT/pycache"
+          {
+            echo "TEMP=$CI_ROOT/tmp"
+            echo "TMP=$CI_ROOT/tmp"
+            echo "TMPDIR=$CI_ROOT/tmp"
+            echo "PYTHONPYCACHEPREFIX=$CI_ROOT/pycache"
+            echo "PYTEST_BASETEMP=$CI_PYTEST_BASETEMP"
+          } >> "$GITHUB_ENV"
+
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.lock
-
-      - name: Set isolated focused paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-focused-${GITHUB_RUN_ID}.db" >> "$GITHUB_ENV"
 
       - name: Install locked dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --require-hashes --requirement backend/requirements.lock
+          python -m pip install --no-cache-dir --require-hashes --requirement backend/requirements.lock
+
+      - name: Wait for Redis Streams readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            if python -c 'import os, redis; client=redis.Redis.from_url(os.environ["CYBERASSESS_LIVE_REDIS_TEST_URL"]); client.ping(); client.close()'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+      - name: Wait for authenticated PostgreSQL readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            if python -c 'import os, psycopg; connection=psycopg.connect(os.environ["CYBERASSESS_POSTGRES_TEST_URL"], connect_timeout=2); connection.execute("SELECT 1"); connection.close()'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
 
       - name: Run focused contract suite
         shell: bash
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/cyberassess-focused-reports"
+          report_dir="$CI_REPORT_DIR"
           mkdir -p "$report_dir"
-          python -m pytest -q \
+          python -m pytest -p no:cacheprovider -q \
+            --basetemp="$PYTEST_BASETEMP" \
             tests/security/test_contract_fleet_consistency.py \
             backend/tests/test_scan_manifest_contract.py \
             backend/tests/test_execution_launch_inventory.py \
@@ -88,6 +163,7 @@ jobs:
             tests/security/test_auth_admin_boundaries.py \
             tests/security/test_execution_decision_authority.py \
             tests/security/test_execution_cancellation_coordinator.py \
+            tests/security/test_real_dispatch_authority_assurance.py \
             tests/security/test_scan_request_migration.py \
             tests/security/test_process_launch_boundary.py \
             tests/security/test_container_hardening.py \
@@ -102,7 +178,7 @@ jobs:
           import os
           import xml.etree.ElementTree as ET
 
-          report_path = os.path.join(os.environ["RUNNER_TEMP"], "cyberassess-focused-reports", "focused-contract.xml")
+          report_path = os.path.join(os.environ["CI_REPORT_DIR"], "focused-contract.xml")
           root = ET.parse(report_path).getroot()
           allowed = {
               "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch",
@@ -118,7 +194,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: focused-contract-evidence-${{ github.run_id }}
-          path: ${{ runner.temp }}/cyberassess-focused-reports/
+          path: ${{ env.CI_REPORT_DIR }}/
           if-no-files-found: error
           retention-days: 14
 
@@ -129,31 +205,68 @@ jobs:
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
+      CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
+      CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification
+      CI_REPORT_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification/reports
+      CI_PYTEST_BASETEMP: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification/pytest
+      CYBERASSESS_DB_PATH: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification/cyberassess.db
+      FULL_EVIDENCE_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification/reports
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cyberassess_ci
+          POSTGRES_PASSWORD: cyberassess_ci_only
+          POSTGRES_DB: cyberassess_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cyberassess_ci -d cyberassess_ci"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      - name: Set project-local CI paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_ROOT/tmp" "$CI_REPORT_DIR" "$CI_PYTEST_BASETEMP" "$CI_ROOT/pycache"
+          {
+            echo "TEMP=$CI_ROOT/tmp"
+            echo "TMP=$CI_ROOT/tmp"
+            echo "TMPDIR=$CI_ROOT/tmp"
+            echo "PYTHONPYCACHEPREFIX=$CI_ROOT/pycache"
+            echo "PYTEST_BASETEMP=$CI_PYTEST_BASETEMP"
+          } >> "$GITHUB_ENV"
+
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.lock
-
-      - name: Set isolated full-suite paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-full-${GITHUB_RUN_ID}.db" >> "$GITHUB_ENV"
-          echo "FULL_EVIDENCE_DIR=${RUNNER_TEMP}/cyberassess-full-reports" >> "$GITHUB_ENV"
 
       - name: Install locked dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --require-hashes --requirement backend/requirements.lock
+          python -m pip install --no-cache-dir --require-hashes --requirement backend/requirements.lock
+
+      - name: Wait for authenticated PostgreSQL readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            if python -c 'import os, psycopg; connection=psycopg.connect(os.environ["CYBERASSESS_POSTGRES_TEST_URL"], connect_timeout=2); connection.execute("SELECT 1"); connection.close()'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
 
       - name: Run full repository suite
         shell: bash
@@ -161,7 +274,8 @@ jobs:
           set -euo pipefail
           report_dir="$FULL_EVIDENCE_DIR"
           mkdir -p "$report_dir"
-          python -m pytest -q \
+          python -m pytest -p no:cacheprovider -q \
+            --basetemp="$PYTEST_BASETEMP" \
             --junitxml="$report_dir/full-suite.xml" \
             2>&1 | tee "$report_dir/full-suite.log"
 
@@ -180,8 +294,6 @@ jobs:
               raise SystemExit("Full-suite JUnit evidence was not produced")
           root = ET.parse(report_path).getroot()
           classifications = {
-              "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite":
-                  "DEPENDENCY_DEFERRED_TO_POSTGRES_JOB",
               "UNAVAILABLE: approved managed Subfinder v2.6.5 binary is not installed":
                   "ENVIRONMENT_UNAVAILABLE_MANAGED_TOOL",
               "Managed nmap binary not present on this dev machine":
@@ -212,7 +324,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: full-repository-evidence-${{ github.run_id }}
-          path: ${{ runner.temp }}/cyberassess-full-reports/
+          path: ${{ env.CI_REPORT_DIR }}/
           if-no-files-found: error
           retention-days: 14
 
@@ -225,6 +337,11 @@ jobs:
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
       CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
       CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
+      CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/postgres-schema-assurance
+      CI_REPORT_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/postgres-schema-assurance/reports
+      CI_PYTEST_BASETEMP: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/postgres-schema-assurance/pytest
+      CYBERASSESS_DB_PATH: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/postgres-schema-assurance/cyberassess.db
+      POSTGRES_EVIDENCE_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/postgres-schema-assurance/reports
     services:
       postgres:
         image: postgres:16-alpine
@@ -241,25 +358,29 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set project-local CI paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_ROOT/tmp" "$CI_REPORT_DIR" "$CI_PYTEST_BASETEMP" "$CI_ROOT/pycache"
+          {
+            echo "TEMP=$CI_ROOT/tmp"
+            echo "TMP=$CI_ROOT/tmp"
+            echo "TMPDIR=$CI_ROOT/tmp"
+            echo "PYTHONPYCACHEPREFIX=$CI_ROOT/pycache"
+            echo "PYTEST_BASETEMP=$CI_PYTEST_BASETEMP"
+          } >> "$GITHUB_ENV"
+
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.lock
-
-      - name: Set isolated PostgreSQL paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "CYBERASSESS_DB_PATH=${RUNNER_TEMP}/cyberassess-postgres-${GITHUB_RUN_ID}.db" >> "$GITHUB_ENV"
-          echo "POSTGRES_EVIDENCE_DIR=${RUNNER_TEMP}/cyberassess-postgres-reports" >> "$GITHUB_ENV"
 
       - name: Install locked dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --require-hashes --requirement backend/requirements.lock
+          python -m pip install --no-cache-dir --require-hashes --requirement backend/requirements.lock
 
       - name: Wait for authenticated PostgreSQL readiness
         shell: bash
@@ -280,7 +401,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$POSTGRES_EVIDENCE_DIR"
-          python -m pytest -q \
+          python -m pytest -p no:cacheprovider -q \
+            --basetemp="$PYTEST_BASETEMP" \
             tests/security/test_postgres_integration.py \
             --junitxml="$POSTGRES_EVIDENCE_DIR/postgres-suite.xml" \
             2>&1 | tee "$POSTGRES_EVIDENCE_DIR/postgres-suite.log"
@@ -305,7 +427,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: postgres-schema-evidence-${{ github.run_id }}
-          path: ${{ runner.temp }}/cyberassess-postgres-reports/
+          path: ${{ env.CI_REPORT_DIR }}/
           if-no-files-found: error
           retention-days: 14
 

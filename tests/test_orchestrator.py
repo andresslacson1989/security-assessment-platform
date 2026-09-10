@@ -76,6 +76,7 @@ async def test_worker_handoff_rejects_revoked_child_before_entering_executor(mon
         target=Target(name="Example", type=TargetType.DOMAIN, value="example.com"),
         profile=ScanProfile.QUICK,
         status=ScanStatus.PENDING,
+        authorization_manifest_hash="a" * 64,
     )
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     binding = {
@@ -103,11 +104,13 @@ async def test_worker_handoff_rejects_revoked_child_before_entering_executor(mon
         "child_run_snapshot_completeness": "COMPLETE",
         "child_run_worker_identity": "worker-a",
         "child_run_worker_generation": "generation-a",
+        "child_run_state": "REQUESTED",
         "dispatch_state": "PENDING",
     }
     parent = {
         "scan_id": job.id,
         "organization_id": "org-a",
+        "manifest_hash": "a" * 64,
         "state": "DISPATCHABLE",
         "expires_at": expires_at,
         "revoked_at": None,

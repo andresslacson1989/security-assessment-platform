@@ -1375,7 +1375,7 @@ def _seed_execution_for_termination_settlement(
     if no_external_process:
         assert record_no_process(
             capability,
-            proof_code="TEST_PRE_POPEN_CANCELLATION",
+            proof_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
             reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
         )
     elif claim_dispatch:
@@ -1420,6 +1420,7 @@ def test_confirmed_termination_settlement_requires_revocation_and_exact_identity
         "process_start_token": identity.start_token,
         "session_id": identity.session_id,
         "worker_generation": "generation-settlement",
+        "worker_identity": "worker-settlement",
     }
     # The dedicated post-revocation primitive cannot replace the ordinary
     # authority-held terminal transition.
@@ -1429,10 +1430,10 @@ def test_confirmed_termination_settlement_requires_revocation_and_exact_identity
     with database._connection_scope() as conn:
         active = conn.execute(
             "SELECT p.ownership_state, r.state, i.state, s.status "
-            "FROM execution_process_ownership p "
-            "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
-            "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
-            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
+        "FROM execution_process_ownership p "
+        "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
+        "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
+        "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
             "WHERE p.execution_id=? AND p.organization_id=?",
             ("run-settlement", "org-settlement"),
         ).fetchone()
@@ -1469,7 +1470,9 @@ def test_confirmed_termination_settlement_requires_revocation_and_exact_identity
         final = conn.execute(
             "SELECT p.ownership_state, p.no_process_proof, r.state AS run_state, "
             "r.reason_code, i.state AS dispatch_state, i.last_error, "
-            "s.status, s.owner, s.lease_token "
+            "s.status, s.owner, s.lease_token, s.worker_generation, "
+            "s.attempt_number, s.last_outcome, s.last_error AS recovery_last_error, "
+            "s.next_retry_at, s.escalation_level "
             "FROM execution_process_ownership p "
             "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
             "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
@@ -1483,14 +1486,417 @@ def test_confirmed_termination_settlement_requires_revocation_and_exact_identity
             ("run-settlement", "org-settlement"),
         ).fetchone()
     assert final["ownership_state"] == "TERMINAL"
-    assert final["no_process_proof"].startswith("TERMINATION_CONFIRMED:v1:")
+    assert final["no_process_proof"].startswith("TERMINATION_CONFIRMED:v2:")
     assert final["run_state"] == "CANCELLED"
     assert final["reason_code"] == "EXECUTION_CANCELLED"
     assert final["dispatch_state"] == "BLOCKED"
     assert final["last_error"] == "EXECUTION_CANCELLED"
     assert final["status"] == "CONFIRMED_TERMINATED"
     assert final["owner"] is None and final["lease_token"] is None
+    assert final["worker_generation"] == "generation-settlement"
+    assert final["attempt_number"] == 1
+    assert final["last_outcome"] == final["no_process_proof"]
+    assert final["recovery_last_error"] is None
+    assert final["next_retry_at"] is None
+    assert final["escalation_level"] == 0
     assert attempts["count"] == 1
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "recovery_generation",
+        "recovery_timestamp",
+        "recovery_attempt_worker_identity",
+        "terminalized_timestamp",
+    ),
+)
+def test_confirmed_termination_replay_rejects_durable_metadata_tampering(tmp_path, tamper):
+    """The database replay fence rejects altered recovery metadata read-only."""
+    from app.core.execution_service import load_durable_process_identity
+
+    database = DatabaseManager(tmp_path / f"confirmed-termination-{tamper}.db")
+    _authority, _attestation = _seed_execution_for_termination_settlement(
+        database,
+        execution_id=f"run-replay-{tamper}",
+        request_id=f"request-replay-{tamper}",
+        decision_id=f"decision-replay-{tamper}",
+    )
+    identity = load_durable_process_identity(
+        database, f"run-replay-{tamper}", "org-settlement"
+    )
+    assert identity is not None
+    settlement_args = {
+        "terminal_state": "CANCELLED",
+        "reason_code": "EXECUTION_CANCELLED",
+        "termination_status": "KILLED",
+        "process_id": identity.pid,
+        "process_group_id": str(identity.process_group_id),
+        "process_start_token": identity.start_token,
+        "session_id": identity.session_id,
+        "worker_generation": "generation-settlement",
+        "worker_identity": "worker-settlement",
+    }
+    execution_id = f"run-replay-{tamper}"
+    assert database.revoke_execution_request(
+        f"request-replay-{tamper}", "org-settlement", "admin-settlement"
+    ) is True
+    assert database.settle_execution_after_confirmed_termination(
+        execution_id, "org-settlement", **settlement_args
+    ) is True
+
+    with database._connection_scope() as conn:
+        attempt = conn.execute(
+            "SELECT * FROM execution_recovery_attempts "
+            "WHERE execution_id=? AND organization_id=? "
+            "ORDER BY completed_at DESC, attempt_id DESC LIMIT 1",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+        assert attempt is not None
+        if tamper == "recovery_generation":
+            conn.execute(
+                "UPDATE execution_recovery_state SET worker_generation=? "
+                "WHERE execution_id=? AND organization_id=?",
+                ("tampered-recovery-generation", execution_id, "org-settlement"),
+            )
+        elif tamper in {"recovery_timestamp", "recovery_attempt_worker_identity"}:
+            conn.execute(
+                "INSERT INTO execution_recovery_attempts "
+                "(attempt_id, execution_id, organization_id, worker_identity, "
+                "worker_generation, attempt_number, status, cancellation_status, "
+                "reason_code, correlation_id, requested_at, started_at, completed_at, "
+                "error_code, escalation_level, health_reference) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "tampered-recovery-attempt",
+                    execution_id,
+                    "org-settlement",
+                    (
+                        "tampered-recovery-worker"
+                        if tamper == "recovery_attempt_worker_identity"
+                        else attempt["worker_identity"]
+                    ),
+                    attempt["worker_generation"],
+                    attempt["attempt_number"],
+                    "CONFIRMED_TERMINATED",
+                    attempt["cancellation_status"],
+                    attempt["reason_code"],
+                    attempt["correlation_id"],
+                    (
+                        attempt["requested_at"]
+                        if tamper == "recovery_attempt_worker_identity"
+                        else "2026-09-10T12:00:00"
+                    ),
+                    attempt["started_at"],
+                    "9999-12-31T00:00:00+00:00",
+                    None,
+                    attempt["escalation_level"],
+                    "tampered-recovery-health",
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE execution_process_ownership SET terminalized_at=? "
+                "WHERE execution_id=? AND organization_id=?",
+                ("2026-09-10T12:00:00", execution_id, "org-settlement"),
+            )
+        before = conn.execute(
+            "SELECT p.ownership_state, p.no_process_proof, p.terminalized_at, "
+            "r.state, r.reason_code, i.state, s.status, s.worker_generation, "
+            "s.attempt_number, s.last_outcome, s.last_error, s.owner, s.lease_token, "
+            "s.lease_expires_at, s.next_retry_at, s.escalation_level "
+            "FROM execution_process_ownership p "
+            "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
+            "WHERE p.execution_id=? AND p.organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE organization_id=?",
+            ("org-settlement",),
+        ).fetchone()["count"]
+        recovery_attempt_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM execution_recovery_attempts "
+            "WHERE execution_id=? AND organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()["count"]
+
+    assert database.settle_execution_after_confirmed_termination(
+        execution_id, "org-settlement", **settlement_args
+    ) is False
+
+    with database._connection_scope() as conn:
+        after = conn.execute(
+            "SELECT p.ownership_state, p.no_process_proof, p.terminalized_at, "
+            "r.state, r.reason_code, i.state, s.status, s.worker_generation, "
+            "s.attempt_number, s.last_outcome, s.last_error, s.owner, s.lease_token, "
+            "s.lease_expires_at, s.next_retry_at, s.escalation_level "
+            "FROM execution_process_ownership p "
+            "JOIN execution_runs r ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id "
+            "WHERE p.execution_id=? AND p.organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+        assert tuple(after) == tuple(before)
+        assert conn.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE organization_id=?",
+            ("org-settlement",),
+        ).fetchone()["count"] == audit_count
+        assert conn.execute(
+            "SELECT COUNT(*) AS count FROM execution_recovery_attempts "
+            "WHERE execution_id=? AND organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()["count"] == recovery_attempt_count
+
+
+def test_process_ownership_dal_rejects_worker_identity_and_generation_mismatch(tmp_path):
+    """Ownership transitions must bind worker identity before any mutation."""
+    from app.core.models import ExecutionProcessOwnershipRecord, ProcessOwnershipState
+
+    database = DatabaseManager(tmp_path / "process-worker-binding.db")
+    _authority, _identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-process-worker-binding",
+        request_id="request-process-worker-binding",
+        decision_id="decision-process-worker-binding",
+    )
+    existing = database.get_process_ownership(
+        "run-process-worker-binding", "org-settlement"
+    )
+    assert existing is not None
+    record = ExecutionProcessOwnershipRecord.model_validate(existing)
+
+    with database._connection_scope() as conn:
+        audit_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE organization_id=?",
+            ("org-settlement",),
+        ).fetchone()["count"]
+
+    assert database.transition_process_ownership(
+        record,
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        worker_identity="worker-attacker",
+        actor="worker-attacker",
+    ) is False
+    assert database.get_process_ownership(
+        "run-process-worker-binding", "org-settlement"
+    ) == existing
+
+    generation_tampered = record.model_copy(
+        update={"worker_generation": "generation-attacker"}
+    )
+    assert database.transition_process_ownership(
+        generation_tampered,
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        worker_identity="worker-settlement",
+        actor="worker-settlement",
+    ) is False
+    assert database.get_process_ownership(
+        "run-process-worker-binding", "org-settlement"
+    ) == existing
+    with database._connection_scope() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE organization_id=?",
+            ("org-settlement",),
+        ).fetchone()["count"] == audit_count
+
+
+def test_recovery_settlement_rejects_owner_not_bound_to_durable_run_read_only(tmp_path):
+    """A recovery lease owner cannot terminalize another worker's process."""
+    database = DatabaseManager(tmp_path / "recovery-worker-binding.db")
+    _authority, identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-recovery-worker-binding",
+        request_id="request-recovery-worker-binding",
+        decision_id="decision-recovery-worker-binding",
+    )
+    assert identity is not None
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership "
+            "SET ownership_state='LAUNCH_UNCERTAIN', launch_commit_state='UNCERTAIN' "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-worker-binding", "org-settlement"),
+        )
+
+    lease = database.claim_recovery(
+        "run-recovery-worker-binding",
+        "org-settlement",
+        "worker-attacker",
+        "generation-settlement",
+    )
+    assert lease is not None
+
+    def snapshot():
+        with database._connection_scope() as conn:
+            return (
+                tuple(conn.execute(
+                    "SELECT ownership_state, launch_commit_state, worker_generation, "
+                    "no_process_proof, terminalized_at FROM execution_process_ownership "
+                    "WHERE execution_id=? AND organization_id=?",
+                    ("run-recovery-worker-binding", "org-settlement"),
+                ).fetchone()),
+                tuple(conn.execute(
+                    "SELECT state, reason_code, finished_at FROM execution_runs "
+                    "WHERE execution_id=? AND organization_id=?",
+                    ("run-recovery-worker-binding", "org-settlement"),
+                ).fetchone()),
+                tuple(conn.execute(
+                    "SELECT status, owner, lease_token, worker_generation, attempt_number, "
+                    "last_outcome, last_error FROM execution_recovery_state "
+                    "WHERE execution_id=? AND organization_id=?",
+                    ("run-recovery-worker-binding", "org-settlement"),
+                ).fetchone()),
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM audit_events WHERE organization_id=?",
+                    ("org-settlement",),
+                ).fetchone()["count"],
+            )
+
+    before = snapshot()
+    assert database.settle_recovery_execution(
+        "run-recovery-worker-binding",
+        "org-settlement",
+        "worker-attacker",
+        lease["lease_token"],
+        "generation-settlement",
+    ) is False
+    assert snapshot() == before
+
+
+def test_terminal_process_settlement_replay_requires_the_original_proof_tuple(tmp_path):
+    from app.core.execution_service import record_terminal
+    from app.core.execution_context import decode_execution_proof, encode_execution_proof
+
+    database = DatabaseManager(tmp_path / "terminal-proof-idempotence.db")
+    authority, _attestation = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-terminal-proof-idempotence",
+        request_id="request-terminal-proof-idempotence",
+        decision_id="decision-terminal-proof-idempotence",
+    )
+    capability = SimpleNamespace(
+        execution_id="run-terminal-proof-idempotence",
+        decision=SimpleNamespace(
+            id="decision-terminal-proof-idempotence",
+            organization_id="org-settlement",
+        ),
+        worker_identity="worker-settlement",
+        worker_generation="generation-settlement",
+        claim_token=authority.decision.token,
+        dispatch_claim_token=authority.dispatch.token,
+        database=database,
+    )
+    original = {
+        "terminal_state": "FAILED",
+        "reason_code": "PROCESS_EXIT_NONZERO",
+        "process_id": 4242,
+        "process_group_id": "4242",
+        "process_start_token": "posix:00000000-0000-0000-0000-000000000001:12345",
+        "session_id": 4242,
+        "termination_status": "ALREADY_EXITED",
+    }
+    assert record_terminal(capability, **original) is True
+    assert record_terminal(capability, **original) is True
+    for omitted_field in (
+        "process_id",
+        "process_group_id",
+        "process_start_token",
+        "session_id",
+        "termination_status",
+    ):
+        before_ownership = database.get_process_ownership(
+            capability.execution_id,
+            "org-settlement",
+        )
+        with database._connection_scope() as conn:
+            before_audit_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM audit_events"
+            ).fetchone()["count"]
+        assert record_terminal(
+            capability,
+            **{**original, omitted_field: None},
+        ) is False
+        assert database.get_process_ownership(
+            capability.execution_id,
+            "org-settlement",
+        ) == before_ownership
+        with database._connection_scope() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) AS count FROM audit_events"
+            ).fetchone()["count"] == before_audit_count
+    assert record_terminal(
+        capability,
+        **{**original, "process_id": 4243},
+    ) is False
+    assert record_terminal(
+        capability,
+        **{**original, "reason_code": "EXECUTION_TIMEOUT"},
+    ) is False
+
+    # A digest-valid proof with a changed observation timestamp is still not
+    # the durable terminal record.  Replay must bind the timestamp to the
+    # immutable ownership terminalization time before returning idempotent
+    # success.
+    with database._connection_scope() as conn:
+        proof_row = conn.execute(
+            "SELECT no_process_proof FROM execution_process_ownership "
+            "WHERE execution_id=? AND organization_id=?",
+            (capability.execution_id, "org-settlement"),
+        ).fetchone()
+        assert proof_row is not None
+        proof_payload = decode_execution_proof(
+            proof_row["no_process_proof"],
+            expected_proof_type="TERMINATION_CONFIRMED",
+        )
+        proof_payload["observed_at"] = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+        conn.execute(
+            "UPDATE execution_process_ownership SET no_process_proof=? "
+            "WHERE execution_id=? AND organization_id=?",
+            (
+                encode_execution_proof("TERMINATION_CONFIRMED", proof_payload),
+                capability.execution_id,
+                "org-settlement",
+            ),
+        )
+    assert record_terminal(capability, **original) is False
+
+    # Restore the original proof so the independent correlation vector below
+    # continues to exercise the correlation fence rather than the timestamp
+    # fence.
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership SET no_process_proof=? "
+            "WHERE execution_id=? AND organization_id=?",
+            (
+                proof_row["no_process_proof"],
+                capability.execution_id,
+                "org-settlement",
+            ),
+        )
+
+    # A terminal replay must bind the immutable ownership correlation to the
+    # run correlation before returning an idempotent success.  This direct SQL
+    # change is a negative tamper fixture only; the production transition API
+    # does not permit rewriting the ownership correlation.
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership SET correlation_id=? "
+            "WHERE execution_id=? AND organization_id=?",
+            ("tampered-terminal-correlation", capability.execution_id, "org-settlement"),
+        )
+        audit_count = conn.execute("SELECT COUNT(*) AS count FROM audit_events").fetchone()["count"]
+    assert record_terminal(capability, **original) is False
+    with database._connection_scope() as conn:
+        ownership = conn.execute(
+            "SELECT correlation_id FROM execution_process_ownership "
+            "WHERE execution_id=? AND organization_id=?",
+            (capability.execution_id, "org-settlement"),
+        ).fetchone()
+        assert conn.execute("SELECT COUNT(*) AS count FROM audit_events").fetchone()["count"] == audit_count
+    assert ownership["correlation_id"] == "tampered-terminal-correlation"
 
 
 def test_no_external_process_and_pre_dispatch_settlement_are_durable(tmp_path):
@@ -1513,6 +1919,7 @@ def test_no_external_process_and_pre_dispatch_settlement_are_durable(tmp_path):
         reason_code="EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
         termination_status="NO_EXTERNAL_PROCESS",
         worker_generation="generation-settlement",
+        worker_identity="worker-settlement",
     ) is True
 
     # A request cancelled before the dispatch claim uses a distinct proof and
@@ -1536,6 +1943,7 @@ def test_no_external_process_and_pre_dispatch_settlement_are_durable(tmp_path):
         reason_code="EXECUTION_CANCELLED_BEFORE_DISPATCH",
         termination_status="PRE_DISPATCH",
         worker_generation="generation-settlement",
+        worker_identity="worker-settlement",
     ) is True
     with database._connection_scope() as conn:
         states = conn.execute(

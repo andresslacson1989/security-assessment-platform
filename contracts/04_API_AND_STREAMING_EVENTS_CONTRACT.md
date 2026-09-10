@@ -52,6 +52,25 @@ One authenticated administrator approval/session may approve one exact immutable
 
 Current implementation status: scan approval requires the registered `execution:approve` scope and ADMIN role. After the database atomically materializes the parent approval and selected child authorities, the endpoint invokes the single orchestrator dispatch boundary. In a durable deployment, the control-plane call returns `dispatch_state: DISPATCHED` only after the tenant/request-bound queue publication is accepted; in a local test/development deployment, it returns after the bounded worker task is scheduled. `execution_started: false` remains correct because dispatch acceptance is not proof that a worker has claimed a child run or that an external process has been created. Exact approval replays return the same durable child materialization and must not create a second governed queue publication or launch. A queue publication failure is surfaced as an error and is not reported as dispatch success.
 
+An authoritative queue publication MUST carry one canonical
+`queue-dispatch-binding-v1` containing the scan ID, organization ID,
+authorization-request ID, manifest hash, complete ordered execution IDs,
+complete ordered operation IDs, and a digest over that canonical content. The
+worker MUST parse and pass that typed binding to the orchestrator; a queue
+message with an authorization request but without the complete binding MUST
+be rejected. If compatibility metadata is supplied alongside a typed binding,
+it MUST reconstruct the same canonical binding; conflicting metadata MUST be
+rejected rather than silently taking precedence or being dropped. Authoritative
+parse, preflight, decryption, or handler failures MUST retain the message in
+the Redis pending-entry list, append tenant/request-attributed failure evidence
+with the delivery count and configured attempt bound, and remain recoverable.
+At the configured maximum delivery count the message MUST be marked
+quarantined and escalated; while quarantined it MUST not re-enter the handler
+automatically, and the quarantine marker plus the original failure evidence
+MUST remain available for explicit recovery or acknowledgement. The
+non-authoritative legacy queue path may retain its acknowledgement behavior,
+but it MUST never be used as a governed scan handoff.
+
 `POST /api/scans/{scan_id}/approve` MUST be the only control-plane transition that dispatches an approved scan. It MUST never imply that a worker has claimed a child run or that a process has been launched merely because `dispatch_state` is `DISPATCHED`. Approval MUST lock the parent authority before rehydrating the stored manifest, compare canonical normalized operation and complete-26-tool fleet material, revalidate current policy/target/asset/session/expiry state, and atomically materialize child authorities. Any mismatch or child-insert failure MUST fail closed and roll back all partial child rows and parent links. The durable queue publication MUST be idempotent by the tenant-bound authorization request identity so an exact replay after an API/worker restart cannot create a second queue entry; changed manifests remain conflicts and cannot reuse the original authority. A scan parent identifier MUST NOT be passed to the process supervisor as a process identity. Each adapter launch MUST resolve its selected child authority through the service-owned authority resolver; the resolver MUST bind the canonical tool, engine, operation family, options, worker identity, worker generation, validated target, and exact command before `ProcessSupervisor` creates a process.
 - `GET /api/scans/{scan_id}`: Retrieves full scan job snapshot and findings (`scan:read`, tenant-scoped).
 - `GET /api/scans/{scan_id}/telemetry`: Retrieves organized assessment intelligence, per-tool execution logs, per-link grouped security dossiers (`tests_performed`, `tools_executed`, `findings`), and actively resolved subdomain attack surface (`scan:read`, tenant-scoped).
@@ -245,6 +264,41 @@ complete member set; registering a later process MUST NOT overwrite an earlier
 member or make it unaddressable. A launch whose process creation is not
 atomically bound to that identity MUST enter `LAUNCH_UNCERTAIN` and remain
 non-terminal until a verified cleanup or attachment protocol succeeds.
+
+The terminalization callback is also an identity-bound operation. It MUST
+compare the supplied process ID, process group, POSIX start token, session,
+worker generation, and identity attestation with the durable ownership row.
+Only a governed or already-terminal row may use the ordinary authority-held
+terminal callback. `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED` require the
+confirmed-termination recovery primitive; an uncertain/recovery row with no
+persisted attestation may be settled without inventing one, but any persisted
+attestation MUST match exactly. Terminal replays MUST be idempotent only for
+the same proof tuple and MUST not rewrite a committed identity or reopen a
+terminal record.
+
+The worker handoff MUST distinguish a read-only terminal replay from an
+execution retry. A terminal replay is permitted only after the authoritative
+tenant-bound run, dispatch, child-authority, manifest, target-policy, worker,
+and process-ownership records have been reloaded and their complete proof
+tuple agrees. The mapped dispatch state MUST be `COMPLETED` for
+`SUCCEEDED`/`PARTIAL_RESULTS_WITH_WARNING`, `BLOCKED` for
+`CANCELLED`/`EXECUTION_BLOCKED`, or `FAILED` for `FAILED`/`TIMED_OUT`. The
+persisted process proof MUST be either the complete no-process shape
+(`NO_EXTERNAL_PROCESS` or `TERMINAL` ownership, `NONE` container,
+`NOT_ATTEMPTED` launch, all process identity fields absent, and a versioned
+no-process proof) or the complete governed terminal shape (`TERMINAL`
+ownership, `COMMITTED` launch, non-`NONE` container, root/container/process
+identity, and non-empty attestation matching the durable run). A no-process
+ownership row is acceptable without a separate ownership-label transition
+only when its proof, run, and dispatch are all terminal and mutually bound.
+An exact replay MUST return without authority reacquisition, lease renewal or
+claim, process launch, reclaim, settlement, terminal rewrite, audit/telemetry
+mutation, or scan-state mutation. Therefore it remains a no-op after approval
+consumption, expiry, child/session revocation, or approving-session
+invalidation without resurrecting execution authority. Missing, partial,
+nonterminal, uncertain, recovery-blocked, ambiguous, cross-tenant, or
+inconsistent proof MUST be rejected through the existing fail-closed path; it
+MUST NOT be downgraded to a successful replay or a new execution attempt.
 
 Cancellation MUST have one coordinator for task shutdown, process/container
 termination, authority revocation, and durable settlement. The coordinator
