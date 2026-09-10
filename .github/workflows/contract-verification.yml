@@ -205,6 +205,7 @@ jobs:
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_LIVE_REDIS_TEST_URL: redis://127.0.0.1:6379/15
       CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
       CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
       CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification
@@ -213,6 +214,13 @@ jobs:
       CYBERASSESS_DB_PATH: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification/cyberassess.db
       FULL_EVIDENCE_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification/reports
     services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
       postgres:
         image: postgres:16-alpine
         env:
@@ -261,6 +269,20 @@ jobs:
           ready=0
           for attempt in $(seq 1 60); do
             if python -c 'import os, psycopg; connection=psycopg.connect(os.environ["CYBERASSESS_POSTGRES_TEST_URL"], connect_timeout=2); connection.execute("SELECT 1"); connection.close()'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+      - name: Wait for Redis Streams readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            if python -c 'import os, redis; client=redis.Redis.from_url(os.environ["CYBERASSESS_LIVE_REDIS_TEST_URL"]); client.ping(); client.close()'; then
               ready=1
               break
             fi

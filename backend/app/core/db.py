@@ -638,7 +638,7 @@ def _assert_current_target_and_asset(conn: Any, parent: Any, manifest: ScanAutho
 
     asset = conn.execute(
         "SELECT id, organization_id, project_id, type, target_value, owner, lifecycle_status FROM assets "
-        "WHERE id=? AND organization_id=? AND (project_id=? OR (project_id IS NULL AND ? IS NULL))" + lock_suffix,
+        "WHERE id=? AND organization_id=? AND (project_id=? OR (project_id IS NULL AND CAST(? AS TEXT) IS NULL))" + lock_suffix,
         (manifest.asset_id, manifest.organization_id, manifest.project_id, manifest.project_id),
     ).fetchone()
     if not asset:
@@ -4603,7 +4603,7 @@ class DatabaseManager:
             cur.execute("SELECT id FROM organizations WHERE id = ? AND is_active = 1", (request.organization_id,))
             if not cur.fetchone():
                 raise ValueError("execution request organization is invalid")
-            cur.execute("SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))", (request.asset_id, request.organization_id, request.project_id, request.project_id))
+            cur.execute("SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND CAST(? AS TEXT) IS NULL))", (request.asset_id, request.organization_id, request.project_id, request.project_id))
             if not cur.fetchone():
                 raise ValueError("execution request asset is not tenant-bound")
             cur.execute("SELECT id FROM users WHERE id = ? AND organization_id = ? AND is_active = 1", (request.requested_by_user_id, request.organization_id))
@@ -4706,7 +4706,7 @@ class DatabaseManager:
                 return "EXPIRED", None, None
             cur.execute(
                 """SELECT id FROM assets WHERE id = ? AND organization_id = ?
-                   AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
+                   AND (project_id = ? OR (project_id IS NULL AND CAST(? AS TEXT) IS NULL))
                    AND active_probing_granted = 1""",
                 (row["asset_id"], organization_id, row["project_id"], row["project_id"]),
             )
@@ -6359,7 +6359,7 @@ class DatabaseManager:
             if not cur.fetchone():
                 raise ValueError("execution decision organization does not exist or is inactive")
             cur.execute(
-                "SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))",
+                "SELECT id FROM assets WHERE id = ? AND organization_id = ? AND (project_id = ? OR (project_id IS NULL AND CAST(? AS TEXT) IS NULL))",
                 (decision.asset_id, decision.organization_id, decision.project_id, decision.project_id),
             )
             if not cur.fetchone():

@@ -112,7 +112,7 @@ def _isolated_database(backend: str):
             connection.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
-def _seed_manifest(database: object) -> SeededManifest:
+def _seed_manifest(database: object, *, project_scoped: bool = False) -> SeededManifest:
     """Create one complete tenant-bound parent manifest in the real DAL."""
     suffix = uuid.uuid4().hex
     organization_id = f"org-real-dispatch-{suffix}"
@@ -122,6 +122,7 @@ def _seed_manifest(database: object) -> SeededManifest:
     scan_request_id = f"scanreq-real-dispatch-{suffix}"
     correlation_id = f"corr-real-dispatch-{suffix}"
     worker_identity = f"worker-real-dispatch-{suffix}"
+    project_id = f"project-real-dispatch-{suffix}" if project_scoped else None
     created_at = utc_now()
 
     with database._connection_scope() as connection:
@@ -134,10 +135,16 @@ def _seed_manifest(database: object) -> SeededManifest:
             "VALUES (?, ?, ?, ?, 'ADMIN', ?, 1, ?)",
             (user_id, f"real-dispatch-{suffix}", f"{suffix}@example.invalid", "test-hash", organization_id, created_at.isoformat()),
         )
+        if project_id:
+            connection.execute(
+                "INSERT INTO projects (id, organization_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+                (project_id, organization_id, "Real dispatch project", "Project scope regression", created_at.isoformat()),
+            )
 
     asset = Asset(
         id=asset_id,
         organization_id=organization_id,
+        project_id=project_id,
         name="Real dispatch assurance asset",
         type=AssetType.IP_ADDRESS,
         target_value="1.1.1.1",
@@ -151,6 +158,7 @@ def _seed_manifest(database: object) -> SeededManifest:
     validated_target = create_validated_target(
         target,
         organization_id=organization_id,
+        project_id=project_id,
         asset_id=asset_id,
         active_probing_granted=True,
     )
@@ -168,7 +176,7 @@ def _seed_manifest(database: object) -> SeededManifest:
     network_engine = NetworkAssessmentEngine()
     manifest = build_scan_manifest(
         organization_id=organization_id,
-        project_id=None,
+        project_id=project_id,
         asset_id=asset_id,
         asset_owner=asset.owner,
         asset_lifecycle_status=asset.lifecycle_status.value,
@@ -194,6 +202,7 @@ def _seed_manifest(database: object) -> SeededManifest:
         id=scan_id,
         correlation_id=correlation_id,
         organization_id=organization_id,
+        project_id=project_id,
         asset_id=asset_id,
         active_probing_granted=True,
         target=target,
@@ -239,6 +248,34 @@ def _seed_manifest(database: object) -> SeededManifest:
 def seeded_manifest(request):
     with _isolated_database(request.param) as database:
         yield _seed_manifest(database)
+
+
+@pytest.mark.parametrize("backend", ("sqlite", "postgresql"), ids=("sqlite", "postgresql"))
+def test_project_scoped_real_approval_preserves_matching_and_rejects_mismatch(backend, monkeypatch):
+    """Exercise the real approval path for nullable and non-null project scope.
+
+    The project-bound case must authorize only the asset in the same tenant and
+    project.  A changed asset project is rejected before child authority
+    materialization, which protects the approval boundary from scope drift.
+    """
+    with _isolated_database(backend) as database:
+        matching = _seed_manifest(database, project_scoped=True)
+        _approve_seeded_manifest(matching, monkeypatch)
+
+        mismatched = _seed_manifest(database, project_scoped=True)
+        with mismatched.database._connection_scope() as connection:
+            other_project_id = f"project-other-{uuid.uuid4().hex}"
+            connection.execute(
+                "INSERT INTO projects (id, organization_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+                (other_project_id, mismatched.organization_id, "Other project", "Scope mismatch regression", utc_now().isoformat()),
+            )
+            connection.execute(
+                "UPDATE assets SET project_id=? WHERE id=? AND organization_id=?",
+                (other_project_id, mismatched.asset_id, mismatched.organization_id),
+            )
+
+        with pytest.raises(RuntimeError, match="asset ownership or delegation"):
+            _approve_seeded_manifest(mismatched, monkeypatch)
 
 
 def _execution_lifecycle_snapshot(database: object, organization_id: str) -> str:

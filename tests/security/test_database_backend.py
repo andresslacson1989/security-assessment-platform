@@ -1032,10 +1032,14 @@ async def test_redis_consumer_claims_new_intent_and_acknowledges_after_handler()
     from app.core.queue import RedisDurableQueue
 
     class FakeRedis:
+        def __init__(self):
+            self.read_blocks = []
+
         async def xautoclaim(self, *args, **kwargs):
             return ("0-0", [], [])
 
         async def xreadgroup(self, *args, **kwargs):
+            self.read_blocks.append(kwargs["block"])
             return [("stream", [("message-1", {"scan_id": "scan-1", "organization_id": "org-1"})])]
 
         async def xack(self, *args):
@@ -1057,6 +1061,7 @@ async def test_redis_consumer_claims_new_intent_and_acknowledges_after_handler()
     assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
     assert received == [("scan-1", "org-1")]
     assert queue._redis.acked == "message-1"
+    assert queue._redis.read_blocks == [None]
 
 
 @pytest.mark.asyncio

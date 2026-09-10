@@ -782,7 +782,10 @@ class RedisDurableQueue:
                 self._consumer_name,
                 {self.stream_name: ">"},
                 count=1,
-                block=block_ms,
+                # Redis interprets BLOCK 0 as an infinite wait.  The
+                # consume_once contract uses non-positive values for a
+                # non-blocking poll, so omit BLOCK in that case.
+                block=block_ms if block_ms > 0 else None,
             )
             if response:
                 messages = response[0][1] or []

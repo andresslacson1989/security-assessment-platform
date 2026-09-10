@@ -113,6 +113,10 @@ def test_ci_workflow_static_contract_is_complete():
     assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_URL"].endswith("/cyberassess_ci")
     assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_ACK"] == "I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION"
     assert workflow["jobs"]["full-repository-verification"]["services"]["postgres"]["image"] == "postgres:16-alpine"
+    full_job = workflow["jobs"]["full-repository-verification"]
+    assert full_job["services"]["redis"]["image"] == "redis:7.2-alpine"
+    assert full_job["services"]["redis"]["ports"] == ["6379:6379"]
+    assert full_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/15"
     assert "tests/security/test_real_dispatch_authority_assurance.py" in workflow_text
     for job_id in ("focused-contract-verification", "full-repository-verification"):
         checkout_step = next(
