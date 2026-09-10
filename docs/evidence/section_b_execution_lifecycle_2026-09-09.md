@@ -63,6 +63,12 @@ production execution identity and generation now require explicit environment
 configuration, and the enterprise Compose API and worker services require the
 same provisioned values. Development/test mode retains its deterministic local
 fallback so isolated unit tests do not become deployment configuration tests.
+Non-scan contexts are revalidated against that binding at the process-launch
+boundary. If an enterprise egress rejection is already active, the supervisor
+returns the egress rejection before identity diagnostics; otherwise a missing
+or mismatched deployment binding is rejected before process creation. A
+non-scan context created while the binding is unavailable is therefore not a
+launch authorization and cannot bypass the supervisor gate.
 
 The evidence below separates the previously published baseline from the
 current working-tree implementation candidate. The final delivery commit and

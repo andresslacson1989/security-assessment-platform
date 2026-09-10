@@ -38,7 +38,11 @@ _PROCESS_WORKER_GENERATION = os.environ.get("CYBERASSESS_WORKER_GENERATION", "")
 
 def _requires_deployment_identity() -> bool:
     """Return whether durable execution identity must come from deployment config."""
-    return (os.environ.get("ENVIRONMENT") or os.environ.get("OPERATING_MODE") or "").strip().lower() in {
+    # OPERATING_MODE controls execution policy gates (including E13 egress
+    # enforcement) and is intentionally not the deployment-binding signal.
+    # The deployment plane is identified by ENVIRONMENT, which is explicitly
+    # set by the enterprise Compose services below.
+    return os.environ.get("ENVIRONMENT", "").strip().lower() in {
         "production",
         "enterprise",
     }
@@ -670,13 +674,29 @@ def issue_non_scan_execution_context(purpose: str, *, ttl_seconds: int = 300):
     only a registered purpose and bounded lifetime.  This capability is never
     eligible for scan authorization or scan terminalization.
     """
-    worker_identity = get_worker_identity()
+    try:
+        worker_identity = get_worker_identity()
+        worker_generation = get_worker_generation()
+    except RuntimeError:
+        # An enterprise egress rejection still needs to reach the supervisor
+        # so it can return the typed launch rejection.  Mark this context as
+        # unusable; ProcessSupervisor revalidates the deployment binding at
+        # the actual launch boundary and fails closed before Popen().
+        egress_required = os.environ.get("ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if not egress_required:
+            raise
+        worker_identity = "deployment-identity-unavailable"
+        worker_generation = "deployment-generation-unavailable"
     return _issue_non_scan_execution_context(
         purpose,
         ttl_seconds=ttl_seconds,
         issuer=_ISSUER_TOKEN,
         worker_identity=worker_identity,
-        worker_generation=get_worker_generation(),
+        worker_generation=worker_generation,
     )
 
 

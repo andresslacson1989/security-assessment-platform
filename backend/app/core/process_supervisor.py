@@ -1166,6 +1166,34 @@ class ProcessSupervisor:
                                 "PROCESS_LAUNCH_REJECTED_SECURITY: Enterprise egress network enforcement facility is not configured or verifiably available.",
                             ),
                         )
+                    if non_scan_context is not None:
+                        try:
+                            from app.core.execution_service import get_worker_generation, get_worker_identity
+                            deployment_identity = get_worker_identity()
+                            deployment_generation = get_worker_generation()
+                        except RuntimeError:
+                            return _settle_no_process(
+                                "EXECUTION_BLOCKED",
+                                "PROCESS_LAUNCH_REJECTED_SECURITY",
+                                ProcessExecutionResult(
+                                    126,
+                                    "",
+                                    "PROCESS_LAUNCH_REJECTED_SECURITY: deployment worker identity is not configured",
+                                ),
+                            )
+                        if (
+                            non_scan_context.worker_identity != deployment_identity
+                            or non_scan_context.worker_generation != deployment_generation
+                        ):
+                            return _settle_no_process(
+                                "EXECUTION_BLOCKED",
+                                "PROCESS_LAUNCH_REJECTED_SECURITY",
+                                ProcessExecutionResult(
+                                    126,
+                                    "",
+                                    "PROCESS_LAUNCH_REJECTED_SECURITY: non-scan execution identity mismatch",
+                                ),
+                            )
                     if scanner_egress_proxy is not None and type(scanner_egress_proxy) is not VerifiedEgressProxy:
                         raise TypeError("scanner egress capability type is not approved")
                     if credential_handoff is not None and type(credential_handoff) is not CredentialEnvironmentHandoff:
