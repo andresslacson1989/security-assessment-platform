@@ -49,6 +49,7 @@ The changed implementation files in this candidate are:
 - `backend/app/core/observation_service.py`
 - `backend/app/core/orchestrator.py`
 - `backend/app/core/process_supervisor.py`
+- `docker-compose.yml`
 - `backend/tests/test_execution_launch_inventory.py`
 - `run_worker.py`
 - `tests/security/test_execution_cancellation_coordinator.py`
@@ -57,7 +58,17 @@ The changed implementation files in this candidate are:
 - `tests/test_observation_service.py`
 - `tests/test_orchestrator.py`
 
-The two documentation files in this addendum are the only evidence updates.
+The current Section B candidate also adds a fail-closed deployment binding:
+production execution identity and generation now require explicit environment
+configuration, and the enterprise Compose API and worker services require the
+same provisioned values. Development/test mode retains its deterministic local
+fallback so isolated unit tests do not become deployment configuration tests.
+
+The evidence below separates the previously published baseline from the
+current working-tree implementation candidate. The final delivery commit and
+its GitHub run are reported in the Section B review message after the grouped
+publication; this addendum does not infer a commit SHA before that publication.
+
 Contracts, migrations, `AGENTS.md`, the protected database, `.ci/`, and
 `.project-temp/` remain outside the candidate delivery scope.
 
@@ -65,17 +76,20 @@ No migration or runtime database change is part of this section.
 
 ## Current local verification
 
-The following checks were executed against code baseline
-`0e56c766ca96b046a5392d5e92e48dd02122c4f3`. Every disposable SQLite database
-was created under the project-local `.project-temp/` tree; the runtime
-database was not used.
+The prior baseline checks below were executed against
+`0e56c766ca96b046a5392d5e92e48dd02122c4f3`; the generation-binding checks
+were executed against the current working-tree candidate before its grouped
+delivery commit. Every disposable SQLite database was created under the
+project-local `.project-temp/` tree; the runtime database was not used.
 
-- Focused contract command, including the worker handoff, authority,
+- Focused contract command against the previously published `0e56c766`
+  baseline, including the worker handoff, authority,
   cancellation, observation, process, and launch-inventory tests:
-  **250 passed, 40 skipped**. The command also encountered the preserved
-  historical worktree-inventory assertion; that assertion is the known
-  user-owned `.ci/` evidence mismatch documented below and is not an
-  application failure.
+  **1 failed, 250 passed, 40 skipped**, exit code **1**. The failed test is
+  the preserved historical worktree-inventory assertion; its recorded `.ci/`
+  inventory is 1709 entries while the preserved untracked tree currently has
+  3038. It is not an application defect, but it remains a failed test in that
+  exact command and is not presented as a pass.
 - Full local repository suite from a fresh unique disposable SQLite path,
   excluding only that preserved historical worktree snapshot assertion:
   **881 passed, 78 skipped, 1 deselected, 15 warnings**.
@@ -84,6 +98,19 @@ database was not used.
   The authoritative PostgreSQL evidence for this baseline is the successful
   GitHub Actions PostgreSQL 16 job recorded below; no local substitute is
   claimed.
+- Current Section B generation-binding candidate command, with an explicit
+  disposable SQLite path: **89 passed, 1 skipped**, exit code **0**. This
+  covered the launch inventory, worker handoff, decision authority,
+  cancellation coordinator, process boundary, and the new production
+  fail-closed worker-identity/generation vector.
+- A prior exploratory invocation without `CYBERASSESS_DB_PATH` exited with
+  code **2** during module collection on the protected database's existing
+  migration-ledger mismatch; no test body ran. A subsequent exploratory
+  invocation exited with code **1** because the new test was temporarily
+  inserted inside an existing parameterized test and raised `NameError`.
+  Both conditions were corrected before the final `89 passed` run. The
+  protected database fingerprint was rechecked unchanged after the first
+  invocation; neither exploratory command is acceptance evidence.
 - POSIX fresh-supervisor restart-attachment proof in a newly named disposable
   container using a container-local source copy: **1 passed, 9 deselected**.
   The proof captured the root/session/start-token identity, rejected a forged

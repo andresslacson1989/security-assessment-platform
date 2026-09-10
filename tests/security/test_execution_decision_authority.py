@@ -85,6 +85,20 @@ def _target():
     )
 
 
+def test_production_worker_identity_and_generation_fail_closed_when_unconfigured(monkeypatch):
+    import app.core.execution_service as execution_service
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("OPERATING_MODE", raising=False)
+    monkeypatch.delenv("CYBERASSESS_WORKER_IDENTITY", raising=False)
+    monkeypatch.delenv("CYBERASSESS_WORKER_GENERATION", raising=False)
+
+    with pytest.raises(RuntimeError, match="CYBERASSESS_WORKER_IDENTITY"):
+        execution_service.get_worker_identity()
+    with pytest.raises(RuntimeError, match="CYBERASSESS_WORKER_GENERATION"):
+        execution_service.get_worker_generation()
+
+
 def test_migration_registry_has_fixed_executable_verifier_vectors():
     assert [spec.version for spec in MIGRATION_REGISTRY] == list(range(1, len(MIGRATION_REGISTRY) + 1))
     assert all(callable(spec.apply) and callable(spec.reconcile) for spec in MIGRATION_REGISTRY)
@@ -1522,6 +1536,7 @@ def test_confirmed_termination_replay_rejects_durable_metadata_tampering(tmp_pat
         request_id=f"request-replay-{tamper}",
         decision_id=f"decision-replay-{tamper}",
     )
+
     identity = load_durable_process_identity(
         database, f"run-replay-{tamper}", "org-settlement"
     )

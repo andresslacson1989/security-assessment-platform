@@ -152,6 +152,17 @@ def test_production_worker_uses_the_public_post_consume_handoff() -> None:
     assert forbidden == []
 
 
+def test_enterprise_compose_requires_shared_worker_identity_and_generation() -> None:
+    """The API and worker must receive the same durable deployment binding."""
+    compose = (ROOT.parent / "docker-compose.yml").read_text(encoding="utf-8")
+    api_section = compose.split("  cyberassess-enterprise:", 1)[1].split("  cyberassess-worker:", 1)[0]
+    worker_section = compose.split("  cyberassess-worker:", 1)[1].split("  postgres:", 1)[0]
+    for variable in ("CYBERASSESS_WORKER_IDENTITY", "CYBERASSESS_WORKER_GENERATION"):
+        expected = f'{variable}: "${{{variable}:?{variable} must be shared by the enterprise API and worker}}"'
+        assert expected in api_section
+        assert expected in worker_section
+
+
 @pytest.mark.asyncio
 async def test_production_worker_runtime_handler_calls_public_handoff(monkeypatch) -> None:
     """Exercise the actual nested Redis handler without launching a scan."""

@@ -80,6 +80,8 @@ services:
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
       BOOTSTRAP_SECRET: "${BOOTSTRAP_SECRET:?BOOTSTRAP_SECRET must be configured for enterprise bootstrap}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
+      CYBERASSESS_WORKER_IDENTITY: "${CYBERASSESS_WORKER_IDENTITY:?CYBERASSESS_WORKER_IDENTITY must be shared by the enterprise API and worker}"
+      CYBERASSESS_WORKER_GENERATION: "${CYBERASSESS_WORKER_GENERATION:?CYBERASSESS_WORKER_GENERATION must be shared by the enterprise API and worker}"
       ENVIRONMENT: production
       SCANNER_EGRESS_PROXY: "${SCANNER_EGRESS_PROXY:-}"
     volumes:
@@ -129,6 +131,8 @@ services:
       EXECUTION_QUEUE_URL: "${EXECUTION_QUEUE_URL:?EXECUTION_QUEUE_URL must reference the enterprise Redis service}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set for enterprise mode}"
       CLOUD_CREDENTIALS_ENCRYPTION_KEY: "${CLOUD_CREDENTIALS_ENCRYPTION_KEY:?CLOUD_CREDENTIALS_ENCRYPTION_KEY must be a separately provisioned 32-byte base64 key}"
+      CYBERASSESS_WORKER_IDENTITY: "${CYBERASSESS_WORKER_IDENTITY:?CYBERASSESS_WORKER_IDENTITY must be shared by the enterprise API and worker}"
+      CYBERASSESS_WORKER_GENERATION: "${CYBERASSESS_WORKER_GENERATION:?CYBERASSESS_WORKER_GENERATION must be shared by the enterprise API and worker}"
       ENVIRONMENT: production
       ENTERPRISE_EGRESS_ENFORCEMENT_REQUIRED: "true"
       SCANNER_EGRESS_PROXY: "${SCANNER_EGRESS_PROXY:-}"

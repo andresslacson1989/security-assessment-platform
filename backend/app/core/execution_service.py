@@ -36,13 +36,31 @@ from app.core.models import (
 _PROCESS_WORKER_GENERATION = os.environ.get("CYBERASSESS_WORKER_GENERATION", "").strip() or f"process-{uuid.uuid4().hex}"
 
 
+def _requires_deployment_identity() -> bool:
+    """Return whether durable execution identity must come from deployment config."""
+    return (os.environ.get("ENVIRONMENT") or os.environ.get("OPERATING_MODE") or "").strip().lower() in {
+        "production",
+        "enterprise",
+    }
+
+
 def get_worker_identity() -> str:
     """Return the deployment-configured worker identity used by the execution plane."""
-    return os.environ.get("CYBERASSESS_WORKER_IDENTITY", "local-worker").strip()
+    configured = os.environ.get("CYBERASSESS_WORKER_IDENTITY", "").strip()
+    if configured:
+        return configured
+    if _requires_deployment_identity():
+        raise RuntimeError("CYBERASSESS_WORKER_IDENTITY is required in the deployment execution plane")
+    return "local-worker"
 
 
 def get_worker_generation() -> str:
     """Return the process/deployment generation bound to durable execution evidence."""
+    configured = os.environ.get("CYBERASSESS_WORKER_GENERATION", "").strip()
+    if configured:
+        return configured
+    if _requires_deployment_identity():
+        raise RuntimeError("CYBERASSESS_WORKER_GENERATION is required in the deployment execution plane")
     return _PROCESS_WORKER_GENERATION
 
 
@@ -658,7 +676,7 @@ def issue_non_scan_execution_context(purpose: str, *, ttl_seconds: int = 300):
         ttl_seconds=ttl_seconds,
         issuer=_ISSUER_TOKEN,
         worker_identity=worker_identity,
-        worker_generation=_PROCESS_WORKER_GENERATION,
+        worker_generation=get_worker_generation(),
     )
 
 
