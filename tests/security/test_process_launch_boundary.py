@@ -407,3 +407,31 @@ def test_root_exit_with_multiple_descendants_requires_session_and_group_empty() 
                 pass
         if root is not None and root.stdout is not None:
             root.stdout.close()
+
+
+def test_session_emptiness_ignores_zombie_members_but_keeps_live_members(monkeypatch) -> None:
+    """A reaped process cannot keep a governed session open."""
+    import app.core.process_supervisor as process_supervisor_module
+
+    class Completed:
+        returncode = 0
+        stdout = "10 42 Z\n11 42 S\n"
+
+    monkeypatch.setattr(process_supervisor_module.os, "name", "posix")
+    monkeypatch.setattr(
+        process_supervisor_module.subprocess,
+        "run",
+        lambda *args, **kwargs: Completed(),
+    )
+    assert ProcessSupervisor._process_session_exists(42) is True
+
+    class ZombieOnly:
+        returncode = 0
+        stdout = "10 42 Z\n"
+
+    monkeypatch.setattr(
+        process_supervisor_module.subprocess,
+        "run",
+        lambda *args, **kwargs: ZombieOnly(),
+    )
+    assert ProcessSupervisor._process_session_exists(42) is False

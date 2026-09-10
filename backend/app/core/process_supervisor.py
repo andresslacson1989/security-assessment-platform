@@ -603,7 +603,7 @@ class ProcessSupervisor:
             return False
         try:
             result = subprocess.run(
-                ["ps", "-e", "-o", "pid=", "-o", "sid="],
+                ["ps", "-e", "-o", "pid=", "-o", "sid=", "-o", "stat="],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -614,13 +614,17 @@ class ProcessSupervisor:
                 return True
             for line in result.stdout.splitlines():
                 fields = line.split()
-                if len(fields) != 2:
+                if len(fields) < 3:
                     continue
                 try:
-                    member_pid, member_session_id = (int(value) for value in fields)
+                    member_pid, member_session_id = (int(value) for value in fields[:2])
                 except ValueError:
                     continue
-                if member_pid > 1 and member_session_id == session_id:
+                if (
+                    member_pid > 1
+                    and member_session_id == session_id
+                    and not fields[2].startswith(("Z", "X"))
+                ):
                     return True
             return False
         except (OSError, subprocess.SubprocessError):
