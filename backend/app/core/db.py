@@ -6830,8 +6830,8 @@ class DatabaseManager:
                 """UPDATE execution_runs SET state = ?, reason_code = ?, process_id = COALESCE(?, process_id),
                               process_group_id = COALESCE(?, process_group_id), finished_at = ?
                     WHERE execution_id = ? AND organization_id = ? AND state = 'RUNNING'
-                      AND worker_identity = ? AND (process_id = ? OR (? IS NULL AND process_id IS NULL))
-                      AND (process_group_id = ? OR (? IS NULL AND process_group_id IS NULL))
+                      AND worker_identity = ? AND (process_id = ? OR (CAST(? AS INTEGER) IS NULL AND process_id IS NULL))
+                      AND (process_group_id = ? OR (CAST(? AS TEXT) IS NULL AND process_group_id IS NULL))
                       AND EXISTS (
                           SELECT 1 FROM execution_runs r2
                           JOIN execution_requests q2 ON q2.id = r2.request_id

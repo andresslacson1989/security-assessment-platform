@@ -112,6 +112,27 @@ def _isolated_database(backend: str):
             connection.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+@contextmanager
+def _fresh_database_manager(database: object):
+    """Open a second manager against the same isolated backend and scope."""
+    database_url = getattr(database, "database_url", None)
+    if isinstance(database_url, str) and database_url.strip():
+        from app.core.db import PostgresDatabaseManager
+
+        fresh_database = PostgresDatabaseManager(database_url)
+        try:
+            yield fresh_database
+        finally:
+            if fresh_database._pool is not None:
+                fresh_database._pool.close()
+        return
+
+    database_path = getattr(database, "db_path", None)
+    if database_path is None:
+        raise AssertionError("isolated database does not expose a fresh-manager identity")
+    yield DatabaseManager(database_path)
+
+
 def _seed_manifest(database: object, *, project_scoped: bool = False) -> SeededManifest:
     """Create one complete tenant-bound parent manifest in the real DAL."""
     suffix = uuid.uuid4().hex
@@ -1295,45 +1316,44 @@ async def test_terminal_replay_uses_durable_parent_lifecycle_and_fresh_repositor
         seeded_manifest.user_id,
     ) is True
 
-    database_path = seeded_manifest.database.db_path
-    fresh_database = DatabaseManager(database_path)
-    fresh_parent = fresh_database.get_scan_authorization_request(
-        seeded_manifest.scan_request_id,
-        seeded_manifest.organization_id,
-    )
-    assert fresh_parent is not None
-    assert fresh_parent["state"] == invalidating_state
-    if invalidating_state == "REVOKED":
-        assert fresh_database.is_token_revoked(binding["child_decision_session_jti"]) is True
-    fresh_snapshot = _execution_lifecycle_snapshot(
-        fresh_database,
-        seeded_manifest.organization_id,
-    )
+    with _fresh_database_manager(seeded_manifest.database) as fresh_database:
+        fresh_parent = fresh_database.get_scan_authorization_request(
+            seeded_manifest.scan_request_id,
+            seeded_manifest.organization_id,
+        )
+        assert fresh_parent is not None
+        assert fresh_parent["state"] == invalidating_state
+        if invalidating_state == "REVOKED":
+            assert fresh_database.is_token_revoked(binding["child_decision_session_jti"]) is True
+        fresh_snapshot = _execution_lifecycle_snapshot(
+            fresh_database,
+            seeded_manifest.organization_id,
+        )
 
-    import app.core.orchestrator as orchestrator_module
+        import app.core.orchestrator as orchestrator_module
 
-    monkeypatch.setattr(orchestrator_module, "db_manager", fresh_database)
-    monkeypatch.setattr(
-        orchestrator_module,
-        "get_scan",
-        lambda scan_id, organization_id=None: fresh_database.get_scan_record(
-            scan_id,
-            organization_id=organization_id,
-        ),
-    )
-    monkeypatch.setattr(orchestrator_module, "save_scan", fresh_database.save_scan_record)
-    await worker.execute_dispatched_scan(
-        seeded_manifest.scan_id,
-        seeded_manifest.organization_id,
-        seeded_manifest.scan_request_id,
-        executor=object(),
-        queue_binding=queue_binding,
-    )
-    assert engine_calls["count"] == 1
-    assert _execution_lifecycle_snapshot(
-        fresh_database,
-        seeded_manifest.organization_id,
-    ) == fresh_snapshot
+        monkeypatch.setattr(orchestrator_module, "db_manager", fresh_database)
+        monkeypatch.setattr(
+            orchestrator_module,
+            "get_scan",
+            lambda scan_id, organization_id=None: fresh_database.get_scan_record(
+                scan_id,
+                organization_id=organization_id,
+            ),
+        )
+        monkeypatch.setattr(orchestrator_module, "save_scan", fresh_database.save_scan_record)
+        await worker.execute_dispatched_scan(
+            seeded_manifest.scan_id,
+            seeded_manifest.organization_id,
+            seeded_manifest.scan_request_id,
+            executor=object(),
+            queue_binding=queue_binding,
+        )
+        assert engine_calls["count"] == 1
+        assert _execution_lifecycle_snapshot(
+            fresh_database,
+            seeded_manifest.organization_id,
+        ) == fresh_snapshot
 
 
 @pytest.mark.asyncio
