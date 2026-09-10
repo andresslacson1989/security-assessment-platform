@@ -6,8 +6,9 @@ candidate; independent acceptance remains open.
 This addendum records the durable approval-to-dispatch and cancellation-
 coordination implementation pass, including the subsequent authority-to-launch
 preflight, exact identity settlement rework, PostgreSQL settlement correction,
-explicit deployment identity/generation binding, and process-session emptiness
-check at the current code baseline `dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7`.
+explicit deployment identity/generation binding, process-session emptiness
+checking, and zombie-member handling at the current code baseline
+`5cf443711e74bde9be7a7f028b4b87e2477d7ad1`.
 It is evidence for the Section B review and does not claim that the
 execution-lifecycle closure matrix is accepted.
 
@@ -86,7 +87,7 @@ No migration or runtime database change is part of this section.
 The prior baseline checks below are retained as historical evidence for
 `0e56c766ca96b046a5392d5e92e48dd02122c4f3`. The current focused verification
 was executed against the grouped implementation at
-`dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7`; the earlier generation-binding
+`5cf443711e74bde9be7a7f028b4b87e2477d7ad1`; the earlier generation-binding
 run at `89 passed, 1 skipped` is retained only as the pre-publication
 checkpoint. Every disposable SQLite database was created under the
 project-local `.project-temp/` tree; the protected runtime database was not
@@ -108,7 +109,7 @@ used.
   The authoritative PostgreSQL evidence for this baseline is the successful
   GitHub Actions PostgreSQL 16 job recorded below; no local substitute is
   claimed.
-- Current Section B focused command at `dcde19c`, with an explicit disposable
+- Current Section B focused command at `5cf4437`, with an explicit disposable
   SQLite path: **153 passed, 40 skipped**, exit code **0**. This covered the
   launch inventory, worker handoff, decision authority, cancellation
   coordinator, process boundary, real dispatch assurance, observation, and
@@ -152,10 +153,10 @@ therefore recorded as an environment skip, not as a Windows pass.
 The current code baseline was published first to GitHub as:
 
 ```text
-commit: dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7
+commit: 5cf443711e74bde9be7a7f028b4b87e2477d7ad1
 ref:    security/nmap-installer-closure
-run:    34539737401
-url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34539737401
+run:    34543417823
+url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34543417823
 ```
 
 The required GitHub Actions workflow completed successfully for that exact
@@ -163,17 +164,27 @@ commit. The independently inspected job records were:
 
 | Job | Job ID | Result | Evidence |
 | --- | ---: | --- | --- |
-| Compile backend | 103079443368 | success | backend compilation completed |
-| Focused contract verification | 103079443377 | success | focused contract suite and skip policy completed |
-| Full repository verification | 103079443056 | success | full repository suite and skip classification completed |
-| PostgreSQL 16 schema assurance | 103079443242 | success | PostgreSQL schema assurance completed |
-| Hardened production image verification | 103079443161 | success | hardened image and health smoke checks completed |
+| Compile backend | 103090865464 | success | backend compilation completed |
+| Focused contract verification | 103090865352 | success | focused contract suite and skip policy completed |
+| Full repository verification | 103090865485 | success | full repository suite and skip classification completed |
+| PostgreSQL 16 schema assurance | 103090865501 | success | PostgreSQL schema assurance completed |
+| Hardened production image verification | 103090865562 | success | hardened image and health smoke checks completed |
 
-The run's retained, non-expired artifacts are `focused-contract-evidence-
-34539737401` (artifact `10176843126`), `full-repository-evidence-34539737401`
-(artifact `10176900192`), and `postgres-schema-evidence-34539737401`
-(artifact `10176816802`). Each artifact was produced by the same GitHub run
-and is bound to the commit above.
+The run's retained, non-expired artifacts are:
+
+| Artifact | Artifact ID | Digest |
+| --- | ---: | --- |
+| `focused-contract-evidence-34543417823` | 10178191405 | `sha256:8e6d65f79dcb9e57e21288f5e1bc67ce0422f591c336621eb786ecd575b65de4` |
+| `full-repository-evidence-34543417823` | 10178220444 | `sha256:f8f3865fe129c6d0d2887d8282f724fa5c3001741fdba7a83e278f6b9541ce8a` |
+| `postgres-schema-evidence-34543417823` | 10178152499 | `sha256:7f65cd048e3d8325a098bb30828bbd6fbb09ea8403be91feb5a9f33c28afc6f9` |
+
+The immediately preceding documentation/session-containment commit
+`350bd541e7c1dd52edaea713f9b7f9a20b2df88a` had one focused-job failure. The
+failure was isolated to the new Linux session vector treating terminated
+zombie entries as live members. The corrective commit
+`5cf443711e74bde9be7a7f028b4b87e2477d7ad1` excludes `Z`/`X` process states,
+and the successful run above is the authoritative verification for the
+corrected implementation.
 
 The GitHub result is CI evidence for the exact code baseline. It does not
 close the independent platform and deployment gates listed in this addendum.
@@ -255,8 +266,8 @@ the test database. All SQLite tests used project-local disposable paths under
 
 ## Delivery and remaining gates
 
-The current Section B rework was delivered as one grouped GitHub-first
-publication at `dcde19ccf01cd4ef7b145cf750c5f9123bfccfb7` on
+The current Section B rework was delivered through the grouped GitHub-first
+publication sequence ending at `5cf443711e74bde9be7a7f028b4b87e2477d7ad1` on
 `security/nmap-installer-closure`, with the successful run and job records
 above. GitLab was intentionally not promoted for this auditor-bounded pass.
 This evidence update does not change the implementation or lifecycle
