@@ -168,18 +168,15 @@ class TestBaseToolAdapter:
         )
         if sys.platform == "win32":
             assert code == -1
-            if stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED"):
-                assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
-            else:
-                # Windows has no assured process-container boundary here. If
-                # the bounded supervisor can nevertheless prove that the
-                # process exited, the correct result is an explicit partial
-                # result rather than an invented uncertainty state.
-                assert stderr.startswith("Output exceeded maximum")
-                assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
+            assert stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED")
+            assert "Output exceeded maximum" not in stderr
+            assert stdout == ""
+            assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
             return
         assert code == -1
         assert "timed out" in stderr
+        assert "Output exceeded maximum" not in stderr
+        assert stdout == ""
         assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_TIMED_OUT
         assert any(l[0] == LogLevel.WARNING for l in logs)
 
@@ -194,8 +191,14 @@ class TestBaseToolAdapter:
         )
         if sys.platform == "win32":
             assert code == -1
-            assert stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED")
-            assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+            if stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED"):
+                assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+            else:
+                # If the bounded supervisor proves the process exited while
+                # collecting the oversized stream, preserve explicit partial
+                # result semantics rather than inventing uncertainty.
+                assert stderr.startswith("Output exceeded maximum")
+                assert adapter.last_execution_state == NormalizedExecutionState.PARTIAL_RESULTS_WITH_WARNING
             return
         assert code == -1
         assert len(stdout.encode("utf-8")) <= 128

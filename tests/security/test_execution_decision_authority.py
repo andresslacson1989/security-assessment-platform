@@ -1527,6 +1527,47 @@ def test_committed_launch_uncertainty_transitions_to_recovery_blocked_without_re
     assert settled["identity_attestation"] == before["identity_attestation"]
 
 
+def test_launch_uncertainty_uses_atomic_current_state_without_stale_pre_read(tmp_path, monkeypatch):
+    """The uncertainty callback must revalidate the locked durable row itself."""
+    from app.core.execution_service import record_launch_uncertain
+
+    database = DatabaseManager(tmp_path / "atomic-uncertainty-transition.db")
+    authority, _ = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-atomic-uncertainty-transition",
+        request_id="request-atomic-uncertainty-transition",
+        decision_id="decision-atomic-uncertainty-transition",
+    )
+    capability = _capability_for_seed(
+        database,
+        "run-atomic-uncertainty-transition",
+        "decision-atomic-uncertainty-transition",
+        authority,
+    )
+
+    def stale_read_forbidden(*_args, **_kwargs):
+        raise AssertionError("record_launch_uncertain must not use a stale ownership pre-read")
+
+    monkeypatch.setattr(database, "get_process_ownership", stale_read_forbidden)
+    assert record_launch_uncertain(
+        capability,
+        pid=9999,
+        process_group_id=9999,
+        start_token="posix:00000000-0000-0000-0000-000000000001:99999",
+        session_id=9999,
+        member_snapshot=(),
+    ) is True
+
+    with database._connection_scope() as conn:
+        ownership = conn.execute(
+            "SELECT ownership_state, root_process_id, root_process_start_token "
+            "FROM execution_process_ownership WHERE execution_id=? AND organization_id=?",
+            ("run-atomic-uncertainty-transition", "org-settlement"),
+        ).fetchone()
+    assert ownership["ownership_state"] == "RECOVERY_BLOCKED"
+    assert ownership["root_process_id"] == 4242
+    assert ownership["root_process_start_token"].endswith(":12345")
+
 @pytest.mark.parametrize("complete", [True, False])
 def test_launch_uncertain_production_path_preserves_complete_identity_or_blocks_incomplete(tmp_path, complete):
     """The real pre-commit uncertainty path never manufactures signal authority."""
@@ -1556,7 +1597,7 @@ def test_launch_uncertain_production_path_preserves_complete_identity_or_blocks_
         member_snapshot=(member,) if complete else (),
     ) is True
     ownership = database.get_process_ownership(execution_id, "org-settlement")
-    assert ownership["ownership_state"] == "LAUNCH_UNCERTAIN"
+    assert ownership["ownership_state"] == ("LAUNCH_UNCERTAIN" if complete else "RECOVERY_BLOCKED")
     if complete:
         assert ownership["container_type"] == "POSIX_SESSION"
         assert ownership["identity_attestation"]
@@ -2100,7 +2141,7 @@ def test_recovery_settlement_rejects_owner_not_bound_to_durable_run_read_only(tm
     lease = database.claim_recovery(
         "run-recovery-worker-binding",
         "org-settlement",
-        "worker-attacker",
+        "worker-other-recovery",
         "generation-settlement",
     )
     assert lease is not None
@@ -2140,6 +2181,62 @@ def test_recovery_settlement_rejects_owner_not_bound_to_durable_run_read_only(tm
         "generation-settlement",
     ) is False
     assert snapshot() == before
+
+
+def test_recovery_settlement_accepts_distinct_recovery_lease_binding(tmp_path):
+    """Recovery coordination is separate from the original process worker."""
+    from app.core.execution_context import decode_execution_proof
+
+    database = DatabaseManager(tmp_path / "recovery-distinct-lease.db")
+    _authority, _identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-recovery-distinct-lease",
+        request_id="request-recovery-distinct-lease",
+        decision_id="decision-recovery-distinct-lease",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership "
+            "SET ownership_state='LAUNCH_UNCERTAIN', launch_commit_state='UNCERTAIN' "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-distinct-lease", "org-settlement"),
+        )
+
+    lease = database.claim_recovery(
+        "run-recovery-distinct-lease",
+        "org-settlement",
+        "execution-recovery-coordinator",
+        "recovery-generation-1",
+    )
+    assert lease is not None
+    assert database.settle_recovery_execution(
+        "run-recovery-distinct-lease",
+        "org-settlement",
+        "execution-recovery-coordinator",
+        lease["lease_token"],
+        "recovery-generation-1",
+    ) is True
+
+    with database._connection_scope() as conn:
+        ownership = conn.execute(
+            "SELECT ownership_state, worker_generation, no_process_proof "
+            "FROM execution_process_ownership WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-distinct-lease", "org-settlement"),
+        ).fetchone()
+        attempt = conn.execute(
+            "SELECT worker_identity, worker_generation, status "
+            "FROM execution_recovery_attempts WHERE execution_id=? AND organization_id=? "
+            "ORDER BY completed_at DESC LIMIT 1",
+            ("run-recovery-distinct-lease", "org-settlement"),
+        ).fetchone()
+    assert ownership["ownership_state"] == "TERMINAL"
+    assert ownership["worker_generation"] == "generation-settlement"
+    assert attempt["worker_identity"] == "execution-recovery-coordinator"
+    assert attempt["worker_generation"] == "recovery-generation-1"
+    assert attempt["status"] == "CONFIRMED_TERMINATED"
+    proof = decode_execution_proof(ownership["no_process_proof"], expected_proof_type="TERMINATION_CONFIRMED")
+    assert proof["worker_identity"] == "worker-settlement"
+    assert proof["worker_generation"] == "generation-settlement"
 
 
 def test_terminal_process_settlement_replay_requires_the_original_proof_tuple(tmp_path):

@@ -5026,18 +5026,6 @@ class DatabaseManager:
                 or not isinstance(durable_worker_generation, str)
                 or not durable_worker_generation.strip()
                 or record.worker_generation != durable_worker_generation
-                or (
-                    authority["recovery_worker_generation"] is not None
-                    and authority["recovery_worker_generation"] != durable_worker_generation
-                )
-                or (
-                    authority["latest_recovery_worker_identity"] is not None
-                    and authority["latest_recovery_worker_identity"] != durable_worker_identity
-                )
-                or (
-                    authority["latest_recovery_worker_generation"] is not None
-                    and authority["latest_recovery_worker_generation"] != durable_worker_generation
-                )
             ):
                 return False
             allowed_authority_dispatch_states = {
@@ -5351,6 +5339,7 @@ class DatabaseManager:
             row = conn.execute(
                 """SELECT p.*, s.status AS recovery_status, s.attempt_number,
                           r.request_id, r.approved_decision_id, r.worker_identity AS run_worker_identity,
+                          r.worker_generation AS run_worker_generation,
                           d.worker_identity AS decision_worker_identity,
                           p.correlation_id AS ownership_correlation_id,
                           r.correlation_id AS run_correlation_id,
@@ -5374,7 +5363,6 @@ class DatabaseManager:
             if (
                 not isinstance(row["run_worker_identity"], str)
                 or not row["run_worker_identity"].strip()
-                or row["run_worker_identity"] != owner
                 or row["decision_worker_identity"] != row["run_worker_identity"]
             ):
                 return False
@@ -5399,7 +5387,7 @@ class DatabaseManager:
                 or not row["root_process_start_token"]
                 or not row["process_group_id"]
                 or not row["session_id"]
-                or row["worker_generation"] != worker_generation
+                or row["worker_generation"] != row["run_worker_generation"]
             ):
                 # An uncertain row without a complete, verified identity is
                 # not safe to classify as terminated after a restart.
@@ -5413,7 +5401,7 @@ class DatabaseManager:
                 return False
             if (
                 attestation.verification_result != "VERIFIED"
-                or attestation.worker_generation != worker_generation
+                or attestation.worker_generation != row["run_worker_generation"]
                 or attestation.boot_id != start_parts[1]
                 or attestation.root_start_ticks != int(start_parts[2])
                 or attestation.session_id != int(str(row["session_id"]))
@@ -5469,7 +5457,7 @@ class DatabaseManager:
                 "container_type": row["container_type"],
                 "launch_commit_state": row["launch_commit_state"],
                 "worker_identity": row["run_worker_identity"],
-                "worker_generation": worker_generation,
+                "worker_generation": row["run_worker_generation"],
                 "correlation_id": correlation_id,
                 "claim_identity_digest": claim_digests["decision"],
                 "dispatch_identity_digest": claim_digests["dispatch"],
@@ -7551,14 +7539,18 @@ class DatabaseManager:
         actor: str,
         action: AuditAction,
         reason_code: str,
+        details: Optional[dict[str, Any]] = None,
     ) -> None:
         """Record a sanitized dispatch-control rejection inside its transaction."""
+        audit_details = {"reason_code": reason_code}
+        if details:
+            audit_details.update(details)
         self._insert_audit_event_conn(conn, AuditEvent(
             id=f"aud-{uuid.uuid4().hex[:12]}", actor=actor or "system",
             organization_id=organization_id or "unknown",
             action=action, object_type="execution_dispatch_intent", object_id=execution_id or "unknown",
             result="REJECTED", correlation_id=self._execution_correlation_id_conn(conn, execution_id, organization_id),
-            details={"reason_code": reason_code},
+            details=audit_details,
         ))
 
     def _execution_correlation_id_conn(self, conn, execution_id: Optional[str] = None, organization_id: Optional[str] = None, decision_id: Optional[str] = None) -> str:

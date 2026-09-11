@@ -10,13 +10,50 @@ explicit deployment identity/generation binding, process-session emptiness
 checking, zombie-member handling, and explicit recovery blocking when root
 ownership is no longer independently provable at the
 current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
-The current unpublished closure candidate additionally enforces explicit
+The current unpublished closure candidate is derived from local commit
+`abbc2504b3badbd52032352722b5a0bc08ca9eab` and additionally enforces explicit
 authoritative-versus-legacy queue classification, strict failure evidence and
 quarantine-state schemas, exact evidence digests, atomic quarantine
 publication, and compare-and-swap recovery acknowledgement. Those local
 changes are recorded below and are not represented by the published baseline.
 It is evidence for the Section B review and does not claim that the
 execution-lifecycle closure matrix is accepted.
+
+## Contract-closure state and call graph
+
+The bounded production path is:
+
+```text
+ExecutionDecisionCapability
+  -> ProcessSupervisor.execute()
+     -> Popen()
+        -> capture stable complete process identity
+           -> record_posix_launch()
+              -> EXTERNAL_PROCESS_GOVERNED
+           -> bounded communicate / cancellation / timeout
+              -> confirmed termination -> ordinary governed settlement
+              -> unconfirmed termination -> record_launch_uncertain()
+     -> atomic ownership transition under the database lock
+        -> complete identity: LAUNCH_UNCERTAIN
+        -> incomplete/invalid identity: RECOVERY_BLOCKED
+        -> committed current row: atomic committed-to-recovery downgrade
+  -> BackendObservationService._reap_execution_authority_once()
+     -> claim recovery lease (owner/token/generation)
+     -> reload exact durable process identity
+     -> ProcessSupervisor.cancel_execution(exact identity)
+     -> confirmed termination -> settle_recovery_execution(recovery lease)
+     -> unconfirmed/missing identity -> deferred or exhausted, non-terminal
+```
+
+The process worker binding is the durable `execution_runs.worker_identity` and
+`worker_generation` tuple. The recovery lease binding is the mutable
+`execution_recovery_state.owner`, `lease_token`, and `worker_generation` tuple
+plus its immutable recovery attempt. These are intentionally separate: the
+recovery coordinator may differ from the worker that created the process, but
+it cannot replace the persisted process identity or its original attestation.
+An incomplete identity never receives a fabricated attestation and remains
+`RECOVERY_BLOCKED`; the observer cannot terminalize it through a missing-PID or
+`NOT_FOUND` inference.
 
 ## Scope
 
@@ -55,7 +92,13 @@ downgrade: a locked `EXTERNAL_PROCESS_GOVERNED` row can become
 and attestation validation, and the transition updates no persisted identity
 field. The recovery settlement primitive now accepts that preserved
 `COMMITTED` launch state and emits its terminal proof from the persisted
-attestation after a recovery lease.
+attestation after a recovery lease. The current corrective pass also makes
+the uncertainty callback state-driven under the database lock, so it cannot
+make a stale get-then-write decision. Complete post-launch identity is
+`LAUNCH_UNCERTAIN`; incomplete or invalid post-launch identity is
+`RECOVERY_BLOCKED`. Recovery lease owner and generation are distinct from the
+original durable process worker identity and generation, and the observer uses
+that separate lease to settle only after exact supervisor confirmation.
 
 The queue closure candidate makes the wire classification explicit. Production
 execution intents are `AUTHORITATIVE_EXECUTION`; diagnostic compatibility
@@ -217,6 +260,20 @@ used.
   capability remains a typed handoff after HTTP authentication, not a second
   authentication boundary; existing wrong-type construction rejection is
   retained.
+- Current corrective Section B vectors after the atomic uncertainty,
+  recovery-lease separation, synthetic-authentication boundary, strict timeout,
+  and post-`Popen()` persistence changes: **8 passed**, exit code **0**. This
+  includes the atomic no-stale-read vector, production observer/reaper path
+  with a distinct recovery lease identity, complete-versus-incomplete identity
+  vectors, and strict no-output timeout semantics. The complete affected-path
+  rerun remains required after the final documentation and regression changes.
+  Command: `python -m pytest -q -p no:cacheprovider
+  tests/security/test_execution_decision_authority.py
+  tests/security/test_process_launch_boundary.py
+  tests/security/test_auth_admin_boundaries.py
+  tests/test_observation_service.py tests/test_adapters.py` with
+  `CYBERASSESS_DB_PATH` and `--basetemp` under the unique
+  `.project-temp/section-b-corrective-focused-final-2/` directory.
 - The live Redis transport vector was attempted with the declared `redis` and
   `hiredis` packages installed only under `.project-temp/`. Dependency
   construction succeeded and the project-local Redis service was reachable,
@@ -313,6 +370,15 @@ corrected implementation.
 
 The GitHub result is CI evidence for the exact code baseline. It does not
 close the independent platform and deployment gates listed in this addendum.
+
+There is no GitHub Actions run for the current corrective candidate derived
+from `abbc2504b3badbd52032352722b5a0bc08ca9eab`. The required jobs
+`compile-backend`, `focused-contract-verification`,
+`full-repository-verification`, and `postgres-schema-assurance` remain defined
+in `.github/workflows/contract-verification.yml`, but their results for the
+current candidate are **UNVERIFIED** until the GitHub-first publication gate
+is completed and the exact commit run is independently inspected. A GitHub
+pass from the prior SHA cannot be used as evidence for this candidate.
 
 The GitHub full-suite skip classification was:
 

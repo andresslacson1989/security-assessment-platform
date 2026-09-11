@@ -48,10 +48,12 @@ The implementation MUST distinguish these states at the run/process boundary:
   process was created for the run.
 - `EXTERNAL_PROCESS_GOVERNED`: a durable launch handshake records the owned
   process container and its verified identity.
-- `LAUNCH_UNCERTAIN`: process creation may have occurred but the durable
-  handshake or identity proof is incomplete; the run is not terminalizable.
-- `RECOVERY_BLOCKED`: authority was lost or termination was not confirmed;
-  retry and escalation are required.
+- `LAUNCH_UNCERTAIN`: process creation may have occurred and a complete
+  durable identity/attestation was captured, but the launch or termination
+  handshake is unresolved; the run is not terminalizable.
+- `RECOVERY_BLOCKED`: authority was lost, termination was not confirmed, or
+  the post-launch identity is incomplete/invalid; retry and escalation are
+  required, and no attestation may be fabricated.
 - `TERMINAL`: the coordinator has confirmed task/process obligations and
   durably settled the run and dispatch records.
 
@@ -94,8 +96,15 @@ post-launch termination or ownership failure uses a dedicated atomic database
 transition to `RECOVERY_BLOCKED`. That transition verifies the durable tenant,
 worker, generation, correlation, and attestation fences, changes only the
 ownership state and timestamp, and ignores caller-supplied replacement
-identity. `settle_recovery_execution()` accepts the resulting committed-state
-row only after the recovery lease and supervisor-confirmed termination path.
+identity. `record_launch_uncertain()` performs no stale ownership pre-read: the
+database lock re-evaluates the current state, and a concurrent committed row is
+handled by the dedicated downgrade primitive. Complete post-launch identity is
+persisted as `LAUNCH_UNCERTAIN`; incomplete or invalid identity is persisted as
+`RECOVERY_BLOCKED`. `settle_recovery_execution()` accepts either uncertain state
+only after a separate recovery lease owner/token/generation and
+supervisor-confirmed termination. The original process worker identity and
+generation remain the immutable process proof and are not required to equal the
+recovery coordinator identity.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and

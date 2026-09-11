@@ -12,6 +12,46 @@ from app.core.models import PrincipalType, UserRole
 
 
 @pytest.mark.asyncio
+async def test_signed_viewer_token_cannot_escalate_through_synthetic_identity(monkeypatch):
+    """A valid signature does not make token-provided elevated scopes authoritative."""
+    import time
+    import jwt
+    import app.core.auth as auth_module
+    import app.core.db as db_module
+
+    monkeypatch.setattr(auth_module, "OPERATING_MODE", auth_module.OperatingMode.TEST)
+    monkeypatch.setattr(db_module.db_manager, "get_user_by_id", lambda _subject: None)
+    monkeypatch.setattr(db_module.db_manager, "is_token_revoked", lambda _jti: False)
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "iss": auth_module.JWT_ISSUER,
+            "aud": auth_module.JWT_AUDIENCE,
+            "sub": "fixture-viewer-not-provisioned",
+            "username": "viewer",
+            "email": "viewer@example.test",
+            "role": UserRole.VIEWER.value,
+            "principal_type": PrincipalType.TENANT_PRINCIPAL.value,
+            "org_id": "org-viewer",
+            "scopes": ["tool:install", "scan:read"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+            "jti": "fixture-viewer-elevated-scope",
+        },
+        auth_module.JWT_SECRET,
+        algorithm=auth_module.JWT_ALGORITHM,
+        headers={"typ": "JWT", "kid": auth_module.ACTIVE_KEY_ID},
+    )
+
+    resolved = await auth_module.get_current_user(authorization=f"Bearer {token}")
+
+    assert resolved.role is UserRole.VIEWER
+    assert resolved.scopes == ["scan:read"]
+    assert "tool:install" not in resolved.scopes
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("approval_result", ["AUTHORIZED", "REPLAY"])
 async def test_scan_approval_dispatches_through_orchestrator_and_replay_is_idempotent(monkeypatch, approval_result):
     from types import SimpleNamespace

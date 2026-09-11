@@ -321,6 +321,11 @@ def create_access_token(
         "exp": now + expires_in,
         "jti": secrets.token_hex(16),
     }
+    # Synthetic identities are an explicit non-production fixture boundary.
+    # Production tokens never carry this marker and production authentication
+    # remains database-authoritative.
+    if OPERATING_MODE != OperatingMode.PRODUCTION:
+        payload["synthetic_fixture"] = True
     signing_key = JWT_KEY_ROTATION_STORE.get(ACTIVE_KEY_ID, JWT_SECRET)
     return jwt.encode(
         payload,
@@ -625,6 +630,7 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        synthetic_fixture = payload.get("synthetic_fixture") is True
         synth_user = UserProfile.model_construct(
             id=payload.get("sub", "anon"),
             username=payload.get("username", "user"),
@@ -632,15 +638,17 @@ async def get_current_user(
             role=UserRole(payload.get("role", "VIEWER")),
             principal_type=p_type,
             organization_id=payload.get("org_id", "org-default"),
-            # In TEST/DEVELOPMENT compatibility mode there is no
-            # database-authoritative profile. Seed the synthetic profile with
-            # the token's validated scope list so explicitly granted extra
-            # scopes (for example scan:internal) remain bounded and exact.
-            scopes=list(raw_scopes or []),
+            # Only tokens explicitly issued by the non-production fixture
+            # boundary may carry synthetic extra scopes. A merely valid
+            # signature is not authority for a role-exceeding grant.
+            scopes=list(raw_scopes or []) if synthetic_fixture else [],
             is_active=True,
             created_at=datetime.fromtimestamp(payload.get("iat", time.time()), tz=timezone.utc),
         )
-        synth_user.scopes = resolve_effective_scopes(synth_user, explicit_scopes=raw_scopes)
+        synth_user.scopes = resolve_effective_scopes(
+            synth_user,
+            explicit_scopes=raw_scopes if raw_scopes is not None else None,
+        )
         return synth_user
 
     # 3. Explicit Development Mode Bypass (Restricted to VIEWER role)

@@ -478,6 +478,7 @@ PROCESS_OWNERSHIP_TRANSITIONS = {
         ProcessOwnershipState.NO_EXTERNAL_PROCESS,
         ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
         ProcessOwnershipState.LAUNCH_UNCERTAIN,
+        ProcessOwnershipState.RECOVERY_BLOCKED,
     }),
     ProcessOwnershipState.NO_EXTERNAL_PROCESS: frozenset({ProcessOwnershipState.TERMINAL}),
     ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED: frozenset({

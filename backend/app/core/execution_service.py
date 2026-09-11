@@ -1076,23 +1076,6 @@ def record_launch_uncertain(
     """Persist post-creation uncertainty before any recovery decision."""
     if not capability.execution_id:
         return False
-    existing = capability.database.get_process_ownership(
-        capability.execution_id,
-        capability.decision.organization_id,
-    )
-    if existing and existing.get("ownership_state") == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value:
-        # A committed launch has an immutable identity already persisted by
-        # record_posix_launch.  The recovery transition must read and lock
-        # that row; caller-supplied PID/group/token values are deliberately
-        # ignored so a post-commit failure cannot overwrite the attestation.
-        return capability.database.transition_committed_process_to_recovery_blocked(
-            capability.execution_id,
-            capability.decision.organization_id,
-            capability.worker_identity,
-            capability.worker_generation,
-            reason_code="PROCESS_TERMINATION_UNCONFIRMED",
-            actor=capability.worker_identity,
-        )
     evidence = _durable_execution_evidence(capability)
     if evidence is None or not isinstance(evidence["run"].get("correlation_id"), str):
         return False
@@ -1176,10 +1159,17 @@ def record_launch_uncertain(
             container_type = ProcessContainerType.PROCESS_SET
             container_identity = None
             persisted_session_id = None
+    complete_identity = attestation_json is not None
     record = ExecutionProcessOwnershipRecord(
         execution_id=capability.execution_id,
         organization_id=capability.decision.organization_id,
-        ownership_state=ProcessOwnershipState.LAUNCH_UNCERTAIN,
+        # An incomplete identity cannot authorize even an uncertain recovery
+        # claim.  It is persisted as RECOVERY_BLOCKED so only an operator /
+        # explicitly supported recovery path can proceed.
+        ownership_state=(
+            ProcessOwnershipState.LAUNCH_UNCERTAIN
+            if complete_identity else ProcessOwnershipState.RECOVERY_BLOCKED
+        ),
         container_type=container_type,
         container_identity=container_identity,
         root_process_id=pid,
@@ -1192,11 +1182,28 @@ def record_launch_uncertain(
         correlation_id=evidence["run"]["correlation_id"],
         last_verified_at=utc_now(),
     )
-    return capability.database.transition_process_ownership(
+    transitioned = capability.database.transition_process_ownership(
         record,
         ProcessOwnershipState.UNKNOWN,
         reason_code="PROCESS_LAUNCH_UNCERTAIN",
         worker_identity=capability.worker_identity,
+    )
+    if transitioned:
+        return True
+
+    # The atomic transition above locks and re-reads the current durable row.
+    # A concurrent record_posix_launch may therefore have won the race and
+    # committed an immutable identity between the caller's observation and
+    # this callback.  Re-enter the dedicated committed downgrade primitive;
+    # it performs its own lock and validates the persisted identity, never
+    # accepting the callback's PID/group/token as a replacement.
+    return capability.database.transition_committed_process_to_recovery_blocked(
+        capability.execution_id,
+        capability.decision.organization_id,
+        capability.worker_identity,
+        capability.worker_generation,
+        reason_code="PROCESS_TERMINATION_UNCONFIRMED",
+        actor=capability.worker_identity,
     )
 
 

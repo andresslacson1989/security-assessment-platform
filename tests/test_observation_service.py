@@ -148,6 +148,63 @@ async def test_reaper_keeps_process_backlog_open_when_termination_is_unconfirmed
 
 
 @pytest.mark.asyncio
+async def test_production_reaper_settles_uncertain_execution_with_distinct_recovery_identity(tmp_path, monkeypatch):
+    """The real observer path uses a recovery lease, not the process worker binding."""
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+    from tests.security.test_execution_decision_authority import _seed_execution_for_termination_settlement
+
+    database = db_module.DatabaseManager(tmp_path / "observer-production-recovery.db")
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-observer-production-recovery",
+        request_id="request-observer-production-recovery",
+        decision_id="decision-observer-production-recovery",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership "
+            "SET ownership_state='LAUNCH_UNCERTAIN', launch_commit_state='UNCERTAIN' "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-observer-production-recovery", "org-settlement"),
+        )
+
+    class FakeSupervisor:
+        def cancel_execution(self, execution_id, **kwargs):
+            assert execution_id == "run-observer-production-recovery"
+            assert kwargs["process_identity"] is not None
+            return ProcessCancellationResult(
+                execution_id, ProcessCancellationStatus.ALREADY_EXITED, 4242,
+            )
+
+    monkeypatch.setattr(db_module, "db_manager", database)
+    monkeypatch.setattr(supervisor_module, "process_supervisor", FakeSupervisor())
+    monkeypatch.setattr(
+        "app.core.execution_service.get_worker_generation",
+        lambda: "observer-recovery-generation",
+    )
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 1
+    with database._connection_scope() as conn:
+        run = conn.execute(
+            "SELECT state FROM execution_runs WHERE execution_id=? AND organization_id=?",
+            ("run-observer-production-recovery", "org-settlement"),
+        ).fetchone()
+        attempt = conn.execute(
+            "SELECT worker_identity, worker_generation, status "
+            "FROM execution_recovery_attempts WHERE execution_id=? AND organization_id=? "
+            "ORDER BY completed_at DESC LIMIT 1",
+            ("run-observer-production-recovery", "org-settlement"),
+        ).fetchone()
+    assert run["state"] == "FAILED"
+    assert attempt["worker_identity"] == "execution-recovery-coordinator"
+    assert attempt["worker_generation"] == "observer-recovery-generation"
+    assert attempt["status"] == "CONFIRMED_TERMINATED"
+
+
+@pytest.mark.asyncio
 async def test_reaper_settles_durable_no_process_without_supervisor_inference(monkeypatch):
     from app.core import db as db_module
     from app.core import process_supervisor as supervisor_module

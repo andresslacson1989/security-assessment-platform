@@ -1644,13 +1644,22 @@ class ProcessSupervisor:
                     if execution_capability is not None:
                         try:
                             from app.core.execution_service import record_launch_uncertain
-                            record_launch_uncertain(
+                            recorded = record_launch_uncertain(
                                 execution_capability,
                                 pid=proc.pid,
                                 process_group_id=process_group_id,
                             )
-                        except Exception:
-                            retain_execution_ref[0] = True
+                        except Exception as exc:
+                            logger.error(
+                                "Post-Popen identity uncertainty could not be persisted: error_type=%s",
+                                type(exc).__name__,
+                            )
+                            recorded = False
+                        if not recorded:
+                            return ProcessExecutionResult(
+                                -1, "",
+                                "PROCESS_FINALIZATION_FAILED: post-Popen identity uncertainty was not committed",
+                            )
                     return ProcessExecutionResult(
                         -1, "",
                         "PROCESS_LAUNCH_UNCERTAIN: process identity unavailable; recovery is required",
@@ -1671,31 +1680,36 @@ class ProcessSupervisor:
                         termination_confirmed = self.kill_process_tree(
                             proc.pid, process_group_id=process_group_id, identity=process_identity,
                         )
-                        if not termination_confirmed:
-                            retain_execution_ref[0] = True
-                            try:
-                                from app.core.execution_service import record_launch_uncertain
-                                record_launch_uncertain(
-                                    execution_capability,
-                                    pid=proc.pid,
-                                    process_group_id=process_group_id,
-                                    start_token=process_identity.start_token,
-                                    session_id=process_identity.session_id,
-                                    member_snapshot=process_identity.member_snapshot,
-                                )
-                            except Exception:
-                                pass
-                            return ProcessExecutionResult(
-                                -1, "",
-                                "PROCESS_LAUNCH_UNCERTAIN: durable process ownership commit failed and termination was not confirmed",
+                        # A real Popen has occurred.  Even confirmed
+                        # termination does not prove that the durable launch
+                        # handshake never happened; persist uncertainty first
+                        # and let the recovery primitive perform the only
+                        # terminal transition for this post-creation path.
+                        retain_execution_ref[0] = True
+                        try:
+                            from app.core.execution_service import record_launch_uncertain
+                            recorded = record_launch_uncertain(
+                                execution_capability,
+                                pid=proc.pid,
+                                process_group_id=process_group_id,
+                                start_token=process_identity.start_token,
+                                session_id=process_identity.session_id,
+                                member_snapshot=process_identity.member_snapshot,
                             )
-                        if not _settle_durable("EXECUTION_BLOCKED", "PROCESS_LAUNCH_REJECTED_SECURITY"):
+                        except Exception as uncertainty_exc:
+                            logger.error(
+                                "Post-Popen ownership uncertainty could not be persisted: error_type=%s",
+                                type(uncertainty_exc).__name__,
+                            )
+                            recorded = False
+                        if not recorded:
                             return ProcessExecutionResult(
                                 -1, "",
-                                "PROCESS_FINALIZATION_FAILED: security rejection outcome was not committed",
+                                "PROCESS_FINALIZATION_FAILED: post-Popen ownership uncertainty was not committed",
                             )
                         return ProcessExecutionResult(
-                            -1, "", f"PROCESS_LAUNCH_REJECTED_SECURITY: durable process ownership commit failed ({type(exc).__name__})",
+                            -1, "",
+                            "PROCESS_LAUNCH_UNCERTAIN: durable process ownership commit failed; recovery is required",
                         )
                     execution_capability.mark_started(
                         process_id=proc.pid,
@@ -1723,7 +1737,7 @@ class ProcessSupervisor:
                     if execution_capability is not None and launch_committed:
                         try:
                             from app.core.execution_service import record_launch_uncertain
-                            record_launch_uncertain(
+                            recorded = record_launch_uncertain(
                                 execution_capability,
                                 pid=proc.pid,
                                 process_group_id=process_group_id,
@@ -1731,11 +1745,20 @@ class ProcessSupervisor:
                                 session_id=process_identity.session_id if process_identity else None,
                                 member_snapshot=process_identity.member_snapshot if process_identity else None,
                             )
-                        except Exception:
+                        except Exception as uncertainty_exc:
                             # The durable state remains governed only when
                             # the database transition succeeds; retain the
                             # process for recovery if the downgrade is fenced.
-                            pass
+                            logger.error(
+                                "Bounded-execution uncertainty could not be persisted: error_type=%s",
+                                type(uncertainty_exc).__name__,
+                            )
+                            recorded = False
+                        if not recorded:
+                            return ProcessExecutionResult(
+                                -1, stdout,
+                                "PROCESS_FINALIZATION_FAILED: bounded-execution uncertainty was not committed",
+                            )
                     return ProcessExecutionResult(
                         -1, stdout,
                         "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active\n" + stderr,
@@ -1756,15 +1779,27 @@ class ProcessSupervisor:
                     ):
                         retain_execution_ref[0] = True
                         if execution_capability is not None:
-                            from app.core.execution_service import record_launch_uncertain
-                            record_launch_uncertain(
-                                execution_capability,
-                                pid=proc.pid,
-                                process_group_id=process_group_id,
-                                start_token=process_identity.start_token,
-                                session_id=process_identity.session_id,
-                                member_snapshot=process_identity.member_snapshot,
-                            )
+                            try:
+                                from app.core.execution_service import record_launch_uncertain
+                                recorded = record_launch_uncertain(
+                                    execution_capability,
+                                    pid=proc.pid,
+                                    process_group_id=process_group_id,
+                                    start_token=process_identity.start_token,
+                                    session_id=process_identity.session_id,
+                                    member_snapshot=process_identity.member_snapshot,
+                                )
+                            except Exception as uncertainty_exc:
+                                logger.error(
+                                    "Non-empty process-container uncertainty could not be persisted: error_type=%s",
+                                    type(uncertainty_exc).__name__,
+                                )
+                                recorded = False
+                            if not recorded:
+                                return ProcessExecutionResult(
+                                    -1, stdout,
+                                    "PROCESS_FINALIZATION_FAILED: process-container uncertainty was not committed",
+                                )
                         return ProcessExecutionResult(
                             -1, stdout,
                                 "PROCESS_LAUNCH_UNCERTAIN: owned process container is not empty",
@@ -1828,7 +1863,7 @@ class ProcessSupervisor:
                             identity=process_identity_ref[0],
                         )
                 if execution_capability is not None:
-                    if proc is not None and not launch_committed:
+                    if proc is not None:
                         # Popen succeeded but the launch handshake did not
                         # reach a durable committed state. Preserve the exact
                         # execution identity for recovery and never convert
@@ -1836,7 +1871,7 @@ class ProcessSupervisor:
                         retain_execution_ref[0] = True
                         try:
                             from app.core.execution_service import record_launch_uncertain
-                            record_launch_uncertain(
+                            recorded = record_launch_uncertain(
                                 execution_capability,
                                 pid=proc.pid,
                                 process_group_id=process_group_ref[0],
@@ -1844,33 +1879,25 @@ class ProcessSupervisor:
                                 session_id=(process_identity_ref[0].session_id if process_identity_ref[0] else None),
                                 member_snapshot=(process_identity_ref[0].member_snapshot if process_identity_ref[0] else None),
                             )
-                        except Exception:
-                            pass
+                        except Exception as uncertainty_exc:
+                            logger.error(
+                                "Post-Popen exception uncertainty could not be persisted: error_type=%s",
+                                type(uncertainty_exc).__name__,
+                            )
+                            recorded = False
+                        if not recorded:
+                            return ProcessExecutionResult(
+                                -1, "",
+                                "PROCESS_FINALIZATION_FAILED: post-Popen exception uncertainty was not committed",
+                            )
                         return ProcessExecutionResult(
                             -1, "",
-                            "PROCESS_LAUNCH_UNCERTAIN: post-launch ownership handshake failed; recovery is required",
+                            "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active"
+                            if not termination_confirmed
+                            else "PROCESS_LAUNCH_UNCERTAIN: post-launch exception requires recovery",
                         )
-                    if launch_committed:
-                        if not termination_confirmed:
-                            retain_execution_ref[0] = True
-                            try:
-                                from app.core.execution_service import record_launch_uncertain
-                                record_launch_uncertain(
-                                    execution_capability,
-                                    pid=proc.pid if proc else None,
-                                    process_group_id=process_group_ref[0],
-                                    start_token=(process_identity_ref[0].start_token if process_identity_ref[0] else None),
-                                    session_id=(process_identity_ref[0].session_id if process_identity_ref[0] else None),
-                                    member_snapshot=(process_identity_ref[0].member_snapshot if process_identity_ref[0] else None),
-                                )
-                            except Exception:
-                                pass
-                            return ProcessExecutionResult(-1, "", "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
-                        if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
-                            return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
-                    else:
-                        if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION"):
-                            return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable launch failure was not committed")
+                    if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION"):
+                        return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
                 return ProcessExecutionResult(-1, "", str(e))
             finally:
                 if proc and proc.pid and not retain_execution_ref[0]:
