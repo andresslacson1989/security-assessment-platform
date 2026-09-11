@@ -508,7 +508,8 @@ def test_root_exit_with_descendant_in_new_group_recovers_from_attested_snapshot(
             process_identity=identity,
         )
         assert cancelled.confirmed is True
-        assert not ProcessSupervisor._pid_exists(child_pid)
+        # A killed grandchild may remain as a zombie until its reaper collects
+        # it.  Session emptiness is the authoritative live-process assertion.
         assert not ProcessSupervisor._process_session_exists(identity.session_id)
     finally:
         _terminate_owned_test_session(identity.session_id if identity is not None else None)

@@ -973,12 +973,11 @@ class ProcessSupervisor:
         session_exists = identity is not None and ProcessSupervisor._process_session_exists(identity.session_id)
         identity_matches = identity is not None and (
             ProcessSupervisor._identity_matches(identity)
+            and ProcessSupervisor._process_group_identity_matches(identity)
             if root_exists
-            else (
-                ProcessSupervisor._process_group_identity_matches(identity)
-                if ProcessSupervisor._process_group_exists(process_group_id)
-                else False
-            )
+            else ProcessSupervisor._process_group_identity_matches(identity)
+            if (ProcessSupervisor._process_group_exists(process_group_id) or session_exists)
+            else False
         )
         if identity is not None and not identity_matches and (
             ProcessSupervisor._pid_exists(pid)
