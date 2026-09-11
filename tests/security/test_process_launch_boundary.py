@@ -730,10 +730,16 @@ async def test_windows_non_scan_timeout_output_cancellation_and_exception_are_ty
     )
     timed_out = await supervisor.execute(
         [sys.executable, "-c", timeout_code],
-        timeout=0.25,
+        # The child must have a runner-safe window to start and create its
+        # readiness marker before the Job Object timeout is enforced.
+        timeout=5.0,
         non_scan_context=issue_non_scan_execution_context("observation:windows-timeout"),
     )
     assert timed_out.execution_status is ProcessExecutionStatus.TIMED_OUT
+    deadline = time.monotonic() + 10
+    while not timeout_marker.exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert timeout_marker.exists(), "timed-out child did not publish its readiness marker"
     timeout_pid = int(timeout_marker.read_text())
     assert not ProcessSupervisor._pid_exists(timeout_pid)
 

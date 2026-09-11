@@ -980,12 +980,49 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         assert await queue.consume_once(tamper_handler, block_ms=0, reclaim_idle_ms=0) is True
         assert not tamper_calls
         tampered_state_key = queue._quarantine_state_key(tampered_message_id)
+        tampered_state = json.loads(await redis.get(tampered_state_key))
+        assert tampered_state["message_kind"] == "AMBIGUOUS_UNCLASSIFIED"
+        assert tampered_state["reason"] == "QUEUE_BINDING_REJECTED"
+        assert all(
+            field_name not in tampered_state
+            for field_name in (
+                "queue_binding_digest",
+                "manifest_hash",
+                "execution_ids",
+                "operation_ids",
+            )
+        )
         await redis.delete(queue._quarantine_key(tampered_message_id))
         assert await queue.consume_once(tamper_handler, block_ms=0, reclaim_idle_ms=0) is True
         assert not tamper_calls
+        assert await redis.xpending_range(
+            queue.stream_name,
+            queue.consumer_group,
+            min=tampered_message_id,
+            max=tampered_message_id,
+            count=1,
+        )
+        assert await redis.get(tampered_state_key)
         assert await queue.acknowledge_quarantined(
             tampered_message_id,
-        operator=_issue_authenticated_quarantine_authorization(
+            operator=_issue_authenticated_quarantine_authorization(
+                actor_id="live-redis-operator",
+                organization_id=f"wrong-tenant-{suffix}",
+                session_binding=f"session-{suffix}",
+            ),
+            authorization_request_id=tampered_request_id,
+        ) is False
+        assert await redis.xpending_range(
+            queue.stream_name,
+            queue.consumer_group,
+            min=tampered_message_id,
+            max=tampered_message_id,
+            count=1,
+        )
+        assert await redis.get(tampered_state_key)
+        assert await queue.acknowledge_quarantined(
+            tampered_message_id,
+            operator=_issue_authenticated_quarantine_authorization(
                 actor_id="live-redis-operator",
                 organization_id=organization_id,
                 session_binding=f"session-{suffix}",
@@ -993,6 +1030,25 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
             authorization_request_id=tampered_request_id,
         ) is True
         assert await redis.get(tampered_state_key) is None
+        recovery_events = [
+            fields for _event_id, fields in await redis.xrange(
+                f"{queue.stream_name}:failures", min="-", max="+"
+            )
+            if fields.get("message_id") == tampered_message_id
+            and fields.get("failure_category") == "AUTHORITATIVE_DISPATCH_RECOVERY"
+        ]
+        assert len(recovery_events) == 1
+        assert recovery_events[0]["quarantine_reason"] == "QUEUE_BINDING_REJECTED"
+        assert recovery_events[0]["queue_binding_digest"] == ""
+        assert recovery_events[0]["manifest_hash"] == ""
+        assert "credential_envelope" not in recovery_events[0]
+        assert not await redis.xpending_range(
+            queue.stream_name,
+            queue.consumer_group,
+            min=tampered_message_id,
+            max=tampered_message_id,
+            count=1,
+        )
     finally:
         keys = [
             key async for key in redis.scan_iter(match=f"{queue.stream_name}:*")

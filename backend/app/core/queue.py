@@ -50,6 +50,14 @@ _QUEUE_MESSAGE_KINDS = frozenset({
     _QUEUE_MESSAGE_KIND_LEGACY,
     _QUEUE_MESSAGE_KIND_AMBIGUOUS,
 })
+# These are the only malformed-wire outcomes that an authenticated tenant
+# operator may explicitly close. The recovery operation acknowledges the
+# pending stream entry for evidence cleanup; it never reclassifies the wire
+# payload or permits handler entry.
+_QUEUE_AMBIGUOUS_RECOVERY_REASONS = frozenset({
+    "QUEUE_MESSAGE_CLASSIFICATION_REJECTED",
+    "QUEUE_BINDING_REJECTED",
+})
 _QUEUE_WIRE_FIELDS = frozenset({
     "message_kind",
     "scan_id",
@@ -1094,15 +1102,34 @@ class RedisDurableQueue:
         marker_key = self._quarantine_key(message_id)
         raw_state = await self._redis.get(state_key)
         state = await self._get_quarantine_state(message_id)
+        state_message_kind = state.get("message_kind") if state else None
+        ambiguous_recovery = (
+            state_message_kind == _QUEUE_MESSAGE_KIND_AMBIGUOUS
+            and state.get("reason") in _QUEUE_AMBIGUOUS_RECOVERY_REASONS
+            and not any(
+                field_name in state
+                for field_name in (
+                    "queue_binding_digest",
+                    "manifest_hash",
+                    "execution_ids",
+                    "operation_ids",
+                )
+            )
+        ) if state else False
+        acknowledgeable = (
+            state_message_kind == _QUEUE_MESSAGE_KIND_AUTHORITATIVE
+            or ambiguous_recovery
+        )
         if (
             not state
             or raw_state is None
             or state.get("organization_id") != operator.organization_id
             or state.get("authorization_request_id") != authorization_request_id.strip()
-            or state.get("message_kind") != _QUEUE_MESSAGE_KIND_AUTHORITATIVE
+            or not acknowledgeable
         ):
-            # A legacy/expired marker without durable tenant/request context
-            # cannot be safely acknowledged through the authoritative path.
+            # A legacy/expired marker without durable tenant/request context,
+            # or an ambiguous state outside the two reviewed malformed-wire
+            # outcomes, cannot be safely acknowledged through recovery.
             return False
         fields: dict[str, str] = {
             "message_id": message_id,

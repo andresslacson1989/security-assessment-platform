@@ -124,6 +124,12 @@ def _read_posix_start_token(pid: int) -> Optional[str]:
         with open(f"/proc/{pid}/stat", encoding="ascii") as stat_file:
             stat_text = stat_file.read()
         after_comm = stat_text.rsplit(")", 1)[1].split()
+        # A child can exit and remain as a zombie while the launch worker is
+        # still completing its bounded identity handshake.  A zombie cannot
+        # execute, and its start token must not keep it in the live-member
+        # identity set or prevent the post-root-exit proof from completing.
+        if not after_comm or after_comm[0] in {"Z", "X"}:
+            return None
         start_ticks = after_comm[19]
         with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as boot_id_file:
             boot_id = boot_id_file.read().strip()
@@ -786,16 +792,17 @@ class ProcessSupervisor:
         if members is None:
             return False
         expected = {
-            (member.pid, member.start_token, member.process_group_id)
+            (member.pid, member.start_token)
             for member in identity.member_snapshot
             if member.session_id == identity.session_id
         }
         if not expected:
             return False
-        current_set = set(members)
+        current_set = {(member_pid, start_token) for member_pid, start_token, _ in members}
         # A root-exit snapshot is authoritative only when every remaining
-        # member was present in the bounded snapshot. A new PID, changed
-        # start token, or unexpected PGID is a recovery block.
+        # member was present in the bounded snapshot. A new PID or changed
+        # start token is a recovery block. PGID is mutable for an attested
+        # descendant; its current value is freshly checked below.
         if not current_set.issubset(expected):
             return False
         current_pid = os.getpid()
@@ -862,6 +869,67 @@ class ProcessSupervisor:
                 return None
         return ProcessIdentity(pid, process_group_id, start_token, session_id, member_snapshot)
 
+    @staticmethod
+    def _capture_posix_identity_after_root_exit(
+        previous: ProcessIdentity,
+    ) -> Optional[ProcessIdentity]:
+        """Finalize an identity after an already-attested root exits.
+
+        The root start token and session were captured while the root was live.
+        A later snapshot may therefore retain that attested root as historical
+        evidence while binding any surviving members to their own current
+        start tokens and session. No PID discovered only after the root exits
+        is eligible unless it was present in this complete, bounded snapshot.
+        """
+        if (
+            os.name == "nt"
+            or type(previous) is not ProcessIdentity
+            or previous.pid <= 1
+            or previous.process_group_id is None
+            or previous.process_group_id <= 1
+            or previous.session_id is None
+            or previous.session_id <= 1
+            or not isinstance(previous.start_token, str)
+            or not previous.start_token.strip()
+        ):
+            return None
+        # A live or PID-reused root cannot be treated as a completed root-exit
+        # transition. The second token read is the current kernel fact.
+        if _read_posix_start_token(previous.pid) is not None:
+            return None
+        members = ProcessSupervisor._posix_session_member_identities(previous.session_id)
+        if members is None:
+            return None
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
+        if any(member_pid in {current_pid, parent_pid, previous.pid} for member_pid, _, _ in members):
+            # A reused root PID or a supervisor PID in the owned session is an
+            # identity conflict, not a reason to widen recovery.
+            return None
+        live_members = tuple(
+            ProcessMemberIdentity(member_pid, member_pgid, previous.session_id, member_start_token)
+            for member_pid, member_start_token, member_pgid in members
+        )
+        root_member = ProcessMemberIdentity(
+            previous.pid,
+            previous.process_group_id,
+            previous.session_id,
+            previous.start_token,
+        )
+        snapshot = tuple(
+            sorted(
+                (root_member, *live_members),
+                key=lambda member: (member.pid, member.start_token, member.process_group_id),
+            )
+        )
+        return ProcessIdentity(
+            previous.pid,
+            previous.process_group_id,
+            previous.start_token,
+            previous.session_id,
+            snapshot,
+        )
+
     def _capture_stable_process_identity(
         self,
         pid: int,
@@ -873,27 +941,49 @@ class ProcessSupervisor:
         create its normal worker/helper descendants immediately afterwards.
         Capture is therefore a bounded two-phase handshake: a fresh snapshot
         is sampled repeatedly until it remains unchanged for the required
-        stability interval.  No identity is persisted until that interval
-        completes.  If the process disappears or membership never settles,
-        callers retain launch uncertainty and recovery rather than signalling
-        an unbound PID or group.
+        stability interval.  If an already-attested root exits during the
+        handshake, a bounded post-exit snapshot may complete the proof while
+        retaining the root's original start token.  If no identity was ever
+        captured or membership never settles, callers retain launch
+        uncertainty and recovery rather than signalling an unbound PID/group.
         """
         if os.name == "nt":
             return self._capture_process_identity(pid, process_group_id)
         deadline = time.monotonic() + self._LAUNCH_HANDSHAKE_MAX_SECONDS
         stable_since: Optional[float] = None
         previous: Optional[ProcessIdentity] = None
+        post_exit_previous: Optional[ProcessIdentity] = None
+        post_exit_stable_since: Optional[float] = None
         while time.monotonic() < deadline:
             current = self._capture_process_identity(pid, process_group_id)
-            if current is None:
-                return None
-            if previous is None or current != previous:
-                previous = current
-                stable_since = time.monotonic()
-            elif stable_since is not None and (
-                time.monotonic() - stable_since >= self._LAUNCH_HANDSHAKE_STABLE_SECONDS
-            ):
-                return current
+            if current is not None:
+                post_exit_previous = None
+                post_exit_stable_since = None
+                if previous is None or current != previous:
+                    previous = current
+                    stable_since = time.monotonic()
+                elif stable_since is not None and (
+                    time.monotonic() - stable_since >= self._LAUNCH_HANDSHAKE_STABLE_SECONDS
+                ):
+                    return current
+            elif previous is not None:
+                post_exit = self._capture_posix_identity_after_root_exit(previous)
+                if post_exit is not None:
+                    stable_since = None
+                    if post_exit_previous is None or post_exit != post_exit_previous:
+                        post_exit_previous = post_exit
+                        post_exit_stable_since = time.monotonic()
+                    elif post_exit_stable_since is not None and (
+                        time.monotonic() - post_exit_stable_since
+                        >= self._LAUNCH_HANDSHAKE_STABLE_SECONDS
+                    ):
+                        return post_exit
+                else:
+                    post_exit_previous = None
+                    post_exit_stable_since = None
+                    stable_since = None
+            else:
+                stable_since = None
             time.sleep(self._LAUNCH_HANDSHAKE_POLL_SECONDS)
         return None
 
@@ -915,11 +1005,11 @@ class ProcessSupervisor:
         if not identity.member_snapshot:
             return False
         expected = {
-            (member.pid, member.start_token, member.process_group_id)
+            (member.pid, member.start_token)
             for member in identity.member_snapshot
             if member.session_id == identity.session_id
         }
-        current_set = set(members)
+        current_set = {(member_pid, start_token) for member_pid, start_token, _ in members}
         if not expected or not current_set.issubset(expected):
             return False
         current_pid = os.getpid()
@@ -1344,6 +1434,41 @@ class ProcessSupervisor:
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     termination_confirmed = False
+            # A native Job Object may have completed termination while its
+            # first bounded membership query still observes the terminating
+            # root. Once the exact process handle has reported exit, retry the
+            # same identity-bound container proof once. This does not widen
+            # the target: kill_process_tree still rejects an unbound Windows
+            # PID and only attested job membership can make this successful.
+            if not termination_confirmed and process_identity is not None:
+                termination_confirmed = self.kill_process_tree(
+                    proc.pid,
+                    process_group_id=process_group_id,
+                    identity=process_identity,
+                )
+                if termination_confirmed and proc.poll() is None:
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        termination_confirmed = False
+            # A root can exit while an attested descendant still owns one of
+            # the inherited pipes. Close the exact process container before
+            # joining the readers so already-written output is retained and
+            # the readers cannot remain blocked on an unbounded descendant.
+            if (
+                proc.poll() is not None
+                and process_identity is not None
+                and not self._process_tree_empty(
+                    process_identity,
+                    process_group_id,
+                    root_exited=True,
+                )
+            ):
+                termination_confirmed = self.kill_process_tree(
+                    proc.pid,
+                    process_group_id=process_group_id,
+                    identity=process_identity,
+                ) and termination_confirmed
             for reader in readers:
                 reader.join(timeout=2)
 
@@ -2067,31 +2192,17 @@ class ProcessSupervisor:
         try:
             return await asyncio.shield(worker_task)
         except asyncio.CancelledError:
-            # The caller's cancellation is only a request.  The worker thread
-            # remains the owner of process-tree verification and durable
-            # settlement; this task may signal the exact identity to shorten
-            # the wait, but it must never publish a terminal DB state itself.
+            # The caller's cancellation is only a request. The worker thread
+            # remains the sole owner of process-tree verification, signalling,
+            # and durable settlement. In particular, this task must not signal
+            # a provisional PID or turn an identity handshake race into an
+            # immediate termination-uncertain result.
             cancellation_requested.set()
-            termination_confirmed = True
-            if proc_ref[0] and proc_ref[0].pid:
-                if process_identity_ref[0] is None:
-                    if windows_job_ref[0] is not None:
-                        try:
-                            termination_confirmed = bool(windows_job_ref[0].terminate())
-                        except Exception:
-                            termination_confirmed = False
-                    else:
-                        termination_confirmed = False
-                else:
-                    termination_confirmed = self.kill_process_tree(
-                        proc_ref[0].pid,
-                        process_group_id=process_group_ref[0],
-                        identity=process_identity_ref[0],
-                    )
-            if not termination_confirmed:
-                retain_execution_ref[0] = True
             try:
-                await asyncio.wait_for(asyncio.shield(worker_task), timeout=5.0)
+                worker_result = await asyncio.wait_for(
+                    asyncio.shield(worker_task),
+                    timeout=5.0,
+                )
             except asyncio.TimeoutError:
                 retain_execution_ref[0] = True
                 worker_task.add_done_callback(_consume_late_worker_result)
@@ -2106,7 +2217,19 @@ class ProcessSupervisor:
                 raise RuntimeError(
                     "PROCESS_TERMINATION_UNCONFIRMED: process supervisor worker cancellation was not joined"
                 ) from exc
-            if not termination_confirmed:
+            if not isinstance(worker_result, ProcessExecutionResult):
+                retain_execution_ref[0] = True
+                raise RuntimeError(
+                    "PROCESS_TERMINATION_UNCONFIRMED: process supervisor worker returned an invalid cancellation result"
+                )
+            if retain_execution_ref[0] or worker_result.stderr.startswith(
+                (
+                    "PROCESS_LAUNCH_UNCERTAIN",
+                    "PROCESS_TERMINATION_UNCONFIRMED",
+                    "PROCESS_FINALIZATION_FAILED",
+                )
+            ):
+                retain_execution_ref[0] = True
                 raise RuntimeError(
                     "PROCESS_TERMINATION_UNCONFIRMED: process identity-bound termination was not confirmed"
                 )

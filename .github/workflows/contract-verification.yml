@@ -181,6 +181,9 @@ jobs:
           report_path = os.path.join(os.environ["CI_REPORT_DIR"], "focused-contract.xml")
           root = ET.parse(report_path).getroot()
           allowed = {
+              "Requires the Windows kernel Job Object API",
+              "Windows Job Object lifecycle is covered by the native assurance job",
+              "Windows kernel required",
               "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch",
           }
           reasons = [node.attrib.get("message", "") for node in root.iter("skipped")]
@@ -326,6 +329,12 @@ jobs:
                   "PLATFORM_CAPABILITY_UNAVAILABLE",
               "Unix process sessions are not available on Windows":
                   "PLATFORM_CAPABILITY_UNAVAILABLE",
+              "Requires the Windows kernel Job Object API":
+                  "PLATFORM_CAPABILITY_UNAVAILABLE_WINDOWS_ASSURANCE_COVERED",
+              "Windows Job Object lifecycle is covered by the native assurance job":
+                  "PLATFORM_CAPABILITY_UNAVAILABLE_WINDOWS_ASSURANCE_COVERED",
+              "Windows kernel required":
+                  "PLATFORM_CAPABILITY_UNAVAILABLE_WINDOWS_ASSURANCE_COVERED",
               "historical a1c4fc4 fixture is blocked by its committed v1 artifact mismatch":
                   "PROVENANCE_BLOCKED_ESCALATION_REQUIRED",
           }
