@@ -105,6 +105,15 @@ only after a separate recovery lease owner/token/generation and
 supervisor-confirmed termination. The original process worker identity and
 generation remain the immutable process proof and are not required to equal the
 recovery coordinator identity.
+When a committed governed process is still externally owned but its exact
+identity-bound cancellation is unconfirmed, the observer records a durable
+`DEFERRED` or bounded `EXHAUSTED` recovery outcome, immutable attempt evidence,
+the bounded error/outcome, and (when retryable) `next_retry_at`. The ownership
+state remains `EXTERNAL_PROCESS_GOVERNED`; candidate enumeration suppresses
+in-progress, exhausted, and not-yet-due deferred work. A later exact
+supervisor-confirmed result uses the post-revocation settlement fence and may
+terminalize only after the persisted identity and original worker binding are
+revalidated.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and

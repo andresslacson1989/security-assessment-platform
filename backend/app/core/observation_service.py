@@ -442,6 +442,41 @@ class BackendObservationService:
                         "Execution recovery deferred: termination not confirmed execution_id=%s status=%s",
                         execution_id, getattr(cancellation, "status", "UNKNOWN"),
                     )
+                    if durable_identity_api and durable_identity is not None:
+                        attempt_number = int(candidate.get("recovery_attempt_number") or 0) + 1
+                        exhausted = attempt_number >= max_recovery_attempts
+                        retry_at = None if exhausted else datetime.now(timezone.utc) + timedelta(
+                            seconds=min(300, 5 * (2 ** min(attempt_number - 1, 6)))
+                        )
+                        termination_status = getattr(
+                            getattr(cancellation, "status", None),
+                            "value",
+                            str(getattr(cancellation, "status", "UNKNOWN")),
+                        )
+                        persisted = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                db_manager.record_unconfirmed_governed_recovery,
+                                execution_id,
+                                candidate["organization_id"],
+                                process_id=durable_identity.pid,
+                                process_group_id=str(durable_identity.process_group_id),
+                                process_start_token=durable_identity.start_token,
+                                session_id=durable_identity.session_id,
+                                recovery_worker_identity=recovery_owner,
+                                recovery_worker_generation=recovery_worker_generation,
+                                termination_status=termination_status,
+                                outcome=f"termination_{termination_status.lower()}",
+                                error="termination was not confirmed; automatic recovery remains fenced",
+                                next_retry_at=retry_at,
+                                exhausted=exhausted,
+                                actor="execution-reaper",
+                            ),
+                            timeout=self.refresh_timeout_seconds,
+                        )
+                        if not persisted:
+                            raise RuntimeError(
+                                "durable unconfirmed recovery outcome was not committed"
+                            )
                     self._state = ObservationState(
                         last_started_at=self._state.last_started_at,
                         last_completed_at=self._state.last_completed_at,
@@ -452,6 +487,14 @@ class BackendObservationService:
                     continue
 
                 if durable_identity_api:
+                    run_snapshot = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.get_execution_run,
+                            execution_id,
+                            candidate["organization_id"],
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
                     termination_status = getattr(
                         getattr(cancellation, "status", None),
                         "value",
@@ -470,6 +513,7 @@ class BackendObservationService:
                             process_start_token=durable_identity.start_token,
                             session_id=durable_identity.session_id,
                             worker_generation=(ownership or {}).get("worker_generation"),
+                            worker_identity=(run_snapshot or {}).get("worker_identity"),
                             actor="execution-reaper",
                         ),
                         timeout=self.refresh_timeout_seconds,

@@ -10,12 +10,16 @@ explicit deployment identity/generation binding, process-session emptiness
 checking, zombie-member handling, and explicit recovery blocking when root
 ownership is no longer independently provable at the
 current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
-The current unpublished closure candidate is derived from local commit
-`abbc2504b3badbd52032352722b5a0bc08ca9eab` and additionally enforces explicit
-authoritative-versus-legacy queue classification, strict failure evidence and
-quarantine-state schemas, exact evidence digests, atomic quarantine
-publication, and compare-and-swap recovery acknowledgement. Those local
-changes are recorded below and are not represented by the published baseline.
+The current unpublished corrective worktree is derived from local commit
+`2545a62acbfb2c3e4978ccac9919b7f56688ad48` and adds the audited recovery
+state-machine and durable unconfirmed-governed-recovery corrections. The
+earlier local commit `abbc2504b3badbd52032352722b5a0bc08ca9eab` is retained as
+historical predecessor evidence, not as the current candidate. The current
+worktree also retains the previously implemented authoritative-versus-legacy
+queue classification, strict failure evidence and quarantine-state schemas,
+exact evidence digests, atomic quarantine publication, and compare-and-swap
+recovery acknowledgement. These local changes are not represented by the
+published baseline.
 It is evidence for the Section B review and does not claim that the
 execution-lifecycle closure matrix is accepted.
 
@@ -191,28 +195,32 @@ used.
 - Full local repository suite from a fresh unique disposable SQLite path,
   excluding only that preserved historical worktree snapshot assertion:
   **881 passed, 78 skipped, 1 deselected, 15 warnings**.
-- Current full repository suite for this unpublished candidate from a fresh
+- Historical full repository suite for the pre-correction unpublished
+  candidate from a fresh
   unique disposable SQLite path, excluding the preserved historical fixture
   and worktree snapshot assertion: **888 passed, 84 skipped, 2 deselected, 14
-  warnings**, exit code **0**. Windows process-tree termination vectors remain
+  warnings**, exit code **0**. This is historical evidence, not current
+  candidate evidence. Windows process-tree termination vectors remain
   platform-gated; explicit Windows recovery rejection and non-scan uncertainty
   behavior are tested separately. The excluded inventory assertion remains a
   known local failure because the preserved `.ci/` tree is larger than its
   historical snapshot.
-- Current full repository suite after the corrective process, restart-loader,
+- Historical full repository suite after the corrective process, restart-loader,
   queue, credential, quarantine-API, and recovery-settlement changes, from a
   fresh unique disposable SQLite path and excluding the same two preserved
   historical assertions: **911 passed, 86 skipped, 2 deselected, 15
-  warnings**, exit code **0**. The two additional process vectors are
+  warnings**, exit code **0**. This is historical evidence, not current
+  candidate evidence. The two additional process vectors are
   POSIX-only and are skipped on this Windows host; they are required to execute
   in Linux CI.
-- Current corrective lifecycle, credential, quarantine route, and recovery
+- Historical corrective lifecycle, credential, quarantine route, and recovery
   settlement vectors after the governed-to-recovery state-machine fix,
   explicit legacy credential-field presence rejection, tenant-admin scope
   correction, and persisted member-snapshot validation: **105 passed, 6
   skipped, 1 warning**, exit code **0**, against a project-local disposable
   database. The six skips are POSIX-only process vectors on this Windows host.
-  This is focused local evidence only; it is not GitHub Actions evidence.
+  This is historical focused local evidence only; it is not current candidate
+  or GitHub Actions evidence.
 - Local PostgreSQL and Redis integration could not be rerun because Docker is
   unavailable on this host and no approved local service URLs were provided.
   The authoritative PostgreSQL evidence for this baseline is the successful
@@ -260,7 +268,8 @@ used.
   capability remains a typed handoff after HTTP authentication, not a second
   authentication boundary; existing wrong-type construction rejection is
   retained.
-- Current corrective Section B vectors after the atomic uncertainty,
+- Historical corrective Section B vectors before the current recovery
+  rework, after the atomic uncertainty,
   recovery-lease separation, synthetic-authentication boundary, strict timeout,
   and post-`Popen()` persistence changes: **8 passed**, exit code **0**. This
   includes the atomic no-stale-read vector, production observer/reaper path
@@ -273,7 +282,28 @@ used.
   tests/security/test_auth_admin_boundaries.py
   tests/test_observation_service.py tests/test_adapters.py` with
   `CYBERASSESS_DB_PATH` and `--basetemp` under the unique
-  `.project-temp/section-b-corrective-focused-final-2/` directory.
+  `.project-temp/section-b-corrective-focused-final-2/` directory. This is
+  historical evidence for the predecessor candidate.
+- Current recovery-correction vectors for local worktree changes derived from
+  `2545a62acbfb2c3e4978ccac9919b7f56688ad48`: **3 passed**, exit code **0**.
+  This covers deferred complete-identity `UNCERTAIN` provenance followed by
+  confirmed settlement, durable retry scheduling and later exact settlement
+  for an unconfirmed `EXTERNAL_PROCESS_GOVERNED` process, and per-candidate
+  observer isolation. The exact command used project-local disposable storage
+  under `.project-temp/section-b-recovery-correction-focused-6/`. This is
+  local evidence only; it is not GitHub Actions evidence.
+- Current complete affected-path suite for the same worktree, using a fresh
+  disposable SQLite database and project-local pytest base, passed **191
+  tests**, with **6** Windows-inapplicable POSIX skips and exit code **0**.
+  The exact isolated paths were under
+  `.project-temp/section-b-recovery-correction-affected-final/`. This is local
+  evidence only; it is not GitHub Actions evidence.
+- Current full repository suite for the same worktree, excluding only the two
+  preserved historical Section A snapshot assertions, passed **917 tests**,
+  with **87** skips, **2** intentional deselections, **14** warnings, and exit
+  code **0**. The exact isolated paths were under
+  `.project-temp/section-b-recovery-correction-full-final/`. The deselected
+  assertions remain documented historical evidence checks, not hidden failures.
 - The live Redis transport vector was attempted with the declared `redis` and
   `hiredis` packages installed only under `.project-temp/`. Dependency
   construction succeeded and the project-local Redis service was reachable,
@@ -371,8 +401,9 @@ corrected implementation.
 The GitHub result is CI evidence for the exact code baseline. It does not
 close the independent platform and deployment gates listed in this addendum.
 
-There is no GitHub Actions run for the current corrective candidate derived
-from `abbc2504b3badbd52032352722b5a0bc08ca9eab`. The required jobs
+There is no GitHub Actions run for the current uncommitted corrective worktree
+derived from local commit `2545a62acbfb2c3e4978ccac9919b7f56688ad48`. The
+required jobs
 `compile-backend`, `focused-contract-verification`,
 `full-repository-verification`, and `postgres-schema-assurance` remain defined
 in `.github/workflows/contract-verification.yml`, but their results for the

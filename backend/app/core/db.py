@@ -4172,21 +4172,23 @@ class DatabaseManager:
                       JOIN execution_decisions d ON d.id = r.approved_decision_id AND d.organization_id = r.organization_id
                       JOIN execution_dispatch_intents i ON i.execution_id = r.execution_id AND i.organization_id = r.organization_id
                       JOIN execution_process_ownership p ON p.execution_id = r.execution_id AND p.organization_id = r.organization_id
-                      JOIN execution_recovery_state s ON s.execution_id = r.execution_id AND s.organization_id = r.organization_id
+                     JOIN execution_recovery_state s ON s.execution_id = r.execution_id AND s.organization_id = r.organization_id
                      WHERE r.state IN ('REQUESTED', 'STARTING', 'RUNNING')
+                       AND s.status NOT IN ('IN_PROGRESS', 'EXHAUSTED')
+                       AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?)
                        AND (
                             q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
                             OR d.revoked_at IS NOT NULL
                             OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                             OR q.expires_at <= ? OR d.expires_at <= ?
                             OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))
-                            OR (p.ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                            OR (p.ownership_state IN ('EXTERNAL_PROCESS_GOVERNED','LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
                                 AND s.status <> 'IN_PROGRESS'
                                 AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?))
                        )
                      ORDER BY r.created_at
                      LIMIT ?""",
-                (now, now, now, now, limit),
+                (now, now, now, now, now, limit),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -5317,6 +5319,242 @@ class DatabaseManager:
                 )
             return changed.rowcount == 1
 
+    def record_unconfirmed_governed_recovery(
+        self,
+        execution_id: str,
+        organization_id: str,
+        *,
+        process_id: int,
+        process_group_id: str,
+        process_start_token: str,
+        session_id: int,
+        recovery_worker_identity: str,
+        recovery_worker_generation: str,
+        termination_status: str,
+        outcome: str,
+        error: str,
+        next_retry_at: Optional[datetime],
+        exhausted: bool = False,
+        actor: str = "execution-recovery-coordinator",
+    ) -> bool:
+        """Persist an unconfirmed exact-identity recovery outcome.
+
+        This path is deliberately separate from ``complete_recovery`` because
+        a committed governed process has not acquired a recovery lease yet.
+        It records a retryable recovery projection and immutable attempt while
+        preserving the external-process ownership state and all persisted
+        identity fields.  The locked-row comparisons prevent a stale observer
+        or a caller-supplied replacement identity from publishing recovery
+        evidence for another process.
+        """
+        required_strings = (
+            execution_id,
+            organization_id,
+            process_group_id,
+            process_start_token,
+            recovery_worker_identity,
+            recovery_worker_generation,
+            termination_status,
+            outcome,
+            error,
+            actor,
+        )
+        if not all(isinstance(value, str) and value.strip() for value in required_strings):
+            return False
+        if any(len(value) > 512 for value in required_strings):
+            return False
+        if (
+            not isinstance(process_id, int)
+            or process_id <= 1
+            or not isinstance(session_id, int)
+            or session_id < 0
+            or not process_group_id.isdigit()
+            or int(process_group_id) <= 1
+        ):
+            return False
+        token_parts = process_start_token.split(":", 2)
+        if (
+            len(token_parts) != 3
+            or token_parts[0] != "posix"
+            or re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "") is None
+            or not token_parts[2].isdigit()
+            or int(token_parts[2]) <= 0
+        ):
+            return False
+        if exhausted:
+            if next_retry_at is not None:
+                raise ValueError("exhausted recovery cannot carry a retry time")
+            status = "EXHAUSTED"
+        else:
+            if next_retry_at is None:
+                raise ValueError("unconfirmed recovery requires a retry time")
+            if next_retry_at.tzinfo is None or next_retry_at.utcoffset() is None:
+                raise ValueError("recovery retry time must be timezone-aware")
+            status = "DEFERRED"
+
+        now = utc_now()
+        retry_value = next_retry_at.isoformat() if next_retry_at else None
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                """SELECT p.*, r.state AS run_state,
+                          r.worker_identity AS run_worker_identity,
+                          r.worker_generation AS run_worker_generation,
+                          r.correlation_id AS run_correlation_id,
+                          d.worker_identity AS decision_worker_identity,
+                          s.status AS recovery_status,
+                          s.attempt_number AS recovery_attempt_number,
+                          s.last_outcome AS recovery_last_outcome,
+                          s.last_error AS recovery_last_error,
+                          s.next_retry_at AS recovery_next_retry_at,
+                          s.owner AS recovery_owner,
+                          s.lease_token AS recovery_lease_token
+                     FROM execution_process_ownership p
+                     JOIN execution_runs r
+                       ON r.execution_id=p.execution_id
+                      AND r.organization_id=p.organization_id
+                     JOIN execution_decisions d
+                       ON d.id=r.approved_decision_id
+                      AND d.organization_id=r.organization_id
+                     JOIN execution_recovery_state s
+                       ON s.execution_id=p.execution_id
+                      AND s.organization_id=p.organization_id
+                    WHERE p.execution_id=? AND p.organization_id=?""" + lock,
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row:
+                return False
+            if (
+                row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+                or row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
+                or row["run_state"] not in {"REQUESTED", "STARTING", "RUNNING"}
+                or row["recovery_status"] == "IN_PROGRESS"
+                or row["recovery_status"] in {"CONFIRMED_TERMINATED", "EXHAUSTED"}
+                or row["recovery_owner"] is not None
+                or row["recovery_lease_token"] is not None
+                or row["run_worker_identity"] != row["decision_worker_identity"]
+                or not isinstance(row["run_worker_identity"], str)
+                or not row["run_worker_identity"].strip()
+                or row["run_worker_identity"] != row["decision_worker_identity"]
+                or not isinstance(row["run_worker_generation"], str)
+                or not row["run_worker_generation"].strip()
+                or row["worker_generation"] != row["run_worker_generation"]
+                or row["correlation_id"] != row["run_correlation_id"]
+                or not isinstance(row["correlation_id"], str)
+                or not row["correlation_id"].strip()
+                or row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                or row["root_process_id"] != process_id
+                or str(row["process_group_id"]) != process_group_id
+                or row["root_process_start_token"] != process_start_token
+                or str(row["session_id"]) != str(session_id)
+                or not isinstance(row["identity_attestation"], str)
+                or not row["identity_attestation"].strip()
+            ):
+                return False
+
+            if (
+                row["recovery_status"] == status
+                and row["recovery_last_outcome"] == outcome
+                and row["recovery_last_error"] == error
+                and row["recovery_next_retry_at"] == retry_value
+            ):
+                return True
+
+            attempt_number = int(row["recovery_attempt_number"] or 0) + 1
+            attempt_id = f"recovery-observation-{execution_id}-{attempt_number}"
+            existing_attempt = conn.execute(
+                "SELECT status, error_code, next_retry_at FROM execution_recovery_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if existing_attempt:
+                return (
+                    existing_attempt["status"] == status
+                    and existing_attempt["error_code"] == error
+                    and existing_attempt["next_retry_at"] == retry_value
+                )
+
+            recovery_updated = conn.execute(
+                """UPDATE execution_recovery_state
+                      SET status=?, worker_generation=?, attempt_number=?,
+                          last_outcome=?, last_error=?, next_retry_at=?,
+                          owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+                          updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND status IN ('REQUESTED','DEFERRED','FAILED','ESCALATED')
+                      AND owner IS NULL AND lease_token IS NULL""",
+                (
+                    status,
+                    recovery_worker_generation,
+                    attempt_number,
+                    outcome[:512],
+                    error[:512],
+                    retry_value,
+                    now.isoformat(),
+                    execution_id,
+                    organization_id,
+                ),
+            )
+            if recovery_updated.rowcount != 1:
+                return False
+
+            evidence = json.dumps(
+                {
+                    "execution_id": execution_id,
+                    "organization_id": organization_id,
+                    "attempt_number": attempt_number,
+                    "termination_status": termination_status,
+                    "outcome": outcome,
+                    "next_retry_at": retry_value,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                   (attempt_id, execution_id, organization_id, worker_identity,
+                    worker_generation, attempt_number, status, cancellation_status,
+                    reason_code, correlation_id, requested_at, started_at,
+                    completed_at, next_retry_at, error_code, escalation_level,
+                    health_reference)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    attempt_id,
+                    execution_id,
+                    organization_id,
+                    recovery_worker_identity,
+                    recovery_worker_generation,
+                    attempt_number,
+                    status,
+                    termination_status,
+                    "EXECUTION_RECOVERY_UNCONFIRMED",
+                    row["run_correlation_id"],
+                    now.isoformat(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    retry_value,
+                    error[:512],
+                    0,
+                    f"recovery-observation:{hashlib.sha256(evidence.encode('utf-8')).hexdigest()}",
+                ),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                actor=recovery_worker_identity,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_RECOVERY_ATTEMPT_RECORDED,
+                object_type="execution_recovery_attempt",
+                object_id=attempt_id,
+                correlation_id=row["run_correlation_id"],
+                result="SUCCESS",
+                details={
+                    "execution_id": execution_id,
+                    "attempt_number": attempt_number,
+                    "status": status,
+                    "termination_status": termination_status,
+                    "recovery_worker_identity": recovery_worker_identity,
+                },
+            ))
+            return True
+
     def settle_recovery_execution(
         self, execution_id: str, organization_id: str, owner: str,
         lease_token: str, worker_generation: str, *,
@@ -5374,14 +5612,15 @@ class DatabaseManager:
                 or row["ownership_correlation_id"] != row["run_correlation_id"]
             ):
                 return False
-            expected_recovery_commit_state = (
-                LaunchCommitState.COMMITTED.value
-                if row["ownership_state"] == ProcessOwnershipState.RECOVERY_BLOCKED.value
-                else LaunchCommitState.UNCERTAIN.value
-            )
+            valid_recovery_commit_states = {
+                LaunchCommitState.UNCERTAIN.value,
+                LaunchCommitState.COMMITTED.value,
+            }
+            if row["ownership_state"] == ProcessOwnershipState.LAUNCH_UNCERTAIN.value:
+                valid_recovery_commit_states = {LaunchCommitState.UNCERTAIN.value}
             if (
                 row["container_type"] != ProcessContainerType.POSIX_SESSION.value
-                or row["launch_commit_state"] != expected_recovery_commit_state
+                or row["launch_commit_state"] not in valid_recovery_commit_states
                 or not row["identity_attestation"]
                 or not row["root_process_id"]
                 or not row["root_process_start_token"]
@@ -5849,10 +6088,6 @@ class DatabaseManager:
                     row["worker_generation"] is not None
                     and row["worker_generation"] != row["run_worker_generation"]
                 )
-                or (
-                    row["recovery_worker_generation"] is not None
-                    and row["recovery_worker_generation"] != row["run_worker_generation"]
-                )
             ):
                 return False
 
@@ -6211,7 +6446,7 @@ class DatabaseManager:
             )
             if not run_is_active and not run_is_same_terminal_pre_dispatch:
                 return False
-            if row["recovery_status"] not in {"REQUESTED", "CONFIRMED_TERMINATED"}:
+            if row["recovery_status"] not in {"REQUESTED", "DEFERRED", "CONFIRMED_TERMINATED"}:
                 # An active recovery lease is owned by its lease holder and
                 # must be settled through settle_recovery_execution.  Do all
                 # validation before the first write so a rejected caller can
@@ -6457,7 +6692,7 @@ class DatabaseManager:
                           lease_expires_at=NULL, next_retry_at=NULL,
                           updated_at=?
                     WHERE execution_id=? AND organization_id=?
-                      AND status='REQUESTED'""",
+                      AND status IN ('REQUESTED','DEFERRED')""",
                 (
                     proof_worker_generation, attempt_number, termination_proof,
                     now.isoformat(), execution_id, organization_id,

@@ -2239,6 +2239,78 @@ def test_recovery_settlement_accepts_distinct_recovery_lease_binding(tmp_path):
     assert proof["worker_generation"] == "generation-settlement"
 
 
+def test_deferred_complete_uncertain_recovery_preserves_provenance_and_settles(tmp_path):
+    """A deferred complete-identity launch remains settleable after re-claim."""
+    database = DatabaseManager(tmp_path / "recovery-uncertain-deferred.db")
+    _authority, _identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-recovery-uncertain-deferred",
+        request_id="request-recovery-uncertain-deferred",
+        decision_id="decision-recovery-uncertain-deferred",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership "
+            "SET ownership_state='LAUNCH_UNCERTAIN', launch_commit_state='UNCERTAIN' "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-uncertain-deferred", "org-settlement"),
+        )
+
+    recovery_owner = "execution-recovery-coordinator"
+    recovery_generation = "recovery-deferred-generation"
+    lease = database.claim_recovery(
+        "run-recovery-uncertain-deferred",
+        "org-settlement",
+        recovery_owner,
+        recovery_generation,
+    )
+    assert lease is not None
+    retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert database.complete_recovery(
+        "run-recovery-uncertain-deferred",
+        "org-settlement",
+        recovery_owner,
+        lease["lease_token"],
+        recovery_generation,
+        status="DEFERRED",
+        outcome="termination_not_found",
+        error="termination was not confirmed",
+        next_retry_at=retry_at,
+    ) is True
+
+    with database._connection_scope() as conn:
+        deferred = conn.execute(
+            "SELECT p.ownership_state, p.launch_commit_state, s.status, "
+            "s.last_outcome, s.last_error, s.next_retry_at "
+            "FROM execution_process_ownership p "
+            "JOIN execution_recovery_state s ON s.execution_id=p.execution_id "
+            "AND s.organization_id=p.organization_id "
+            "WHERE p.execution_id=? AND p.organization_id=?",
+            ("run-recovery-uncertain-deferred", "org-settlement"),
+        ).fetchone()
+    assert deferred["ownership_state"] == "RECOVERY_BLOCKED"
+    assert deferred["launch_commit_state"] == "UNCERTAIN"
+    assert deferred["status"] == "DEFERRED"
+    assert deferred["last_outcome"] == "termination_not_found"
+    assert deferred["last_error"] == "termination was not confirmed"
+    assert deferred["next_retry_at"] is not None
+
+    retry_lease = database.claim_recovery(
+        "run-recovery-uncertain-deferred",
+        "org-settlement",
+        recovery_owner,
+        "recovery-confirmation-generation",
+    )
+    assert retry_lease is not None
+    assert database.settle_recovery_execution(
+        "run-recovery-uncertain-deferred",
+        "org-settlement",
+        recovery_owner,
+        retry_lease["lease_token"],
+        "recovery-confirmation-generation",
+    ) is True
+
+
 def test_terminal_process_settlement_replay_requires_the_original_proof_tuple(tmp_path):
     from app.core.execution_service import record_terminal
     from app.core.execution_context import decode_execution_proof, encode_execution_proof

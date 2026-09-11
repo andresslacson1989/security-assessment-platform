@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -202,6 +203,269 @@ async def test_production_reaper_settles_uncertain_execution_with_distinct_recov
     assert attempt["worker_identity"] == "execution-recovery-coordinator"
     assert attempt["worker_generation"] == "observer-recovery-generation"
     assert attempt["status"] == "CONFIRMED_TERMINATED"
+
+
+@pytest.mark.asyncio
+async def test_production_reaper_persists_and_retries_unconfirmed_governed_recovery(tmp_path, monkeypatch):
+    """Unconfirmed exact-process recovery is durable and re-enumerable."""
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+    from tests.security.test_execution_decision_authority import _seed_execution_for_termination_settlement
+
+    database = db_module.DatabaseManager(tmp_path / "observer-governed-retry.db")
+    execution_id = "run-observer-governed-retry"
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id=execution_id,
+        request_id="request-observer-governed-retry",
+        decision_id="decision-observer-governed-retry",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET state='REVOKED' "
+            "WHERE id=? AND organization_id=?",
+            ("request-observer-governed-retry", "org-settlement"),
+        )
+
+    supervisor_status = [ProcessCancellationStatus.NOT_FOUND]
+    supervisor_calls = []
+
+    class FakeSupervisor:
+        def cancel_execution(self, requested_execution_id, **kwargs):
+            assert requested_execution_id == execution_id
+            assert kwargs["process_identity"] is not None
+            supervisor_calls.append(supervisor_status[0])
+            return ProcessCancellationResult(
+                requested_execution_id,
+                supervisor_status[0],
+                4242,
+            )
+
+    monkeypatch.setattr(db_module, "db_manager", database)
+    monkeypatch.setattr(supervisor_module, "process_supervisor", FakeSupervisor())
+    monkeypatch.setattr(
+        "app.core.execution_service.get_worker_generation",
+        lambda: "observer-recovery-generation",
+    )
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 0
+    with database._connection_scope() as conn:
+        deferred = conn.execute(
+            "SELECT r.state, p.ownership_state, s.status, s.next_retry_at, "
+            "s.last_outcome, s.last_error, a.worker_identity, a.worker_generation, "
+            "a.status AS attempt_status, a.cancellation_status "
+            "FROM execution_runs r "
+            "JOIN execution_process_ownership p ON p.execution_id=r.execution_id "
+            "AND p.organization_id=r.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=r.execution_id "
+            "AND s.organization_id=r.organization_id "
+            "JOIN execution_recovery_attempts a ON a.execution_id=r.execution_id "
+            "AND a.organization_id=r.organization_id "
+            "WHERE r.execution_id=? AND r.organization_id=? "
+            "ORDER BY a.attempt_number DESC LIMIT 1",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+        candidates_before_retry = database.list_execution_recovery_candidates()
+    assert deferred["state"] == "RUNNING"
+    assert deferred["ownership_state"] == "EXTERNAL_PROCESS_GOVERNED"
+    assert deferred["status"] == "DEFERRED"
+    assert deferred["next_retry_at"] is not None
+    assert deferred["last_outcome"] == "termination_not_found"
+    assert deferred["last_error"] is not None
+    assert deferred["worker_identity"] == "execution-recovery-coordinator"
+    assert deferred["worker_generation"] == "observer-recovery-generation"
+    assert deferred["attempt_status"] == "DEFERRED"
+    assert deferred["cancellation_status"] == "NOT_FOUND"
+    assert all(item["execution_id"] != execution_id for item in candidates_before_retry)
+
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_recovery_state SET next_retry_at=? "
+            "WHERE execution_id=? AND organization_id=?",
+            ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), execution_id, "org-settlement"),
+        )
+    candidates_after_retry = database.list_execution_recovery_candidates()
+    assert any(item["execution_id"] == execution_id for item in candidates_after_retry)
+    supervisor_status[0] = ProcessCancellationStatus.ALREADY_EXITED
+
+    assert await service.reap_execution_authority_once() == 1
+    assert supervisor_calls == [
+        ProcessCancellationStatus.NOT_FOUND,
+        ProcessCancellationStatus.ALREADY_EXITED,
+    ]
+    with database._connection_scope() as conn:
+        settled = conn.execute(
+            "SELECT r.state, p.ownership_state, s.status, s.next_retry_at "
+            "FROM execution_runs r "
+            "JOIN execution_process_ownership p ON p.execution_id=r.execution_id "
+            "AND p.organization_id=r.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=r.execution_id "
+            "AND s.organization_id=r.organization_id "
+            "WHERE r.execution_id=? AND r.organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+    assert settled["state"] == "CANCELLED"
+    assert settled["ownership_state"] == "TERMINAL"
+    assert settled["status"] == "CONFIRMED_TERMINATED"
+    assert settled["next_retry_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_production_reaper_isolates_candidate_failure_and_persists_later_candidate(tmp_path, monkeypatch, caplog):
+    """One candidate failure cannot prevent durable handling of the next one."""
+    from types import SimpleNamespace
+
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+    from app.core.execution_service import record_posix_launch
+    from app.core.models import ExecutionRunRecord
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+    from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
+    from tests.security.test_execution_decision_authority import _seed_execution_for_termination_settlement
+
+    database = db_module.DatabaseManager(tmp_path / "observer-candidate-isolation.db")
+    first_execution = "run-observer-isolation-first"
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id=first_execution,
+        request_id="request-observer-isolation-first",
+        decision_id="decision-observer-isolation-first",
+    )
+
+    second_execution = "run-observer-isolation-second"
+    second_request = "request-observer-isolation-second"
+    second_decision = "decision-observer-isolation-second"
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    expires_at = (now + timedelta(minutes=5)).isoformat()
+    operation_options = '{"output_format":"json-asff","provider":"aws","quiet":true}'
+    with database._connection_scope() as conn:
+        conn.execute(
+            """INSERT INTO execution_requests
+               (id, idempotency_key, request_fingerprint, organization_id, asset_id,
+                target_id, authorization_decision_id, target_policy_version, tool_id,
+                operation_family, operation_options_json, operation_policy_revision,
+                requested_by_user_id, state, created_at, expires_at, approved_decision_id)
+               VALUES (?, ?, ?, 'org-settlement', 'asset-settlement', 'target-settlement',
+                       'auth-settlement', 'v1', 'prowler', 'cloud_audit', ?, ?,
+                       'admin-settlement', 'AUTHORIZED', ?, ?, ?)""",
+            (second_request, f"idem-{second_request}", "e" * 64, operation_options,
+             OPERATION_POLICY_REVISION, created_at, expires_at, second_decision),
+        )
+        conn.execute(
+            """INSERT INTO execution_decisions
+               (id, organization_id, project_id, asset_id, target_id,
+                authorization_decision_id, target_policy_version, tool_id,
+                operation_family, operation_options_json, operation_policy_revision,
+                approval_state, approver_user_id, session_jti, worker_identity,
+                created_at, expires_at)
+               VALUES (?, 'org-settlement', NULL, 'asset-settlement', 'target-settlement',
+                       'auth-settlement', 'v1', 'prowler', 'cloud_audit', ?, ?,
+                       'APPROVED', 'admin-settlement', 'session-isolation-second',
+                       'worker-settlement', ?, ?)""",
+            (second_decision, operation_options, OPERATION_POLICY_REVISION, created_at, expires_at),
+        )
+    database.create_execution_run(
+        ExecutionRunRecord(
+            execution_id=second_execution,
+            request_id=second_request,
+            organization_id="org-settlement",
+            worker_identity="worker-settlement",
+            worker_generation="generation-settlement",
+            correlation_id=f"corr-{second_execution}",
+        )
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO execution_dispatch_intents "
+            "(execution_id, organization_id, state, attempt_count, created_at) "
+            "VALUES (?, 'org-settlement', 'PENDING', 0, ?)",
+            (second_execution, created_at),
+        )
+    authority = database.claim_execution_authority(
+        second_decision,
+        "org-settlement",
+        "session-isolation-second",
+        "worker-settlement",
+        OPERATION_POLICY_REVISION,
+    )
+    assert authority is not None
+    assert database.transition_execution_run(
+        second_execution,
+        "org-settlement",
+        "STARTING",
+        "RUNNING",
+        worker_identity="worker-settlement",
+        dispatch_claim_token=authority.dispatch.token,
+    )
+    capability = SimpleNamespace(
+        execution_id=second_execution,
+        decision=SimpleNamespace(id=second_decision, organization_id="org-settlement"),
+        claim_token=authority.decision.token,
+        dispatch_claim_token=authority.dispatch.token,
+        worker_identity="worker-settlement",
+        worker_generation="generation-settlement",
+        database=database,
+    )
+    record_posix_launch(
+        capability,
+        pid=5252,
+        process_group_id=5252,
+        session_id=5252,
+        start_token="posix:00000000-0000-0000-0000-000000000002:12345",
+        member_snapshot=(SimpleNamespace(
+            pid=5252,
+            process_group_id=5252,
+            session_id=5252,
+            start_token="posix:00000000-0000-0000-0000-000000000002:12345",
+        ),),
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET state='REVOKED' "
+            "WHERE id IN (?, ?)",
+            ("request-observer-isolation-first", second_request),
+        )
+
+    class FakeSupervisor:
+        def cancel_execution(self, execution_id, **kwargs):
+            assert kwargs["process_identity"] is not None
+            if execution_id == first_execution:
+                raise RuntimeError("first candidate supervisor failure")
+            return ProcessCancellationResult(
+                execution_id,
+                ProcessCancellationStatus.NOT_FOUND,
+                5252,
+            )
+
+    monkeypatch.setattr(db_module, "db_manager", database)
+    monkeypatch.setattr(supervisor_module, "process_supervisor", FakeSupervisor())
+    monkeypatch.setattr(
+        "app.core.execution_service.get_worker_generation",
+        lambda: "observer-recovery-generation",
+    )
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 0
+    with database._connection_scope() as conn:
+        first = conn.execute(
+            "SELECT status, next_retry_at, last_error FROM execution_recovery_state "
+            "WHERE execution_id=? AND organization_id=?",
+            (first_execution, "org-settlement"),
+        ).fetchone()
+        second = conn.execute(
+            "SELECT status, next_retry_at, last_error FROM execution_recovery_state "
+            "WHERE execution_id=? AND organization_id=?",
+            (second_execution, "org-settlement"),
+        ).fetchone()
+    assert first["status"] == "REQUESTED"
+    assert second["status"] == "DEFERRED"
+    assert second["next_retry_at"] is not None
+    assert second["last_error"] is not None
+    assert "first candidate supervisor failure" in caplog.text
+    assert "unconfirmed process termination" in service.state.last_recovery_error
 
 
 @pytest.mark.asyncio
