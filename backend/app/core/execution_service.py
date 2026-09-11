@@ -1076,6 +1076,23 @@ def record_launch_uncertain(
     """Persist post-creation uncertainty before any recovery decision."""
     if not capability.execution_id:
         return False
+    existing = capability.database.get_process_ownership(
+        capability.execution_id,
+        capability.decision.organization_id,
+    )
+    if existing and existing.get("ownership_state") == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value:
+        # A committed launch has an immutable identity already persisted by
+        # record_posix_launch.  The recovery transition must read and lock
+        # that row; caller-supplied PID/group/token values are deliberately
+        # ignored so a post-commit failure cannot overwrite the attestation.
+        return capability.database.transition_committed_process_to_recovery_blocked(
+            capability.execution_id,
+            capability.decision.organization_id,
+            capability.worker_identity,
+            capability.worker_generation,
+            reason_code="PROCESS_TERMINATION_UNCONFIRMED",
+            actor=capability.worker_identity,
+        )
     evidence = _durable_execution_evidence(capability)
     if evidence is None or not isinstance(evidence["run"].get("correlation_id"), str):
         return False

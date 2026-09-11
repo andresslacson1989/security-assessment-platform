@@ -5386,9 +5386,14 @@ class DatabaseManager:
                 or row["ownership_correlation_id"] != row["run_correlation_id"]
             ):
                 return False
+            expected_recovery_commit_state = (
+                LaunchCommitState.COMMITTED.value
+                if row["ownership_state"] == ProcessOwnershipState.RECOVERY_BLOCKED.value
+                else LaunchCommitState.UNCERTAIN.value
+            )
             if (
                 row["container_type"] != ProcessContainerType.POSIX_SESSION.value
-                or row["launch_commit_state"] != LaunchCommitState.UNCERTAIN.value
+                or row["launch_commit_state"] != expected_recovery_commit_state
                 or not row["identity_attestation"]
                 or not row["root_process_id"]
                 or not row["root_process_start_token"]
@@ -5462,7 +5467,7 @@ class DatabaseManager:
                 "dispatch_state": "FAILED",
                 "ownership_state": ProcessOwnershipState.TERMINAL.value,
                 "container_type": row["container_type"],
-                "launch_commit_state": LaunchCommitState.COMMITTED.value,
+                "launch_commit_state": row["launch_commit_state"],
                 "worker_identity": row["run_worker_identity"],
                 "worker_generation": worker_generation,
                 "correlation_id": correlation_id,
@@ -5544,6 +5549,169 @@ class DatabaseManager:
                 result="SUCCESS", correlation_id=correlation_id,
                 details={"to": terminal_state, "reason_code": reason_code,
                          "termination_proof": termination_proof},
+            ))
+            return True
+
+    def transition_committed_process_to_recovery_blocked(
+        self,
+        execution_id: str,
+        organization_id: str,
+        worker_identity: str,
+        worker_generation: str,
+        *,
+        reason_code: str = "PROCESS_TERMINATION_UNCONFIRMED",
+        actor: str = "execution-recovery-coordinator",
+    ) -> bool:
+        """Atomically fence a committed process without rebuilding its identity.
+
+        This is a safety downgrade, not a general ownership transition API.
+        It accepts only the exact durable worker/execution binding and changes
+        only ``ownership_state`` plus its audit timestamp.  All process
+        identity, attestation, container, correlation, and generation fields
+        are read from the locked committed row and therefore cannot be
+        replaced by a post-launch caller.
+        """
+        if not all(
+            isinstance(value, str) and value.strip() and len(value) <= 256
+            for value in (execution_id, organization_id, worker_identity, worker_generation, reason_code, actor)
+        ):
+            return False
+        now = utc_now()
+        with self._connection_scope() as conn:
+            if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            lock_suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                """SELECT p.*, r.state AS run_state, r.worker_identity AS run_worker_identity,
+                          r.worker_generation AS run_worker_generation,
+                          r.correlation_id AS run_correlation_id,
+                          q.state AS request_state, d.approval_state, d.revoked_at,
+                          d.worker_identity AS decision_worker_identity,
+                          s.status AS recovery_status
+                     FROM execution_process_ownership p
+                     JOIN execution_runs r
+                       ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id
+                     JOIN execution_requests q
+                       ON q.id=r.request_id AND q.organization_id=r.organization_id
+                     JOIN execution_decisions d
+                       ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                     JOIN execution_recovery_state s
+                       ON s.execution_id=p.execution_id AND s.organization_id=p.organization_id
+                    WHERE p.execution_id=? AND p.organization_id=?""" + lock_suffix,
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row:
+                return False
+            if (
+                row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+                or row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
+                or row["run_state"] not in {"REQUESTED", "STARTING", "RUNNING"}
+                or row["request_state"] not in {"AUTHORIZED", "REVOKED"}
+                or row["approval_state"] != "APPROVED"
+                or row["recovery_status"] == "CONFIRMED_TERMINATED"
+                or row["run_worker_identity"] != worker_identity
+                or row["decision_worker_identity"] != worker_identity
+                or row["run_worker_generation"] != worker_generation
+                or row["worker_generation"] != worker_generation
+                or row["correlation_id"] != row["run_correlation_id"]
+                or not isinstance(row["correlation_id"], str)
+                or not row["correlation_id"].strip()
+            ):
+                return False
+            if (
+                row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                or not isinstance(row["container_identity"], str)
+                or row["container_identity"]
+                != f"posix-session:{row['session_id']}:group:{row['process_group_id']}"
+                or not isinstance(row["root_process_id"], int)
+                or row["root_process_id"] <= 1
+                or not isinstance(row["process_group_id"], str)
+                or not row["process_group_id"].isdigit()
+                or int(row["process_group_id"]) <= 1
+                or not isinstance(row["session_id"], str)
+                or not row["session_id"].isdigit()
+                or int(row["session_id"]) < 0
+                or not isinstance(row["root_process_start_token"], str)
+                or not row["root_process_start_token"].strip()
+                or not isinstance(row["identity_attestation"], str)
+                or not row["identity_attestation"].strip()
+            ):
+                return False
+            try:
+                attestation = PosixProcessAttestation.model_validate_json(row["identity_attestation"])
+            except Exception:
+                return False
+            token_parts = row["root_process_start_token"].split(":", 2)
+            if (
+                len(token_parts) != 3
+                or token_parts[0] != "posix"
+                or not token_parts[1]
+                or not token_parts[2].isdigit()
+                or int(token_parts[2]) <= 0
+                or attestation.verification_result != "VERIFIED"
+                or attestation.worker_generation != worker_generation
+                or attestation.boot_id != token_parts[1]
+                or attestation.root_start_ticks != int(token_parts[2])
+                or attestation.session_id != int(row["session_id"])
+                or attestation.process_group_id != int(row["process_group_id"])
+                or not attestation.member_snapshot
+                or len(attestation.member_snapshot) > 512
+            ):
+                return False
+            seen_pids: set[int] = set()
+            root_bound = False
+            for member in attestation.member_snapshot:
+                member_parts = member.start_token.split(":", 2)
+                if (
+                    member.pid in seen_pids
+                    or member.pid <= 1
+                    or member.session_id != int(row["session_id"])
+                    or len(member_parts) != 3
+                    or member_parts[0] != "posix"
+                    or member_parts[1] != token_parts[1]
+                    or not member_parts[2].isdigit()
+                    or int(member_parts[2]) <= 0
+                ):
+                    return False
+                seen_pids.add(member.pid)
+                root_bound = root_bound or (
+                    member.pid == row["root_process_id"]
+                    and member.process_group_id == int(row["process_group_id"])
+                    and member.start_token == row["root_process_start_token"]
+                )
+            if not root_bound:
+                return False
+            updated = conn.execute(
+                """UPDATE execution_process_ownership
+                      SET ownership_state=?, updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND ownership_state=? AND launch_commit_state=?
+                      AND worker_generation=?""",
+                (
+                    ProcessOwnershipState.RECOVERY_BLOCKED.value,
+                    now.isoformat(),
+                    execution_id,
+                    organization_id,
+                    ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value,
+                    LaunchCommitState.COMMITTED.value,
+                    worker_generation,
+                ),
+            )
+            if updated.rowcount != 1:
+                return False
+            self._insert_audit_event_conn(conn, AuditEvent(
+                actor=actor,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_PROCESS_OWNERSHIP_TRANSITIONED,
+                object_type="execution_process_ownership",
+                object_id=execution_id,
+                correlation_id=row["correlation_id"],
+                result="SUCCESS",
+                details={
+                    "from": ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value,
+                    "to": ProcessOwnershipState.RECOVERY_BLOCKED.value,
+                    "reason_code": reason_code,
+                },
             ))
             return True
 
@@ -5733,6 +5901,32 @@ class DatabaseManager:
                     or row["container_identity"]
                     != f"posix-session:{process_session}:group:{process_group}"
                 ):
+                    return False
+                if not attestation.member_snapshot or len(attestation.member_snapshot) > 512:
+                    return False
+                seen_pids: set[int] = set()
+                root_bound = False
+                for member in attestation.member_snapshot:
+                    member_parts = member.start_token.split(":", 2)
+                    if (
+                        member.pid in seen_pids
+                        or member.pid <= 1
+                        or member.process_group_id <= 1
+                        or member.session_id != process_session
+                        or len(member_parts) != 3
+                        or member_parts[0] != "posix"
+                        or member_parts[1] != start_parts[1]
+                        or not member_parts[2].isdigit()
+                        or int(member_parts[2]) <= 0
+                    ):
+                        return False
+                    seen_pids.add(member.pid)
+                    root_bound = root_bound or (
+                        member.pid == int(row["root_process_id"] or 0)
+                        and member.process_group_id == process_group
+                        and member.start_token == row["root_process_start_token"]
+                    )
+                if not root_bound:
                     return False
 
             current_ownership = str(row["ownership_state"])

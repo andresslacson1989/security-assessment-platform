@@ -63,8 +63,8 @@ def quarantine_api_state(tmp_path, monkeypatch):
     return database, admin, organization, backend
 
 
-def _token(user: UserProfile) -> str:
-    return create_access_token(user)
+def _token(user: UserProfile, *, scopes=None) -> str:
+    return create_access_token(user, scopes=scopes)
 
 
 def _payload(request_id: str) -> dict[str, str]:
@@ -121,6 +121,14 @@ def test_quarantine_route_enforces_scope_role_expiry_and_revocation(
         json=_payload("request-auth"),
     )
     assert analyst_response.status_code == 403
+
+    restricted_admin = admin.model_copy(update={"scopes": []})
+    restricted_response = client.post(
+        "/api/system/executions/recovery/quarantine/message-auth/ack",
+        headers={"Authorization": f"Bearer {_token(restricted_admin, scopes=[])}"},
+        json=_payload("request-auth"),
+    )
+    assert restricted_response.status_code == 403
 
     valid_token = _token(admin)
     assert auth_module.revoke_token(valid_token) is True

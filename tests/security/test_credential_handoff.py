@@ -97,7 +97,8 @@ async def test_durable_queue_rejects_credentialed_legacy_intent_before_encryptio
     assert queue._redis.fields is None
 
 
-def test_legacy_credential_wire_message_is_rejected_before_decryption():
+@pytest.mark.parametrize("credential_value", ["", "malformed", "ciphertext-only"])
+def test_legacy_credential_wire_field_is_rejected_before_decryption(credential_value):
     from app.core.queue import RedisDurableQueue
 
     fields = {
@@ -105,7 +106,7 @@ def test_legacy_credential_wire_message_is_rejected_before_decryption():
         "scan_id": "scan-a",
         "organization_id": "org-a",
         "enqueued_at": "2026-09-11T00:00:00+00:00",
-        "credential_envelope": "ciphertext-only",
+        "credential_envelope": credential_value,
     }
     with pytest.raises(ValueError, match="cannot contain credential handoff"):
         RedisDurableQueue._validate_wire_message(fields)

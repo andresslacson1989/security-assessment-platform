@@ -1229,7 +1229,7 @@ class RedisDurableQueue:
         else:
             if authorization_request_id or present_binding:
                 raise ValueError("legacy diagnostic message contains authoritative metadata")
-            if fields.get("credential_envelope"):
+            if "credential_envelope" in fields:
                 raise ValueError(
                     "legacy diagnostic message cannot contain credential handoff"
                 )

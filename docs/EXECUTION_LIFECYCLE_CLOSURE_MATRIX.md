@@ -34,8 +34,8 @@ been independently reviewed.
 | --- | --- | --- | --- |
 | Typed durable identity | A typed execution context binds `execution_id`, organization, worker, approved decision, target seal, operation policy, and exact command. Governed launch APIs reject missing or mismatched context. | Unit and integration tests for missing context, cross-tenant context, explicit-ID mismatch, and command/decision mismatch. Static inventory of scan-reachable process calls. | OPEN |
 | Complete launch coverage | Capability discovery, adapters, direct helpers, and child tasks either receive the same governed context or are explicitly non-scan operations with a separate capability. | Call-site inventory, CI enforcement test, and cancellation test during discovery and each engine family. | OPEN |
-| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. Windows governed execution is explicitly fail-closed until a real Job Object or equivalent kernel-owned container exists. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed Windows termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; explicit Windows recovery fail-closed test; platform-specific non-scan uncertainty handling; future Windows Job Object evidence remains required before Windows assurance. | OPEN |
-| Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted worker must attach only after independent identity and tenant validation. Valid complete attestations remain attached for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. | Restart test with a surviving child/group, valid uncertain/recovery loader states, invalid worker generation, PID reuse, incomplete/tampered attestation, and operator-visible recovery escalation. | OPEN |
+| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. A committed governed row is downgraded atomically to `RECOVERY_BLOCKED` without rebuilding its identity. Windows governed execution is explicitly fail-closed until a real Job Object or equivalent kernel-owned container exists. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed Windows termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; committed-to-recovery database transition, tamper, replay, and concurrency tests; explicit Windows recovery fail-closed test; platform-specific non-scan uncertainty handling; future Windows Job Object evidence remains required before Windows assurance. | OPEN |
+| Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted worker must attach only after independent identity and tenant validation. Valid complete attestations remain attached for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. A post-commit recovery primitive preserves the committed launch state and consumes the persisted attestation. | Restart test with a surviving child/group, valid uncertain/recovery loader states, production-path governed-to-recovery transition, invalid worker generation, PID/PGID/SID reuse, incomplete/tampered attestation, concurrency/replay, and operator-visible recovery escalation. | OPEN |
 | Single cancellation coordinator | One coordinator owns cancellation request, task shutdown, process termination, authority revocation, and terminal settlement. Async cancellation cannot race a background execution thread. | Ignored-cancellation, timeout, duplicate-request, revocation-vs-finish, and exact idempotence tests. | OPEN |
 | Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | OPEN |
 | Contract and operational proof | Contracts 04/08 and traceability documentation describe the same state machine, platform threat model, and evidence boundary. Protected migration failures remain fail-closed and require operator reconciliation. | Contract consistency tests, clean tree, synchronized remote, CI results, runtime evidence, and auditor acceptance. | OPEN |
@@ -89,6 +89,13 @@ so startup descendants created after the first identity sample are included;
 failure to settle remains `LAUNCH_UNCERTAIN`. Cancellation and observation
 recovery use the persisted `ProcessIdentity`; a missing in-memory mapping or
 a raw PID is not sufficient.
+If the launch row has already committed as `EXTERNAL_PROCESS_GOVERNED`, a
+post-launch termination or ownership failure uses a dedicated atomic database
+transition to `RECOVERY_BLOCKED`. That transition verifies the durable tenant,
+worker, generation, correlation, and attestation fences, changes only the
+ownership state and timestamp, and ignores caller-supplied replacement
+identity. `settle_recovery_execution()` accepts the resulting committed-state
+row only after the recovery lease and supervisor-confirmed termination path.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and
@@ -110,11 +117,12 @@ still requires the evidence listed below and independent auditor review.
 Authoritative Redis execution messages now carry an explicit
 `AUTHORITATIVE_EXECUTION` classification; diagnostic compatibility messages
 must carry `LEGACY_DIAGNOSTIC`. Missing, malformed, conflicting, credential-
-bearing, or otherwise unsupported wire fields are rejected before handler
-entry and cannot enter an implicit legacy acknowledgement path. Credential
-handoffs are rejected unless the message carries the complete authoritative
-authorization request and typed binding; they are never downgraded to a
-legacy diagnostic message. Quarantine
+credential-bearing, or otherwise unsupported wire fields are rejected before
+handler entry and cannot enter an implicit legacy acknowledgement path. The presence
+of a credential field is rejected for every legacy diagnostic value, including
+empty or malformed values; credential handoffs require the complete
+authoritative authorization request and typed binding and are never downgraded
+to a legacy diagnostic message. Quarantine
 evidence is an exact allowlisted representation with a failure digest and a
 top-level quarantine-state digest. State publication, failure-event
 publication, and any explicit acknowledgement are fail-closed durable Redis
@@ -124,13 +132,16 @@ quarantine state. The queue primitive accepts only a typed tenant-bound
 operator assertion; it does not authenticate arbitrary actor strings. The
 quarantine acknowledgement API uses the existing bearer/JWT, role, scope,
 tenant, and durable-revocation boundary to issue that internal capability;
-route-level replay and concurrency vectors are covered separately.
+the opaque in-process handoff is not a second authentication system and its
+session binding is not independently enforced by the queue state comparison.
+Route-level replay and concurrency vectors are covered separately.
 
 Current implementation files are limited to the audited execution boundary:
 `backend/app/core/db.py`, `backend/app/core/execution_service.py`,
 `backend/app/core/observation_service.py`, `backend/app/core/orchestrator.py`,
-`backend/app/core/process_supervisor.py`, `run_worker.py`, and the execution
-identity/lifecycle invariant in `docker-compose.yml`, plus the authoritative
+`backend/app/core/process_supervisor.py`, `backend/app/core/auth.py`,
+`run_worker.py`, and the execution identity/lifecycle invariant in
+`docker-compose.yml`, plus the authoritative
 queue quarantine implementation in `backend/app/core/queue.py`, with the
 corresponding launch, authority, cancellation, observation, process, and
 orchestrator, queue, and replay tests. Contracts, migrations, `AGENTS.md`, the protected

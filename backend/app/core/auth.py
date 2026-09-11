@@ -232,7 +232,8 @@ def resolve_effective_scopes(
     Contract 01 §3, Contract 02 §2, Contract 08 §1:
     1. Distinguishes tenant principal from system principal.
     2. System wildcard rule: Only SYSTEM_PRINCIPAL + ADMIN may receive ["*"].
-    3. Tenant users receive explicit scopes only (never wildcard).
+    3. Explicit scopes are an exact bounded grant for tokens; absent explicit
+       scopes, a tenant user receives the role baseline plus assigned extras.
     4. Fails closed for unknown roles.
     5. Preserves explicit scopes (e.g., durable scan:internal) if valid.
     6. Returns an immutable/copy-safe list of scopes.
@@ -241,9 +242,10 @@ def resolve_effective_scopes(
         user.principal_type == PrincipalType.SYSTEM_PRINCIPAL
         and user.role == UserRole.ADMIN
     )
-    if is_system_admin:
-        if explicit_scopes is None or "*" in explicit_scopes:
-            return ["*"]
+    if is_system_admin and explicit_scopes is None:
+        return ["*"]
+    if is_system_admin and explicit_scopes is not None and "*" in explicit_scopes:
+        return ["*"]
 
     role = user.role
     if not isinstance(role, UserRole):
@@ -254,8 +256,19 @@ def resolve_effective_scopes(
 
     base_scopes = list(ROLE_BASE_SCOPES.get(role, []))
 
-    # Incorporate explicit valid scopes if assigned (e.g. scan:internal)
-    extra_candidates = explicit_scopes if explicit_scopes is not None else (user.scopes or [])
+    if explicit_scopes is not None:
+        allowed_scopes = set(base_scopes)
+        allowed_scopes.update(
+            scope for scope in (user.scopes or [])
+            if scope in ALL_VALID_SCOPES and scope != "*"
+        )
+        return list(dict.fromkeys(
+            scope for scope in explicit_scopes
+            if scope in allowed_scopes and scope != "*"
+        ))
+
+    # Incorporate explicitly assigned valid scopes (e.g. durable scan:internal)
+    extra_candidates = user.scopes or []
     extra_scopes: List[str] = []
     for s in extra_candidates:
         if s == "*":
@@ -619,7 +632,11 @@ async def get_current_user(
             role=UserRole(payload.get("role", "VIEWER")),
             principal_type=p_type,
             organization_id=payload.get("org_id", "org-default"),
-            scopes=[],
+            # In TEST/DEVELOPMENT compatibility mode there is no
+            # database-authoritative profile. Seed the synthetic profile with
+            # the token's validated scope list so explicitly granted extra
+            # scopes (for example scan:internal) remain bounded and exact.
+            scopes=list(raw_scopes or []),
             is_active=True,
             created_at=datetime.fromtimestamp(payload.get("iat", time.time()), tz=timezone.utc),
         )

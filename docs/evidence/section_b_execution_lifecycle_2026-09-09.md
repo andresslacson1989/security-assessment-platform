@@ -49,6 +49,13 @@ identity, dispatch, run, and recovery fences before its first write and records
 an auditable termination-proof digest. A current, still-valid authorization
 cannot use that primitive as a replacement for the ordinary authority-held
 finish path. No schema or migration change is part of this section.
+The current corrective implementation adds a separate committed-launch
+downgrade: a locked `EXTERNAL_PROCESS_GOVERNED` row can become
+`RECOVERY_BLOCKED` only after durable worker, generation, tenant, correlation,
+and attestation validation, and the transition updates no persisted identity
+field. The recovery settlement primitive now accepts that preserved
+`COMMITTED` launch state and emits its terminal proof from the persisted
+attestation after a recovery lease.
 
 The queue closure candidate makes the wire classification explicit. Production
 execution intents are `AUTHORITATIVE_EXECUTION`; diagnostic compatibility
@@ -59,11 +66,15 @@ allowlisted and canonicalized without caller-payload passthrough. Quarantine
 state stores the canonical evidence, its digest, a top-level state digest, and
 the validated tenant/request relationship. Quarantine state, operational
 marker, failure event, and the optional bounded acknowledgement are governed
-by fail-closed Redis transactions. Explicit recovery requires a typed,
+by fail-closed Redis transactions. A credential field is rejected in every
+legacy diagnostic wire shape, including empty and malformed values, before
+decryption, handler entry, or ACK. Explicit recovery requires a typed,
 tenant-bound operator assertion; the queue primitive itself does not
 authenticate an arbitrary actor string. The acknowledgement transaction uses
 an exact state compare and requires a successful `XACK` before deleting the
-durable quarantine record.
+durable quarantine record. The queue's session-binding field is an opaque
+authenticated-service handoff and is not independently enforced by the queue
+state comparison.
 
 The changed implementation files in this candidate are:
 
@@ -73,6 +84,7 @@ The changed implementation files in this candidate are:
 - `backend/app/core/orchestrator.py`
 - `backend/app/core/process_supervisor.py`
 - `backend/app/core/queue.py`
+- `backend/app/core/auth.py`
 - `docker-compose.yml`
 - `backend/tests/test_execution_launch_inventory.py`
 - `run_worker.py`
@@ -83,6 +95,7 @@ The changed implementation files in this candidate are:
 - `tests/test_observation_service.py`
 - `tests/test_orchestrator.py`
 - `tests/security/test_credential_handoff.py`
+- `tests/security/test_execution_quarantine_api.py`
 - `tests/test_adapters.py`
 - `tests/test_e13_process_isolation.py`
 - `tests/security/test_code_sast_assurance.py`
@@ -144,24 +157,35 @@ used.
   known local failure because the preserved `.ci/` tree is larger than its
   historical snapshot.
 - Current full repository suite after the corrective process, restart-loader,
-  queue, credential, and quarantine-API changes, from a fresh unique
-  disposable SQLite path and excluding the same two preserved historical
-  assertions: **896 passed, 86 skipped, 2 deselected, 15 warnings**, exit code
-  **0**. The two additional process vectors are POSIX-only and are skipped on
-  this Windows host; they are required to execute in Linux CI.
+  queue, credential, quarantine-API, and recovery-settlement changes, from a
+  fresh unique disposable SQLite path and excluding the same two preserved
+  historical assertions: **911 passed, 86 skipped, 2 deselected, 15
+  warnings**, exit code **0**. The two additional process vectors are
+  POSIX-only and are skipped on this Windows host; they are required to execute
+  in Linux CI.
+- Current corrective lifecycle, credential, quarantine route, and recovery
+  settlement vectors after the governed-to-recovery state-machine fix,
+  explicit legacy credential-field presence rejection, tenant-admin scope
+  correction, and persisted member-snapshot validation: **105 passed, 6
+  skipped, 1 warning**, exit code **0**, against a project-local disposable
+  database. The six skips are POSIX-only process vectors on this Windows host.
+  This is focused local evidence only; it is not GitHub Actions evidence.
 - Local PostgreSQL and Redis integration could not be rerun because Docker is
   unavailable on this host and no approved local service URLs were provided.
   The authoritative PostgreSQL evidence for this baseline is the successful
   GitHub Actions PostgreSQL 16 job recorded below; no local substitute is
   claimed.
-- Current queue/quarantine closure command against the unpublished working
-  tree, with an explicit disposable SQLite path and project-local pytest base:
-  **73 passed, 38 skipped**, exit code **0**. This verifies explicit wire
+- The preceding queue/quarantine closure command against the unpublished
+  pre-corrective working tree, with an explicit disposable SQLite path and
+  project-local pytest base: **73 passed, 38 skipped**, exit code **0**. This verifies explicit wire
   classification, strict unknown/non-string/credential-bearing evidence
   rejection, malformed binding rejection, atomic quarantine publication,
   durable original-failure evidence and both evidence/state digest bindings,
   no credential persistence, compare-and-swap acknowledgement, and tamper
   rejection.
+- The current credential-hand-off subset adds three locally executed legacy
+  wire vectors (empty, malformed, and non-empty credential-field values); all
+  three reject before decryption, handler entry, and ACK.
 - Current process-boundary command against the unpublished working tree, with
   an explicit disposable SQLite path and project-local pytest base: **13
   passed, 6 skipped**, exit code **0**. This verifies the bounded post-Popen
@@ -186,6 +210,13 @@ used.
   expired, revoked, non-admin/missing-scope, wrong-tenant, wrong-request,
   replay, and concurrent acknowledgement behavior through the existing JWT,
   role, scope, and durable revocation boundary.
+- The current API/auth route set additionally executes the explicit tenant
+  `ADMIN` token with `scopes=[]` vector and rejects it with **403**; explicit
+  token scopes are now bounded grants rather than being widened to role
+  defaults during token decode. The queue's opaque in-process operator
+  capability remains a typed handoff after HTTP authentication, not a second
+  authentication boundary; existing wrong-type construction rejection is
+  retained.
 - The live Redis transport vector was attempted with the declared `redis` and
   `hiredis` packages installed only under `.project-temp/`. Dependency
   construction succeeded and the project-local Redis service was reachable,

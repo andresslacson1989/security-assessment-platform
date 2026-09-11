@@ -1720,6 +1720,22 @@ class ProcessSupervisor:
                 )
                 if bounded_failure and not termination_confirmed:
                     retain_execution_ref[0] = True
+                    if execution_capability is not None and launch_committed:
+                        try:
+                            from app.core.execution_service import record_launch_uncertain
+                            record_launch_uncertain(
+                                execution_capability,
+                                pid=proc.pid,
+                                process_group_id=process_group_id,
+                                start_token=process_identity.start_token if process_identity else None,
+                                session_id=process_identity.session_id if process_identity else None,
+                                member_snapshot=process_identity.member_snapshot if process_identity else None,
+                            )
+                        except Exception:
+                            # The durable state remains governed only when
+                            # the database transition succeeds; retain the
+                            # process for recovery if the downgrade is fenced.
+                            pass
                     return ProcessExecutionResult(
                         -1, stdout,
                         "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active\n" + stderr,
@@ -1837,6 +1853,18 @@ class ProcessSupervisor:
                     if launch_committed:
                         if not termination_confirmed:
                             retain_execution_ref[0] = True
+                            try:
+                                from app.core.execution_service import record_launch_uncertain
+                                record_launch_uncertain(
+                                    execution_capability,
+                                    pid=proc.pid if proc else None,
+                                    process_group_id=process_group_ref[0],
+                                    start_token=(process_identity_ref[0].start_token if process_identity_ref[0] else None),
+                                    session_id=(process_identity_ref[0].session_id if process_identity_ref[0] else None),
+                                    member_snapshot=(process_identity_ref[0].member_snapshot if process_identity_ref[0] else None),
+                                )
+                            except Exception:
+                                pass
                             return ProcessExecutionResult(-1, "", "PROCESS_TERMINATION_UNCONFIRMED: process tree remains active")
                         if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION", process_id=proc.pid if proc else None, process_group_id=str(proc.pid) if proc and start_new_session else None):
                             return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")

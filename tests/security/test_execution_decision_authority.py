@@ -1410,6 +1410,279 @@ def _seed_execution_for_termination_settlement(
     return authority, identity
 
 
+def _capability_for_seed(database, execution_id, decision_id, authority=None):
+    return SimpleNamespace(
+        execution_id=execution_id,
+        decision=SimpleNamespace(id=decision_id, organization_id="org-settlement"),
+        claim_token=authority.decision.token if authority is not None else "unclaimed",
+        dispatch_claim_token=authority.dispatch.token if authority is not None else "unclaimed",
+        worker_identity="worker-settlement",
+        worker_generation="generation-settlement",
+        database=database,
+    )
+
+
+def test_committed_launch_uncertainty_transitions_to_recovery_blocked_without_rewriting_identity(tmp_path):
+    """Post-commit uncertainty uses the durable committed identity as its only source."""
+    from app.core.execution_service import record_launch_uncertain, record_terminal
+    from app.core.models import ProcessOwnershipState
+
+    database = DatabaseManager(tmp_path / "committed-launch-recovery.db")
+    authority, _attestation = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-committed-launch-recovery",
+        request_id="request-committed-launch-recovery",
+        decision_id="decision-committed-launch-recovery",
+    )
+    capability = _capability_for_seed(
+        database,
+        "run-committed-launch-recovery",
+        "decision-committed-launch-recovery",
+        authority,
+    )
+    before = database.get_process_ownership(
+        "run-committed-launch-recovery", "org-settlement"
+    )
+    assert before is not None
+    assert before["ownership_state"] == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+    assert before["launch_commit_state"] == "COMMITTED"
+
+    # Conflicting caller values must be ignored after the committed row exists.
+    assert record_launch_uncertain(
+        capability,
+        pid=9999,
+        process_group_id=9999,
+        start_token="posix:00000000-0000-0000-0000-000000000001:99999",
+        session_id=9999,
+        member_snapshot=(),
+    ) is True
+
+    after = database.get_process_ownership(
+        "run-committed-launch-recovery", "org-settlement"
+    )
+    assert after is not None
+    assert after["ownership_state"] == ProcessOwnershipState.RECOVERY_BLOCKED.value
+    assert after["launch_commit_state"] == before["launch_commit_state"]
+    for field_name in (
+        "execution_id", "organization_id", "container_type", "container_identity",
+        "root_process_id", "root_process_start_token", "process_group_id", "session_id",
+        "worker_generation", "identity_attestation", "correlation_id", "created_at",
+        "launched_at", "last_verified_at", "terminalized_at",
+    ):
+        assert after[field_name] == before[field_name], field_name
+
+    with database._connection_scope() as conn:
+        recovery = conn.execute(
+            "SELECT status, attempt_number, next_retry_at, escalation_level "
+            "FROM execution_recovery_state WHERE execution_id=? AND organization_id=?",
+            ("run-committed-launch-recovery", "org-settlement"),
+        ).fetchone()
+    assert tuple(recovery) == ("REQUESTED", 0, None, 0)
+
+    lease = database.claim_recovery(
+        "run-committed-launch-recovery",
+        "org-settlement",
+        "worker-settlement",
+        "generation-settlement",
+        lease_seconds=30,
+    )
+    assert lease is not None
+    assert lease["attempt_number"] == 1
+    assert lease["lease_expires_at"]
+    with database._connection_scope() as conn:
+        recovery = conn.execute(
+            "SELECT status, attempt_number, owner, worker_generation "
+            "FROM execution_recovery_state WHERE execution_id=? AND organization_id=?",
+            ("run-committed-launch-recovery", "org-settlement"),
+        ).fetchone()
+    assert tuple(recovery) == ("IN_PROGRESS", 1, "worker-settlement", "generation-settlement")
+
+    assert record_terminal(
+        capability,
+        terminal_state="FAILED",
+        reason_code="PROCESS_EXIT_NONZERO",
+        process_id=before["root_process_id"],
+        process_group_id=before["process_group_id"],
+        process_start_token=before["root_process_start_token"],
+        session_id=int(before["session_id"]),
+        termination_status="ALREADY_EXITED",
+    ) is False
+    assert database.get_process_ownership(
+        "run-committed-launch-recovery", "org-settlement"
+    )["ownership_state"] == ProcessOwnershipState.RECOVERY_BLOCKED.value
+
+    # The dedicated recovery primitive consumes the persisted attestation and
+    # is the only path used here to terminalize the blocked ownership.
+    assert database.settle_recovery_execution(
+        "run-committed-launch-recovery",
+        "org-settlement",
+        "worker-settlement",
+        lease["lease_token"],
+        "generation-settlement",
+    ) is True
+    settled = database.get_process_ownership(
+        "run-committed-launch-recovery", "org-settlement"
+    )
+    assert settled["ownership_state"] == ProcessOwnershipState.TERMINAL.value
+    assert settled["identity_attestation"] == before["identity_attestation"]
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_launch_uncertain_production_path_preserves_complete_identity_or_blocks_incomplete(tmp_path, complete):
+    """The real pre-commit uncertainty path never manufactures signal authority."""
+    from app.core.execution_service import load_durable_process_identity, record_launch_uncertain
+    from app.core.process_supervisor import ProcessIdentity, ProcessMemberIdentity
+
+    execution_id = f"run-precommit-uncertain-{complete}"
+    decision_id = f"decision-precommit-uncertain-{complete}"
+    database = DatabaseManager(tmp_path / f"precommit-uncertain-{complete}.db")
+    authority, _ = _seed_execution_for_termination_settlement(
+        database,
+        execution_id=execution_id,
+        request_id=f"request-precommit-uncertain-{complete}",
+        decision_id=decision_id,
+        claim_dispatch=False,
+        running=False,
+    )
+    capability = _capability_for_seed(database, execution_id, decision_id, authority)
+    token = "posix:00000000-0000-0000-0000-000000000001:12345"
+    member = ProcessMemberIdentity(4242, 4242, 4242, token)
+    assert record_launch_uncertain(
+        capability,
+        pid=4242,
+        process_group_id=4242,
+        start_token=token,
+        session_id=4242,
+        member_snapshot=(member,) if complete else (),
+    ) is True
+    ownership = database.get_process_ownership(execution_id, "org-settlement")
+    assert ownership["ownership_state"] == "LAUNCH_UNCERTAIN"
+    if complete:
+        assert ownership["container_type"] == "POSIX_SESSION"
+        assert ownership["identity_attestation"]
+        assert load_durable_process_identity(database, execution_id, "org-settlement") == ProcessIdentity(
+            pid=4242,
+            process_group_id=4242,
+            start_token=token,
+            session_id=4242,
+            member_snapshot=(member,),
+        )
+    else:
+        assert ownership["identity_attestation"] is None
+        assert load_durable_process_identity(database, execution_id, "org-settlement") is None
+
+
+def test_post_commit_recovery_uses_exact_identity_after_database_restart(tmp_path):
+    """A fresh database context can recover only from the committed durable attestation."""
+    from app.core.execution_context import decode_execution_proof
+    from app.core.execution_service import load_durable_process_identity, record_launch_uncertain
+
+    path = tmp_path / "post-commit-restart-recovery.db"
+    database = DatabaseManager(path)
+    authority, _ = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-post-commit-restart",
+        request_id="request-post-commit-restart",
+        decision_id="decision-post-commit-restart",
+    )
+    capability = _capability_for_seed(
+        database, "run-post-commit-restart", "decision-post-commit-restart", authority
+    )
+    committed = database.get_process_ownership("run-post-commit-restart", "org-settlement")
+    assert committed is not None
+    assert record_launch_uncertain(
+        capability,
+        pid=1,
+        process_group_id=1,
+        start_token="posix:00000000-0000-0000-0000-000000000001:1",
+        session_id=1,
+        member_snapshot=(),
+    ) is True
+
+    restarted = DatabaseManager(path)
+    identity = load_durable_process_identity(restarted, "run-post-commit-restart", "org-settlement")
+    assert identity is not None
+    assert identity.start_token == committed["root_process_start_token"]
+    lease = restarted.claim_recovery(
+        "run-post-commit-restart", "org-settlement", "worker-settlement", "generation-settlement"
+    )
+    assert lease is not None
+    assert restarted.settle_recovery_execution(
+        "run-post-commit-restart", "org-settlement", "worker-settlement",
+        lease["lease_token"], "generation-settlement",
+    ) is True
+    settled = restarted.get_process_ownership("run-post-commit-restart", "org-settlement")
+    proof = decode_execution_proof(settled["no_process_proof"], expected_proof_type="TERMINATION_CONFIRMED")
+    assert proof["identity_attestation"] == committed["identity_attestation"]
+    assert proof["process_start_token"] == committed["root_process_start_token"]
+    assert proof["launch_commit_state"] == "COMMITTED"
+
+
+@pytest.mark.parametrize("tamper", ["generation", "tenant", "execution", "root_token", "group", "session", "attestation_digest", "member_snapshot"])
+def test_post_commit_recovery_transition_rejects_conflicting_or_tampered_identity(tmp_path, tamper):
+    """The committed-to-recovery fence is immutable and tenant/generation bound."""
+    from app.core.execution_service import record_launch_uncertain
+
+    execution_id = f"run-recovery-tamper-{tamper}"
+    decision_id = f"decision-recovery-tamper-{tamper}"
+    database = DatabaseManager(tmp_path / f"recovery-tamper-{tamper}.db")
+    authority, _ = _seed_execution_for_termination_settlement(
+        database, execution_id=execution_id,
+        request_id=f"request-recovery-tamper-{tamper}", decision_id=decision_id,
+    )
+    capability = _capability_for_seed(database, execution_id, decision_id, authority)
+    before = database.get_process_ownership(execution_id, "org-settlement")
+    if tamper in {"root_token", "group", "session", "attestation_digest", "member_snapshot"}:
+        with database._connection_scope() as conn:
+            if tamper == "root_token":
+                conn.execute("UPDATE execution_process_ownership SET root_process_start_token=? WHERE execution_id=? AND organization_id=?", ("posix:00000000-0000-0000-0000-000000000001:99999", execution_id, "org-settlement"))
+            elif tamper == "group":
+                conn.execute("UPDATE execution_process_ownership SET process_group_id=? WHERE execution_id=? AND organization_id=?", ("9999", execution_id, "org-settlement"))
+            elif tamper == "session":
+                conn.execute("UPDATE execution_process_ownership SET session_id=? WHERE execution_id=? AND organization_id=?", ("9999", execution_id, "org-settlement"))
+            else:
+                payload = json.loads(before["identity_attestation"])
+                if tamper == "attestation_digest":
+                    payload["digest"] = "0" * 64
+                else:
+                    payload["member_snapshot"][0]["start_token"] = "posix:00000000-0000-0000-0000-000000000001:99999"
+                conn.execute("UPDATE execution_process_ownership SET identity_attestation=? WHERE execution_id=? AND organization_id=?", (json.dumps(payload), execution_id, "org-settlement"))
+    attempted_state = database.get_process_ownership(execution_id, "org-settlement")
+    result = capability.database.transition_committed_process_to_recovery_blocked(
+        "other-execution" if tamper == "execution" else execution_id,
+        "other-tenant" if tamper == "tenant" else "org-settlement",
+        "worker-settlement",
+        "generation-attacker" if tamper == "generation" else "generation-settlement",
+    )
+    assert result is False
+    assert database.get_process_ownership(execution_id, "org-settlement") == attempted_state
+    assert attempted_state["ownership_state"] == "EXTERNAL_PROCESS_GOVERNED"
+
+
+def test_post_commit_recovery_transition_is_single_winner_under_concurrency(tmp_path):
+    """Concurrent downgrade attempts cannot replay or overwrite the committed row."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    execution_id = "run-recovery-transition-race"
+    decision_id = "decision-recovery-transition-race"
+    path = tmp_path / "recovery-transition-race.db"
+    database = DatabaseManager(path)
+    authority, _ = _seed_execution_for_termination_settlement(
+        database, execution_id=execution_id,
+        request_id="request-recovery-transition-race", decision_id=decision_id,
+    )
+
+    def transition():
+        return database.transition_committed_process_to_recovery_blocked(
+            execution_id, "org-settlement", "worker-settlement", "generation-settlement",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _item: transition(), (1, 2)))
+    assert sorted(results) == [False, True]
+    assert database.get_process_ownership(execution_id, "org-settlement")["ownership_state"] == "RECOVERY_BLOCKED"
+
+
 def test_confirmed_termination_settlement_requires_revocation_and_exact_identity(tmp_path):
     from app.core.execution_service import load_durable_process_identity
     from app.core.process_supervisor import ProcessIdentity, ProcessMemberIdentity
