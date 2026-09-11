@@ -489,7 +489,8 @@ def test_root_exit_with_descendant_in_new_group_is_not_empty_and_is_reaped() -> 
             process_identity=identity,
         )
         assert cancelled.confirmed is True
-        assert not ProcessSupervisor._pid_exists(child_pid)
+        # A killed grandchild may remain as a zombie until its reaper collects
+        # it.  Session emptiness is the authoritative live-process assertion.
         assert not ProcessSupervisor._process_session_exists(identity.session_id)
     finally:
         if root is not None and root.poll() is None:

@@ -326,6 +326,7 @@ class ProcessSupervisor:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
+        session_exists = identity is not None and self._process_session_exists(identity.session_id)
         if identity is None and (root_exists or group_exists):
             # A missing launch identity is an uncertainty condition, never
             # permission to signal a possibly reused PID or process group.
@@ -338,11 +339,15 @@ class ProcessSupervisor:
         identity_valid = identity is not None and (
             self._identity_matches(identity)
             if root_exists
-            else (group_exists and self._process_group_identity_matches(identity))
+            else (
+                self._process_group_identity_matches(identity)
+                if group_exists
+                else session_exists
+            )
         )
-        if identity is not None and not identity_valid and (root_exists or group_exists):
+        if identity is not None and not identity_valid and (root_exists or group_exists or session_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-        if root_exists or group_exists:
+        if root_exists or group_exists or session_exists:
             terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
@@ -371,14 +376,19 @@ class ProcessSupervisor:
             identity = self._execution_identities.get(execution_id)
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
+        session_exists = identity is not None and self._process_session_exists(identity.session_id)
         identity_valid = identity is not None and (
             self._identity_matches(identity)
             if root_exists
-            else (group_exists and self._process_group_identity_matches(identity))
+            else (
+                self._process_group_identity_matches(identity)
+                if group_exists
+                else session_exists
+            )
         )
-        if identity is not None and not identity_valid and (root_exists or group_exists):
+        if identity is not None and not identity_valid and (root_exists or group_exists or session_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-        if root_exists or group_exists:
+        if root_exists or group_exists or session_exists:
             terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
             status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
         else:
@@ -835,13 +845,20 @@ class ProcessSupervisor:
         if identity is not None and identity.pid != pid:
             return False
         root_exists = ProcessSupervisor._pid_exists(pid)
+        session_exists = identity is not None and ProcessSupervisor._process_session_exists(identity.session_id)
         identity_matches = identity is not None and (
             ProcessSupervisor._identity_matches(identity)
             if root_exists
-            else ProcessSupervisor._process_group_identity_matches(identity)
+            else (
+                ProcessSupervisor._process_group_identity_matches(identity)
+                if ProcessSupervisor._process_group_exists(process_group_id)
+                else session_exists
+            )
         )
         if identity is not None and not identity_matches and (
-            ProcessSupervisor._pid_exists(pid) or ProcessSupervisor._process_group_exists(process_group_id)
+            ProcessSupervisor._pid_exists(pid)
+            or ProcessSupervisor._process_group_exists(process_group_id)
+            or session_exists
         ):
             logger.error("Refusing to terminate process with mismatched launch identity PID=%s", pid)
             return False
