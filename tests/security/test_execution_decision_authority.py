@@ -2311,7 +2311,16 @@ def test_deferred_complete_uncertain_recovery_preserves_provenance_and_settles(t
     ) is True
 
 
-def test_missing_identity_recovery_dal_is_tenant_bound_idempotent_and_nonterminal(tmp_path):
+@pytest.mark.parametrize(
+    ("ownership_state", "launch_commit_state"),
+    [
+        ("EXTERNAL_PROCESS_GOVERNED", "COMMITTED"),
+        ("UNKNOWN", "UNCERTAIN"),
+    ],
+)
+def test_missing_identity_recovery_dal_is_tenant_bound_idempotent_and_nonterminal(
+    tmp_path, ownership_state, launch_commit_state
+):
     """The durable identity-unavailable projection accepts no forged binding."""
     database = DatabaseManager(tmp_path / "recovery-missing-identity-dal.db")
     _authority, _identity = _seed_execution_for_termination_settlement(
@@ -2323,11 +2332,16 @@ def test_missing_identity_recovery_dal_is_tenant_bound_idempotent_and_nontermina
     with database._connection_scope() as conn:
         conn.execute(
             "UPDATE execution_process_ownership "
-            "SET container_identity=NULL, root_process_id=NULL, "
+            "SET ownership_state=?, launch_commit_state=?, container_identity=NULL, root_process_id=NULL, "
             "root_process_start_token=NULL, process_group_id=NULL, "
             "session_id=NULL, identity_attestation=NULL "
             "WHERE execution_id=? AND organization_id=?",
-            ("run-recovery-missing-identity-dal", "org-settlement"),
+            (
+                ownership_state,
+                launch_commit_state,
+                "run-recovery-missing-identity-dal",
+                "org-settlement",
+            ),
         )
 
     retry_at = datetime.now(timezone.utc) + timedelta(seconds=30)
@@ -2373,7 +2387,7 @@ def test_missing_identity_recovery_dal_is_tenant_bound_idempotent_and_nontermina
     assert state["next_retry_at"] == retry_at.isoformat()
     assert state["last_outcome"] == "identity_unavailable"
     assert state["last_error"] == "durable identity could not be validated"
-    assert ownership["ownership_state"] == "EXTERNAL_PROCESS_GOVERNED"
+    assert ownership["ownership_state"] == ownership_state
     assert all(ownership[field] is None for field in (
         "container_identity", "root_process_id", "root_process_start_token",
         "process_group_id", "session_id", "identity_attestation",

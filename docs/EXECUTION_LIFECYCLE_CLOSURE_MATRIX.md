@@ -122,6 +122,16 @@ non-terminal. It does not invoke the supervisor, infer `NO_EXTERNAL_PROCESS`,
 or accept a caller-supplied replacement identity. The condition is exposed by
 the tenant-scoped recovery-health projection and remains eligible for a later
 retry; settlement requires a newly validated exact identity.
+The same durable identity-unavailable outcome applies to an active
+`UNKNOWN` ownership row when authority is revoked, expired, or otherwise lost
+after dispatch may have begun and no process identity can be independently
+reloaded. The observer preserves `UNKNOWN` and its existing launch state,
+does not fabricate `NO_EXTERNAL_PROCESS`, does not invoke the supervisor, and
+records tenant-bound retry/error/attempt/audit evidence through the same
+bounded `DEFERRED`/`EXHAUSTED` projection. Deferred `UNKNOWN` work is
+re-enumerated only when its retry is due; exhaustion remains non-terminal and
+operator-visible. The explicit `REQUESTED`/`PENDING` pre-dispatch proof path
+remains separate and may terminalize only from positive durable evidence.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and

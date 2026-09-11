@@ -4182,7 +4182,7 @@ class DatabaseManager:
                             OR EXISTS (SELECT 1 FROM revoked_tokens t WHERE t.jti = d.session_jti)
                             OR q.expires_at <= ? OR d.expires_at <= ?
                             OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))
-                            OR (p.ownership_state IN ('EXTERNAL_PROCESS_GOVERNED','LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                            OR (p.ownership_state IN ('UNKNOWN','EXTERNAL_PROCESS_GOVERNED','LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
                                 AND s.status <> 'IN_PROGRESS'
                                 AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?))
                        )
@@ -5643,8 +5643,17 @@ class DatabaseManager:
             if not row:
                 return False
             if (
-                row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
-                or row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
+                (
+                    row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+                    and not (
+                        row["ownership_state"] == ProcessOwnershipState.UNKNOWN.value
+                        and row["launch_commit_state"] == LaunchCommitState.UNCERTAIN.value
+                    )
+                )
+                or (
+                    row["ownership_state"] == ProcessOwnershipState.UNKNOWN.value
+                    and row["launch_commit_state"] != LaunchCommitState.UNCERTAIN.value
+                )
                 or row["run_state"] not in {"REQUESTED", "STARTING", "RUNNING"}
                 or row["recovery_status"] == "IN_PROGRESS"
                 or row["recovery_status"] in {"CONFIRMED_TERMINATED", "EXHAUSTED"}
@@ -5714,6 +5723,8 @@ class DatabaseManager:
                     "execution_id": execution_id,
                     "organization_id": organization_id,
                     "attempt_number": attempt_number,
+                    "ownership_state": row["ownership_state"],
+                    "launch_commit_state": row["launch_commit_state"],
                     "outcome": outcome,
                     "next_retry_at": retry_value,
                     "identity_present": False,
@@ -5762,6 +5773,8 @@ class DatabaseManager:
                     "attempt_number": attempt_number,
                     "status": status,
                     "outcome": outcome,
+                    "ownership_state": row["ownership_state"],
+                    "launch_commit_state": row["launch_commit_state"],
                     "identity_present": False,
                 },
             ))

@@ -10,10 +10,11 @@ explicit deployment identity/generation binding, process-session emptiness
 checking, zombie-member handling, and explicit recovery blocking when root
 ownership is no longer independently provable at the
 current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
-The current unpublished corrective worktree is derived from local commit
-`4bda29980c9c242d6305f718cfccd3d031ceee65` and adds the audited durable
-missing-identity recovery correction to the prior recovery state-machine and
-unconfirmed-governed-recovery fixes. The earlier local commits
+The current local corrective candidate is the grouped commit immediately
+following `c1536c54c9e18c407dcaa7f8f249522663bdac18`; it adds durable
+missing-identity recovery for active `UNKNOWN` ownership, corrects recovery
+attempt projection lookup, and retains the earlier external-process
+correction. The earlier local commits
 `2545a62acbfb2c3e4978ccac9919b7f56688ad48` and
 `abbc2504b3badbd52032352722b5a0bc08ca9eab` are retained as historical
 predecessor evidence, not as the current candidate. The current worktree also
@@ -324,6 +325,21 @@ used.
   failure, and 15 warnings**. Excluding that preserved failure yields 917
   passing tests. Those results are independently verified evidence for the
   prior candidate, not a substitute for the current local run above.
+- Current grouped UNKNOWN-missing-identity correction vectors: **4 passed**,
+  **96 deselected**, exit code **0**, with disposable storage under
+  `.project-temp/section-b-unknown-missing-focused-7/`. This covers the
+  external-process regression, direct DAL acceptance for `UNKNOWN` with
+  `UNCERTAIN` launch state, durable observer retry/health evidence, due-retry
+  re-enumeration, bounded exhaustion, tenant isolation, and non-terminal
+  preservation.
+- Current affected-path regression after the grouped correction: **99 passed**,
+  **96 deselected**, **1 preserved historical/environment fixture failure**,
+  exit code **1**, under
+  `.project-temp/section-b-unknown-affected-suite/`. The preserved failure is
+  `test_http_api_approval_returns_503_and_correlation_header`, which reaches
+  authentication using a disposable module database lacking the unrelated
+  `revoked_tokens` table; no recovery test failed. This is not represented as
+  a passing suite or as a correction to authentication/schema behavior.
 - The live Redis transport vector was attempted with the declared `redis` and
   `hiredis` packages installed only under `.project-temp/`. Dependency
   construction succeeded and the project-local Redis service was reachable,
