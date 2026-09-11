@@ -1399,6 +1399,12 @@ def _seed_execution_for_termination_settlement(
             process_group_id=4242,
             session_id=4242,
             start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+            member_snapshot=(SimpleNamespace(
+                pid=4242,
+                process_group_id=4242,
+                session_id=4242,
+                start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+            ),),
         )
 
     return authority, identity
@@ -1406,7 +1412,7 @@ def _seed_execution_for_termination_settlement(
 
 def test_confirmed_termination_settlement_requires_revocation_and_exact_identity(tmp_path):
     from app.core.execution_service import load_durable_process_identity
-    from app.core.process_supervisor import ProcessIdentity
+    from app.core.process_supervisor import ProcessIdentity, ProcessMemberIdentity
 
     database = DatabaseManager(tmp_path / "confirmed-termination.db")
     _authority, _attestation = _seed_execution_for_termination_settlement(
@@ -1420,6 +1426,12 @@ def test_confirmed_termination_settlement_requires_revocation_and_exact_identity
         process_group_id=4242,
         start_token="posix:00000000-0000-0000-0000-000000000001:12345",
         session_id=4242,
+        member_snapshot=(ProcessMemberIdentity(
+            pid=4242,
+            process_group_id=4242,
+            session_id=4242,
+            start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+        ),),
     )
     assert load_durable_process_identity(
         database, "run-settlement", "org-settlement"

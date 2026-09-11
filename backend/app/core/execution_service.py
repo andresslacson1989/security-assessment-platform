@@ -82,7 +82,7 @@ def load_durable_process_identity(
     The old generation is still checked for internal consistency, and malformed
     or Windows records fail closed.
     """
-    from app.core.process_supervisor import ProcessIdentity
+    from app.core.process_supervisor import ProcessIdentity, ProcessMemberIdentity
 
     if (
         not isinstance(execution_id, str)
@@ -150,6 +150,7 @@ def load_durable_process_identity(
         return None
 
     attestation_json = ownership.get("identity_attestation")
+    member_snapshot: tuple[ProcessMemberIdentity, ...] = ()
     if ownership.get("ownership_state") == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value:
         if not isinstance(attestation_json, str) or not attestation_json.strip():
             return None
@@ -166,6 +167,16 @@ def load_durable_process_identity(
             or attestation.process_group_id != group_id
         ):
             return None
+        if attestation.member_snapshot:
+            member_snapshot = tuple(
+                ProcessMemberIdentity(
+                    pid=member.pid,
+                    process_group_id=member.process_group_id,
+                    session_id=member.session_id,
+                    start_token=member.start_token,
+                )
+                for member in attestation.member_snapshot
+            )
     elif ownership.get("ownership_state") not in {
         ProcessOwnershipState.LAUNCH_UNCERTAIN.value,
         ProcessOwnershipState.RECOVERY_BLOCKED.value,
@@ -177,6 +188,7 @@ def load_durable_process_identity(
         process_group_id=group_id,
         start_token=start_token,
         session_id=session_id,
+        member_snapshot=member_snapshot,
     )
 
 
@@ -922,13 +934,61 @@ def record_no_process(
         return False
 
 
-def record_posix_launch(capability: Any, *, pid: int, process_group_id: Optional[int], session_id: int, start_token: str) -> str:
+def record_posix_launch(
+    capability: Any,
+    *,
+    pid: int,
+    process_group_id: Optional[int],
+    session_id: int,
+    start_token: str,
+    member_snapshot: Any,
+) -> str:
     """Create and persist a canonical POSIX identity attestation and ownership."""
     if not capability.execution_id or not start_token.startswith("posix:"):
         raise ValueError("canonical POSIX process identity is required")
     parts = start_token.split(":", 2)
     if len(parts) != 3 or not parts[1] or not parts[2].isdigit() or pid <= 0 or session_id < 0:
         raise ValueError("POSIX process identity is malformed")
+    if not isinstance(member_snapshot, (tuple, list)) or not member_snapshot or len(member_snapshot) > 512:
+        raise ValueError("complete bounded POSIX member snapshot is required")
+    snapshot_values: list[dict[str, Any]] = []
+    seen_pids: set[int] = set()
+    for member in member_snapshot:
+        try:
+            member_pid = int(member.pid)
+            member_group = int(member.process_group_id)
+            member_session = int(member.session_id)
+            member_token = str(member.start_token)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("POSIX member snapshot identity is malformed") from exc
+        token_parts = member_token.split(":", 2)
+        if (
+            member_pid <= 1
+            or member_group <= 1
+            or member_session != session_id
+            or member_pid in seen_pids
+            or len(token_parts) != 3
+            or token_parts[0] != "posix"
+            or token_parts[1] != parts[1]
+            or not token_parts[2].isdigit()
+            or int(token_parts[2]) <= 0
+        ):
+            raise ValueError("POSIX member snapshot identity is inconsistent")
+        seen_pids.add(member_pid)
+        snapshot_values.append({
+            "pid": member_pid,
+            "process_group_id": member_group,
+            "session_id": member_session,
+            "start_token": member_token,
+        })
+    expected_group = process_group_id if process_group_id is not None else pid
+    if not any(
+        item["pid"] == pid
+        and item["process_group_id"] == expected_group
+        and item["start_token"] == start_token
+        for item in snapshot_values
+    ):
+        raise ValueError("POSIX member snapshot does not bind the root process")
     captured = utc_now()
     expires = captured + timedelta(seconds=30)
     values = {
@@ -944,6 +1004,7 @@ def record_posix_launch(capability: Any, *, pid: int, process_group_id: Optional
         "captured_at": captured,
         "expires_at": expires,
         "verification_result": "VERIFIED",
+        "member_snapshot": tuple(snapshot_values),
     }
     digest = canonical_binding_digest(values)
     attestation = PosixProcessAttestation(**values, digest=digest)

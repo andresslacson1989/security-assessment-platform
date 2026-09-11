@@ -406,8 +406,8 @@ def test_fresh_supervisor_uses_persisted_identity_after_worker_restart() -> None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
-def test_root_exit_with_multiple_descendants_blocks_unproven_recovery() -> None:
-    """A dead root blocks recovery when only numeric group/session identity remains."""
+def test_root_exit_with_multiple_descendants_recovers_from_attested_snapshot() -> None:
+    """A fully attested dead root is safely recovered through its member snapshot."""
     root = None
     identity = None
     child_pids: list[int] = []
@@ -441,8 +441,10 @@ def test_root_exit_with_multiple_descendants_blocks_unproven_recovery() -> None:
             "execution-root-exited-multi-child",
             process_identity=identity,
         )
-        assert cancelled.status is ProcessCancellationStatus.RECOVERY_BLOCKED
-        assert any(ProcessSupervisor._pid_exists(pid) for pid in child_pids)
+        assert cancelled.confirmed is True
+        assert not any(ProcessSupervisor._pid_exists(pid) for pid in child_pids)
+        assert not ProcessSupervisor._process_group_exists(identity.process_group_id)
+        assert not ProcessSupervisor._process_session_exists(identity.session_id)
     finally:
         _terminate_owned_test_session(identity.session_id if identity is not None else None)
         if root is not None and root.poll() is None:
@@ -464,8 +466,8 @@ def test_root_exit_with_multiple_descendants_blocks_unproven_recovery() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
-def test_root_exit_with_descendant_in_new_group_blocks_unproven_recovery() -> None:
-    """A PGID escape after root exit remains blocked without a stronger container proof."""
+def test_root_exit_with_descendant_in_new_group_recovers_from_attested_snapshot() -> None:
+    """A fully attested session member remains recoverable after changing PGID."""
     root = None
     identity = None
     try:
@@ -505,8 +507,9 @@ def test_root_exit_with_descendant_in_new_group_blocks_unproven_recovery() -> No
             "execution-root-exited-pgid-escape",
             process_identity=identity,
         )
-        assert cancelled.status is ProcessCancellationStatus.RECOVERY_BLOCKED
-        assert ProcessSupervisor._pid_exists(child_pid)
+        assert cancelled.confirmed is True
+        assert not ProcessSupervisor._pid_exists(child_pid)
+        assert not ProcessSupervisor._process_session_exists(identity.session_id)
     finally:
         _terminate_owned_test_session(identity.session_id if identity is not None else None)
         if root is not None and root.poll() is None:

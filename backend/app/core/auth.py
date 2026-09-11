@@ -164,7 +164,7 @@ ALL_VALID_SCOPES = frozenset({
     "scan:create", "scan:read", "scan:cancel", "scan:delete", "scan:repeater", "scan:internal",
     "asset:read", "asset:write", "asset:delete",
     "finding:read", "finding:write", "finding:triage", "finding:risk_accept",
-    "report:read", "tool:read", "tool:install", "execution:request", "execution:approve", "execution:read", "execution:revoke",
+    "report:read", "tool:read", "tool:install", "execution:request", "execution:approve", "execution:read", "execution:revoke", "execution:recovery",
 })
 
 ROLE_BASE_SCOPES: Dict[UserRole, List[str]] = {
@@ -218,7 +218,7 @@ ROLE_BASE_SCOPES: Dict[UserRole, List[str]] = {
         "report:read",
         "tool:read",
         "tool:install",
-        "execution:request", "execution:approve", "execution:read", "execution:revoke",
+        "execution:request", "execution:approve", "execution:read", "execution:revoke", "execution:recovery",
     ],
 }
 

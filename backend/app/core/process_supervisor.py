@@ -69,6 +69,16 @@ class ProcessCancellationResult:
 
 
 @dataclass(frozen=True)
+class ProcessMemberIdentity:
+    """Kernel identity for one live member of a governed POSIX session."""
+
+    pid: int
+    process_group_id: int
+    session_id: int
+    start_token: str
+
+
+@dataclass(frozen=True)
 class ProcessIdentity:
     """Platform-specific identity captured at process creation."""
 
@@ -76,6 +86,10 @@ class ProcessIdentity:
     process_group_id: Optional[int]
     start_token: str
     session_id: Optional[int] = None
+    # A complete bounded snapshot is required for recovery after the root has
+    # exited.  Empty snapshots retain compatibility with older in-memory
+    # callers but cannot authorize post-root recovery.
+    member_snapshot: Tuple[ProcessMemberIdentity, ...] = ()
 
 
 def _read_posix_start_token(pid: int) -> Optional[str]:
@@ -334,18 +348,22 @@ class ProcessSupervisor:
             # A missing launch identity is an uncertainty condition, never
             # permission to signal a possibly reused PID or process group.
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
-        # A live root must pass its own start-token check. Do not let a
-        # matching session/group mask a root PID reuse or start-token
-        # mismatch. Once the root exits, numeric group/session membership is
-        # not sufficient for recovery without a stronger container proof.
+        if identity is not None and root_exists:
+            refreshed_identity = self._capture_process_identity(pid, group_id)
+            if (
+                refreshed_identity is None
+                or refreshed_identity.start_token != identity.start_token
+                or refreshed_identity.process_group_id != identity.process_group_id
+                or refreshed_identity.session_id != identity.session_id
+            ):
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+            identity = refreshed_identity
+        # A live root must pass its own start-token check and the complete
+        # member snapshot. A dead root is recoverable only from that snapshot.
         identity_valid = identity is not None and (
-            self._identity_matches(identity)
+            self._identity_matches(identity) and self._process_group_identity_matches(identity)
             if root_exists
-            else (
-                self._process_group_identity_matches(identity)
-                if group_exists
-                else False
-            )
+            else self._process_group_identity_matches(identity) if (group_exists or session_exists) else False
         )
         if identity is not None and not identity_valid and (root_exists or group_exists or session_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
@@ -379,14 +397,20 @@ class ProcessSupervisor:
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
         session_exists = identity is not None and self._process_session_exists(identity.session_id)
+        if identity is not None and root_exists:
+            refreshed_identity = self._capture_process_identity(pid, group_id)
+            if (
+                refreshed_identity is None
+                or refreshed_identity.start_token != identity.start_token
+                or refreshed_identity.process_group_id != identity.process_group_id
+                or refreshed_identity.session_id != identity.session_id
+            ):
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+            identity = refreshed_identity
         identity_valid = identity is not None and (
-            self._identity_matches(identity)
+            self._identity_matches(identity) and self._process_group_identity_matches(identity)
             if root_exists
-            else (
-                self._process_group_identity_matches(identity)
-                if group_exists
-                else False
-            )
+            else self._process_group_identity_matches(identity) if (group_exists or session_exists) else False
         )
         if identity is not None and not identity_valid and (root_exists or group_exists or session_exists):
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
@@ -683,6 +707,7 @@ class ProcessSupervisor:
                     return None
                 if (
                     member_pid <= 1
+                    or member_pgid <= 1
                     or member_session_id != session_id
                     or fields[3].startswith(("Z", "X"))
                 ):
@@ -691,9 +716,41 @@ class ProcessSupervisor:
                 if start_token is None:
                     return None
                 members.append((member_pid, start_token, member_pgid))
+                if len(members) > 512:
+                    # An unbounded process set cannot be safely represented or
+                    # revalidated by this bounded recovery contract.
+                    return None
             return members
         except (OSError, subprocess.SubprocessError):
             return None
+
+    @staticmethod
+    def _capture_process_member_identity(
+        pid: int,
+        process_group_id: int,
+        session_id: int,
+        start_token: Optional[str] = None,
+    ) -> Optional[ProcessMemberIdentity]:
+        """Capture one member identity without recursively enumerating a session."""
+        token = start_token or _read_posix_start_token(pid)
+        if (
+            os.name == "nt"
+            or pid <= 1
+            or process_group_id <= 1
+            or session_id < 0
+            or not isinstance(token, str)
+            or not token.strip()
+        ):
+            return None
+        try:
+            if os.getsid(pid) != session_id or os.getpgid(pid) != process_group_id:
+                return None
+        except OSError:
+            return None
+        current_token = _read_posix_start_token(pid)
+        if current_token != token:
+            return None
+        return ProcessMemberIdentity(pid, process_group_id, session_id, token)
 
     @staticmethod
     def _terminate_posix_session_members(
@@ -713,6 +770,19 @@ class ProcessSupervisor:
         members = ProcessSupervisor._posix_session_member_identities(identity.session_id)
         if members is None:
             return False
+        expected = {
+            (member.pid, member.start_token, member.process_group_id)
+            for member in identity.member_snapshot
+            if member.session_id == identity.session_id
+        }
+        if not expected:
+            return False
+        current_set = set(members)
+        # A root-exit snapshot is authoritative only when every remaining
+        # member was present in the bounded snapshot. A new PID, changed
+        # start token, or unexpected PGID is a recovery block.
+        if not current_set.issubset(expected):
+            return False
         current_pid = os.getpid()
         parent_pid = os.getppid() if hasattr(os, "getppid") else None
         for member_pid, start_token, member_pgid in members:
@@ -730,15 +800,15 @@ class ProcessSupervisor:
                 return False
             if process_group_id is not None and member_pgid == process_group_id:
                 continue
-            current_start_token = _read_posix_start_token(member_pid)
-            if current_start_token is None:
-                continue
-            current = ProcessSupervisor._capture_process_identity(member_pid, member_pgid)
+            current = ProcessSupervisor._capture_process_member_identity(
+                member_pid,
+                member_pgid,
+                identity.session_id,
+                start_token,
+            )
             if current is None:
                 if not ProcessSupervisor._pid_exists(member_pid):
                     continue
-                return False
-            if current != ProcessIdentity(member_pid, member_pgid, start_token, identity.session_id):
                 return False
             try:
                 os.kill(member_pid, signal.SIGKILL)
@@ -764,7 +834,18 @@ class ProcessSupervisor:
                 session_id = os.getsid(pid)
             except OSError:
                 return None
-        return ProcessIdentity(pid, process_group_id, start_token, session_id)
+        member_snapshot: Tuple[ProcessMemberIdentity, ...] = ()
+        if os.name != "nt" and process_group_id is not None and session_id is not None:
+            members = ProcessSupervisor._posix_session_member_identities(session_id)
+            if members is None:
+                return None
+            member_snapshot = tuple(
+                ProcessMemberIdentity(member_pid, member_pgid, session_id, member_start_token)
+                for member_pid, member_start_token, member_pgid in members
+            )
+            if not any(member.pid == pid and member.start_token == start_token for member in member_snapshot):
+                return None
+        return ProcessIdentity(pid, process_group_id, start_token, session_id, member_snapshot)
 
     @staticmethod
     def _process_group_identity_matches(identity: ProcessIdentity) -> bool:
@@ -781,29 +862,34 @@ class ProcessSupervisor:
         members = ProcessSupervisor._posix_session_member_identities(identity.session_id)
         if members is None:
             return False
-        if not ProcessSupervisor._pid_exists(identity.pid):
-            # A surviving numeric PGID/SID is not an ownership proof after
-            # the original root exits. Without a kernel-owned container or a
-            # durable member attestation, recovery must remain blocked.
+        if not identity.member_snapshot:
             return False
-        group_members = [
-            (member_pid, start_token)
-            for member_pid, start_token, member_pgid in members
-            if member_pgid == identity.process_group_id
-        ]
-        if not group_members:
+        expected = {
+            (member.pid, member.start_token, member.process_group_id)
+            for member in identity.member_snapshot
+            if member.session_id == identity.session_id
+        }
+        current_set = set(members)
+        if not expected or not current_set.issubset(expected):
             return False
         current_pid = os.getpid()
         parent_pid = os.getppid() if hasattr(os, "getppid") else None
-        if any(member_pid in {current_pid, parent_pid} for member_pid, _ in group_members):
+        if any(member_pid in {current_pid, parent_pid} for member_pid, _, _ in members):
             return False
-        matching_root = [token for pid, token in group_members if pid == identity.pid]
-        if matching_root != [identity.start_token]:
+        root_members = [entry for entry in members if entry[0] == identity.pid]
+        if root_members and root_members != [
+            (identity.pid, identity.start_token, identity.process_group_id)
+        ]:
+            return False
+        # If the root is gone, at least one attested member must remain for
+        # group/session recovery to be meaningful. An empty container is
+        # handled by the post-signal emptiness proof.
+        if not root_members and not current_set:
             return False
         return all(
-            ProcessSupervisor._capture_process_identity(pid, identity.process_group_id)
-            == ProcessIdentity(pid, identity.process_group_id, start_token, identity.session_id)
-            for pid, start_token in group_members
+            ProcessSupervisor._capture_process_member_identity(pid, pgid, identity.session_id, token)
+            is not None
+            for pid, token, pgid in members
         )
 
     @staticmethod
@@ -874,6 +960,16 @@ class ProcessSupervisor:
         if identity is not None and identity.pid != pid:
             return False
         root_exists = ProcessSupervisor._pid_exists(pid)
+        if identity is not None and root_exists:
+            refreshed_identity = ProcessSupervisor._capture_process_identity(pid, process_group_id)
+            if (
+                refreshed_identity is None
+                or refreshed_identity.start_token != identity.start_token
+                or refreshed_identity.process_group_id != identity.process_group_id
+                or refreshed_identity.session_id != identity.session_id
+            ):
+                return False
+            identity = refreshed_identity
         session_exists = identity is not None and ProcessSupervisor._process_session_exists(identity.session_id)
         identity_matches = identity is not None and (
             ProcessSupervisor._identity_matches(identity)
@@ -1527,6 +1623,7 @@ class ProcessSupervisor:
                                 process_group_id=process_group_id,
                                 session_id=process_identity.session_id if process_identity.session_id is not None else -1,
                                 start_token=process_identity.start_token,
+                                member_snapshot=process_identity.member_snapshot,
                             )
                     except Exception as exc:
                         termination_confirmed = self.kill_process_tree(

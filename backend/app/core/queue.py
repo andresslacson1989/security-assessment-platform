@@ -403,31 +403,51 @@ class QueueDispatchBinding:
         return json.dumps(list(self.operation_ids), separators=(",", ":"), ensure_ascii=True)
 
 
-@dataclass(frozen=True)
-class QueueQuarantineOperatorAuthorization:
-    """Tenant-bound operator assertion supplied by an authenticated service boundary.
+_QUEUE_OPERATOR_ISSUER = object()
 
-    The queue layer does not authenticate users.  It accepts this typed,
-    tenant-bound assertion only so an arbitrary actor string cannot be treated
-    as authority.  A production API/service must construct it after validating
-    the authenticated principal, permission, and session binding.
+
+class QueueQuarantineOperatorAuthorization:
+    """Opaque handoff issued only after the application auth boundary verifies a session.
+
+    This is deliberately not a data-only dataclass.  The queue primitive can
+    accept only an instance produced by the private authenticated-service
+    factory below.  The factory is called by an API dependency that has already
+    validated the signed session, durable revocation state, tenant, role, and
+    recovery permission.
     """
 
-    actor_id: str
-    organization_id: str
-    session_binding: str
-    permission: str = "execution:recovery"
+    __slots__ = ("actor_id", "organization_id", "session_binding", "permission", "_issued")
 
-    def __post_init__(self) -> None:
+    def __init__(self, *, actor_id: str, organization_id: str, session_binding: str, permission: str, _issuer: object):
+        if _issuer is not _QUEUE_OPERATOR_ISSUER:
+            raise TypeError("quarantine authorization must be issued by the authenticated service boundary")
         for field_name, value in (
-            ("actor_id", self.actor_id),
-            ("organization_id", self.organization_id),
-            ("session_binding", self.session_binding),
+            ("actor_id", actor_id),
+            ("organization_id", organization_id),
+            ("session_binding", session_binding),
         ):
             if not _safe_queue_text(value):
                 raise ValueError(f"quarantine operator {field_name} is invalid")
-        if self.permission != "execution:recovery":
+        if permission != "execution:recovery":
             raise ValueError("quarantine operator permission is invalid")
+        self.actor_id = actor_id
+        self.organization_id = organization_id
+        self.session_binding = session_binding
+        self.permission = permission
+        self._issued = True
+
+
+def _issue_authenticated_quarantine_authorization(
+    *, actor_id: str, organization_id: str, session_binding: str, permission: str = "execution:recovery"
+) -> QueueQuarantineOperatorAuthorization:
+    """Private auth-to-queue handoff; callers must first pass app auth guards."""
+    return QueueQuarantineOperatorAuthorization(
+        actor_id=actor_id,
+        organization_id=organization_id,
+        session_binding=session_binding,
+        permission=permission,
+        _issuer=_QUEUE_OPERATOR_ISSUER,
+    )
 
 
 _IDEMPOTENT_ENQUEUE_SCRIPT = """
@@ -916,13 +936,50 @@ class RedisDurableQueue:
             raise ValueError("queue failure delivery count is invalid")
         if max_attempts is not None and (type(max_attempts) is not int or max_attempts < 1):
             raise ValueError("queue failure delivery bound is invalid")
-        resolved_message_kind = message_kind or (
-            _QUEUE_MESSAGE_KIND_AUTHORITATIVE
-            if authorization_request_id
-            else _QUEUE_MESSAGE_KIND_LEGACY
-        )
-        if resolved_message_kind not in _QUEUE_MESSAGE_KINDS:
+        if not isinstance(message_kind, str) or message_kind not in _QUEUE_MESSAGE_KINDS:
             raise ValueError("queue failure message kind is invalid")
+        resolved_message_kind = message_kind
+        authoritative_fields_present = any(
+            value is not None
+            for value in (
+                authorization_request_id,
+                queue_binding_digest,
+                manifest_hash,
+                execution_ids,
+                operation_ids,
+            )
+        )
+        if resolved_message_kind == _QUEUE_MESSAGE_KIND_AUTHORITATIVE:
+            if acknowledge:
+                raise ValueError("authoritative queue failures must remain pending until explicit recovery")
+            if not all(
+                value is not None
+                for value in (
+                    scan_id,
+                    organization_id,
+                    authorization_request_id,
+                    queue_binding_digest,
+                    manifest_hash,
+                    execution_ids,
+                    operation_ids,
+                )
+            ):
+                raise ValueError("authoritative queue failure binding is incomplete")
+            QueueDispatchBinding.from_payload({
+                "scan_id": scan_id,
+                "organization_id": organization_id,
+                "authorization_request_id": authorization_request_id,
+                "manifest_hash": manifest_hash,
+                "execution_ids_json": json.dumps(list(execution_ids), separators=(",", ":"), ensure_ascii=True),
+                "operation_ids_json": json.dumps(list(operation_ids), separators=(",", ":"), ensure_ascii=True),
+                "queue_binding_digest": queue_binding_digest,
+                "queue_binding_schema_version": "queue-dispatch-binding-v1",
+            })
+        elif resolved_message_kind == _QUEUE_MESSAGE_KIND_LEGACY and authoritative_fields_present:
+            raise ValueError("legacy queue failure cannot carry authoritative binding fields")
+        elif resolved_message_kind == _QUEUE_MESSAGE_KIND_AMBIGUOUS:
+            if not quarantined or acknowledge:
+                raise ValueError("ambiguous queue failure must remain quarantined and pending")
         failure_fields: dict[str, str] = {
             "message_id": message_id,
             "dispatch_message_id": message_id,
@@ -1009,6 +1066,14 @@ class RedisDurableQueue:
             raise ValueError("quarantine acknowledgement identity is invalid")
         if type(operator) is not QueueQuarantineOperatorAuthorization:
             raise ValueError("quarantine acknowledgement requires an authenticated operator assertion")
+        if (
+            not getattr(operator, "_issued", False)
+            or operator.permission != "execution:recovery"
+            or not _safe_queue_text(operator.actor_id)
+            or not _safe_queue_text(operator.organization_id)
+            or not _safe_queue_text(operator.session_binding)
+        ):
+            raise ValueError("quarantine acknowledgement authorization is invalid")
         await self._ensure_group()
         if not isinstance(authorization_request_id, str) or not authorization_request_id.strip():
             return False
@@ -1217,6 +1282,21 @@ class RedisDurableQueue:
         delivery_attempts: Optional[int] = None
         if authorization_request_id:
             try:
+                authoritative_binding = QueueDispatchBinding.from_payload(fields)
+                if (
+                    authoritative_binding.scan_id != scan_id
+                    or authoritative_binding.organization_id != organization_id
+                    or authoritative_binding.authorization_request_id != authorization_request_id
+                ):
+                    raise ValueError("authoritative queue binding identity does not match the message")
+            except Exception:
+                await self._quarantine_invalid_wire_message(
+                    message_id,
+                    fields,
+                    "QUEUE_BINDING_REJECTED",
+                )
+                return True
+            try:
                 delivery_attempts = await self._delivery_attempts(str(message_id))
             except Exception:
                 # Transport inspection is part of the authoritative safety
@@ -1229,7 +1309,9 @@ class RedisDurableQueue:
                     scan_id=scan_id,
                     organization_id=organization_id,
                     authorization_request_id=authorization_request_id,
-                    message_kind=message_kind,
+                    # The message has not passed complete binding validation,
+                    # so it cannot be recorded as authoritative evidence.
+                    message_kind=_QUEUE_MESSAGE_KIND_AMBIGUOUS,
                     max_attempts=_QUEUE_MAX_DELIVERY_ATTEMPTS,
                     escalated=True,
                     quarantined=True,
@@ -1243,7 +1325,11 @@ class RedisDurableQueue:
                     scan_id=scan_id,
                     organization_id=organization_id,
                     authorization_request_id=authorization_request_id,
-                    message_kind=message_kind,
+                    message_kind=_QUEUE_MESSAGE_KIND_AUTHORITATIVE,
+                    queue_binding_digest=authoritative_binding.queue_binding_digest,
+                    manifest_hash=authoritative_binding.manifest_hash,
+                    execution_ids=authoritative_binding.execution_ids,
+                    operation_ids=authoritative_binding.operation_ids,
                     attempt_count=delivery_attempts,
                     max_attempts=_QUEUE_MAX_DELIVERY_ATTEMPTS,
                     escalated=True,
@@ -1252,13 +1338,7 @@ class RedisDurableQueue:
                 return True
         try:
             if authorization_request_id:
-                authoritative_binding = QueueDispatchBinding.from_payload(fields)
-                if (
-                    authoritative_binding.scan_id != scan_id
-                    or authoritative_binding.organization_id != organization_id
-                    or authoritative_binding.authorization_request_id != authorization_request_id
-                ):
-                    raise ValueError("authoritative queue binding identity does not match the message")
+                assert authoritative_binding is not None
             envelope = None
             encrypted_envelope = fields.get("credential_envelope", "")
             if encrypted_envelope:
@@ -1493,7 +1573,11 @@ class ScanQueueManager:
                     )
                 else:
                     # Preserve the legacy diagnostic queue ACK behavior.
-                    await self._durable_backend.fail(message_id, type(exc).__name__)
+                    await self._durable_backend.fail(
+                        message_id,
+                        type(exc).__name__,
+                        message_kind=_QUEUE_MESSAGE_KIND_LEGACY,
+                    )
             raise
 
     async def _execute_with_accounting(self, task_fn, args, kwargs, timeout_seconds):

@@ -157,7 +157,7 @@ used.
   no credential persistence, compare-and-swap acknowledgement, and tamper
   rejection.
 - Current process-boundary command against the unpublished working tree, with
-  an explicit disposable SQLite path and project-local pytest base: **14
+  an explicit disposable SQLite path and project-local pytest base: **13
   passed, 4 skipped**, exit code **0**. This verifies the fresh complete
   POSIX member-identity snapshot requirement, root/session/process-group
   vectors, membership race behavior, explicit Windows fail-closed recovery,

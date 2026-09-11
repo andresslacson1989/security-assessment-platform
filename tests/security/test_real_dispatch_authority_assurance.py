@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
@@ -468,6 +469,12 @@ def _prepare_real_posix_worker(seeded: SeededManifest, monkeypatch):
             process_group_id=4242,
             session_id=4242,
             start_token=start_token,
+            member_snapshot=(SimpleNamespace(
+                pid=4242,
+                process_group_id=4242,
+                session_id=4242,
+                start_token=start_token,
+            ),),
         )
         capability.mark_started(process_id=4242, process_group_id="4242")
         from app.core.execution_service import settle_execution
@@ -768,7 +775,7 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
     from app.core import queue as queue_module
     from app.core.queue import (
         DurableQueueIdentityConflict,
-        QueueQuarantineOperatorAuthorization,
+        _issue_authenticated_quarantine_authorization,
         QueueDispatchBinding,
         RedisDurableQueue,
     )
@@ -902,7 +909,7 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         assert len(failure_calls) == 2
         assert await queue.acknowledge_quarantined(
             failure_message_id,
-            operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
                 actor_id="live-redis-operator",
                 organization_id=f"wrong-tenant-{suffix}",
                 session_binding=f"session-{suffix}",
@@ -911,7 +918,7 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         ) is False
         assert await queue.acknowledge_quarantined(
             failure_message_id,
-            operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
                 actor_id="live-redis-operator",
                 organization_id=organization_id,
                 session_binding=f"session-{suffix}",
@@ -978,7 +985,7 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         assert not tamper_calls
         assert await queue.acknowledge_quarantined(
             tampered_message_id,
-            operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
                 actor_id="live-redis-operator",
                 organization_id=organization_id,
                 session_binding=f"session-{suffix}",

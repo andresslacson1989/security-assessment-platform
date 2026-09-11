@@ -67,6 +67,16 @@ def _is_registered_context(context: object) -> bool:
     return _ISSUED_CONTEXTS.get(id(context)) is context
 
 
+class PosixProcessMemberAttestation(BaseModel):
+    """One bounded, start-token-bound member of a governed POSIX session."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    pid: int = Field(ge=2)
+    process_group_id: int = Field(ge=2)
+    session_id: int = Field(ge=0)
+    start_token: str = Field(min_length=10, max_length=256)
+
+
 class PosixProcessAttestation(BaseModel):
     """Canonical, bounded POSIX identity proof; a PID alone is never authority."""
 
@@ -83,6 +93,9 @@ class PosixProcessAttestation(BaseModel):
     captured_at: datetime
     expires_at: datetime
     verification_result: Literal["VERIFIED", "UNVERIFIED", "FAILED"]
+    # Older durable records may not contain a snapshot.  They remain valid for
+    # live-root checks but cannot authorize recovery after the root disappears.
+    member_snapshot: Optional[Tuple[PosixProcessMemberAttestation, ...]] = None
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -93,7 +106,11 @@ class PosixProcessAttestation(BaseModel):
             raise ExecutionContextExpiredError("process attestation expiry must follow capture")
         if self.pidfd_verified and not self.pidfd_supported:
             raise ValueError("pidfd verification cannot be asserted when unsupported")
-        if self.digest != canonical_binding_digest(self.model_dump(exclude={"digest"})):
+        if self.member_snapshot is not None and not self.member_snapshot:
+            raise ValueError("POSIX member snapshot cannot be empty when present")
+        if self.digest != canonical_binding_digest(
+            self.model_dump(exclude={"digest"}, exclude_none=True)
+        ):
             raise ValueError("POSIX process attestation digest does not match canonical fields")
         return self
 
@@ -435,6 +452,7 @@ __all__ = [
     "ExecutionContextError", "MissingExecutionContextError", "ExecutionContextMismatchError",
     "ExecutionContextExpiredError", "ExecutionContextTenantError", "ExecutionContextCommandError",
     "UnsupportedNonScanContextError", "GovernedExecutionContext", "NonScanExecutionContext",
+    "PosixProcessMemberAttestation", "PosixProcessAttestation", "WindowsJobAttestation",
     "canonical_command_digest",
     "canonical_binding_digest",
     "execution_claim_digest",

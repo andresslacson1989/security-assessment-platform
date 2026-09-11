@@ -43,6 +43,10 @@ class ApprovalPayload(BaseModel):
     confirm_owned_target: bool = Field(..., description="Explicit acknowledgement that the target is owned or authorized.")
 
 
+class QuarantineAcknowledgementPayload(BaseModel):
+    authorization_request_id: str = Field(..., min_length=1, max_length=256)
+
+
 def _session_jti(authorization: Optional[str], current_user: UserProfile) -> str:
     if not authorization:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer session is required.")
@@ -206,6 +210,50 @@ async def get_recovery_health(
     return {
         "organization_id": current_user.organization_id,
         "recovery": db_manager.recovery_health(current_user.organization_id),
+    }
+
+
+@router.post("/recovery/quarantine/{message_id}/ack", status_code=status.HTTP_200_OK)
+async def acknowledge_quarantined_dispatch(
+    message_id: str,
+    payload: QuarantineAcknowledgementPayload,
+    authorization: Optional[str] = Header(default=None),
+    current_user: UserProfile = Depends(
+        require_permission(required_scope="execution:recovery", allowed_roles=[UserRole.ADMIN])
+    ),
+) -> Dict[str, Any]:
+    """Acknowledge one tenant-bound queue quarantine through the auth boundary."""
+    session_jti = _session_jti(authorization, current_user)
+    from app.core.queue import (
+        EXECUTION_QUEUE_URL,
+        _issue_authenticated_quarantine_authorization,
+        queue_manager,
+    )
+    durable_backend = getattr(queue_manager, "_durable_backend", None)
+    if durable_backend is None or not EXECUTION_QUEUE_URL:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Durable execution queue is unavailable.")
+    operator = _issue_authenticated_quarantine_authorization(
+        actor_id=current_user.id,
+        organization_id=current_user.organization_id,
+        session_binding=hashlib.sha256(session_jti.encode("utf-8")).hexdigest(),
+    )
+    try:
+        acknowledged = await durable_backend.acknowledge_quarantined(
+            message_id,
+            operator=operator,
+            authorization_request_id=payload.authorization_request_id,
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid quarantine acknowledgement request.")
+    except RuntimeError:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Queue quarantine recovery is unavailable.")
+    if not acknowledged:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quarantine state did not match the authorized request.")
+    return {
+        "message_id": message_id,
+        "authorization_request_id": payload.authorization_request_id,
+        "organization_id": current_user.organization_id,
+        "acknowledged": True,
     }
 
 

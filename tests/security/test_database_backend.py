@@ -502,7 +502,7 @@ async def test_redis_enqueue_rejects_authoritative_intent_without_typed_binding(
 
 @pytest.mark.asyncio
 async def test_redis_consumer_passes_typed_authoritative_binding_to_worker():
-    from app.core.queue import QueueDispatchBinding, QueueQuarantineOperatorAuthorization, RedisDurableQueue
+    from app.core.queue import QueueDispatchBinding, RedisDurableQueue, _issue_authenticated_quarantine_authorization
 
     binding = QueueDispatchBinding.create(
         scan_id="scan-consumer-binding",
@@ -573,7 +573,7 @@ async def test_redis_consumer_passes_typed_authoritative_binding_to_worker():
 async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine_and_explicit_ack(monkeypatch):
     """Authoritative failures are retryable evidence, never implicit ACKs."""
     from app.core import queue as queue_module
-    from app.core.queue import QueueDispatchBinding, QueueQuarantineOperatorAuthorization, RedisDurableQueue
+    from app.core.queue import QueueDispatchBinding, RedisDurableQueue, _issue_authenticated_quarantine_authorization
 
     monkeypatch.setattr(queue_module, "_QUEUE_MAX_DELIVERY_ATTEMPTS", 3)
     binding = QueueDispatchBinding.create(
@@ -765,7 +765,7 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
     queue._redis.markers[quarantine_state_key] = json.dumps(tampered_quarantine)
     assert await queue.acknowledge_quarantined(
         "message-authoritative-failure",
-        operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
             actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
         ),
         authorization_request_id=binding.authorization_request_id,
@@ -785,7 +785,7 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
 
     assert await queue.acknowledge_quarantined(
         "message-authoritative-failure",
-        operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
             actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
         ),
         authorization_request_id=binding.authorization_request_id,
@@ -800,7 +800,7 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
     assert recovery["original_failure_evidence_digest"] == persisted_quarantine["failure_evidence_digest"]
     assert await queue.acknowledge_quarantined(
         "message-authoritative-failure",
-        operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
             actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
         ),
     ) is False
@@ -959,10 +959,10 @@ async def test_authoritative_queue_delivery_counter_failure_quarantines_without_
     assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
     assert handler_calls == 0
     assert len(queue._redis.failures) == 1
-    from app.core.queue import QueueQuarantineOperatorAuthorization
+    from app.core.queue import _issue_authenticated_quarantine_authorization
     assert await queue.acknowledge_quarantined(
         "message-counter-unavailable",
-        operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
             actor_id="security-admin", organization_id="wrong-tenant", session_binding="test-session"
         ),
         authorization_request_id=binding.authorization_request_id,
@@ -970,12 +970,12 @@ async def test_authoritative_queue_delivery_counter_failure_quarantines_without_
     assert queue._redis.acks == []
     assert await queue.acknowledge_quarantined(
         "message-counter-unavailable",
-        operator=QueueQuarantineOperatorAuthorization(
+        operator=_issue_authenticated_quarantine_authorization(
             actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
         ),
         authorization_request_id=binding.authorization_request_id,
-    ) is True
-    assert queue._redis.acks == ["message-counter-unavailable"]
+    ) is False
+    assert queue._redis.acks == []
 
 
 @pytest.mark.asyncio
@@ -1044,6 +1044,7 @@ async def test_authoritative_quarantine_fails_closed_when_transaction_cannot_com
             manifest_hash=binding.manifest_hash,
             execution_ids=binding.execution_ids,
             operation_ids=binding.operation_ids,
+            message_kind="AUTHORITATIVE_EXECUTION",
             attempt_count=5,
             max_attempts=5,
             escalated=True,
@@ -1283,11 +1284,54 @@ def test_queue_binding_payload_rejects_non_string_identity_material() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queue_failure_requires_explicit_consistent_message_classification() -> None:
+    """Missing/partial or cross-classified failure evidence fails before Redis writes."""
+    from app.core.queue import RedisDurableQueue
+
+    queue = object.__new__(RedisDurableQueue)
+    queue._redis = object()
+    queue._group_ready = True
+    queue._group_lock = asyncio.Lock()
+
+    with pytest.raises(ValueError, match="message kind is invalid"):
+        await queue.fail("message-missing-kind", "QUEUE_FAILURE")
+
+    with pytest.raises(ValueError, match="binding is incomplete"):
+        await queue.fail(
+            "message-partial-authority",
+            "QUEUE_FAILURE",
+            acknowledge=False,
+            scan_id="scan-partial",
+            organization_id="org-partial",
+            authorization_request_id="request-partial",
+            message_kind="AUTHORITATIVE_EXECUTION",
+            quarantined=True,
+        )
+
+    with pytest.raises(ValueError, match="legacy queue failure"):
+        await queue.fail(
+            "message-legacy-authority",
+            "QUEUE_FAILURE",
+            message_kind="LEGACY_DIAGNOSTIC",
+            authorization_request_id="request-legacy",
+        )
+
+
+def test_queue_quarantine_authorization_is_not_data_constructible() -> None:
+    from app.core.queue import QueueQuarantineOperatorAuthorization
+
+    with pytest.raises(TypeError):
+        QueueQuarantineOperatorAuthorization(
+            actor_id="operator",
+            organization_id="org",
+            session_binding="session",
+            permission="execution:recovery",
+        )
+
+
+@pytest.mark.asyncio
 async def test_quarantine_acknowledgement_fails_closed_on_compare_and_swap_race(monkeypatch):
-    from app.core.queue import (
-        QueueQuarantineOperatorAuthorization,
-        RedisDurableQueue,
-    )
+    from app.core.queue import RedisDurableQueue, _issue_authenticated_quarantine_authorization
 
     queue = object.__new__(RedisDurableQueue)
     queue._group_ready = True
@@ -1319,7 +1363,7 @@ async def test_quarantine_acknowledgement_fails_closed_on_compare_and_swap_race(
         return state
 
     monkeypatch.setattr(queue, "_get_quarantine_state", fake_get)
-    operator = QueueQuarantineOperatorAuthorization(
+    operator = _issue_authenticated_quarantine_authorization(
         actor_id="operator-cas",
         organization_id="org-cas",
         session_binding="session-cas",
