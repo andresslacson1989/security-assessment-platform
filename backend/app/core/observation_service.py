@@ -397,6 +397,8 @@ class BackendObservationService:
                     and durable_identity is None
                     and ownership_state in {"UNKNOWN", "EXTERNAL_PROCESS_GOVERNED"}
                     and (
+                        ownership_state == "EXTERNAL_PROCESS_GOVERNED"
+                        or
                         candidate_run_state in {"STARTING", "RUNNING"}
                         or candidate.get("process_id") is not None
                         or ownership_state == "UNKNOWN"

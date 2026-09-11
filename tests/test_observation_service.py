@@ -312,8 +312,11 @@ async def test_production_reaper_persists_and_retries_unconfirmed_governed_recov
     assert settled["next_retry_at"] is None
 
 
+@pytest.mark.parametrize("run_state", ["REQUESTED", "STARTING", "RUNNING"])
 @pytest.mark.asyncio
-async def test_production_reaper_persists_missing_identity_without_supervisor(tmp_path, monkeypatch):
+async def test_production_reaper_persists_missing_identity_without_supervisor(
+    tmp_path, monkeypatch, run_state
+):
     """Missing identity is durable, tenant-scoped, retryable, and non-terminal."""
     from app.core import db as db_module
     from app.core import process_supervisor as supervisor_module
@@ -332,6 +335,10 @@ async def test_production_reaper_persists_missing_identity_without_supervisor(tm
         conn.execute(
             "UPDATE execution_requests SET state='REVOKED' WHERE id=? AND organization_id=?",
             (request_id, "org-settlement"),
+        )
+        conn.execute(
+            "UPDATE execution_runs SET state=? WHERE execution_id=? AND organization_id=?",
+            (run_state, execution_id, "org-settlement"),
         )
         conn.execute(
             """UPDATE execution_process_ownership
@@ -420,12 +427,13 @@ async def test_production_reaper_persists_missing_identity_without_supervisor(tm
             "SELECT state FROM execution_runs WHERE execution_id=? AND organization_id=?",
             (execution_id, "org-settlement"),
         ).fetchone()
-    assert final["state"] == "RUNNING"
+    assert final["state"] == run_state
 
 
+@pytest.mark.parametrize("launch_commit_state", ["NOT_ATTEMPTED", "UNCERTAIN"])
 @pytest.mark.asyncio
 async def test_production_reaper_persists_unknown_missing_identity_until_bounded_exhaustion(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, launch_commit_state
 ):
     """UNKNOWN ownership remains durable, retryable, isolated, and non-terminal."""
     from app.core import db as db_module
@@ -448,12 +456,12 @@ async def test_production_reaper_persists_unknown_missing_identity_until_bounded
         )
         conn.execute(
             """UPDATE execution_process_ownership
-                  SET ownership_state='UNKNOWN', launch_commit_state='UNCERTAIN',
+                      SET ownership_state='UNKNOWN', launch_commit_state=?,
                       container_identity=NULL, root_process_id=NULL,
                       root_process_start_token=NULL, process_group_id=NULL,
                       session_id=NULL, identity_attestation=NULL
                 WHERE execution_id=? AND organization_id=?""",
-            (execution_id, "org-settlement"),
+            (launch_commit_state, execution_id, "org-settlement"),
         )
 
     class NeverCalledSupervisor:
@@ -486,7 +494,7 @@ async def test_production_reaper_persists_unknown_missing_identity_until_bounded
     assert state["last_outcome"] == "identity_unavailable"
     assert state["last_error"] is not None
     assert ownership["ownership_state"] == "UNKNOWN"
-    assert ownership["launch_commit_state"] == "UNCERTAIN"
+    assert ownership["launch_commit_state"] == launch_commit_state
     assert ownership["container_identity"] is None
     assert ownership["root_process_id"] is None
     assert len(database.recovery_health("org-settlement")) == 1

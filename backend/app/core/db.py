@@ -5644,15 +5644,18 @@ class DatabaseManager:
                 return False
             if (
                 (
-                    row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
-                    and not (
-                        row["ownership_state"] == ProcessOwnershipState.UNKNOWN.value
-                        and row["launch_commit_state"] == LaunchCommitState.UNCERTAIN.value
-                    )
+                    row["ownership_state"] == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+                    and row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
                 )
                 or (
-                    row["ownership_state"] == ProcessOwnershipState.UNKNOWN.value
-                    and row["launch_commit_state"] != LaunchCommitState.UNCERTAIN.value
+                    row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+                    and (
+                        row["ownership_state"] != ProcessOwnershipState.UNKNOWN.value
+                        or row["launch_commit_state"] not in {
+                            LaunchCommitState.NOT_ATTEMPTED.value,
+                            LaunchCommitState.UNCERTAIN.value,
+                        }
+                    )
                 )
                 or row["run_state"] not in {"REQUESTED", "STARTING", "RUNNING"}
                 or row["recovery_status"] == "IN_PROGRESS"

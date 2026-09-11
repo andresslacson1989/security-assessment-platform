@@ -325,14 +325,16 @@ used.
   failure, and 15 warnings**. Excluding that preserved failure yields 917
   passing tests. Those results are independently verified evidence for the
   prior candidate, not a substitute for the current local run above.
-- Current grouped UNKNOWN-missing-identity correction vectors: **4 passed**,
+- Current grouped UNKNOWN/external-missing-identity correction vectors: **9
+  passed**,
   **96 deselected**, exit code **0**, with disposable storage under
-  `.project-temp/section-b-unknown-missing-focused-7/`. This covers the
-  external-process regression, direct DAL acceptance for `UNKNOWN` with
-  `UNCERTAIN` launch state, durable observer retry/health evidence, due-retry
-  re-enumeration, bounded exhaustion, tenant isolation, and non-terminal
-  preservation.
-- Current affected-path regression after the grouped correction: **99 passed**,
+  `.project-temp/section-b-unknown-combinations-focused/`. This covers the
+  external-process regression across `REQUESTED`, `STARTING`, and `RUNNING`,
+  direct DAL acceptance for `UNKNOWN` with `NOT_ATTEMPTED` and `UNCERTAIN`
+  launch states, invalid ownership/launch-pair rejection, durable
+  observer retry/health evidence, due-retry re-enumeration, bounded
+  exhaustion, tenant isolation, and non-terminal preservation.
+- Current affected-path regression after the grouped correction: **104 passed**,
   **96 deselected**, **1 preserved historical/environment fixture failure**,
   exit code **1**, under
   `.project-temp/section-b-unknown-affected-suite/`. The preserved failure is

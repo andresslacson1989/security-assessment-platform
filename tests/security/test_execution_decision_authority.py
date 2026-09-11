@@ -2395,6 +2395,49 @@ def test_missing_identity_recovery_dal_is_tenant_bound_idempotent_and_nontermina
     assert attempts == 1
 
 
+@pytest.mark.parametrize(
+    ("ownership_state", "launch_commit_state"),
+    [("UNKNOWN", "COMMITTED"), ("EXTERNAL_PROCESS_GOVERNED", "UNCERTAIN")],
+)
+def test_missing_identity_recovery_rejects_invalid_ownership_launch_pair(
+    tmp_path, ownership_state, launch_commit_state
+):
+    database = DatabaseManager(tmp_path / "recovery-invalid-identity-pair.db")
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-recovery-invalid-pair",
+        request_id="request-recovery-invalid-pair",
+        decision_id="decision-recovery-invalid-pair",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership SET ownership_state=?, launch_commit_state=?, "
+            "container_identity=NULL, root_process_id=NULL, root_process_start_token=NULL, "
+            "process_group_id=NULL, session_id=NULL, identity_attestation=NULL "
+            "WHERE execution_id=? AND organization_id=?",
+            (ownership_state, launch_commit_state, "run-recovery-invalid-pair", "org-settlement"),
+        )
+    assert database.record_unavailable_governed_recovery(
+        "run-recovery-invalid-pair",
+        "org-settlement",
+        worker_generation="generation-settlement",
+        recovery_worker_identity="execution-recovery-coordinator",
+        recovery_worker_generation="recovery-generation-invalid-pair",
+        outcome="identity_unavailable",
+        error="invalid ownership/launch pair",
+        next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=30),
+    ) is False
+    with database._connection_scope() as conn:
+        state = conn.execute(
+            "SELECT status, attempt_number, last_error FROM execution_recovery_state "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-invalid-pair", "org-settlement"),
+        ).fetchone()
+    assert state["status"] == "REQUESTED"
+    assert state["attempt_number"] == 0
+    assert state["last_error"] is None
+
+
 def test_terminal_process_settlement_replay_requires_the_original_proof_tuple(tmp_path):
     from app.core.execution_service import record_terminal
     from app.core.execution_context import decode_execution_proof, encode_execution_proof
