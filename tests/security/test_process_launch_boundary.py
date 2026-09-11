@@ -16,6 +16,7 @@ import pytest
 from app.core.process_supervisor import (
     CredentialEnvironmentHandoff,
     CredentialExecutionContext,
+    ProcessCancellationStatus,
     ProcessExecutionStatus,
     ProcessIdentity,
     ProcessSupervisor,
@@ -126,6 +127,42 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
     assert "HTTP_PROXY" not in observed
     assert "HTTPS_PROXY" not in observed
     assert "ALL_PROXY" not in observed
+
+
+@pytest.mark.asyncio
+async def test_identity_capture_failure_after_popen_is_typed_uncertain_and_recoverable(monkeypatch):
+    """A real child created before identity capture cannot become ordinary failure."""
+    supervisor = ProcessSupervisor()
+    launched: list[subprocess.Popen] = []
+    original_popen = subprocess.Popen
+
+    def capture_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        launched.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", capture_popen)
+    monkeypatch.setattr(supervisor, "_capture_process_identity", lambda *_args: None)
+
+    try:
+        result = await supervisor.execute(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=10.0,
+            non_scan_context=issue_non_scan_execution_context(
+                "observation:identity-capture-failure"
+            ),
+        )
+
+        assert result.execution_status is ProcessExecutionStatus.LAUNCH_UNCERTAIN
+        assert result.stderr.startswith("PROCESS_LAUNCH_UNCERTAIN")
+        assert launched
+        assert launched[0].poll() is None
+    finally:
+        for process in launched:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            supervisor._unregister_pid(process.pid)
 
 
 @pytest.mark.asyncio
@@ -397,6 +434,134 @@ def test_root_exit_with_multiple_descendants_requires_session_and_group_empty() 
                     "execution-root-exited-multi-child-cleanup",
                     process_identity=identity,
                 )
+            try:
+                root.kill()
+            except OSError:
+                pass
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        if root is not None and root.stdout is not None:
+            root.stdout.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+def test_root_exit_with_descendant_in_new_group_is_not_empty_and_is_reaped() -> None:
+    """A PGID escape inside the owned session remains recoverable and bounded."""
+    root = None
+    identity = None
+    try:
+        child_code = (
+            "import os,time; os.setpgid(0,0); "
+            "print(os.getpgrp(), flush=True); time.sleep(30)"
+        )
+        root_code = (
+            "import subprocess,sys,time; "
+            f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
+            "print(child.pid, flush=True); time.sleep(1)"
+        )
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        child_line = root.stdout.readline() if root.stdout is not None else ""
+        assert child_line.strip().isdigit()
+        child_pid = int(child_line.strip())
+        identity = ProcessSupervisor._capture_process_identity(root.pid, root.pid)
+        assert identity is not None
+        root.wait(timeout=5)
+        assert not ProcessSupervisor._pid_exists(root.pid)
+        assert ProcessSupervisor._pid_exists(child_pid)
+        assert ProcessSupervisor._process_session_exists(identity.session_id)
+        assert not ProcessSupervisor._process_tree_empty(
+            identity,
+            identity.process_group_id,
+            root_exited=True,
+        )
+
+        cancelled = ProcessSupervisor().cancel_execution(
+            "execution-root-exited-pgid-escape",
+            process_identity=identity,
+        )
+        assert cancelled.confirmed is True
+        assert not ProcessSupervisor._pid_exists(child_pid)
+        assert not ProcessSupervisor._process_session_exists(identity.session_id)
+    finally:
+        if root is not None and root.poll() is None:
+            if identity is not None:
+                ProcessSupervisor().cancel_execution(
+                    "execution-root-exited-pgid-escape-cleanup",
+                    process_identity=identity,
+                )
+            try:
+                root.kill()
+            except OSError:
+                pass
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        if root is not None and root.stdout is not None:
+            root.stdout.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+def test_session_member_created_during_cancellation_is_reaped_or_fails_closed() -> None:
+    """Repeated session snapshots handle members created during termination."""
+    root = None
+    identity = None
+    try:
+        child_code = (
+            "import os,subprocess,sys,time\n"
+            "os.setpgid(0,0)\n"
+            "for _ in range(16):\n"
+            "    subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])\n"
+            "    time.sleep(.05)\n"
+            "time.sleep(30)"
+        )
+        root_code = (
+            "import subprocess,sys,time; "
+            f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
+            "print(child.pid, flush=True); time.sleep(.2)"
+        )
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        child_line = root.stdout.readline() if root.stdout is not None else ""
+        assert child_line.strip().isdigit()
+        identity = ProcessSupervisor._capture_process_identity(root.pid, root.pid)
+        assert identity is not None
+        root.wait(timeout=5)
+
+        cancelled = ProcessSupervisor().cancel_execution(
+            "execution-session-membership-race",
+            process_identity=identity,
+        )
+        assert cancelled.confirmed is True or cancelled.status is ProcessCancellationStatus.FAILED
+        if cancelled.confirmed:
+            assert not ProcessSupervisor._process_session_exists(identity.session_id)
+    finally:
+        if identity is not None:
+            cleanup_supervisor = ProcessSupervisor()
+            for attempt in range(3):
+                if not ProcessSupervisor._process_session_exists(identity.session_id):
+                    break
+                cleanup_supervisor.cancel_execution(
+                    f"execution-session-membership-race-cleanup-{attempt}",
+                    process_identity=identity,
+                )
+            assert not ProcessSupervisor._process_session_exists(identity.session_id)
+        if root is not None and root.poll() is None:
             try:
                 root.kill()
             except OSError:

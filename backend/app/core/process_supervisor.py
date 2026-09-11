@@ -615,11 +615,13 @@ class ProcessSupervisor:
             for line in result.stdout.splitlines():
                 fields = line.split()
                 if len(fields) < 3:
+                    if line.strip():
+                        return True
                     continue
                 try:
                     member_pid, member_session_id = (int(value) for value in fields[:2])
                 except ValueError:
-                    continue
+                    return True
                 if (
                     member_pid > 1
                     and member_session_id == session_id
@@ -629,6 +631,106 @@ class ProcessSupervisor:
             return False
         except (OSError, subprocess.SubprocessError):
             return True
+
+    @staticmethod
+    def _posix_session_member_identities(
+        session_id: Optional[int],
+    ) -> Optional[list[tuple[int, str, int]]]:
+        """Capture live members of an owned POSIX session with start tokens.
+
+        The result is deliberately ``None`` when the complete membership or
+        any member identity cannot be established.  Callers must treat that
+        as an uncertainty condition rather than falling back to an unbound
+        PID signal.
+        """
+        if os.name == "nt" or not session_id or session_id <= 1:
+            return []
+        try:
+            result = subprocess.run(
+                ["ps", "-e", "-o", "pid=", "-o", "pgid=", "-o", "sid=", "-o", "stat="],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            members: list[tuple[int, str, int]] = []
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) < 4:
+                    if line.strip():
+                        return None
+                    continue
+                try:
+                    member_pid, member_pgid, member_session_id = (
+                        int(value) for value in fields[:3]
+                    )
+                except ValueError:
+                    return None
+                if (
+                    member_pid <= 1
+                    or member_session_id != session_id
+                    or fields[3].startswith(("Z", "X"))
+                ):
+                    continue
+                start_token = _read_posix_start_token(member_pid)
+                if start_token is None:
+                    return None
+                members.append((member_pid, start_token, member_pgid))
+            return members
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    @staticmethod
+    def _terminate_posix_session_members(
+        identity: Optional[ProcessIdentity],
+        process_group_id: Optional[int],
+    ) -> bool:
+        """Terminate verified session members outside the owned process group.
+
+        Process-group signalling remains the primary operation.  This narrow
+        supplemental path handles a descendant that changed PGID while
+        retaining the captured session.  Every supplemental signal is bound to
+        a freshly revalidated PID/start-token/session/PGID tuple; a mismatch
+        or incomplete enumeration fails closed.
+        """
+        if identity is None or identity.session_id is None or os.name == "nt":
+            return True
+        members = ProcessSupervisor._posix_session_member_identities(identity.session_id)
+        if members is None:
+            return False
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
+        for member_pid, start_token, member_pgid in members:
+            if member_pid == current_pid or member_pid == parent_pid:
+                logger.error(
+                    "Security invariant: owned session contains supervisor PID=%s",
+                    member_pid,
+                )
+                return False
+            if member_pid == identity.pid and start_token != identity.start_token:
+                logger.error(
+                    "Security invariant: owned root PID was reused PID=%s",
+                    member_pid,
+                )
+                return False
+            if process_group_id is not None and member_pgid == process_group_id:
+                continue
+            if (
+                _read_posix_start_token(member_pid) != start_token
+                or ProcessSupervisor._capture_process_identity(member_pid, member_pgid)
+                != ProcessIdentity(member_pid, member_pgid, start_token, identity.session_id)
+            ):
+                continue
+            try:
+                os.kill(member_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                return False
+        return True
 
     @staticmethod
     def _capture_process_identity(pid: int, process_group_id: Optional[int]) -> Optional[ProcessIdentity]:
@@ -707,6 +809,8 @@ class ProcessSupervisor:
         if not root_exited and ProcessSupervisor._pid_exists(identity.pid):
             return False
         if process_group_id and ProcessSupervisor._process_group_exists(process_group_id):
+            return False
+        if identity.session_id is not None and ProcessSupervisor._process_session_exists(identity.session_id):
             return False
         return True
 
@@ -788,6 +892,8 @@ class ProcessSupervisor:
         tracked_pids = [pid, *descendants]
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
+            if not ProcessSupervisor._terminate_posix_session_members(identity, group_id):
+                return False
             if (
                 not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids)
                 and not ProcessSupervisor._process_group_exists(group_id)
@@ -797,6 +903,8 @@ class ProcessSupervisor:
             ):
                 return True
             time.sleep(0.02)
+        if not ProcessSupervisor._terminate_posix_session_members(identity, group_id):
+            return False
         return (
             not any(ProcessSupervisor._pid_exists(member) for member in tracked_pids)
             and not ProcessSupervisor._process_group_exists(group_id)
