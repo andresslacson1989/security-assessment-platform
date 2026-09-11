@@ -10,8 +10,9 @@ explicit deployment identity/generation binding, process-session emptiness
 checking, zombie-member handling, and explicit recovery blocking when root
 ownership is no longer independently provable at the
 current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
-The current local corrective candidate is the grouped commit immediately
-following `c1536c54c9e18c407dcaa7f8f249522663bdac18`; it adds durable
+The current local corrective candidate is committed at exact SHA
+`aa819b68cf636903b2e5b6126d16a4abb88b6dff`, parent
+`cc16c35720e05d8114ad956e8d1b8f34b3c22af6`; it adds durable
 missing-identity recovery for active `UNKNOWN` ownership, corrects recovery
 attempt projection lookup, and retains the earlier external-process
 correction. The earlier local commits
@@ -287,7 +288,7 @@ used.
   `CYBERASSESS_DB_PATH` and `--basetemp` under the unique
   `.project-temp/section-b-corrective-focused-final-2/` directory. This is
   historical evidence for the predecessor candidate.
-- Current recovery-correction vectors for local worktree changes derived from
+- Historical recovery-correction vectors from
   `2545a62acbfb2c3e4978ccac9919b7f56688ad48`: **3 passed**, exit code **0**.
   This covers deferred complete-identity `UNCERTAIN` provenance followed by
   confirmed settlement, durable retry scheduling and later exact settlement
@@ -307,15 +308,15 @@ used.
   code **0**. The exact isolated paths were under
   `.project-temp/section-b-recovery-correction-full-final/`. The deselected
   assertions remain documented historical evidence checks, not hidden failures.
-- Current missing-identity DAL and production-observer vectors for the
-  worktree derived from `4bda29980c9c242d6305f718cfccd3d031ceee65`: **2
+- Historical missing-identity DAL and production-observer vectors for the
+  predecessor at `4bda29980c9c242d6305f718cfccd3d031ceee65`: **2
   passed**, exit code **0**, with disposable storage under
   `.project-temp/section-b-missing-identity-focused/`. This is local evidence
   only; it is not GitHub Actions evidence.
-- Current complete affected-path suite for the same worktree: **193 passed**,
+- Historical complete affected-path suite for the same predecessor: **193 passed**,
   **6** Windows-inapplicable POSIX skips, exit code **0**, with isolated paths
   under `.project-temp/section-b-missing-identity-affected-final-3/`.
-- Current full repository suite for the same worktree, excluding only the two
+- Historical full repository suite for the same predecessor, excluding only the two
   preserved historical Section A snapshot assertions: **919 passed, 87
   skipped, 2 deselected, 14 warnings**, exit code **0**, with isolated paths
   under `.project-temp/section-b-missing-identity-full-final/`.
@@ -342,6 +343,14 @@ used.
   authentication using a disposable module database lacking the unrelated
   `revoked_tokens` table; no recovery test failed. This is not represented as
   a passing suite or as a correction to authentication/schema behavior.
+- Independent full local repository suite for exact candidate
+  `aa819b68cf636903b2e5b6126d16a4abb88b6dff`: **927 passed, 87 skipped, 1
+  failed, 14 warnings**, exit code **1**. The sole failure is
+  `tests/security/test_contract_fleet_consistency.py::test_worktree_inventory_snapshot_matches_documented_git_serialization`:
+  the preserved historical snapshot records **1709** `.ci` entries while the
+  preserved untracked `.ci` tree contains **3038**. This failure remains
+  explicit and is not converted into a pass or silently excluded. The local
+  full-suite result is not GitHub Actions evidence.
 - The live Redis transport vector was attempted with the declared `redis` and
   `hiredis` packages installed only under `.project-temp/`. Dependency
   construction succeeded and the project-local Redis service was reachable,
@@ -439,8 +448,8 @@ corrected implementation.
 The GitHub result is CI evidence for the exact code baseline. It does not
 close the independent platform and deployment gates listed in this addendum.
 
-There is no GitHub Actions run for the current uncommitted corrective worktree
-derived from local commit `4bda29980c9c242d6305f718cfccd3d031ceee65`. The
+There is no GitHub Actions run for the current committed local candidate
+`aa819b68cf636903b2e5b6126d16a4abb88b6dff`. The
 required jobs
 `compile-backend`, `focused-contract-verification`,
 `full-repository-verification`, and `postgres-schema-assurance` remain defined
