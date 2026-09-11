@@ -21,6 +21,7 @@ from app.core.process_supervisor import (
     CredentialExecutionContext,
     ProcessCancellationStatus,
     ProcessExecutionStatus,
+    ProcessMemberIdentity,
     ProcessIdentity,
     ProcessSupervisor,
     VerifiedEgressProxy,
@@ -1189,6 +1190,150 @@ def test_root_exit_with_multiple_descendants_recovers_from_attested_snapshot() -
                 pass
         if root is not None and root.stdout is not None:
             root.stdout.close()
+
+
+def test_root_exit_rejects_member_created_after_attested_snapshot(monkeypatch) -> None:
+    """Post-root recovery cannot admit a member absent from the prior snapshot."""
+    import app.core.process_supervisor as process_supervisor_module
+
+    previous = ProcessIdentity(
+        pid=4100,
+        process_group_id=4100,
+        start_token="posix:boot:root",
+        session_id=4100,
+        member_snapshot=(
+            ProcessMemberIdentity(4100, 4100, 4100, "posix:boot:root"),
+            ProcessMemberIdentity(4101, 4100, 4100, "posix:boot:child"),
+        ),
+    )
+    monkeypatch.setattr(process_supervisor_module.os, "name", "posix")
+    monkeypatch.setattr(process_supervisor_module.os, "getpid", lambda: 9000)
+    monkeypatch.setattr(process_supervisor_module.os, "getppid", lambda: 9001)
+    monkeypatch.setattr(process_supervisor_module, "_read_posix_start_token", lambda _pid: None)
+    monkeypatch.setattr(
+        ProcessSupervisor,
+        "_posix_session_member_identities",
+        staticmethod(
+            lambda _session_id: [
+                (4102, "posix:boot:late", 4100),
+                (4101, "posix:boot:child", 4100),
+            ]
+        ),
+    )
+
+    assert ProcessSupervisor._capture_posix_identity_after_root_exit(previous) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+def test_root_exit_rejects_descendant_created_after_root_exit(tmp_path) -> None:
+    """A late session member cannot become an authorized recovery target."""
+    root = None
+    identity = None
+    session_id = None
+    child_pid = None
+    late_pid = None
+    child_marker = tmp_path / "attested-child.pid"
+    ready_marker = tmp_path / "attested-child.ready"
+    exit_gate = tmp_path / "root.exit"
+    late_marker = tmp_path / "late-descendant.pid"
+    try:
+        child_code = (
+            "import os,subprocess,sys,time\n"
+            "from pathlib import Path\n"
+            "root_pid=int(sys.argv[1])\n"
+            "ready_marker=sys.argv[2]\n"
+            "late_marker=sys.argv[3]\n"
+            "Path(ready_marker).write_text('ready', encoding='ascii')\n"
+            "while os.getppid() == root_pid:\n"
+            "    time.sleep(0.01)\n"
+            "late=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])\n"
+            "Path(late_marker).write_text(str(late.pid), encoding='ascii')\n"
+            "time.sleep(30)\n"
+        )
+        root_code = (
+            "import os,subprocess,sys,time\n"
+            "from pathlib import Path\n"
+            f"child=subprocess.Popen([sys.executable,'-c',{child_code!r},str(os.getpid()),"
+            f"{str(ready_marker)!r},{str(late_marker)!r}])\n"
+            f"Path({str(child_marker)!r}).write_text(str(child.pid), encoding='ascii')\n"
+            f"while not Path({str(exit_gate)!r}).exists():\n"
+            "    time.sleep(0.01)\n"
+        )
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        session_id = os.getsid(root.pid)
+        deadline = time.monotonic() + 5
+        while not child_marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert child_marker.exists(), "root did not publish the child identity"
+        child_pid = int(child_marker.read_text(encoding="ascii"))
+
+        deadline = time.monotonic() + 5
+        while not ready_marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready_marker.exists(), "attested child did not publish readiness"
+        assert not late_marker.exists(), "late descendant was created before root exit"
+
+        identity = ProcessSupervisor._capture_process_identity(root.pid, root.pid)
+        assert identity is not None
+        previous_pairs = {
+            (member.pid, member.start_token)
+            for member in identity.member_snapshot
+        }
+        assert (root.pid, identity.start_token) in previous_pairs
+        assert (child_pid, next(
+            member.start_token
+            for member in identity.member_snapshot
+            if member.pid == child_pid
+        )) in previous_pairs
+
+        exit_gate.write_text("release", encoding="ascii")
+        root.wait(timeout=5)
+        assert not ProcessSupervisor._pid_exists(root.pid)
+
+        deadline = time.monotonic() + 5
+        while not late_marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert late_marker.exists(), "surviving child did not publish its late descendant"
+        late_pid = int(late_marker.read_text(encoding="ascii"))
+        assert ProcessSupervisor._pid_exists(child_pid)
+        assert ProcessSupervisor._pid_exists(late_pid)
+        current_members = ProcessSupervisor._posix_session_member_identities(session_id)
+        assert current_members is not None
+        assert (child_pid, next(
+            start_token
+            for member_pid, start_token, _member_pgid in current_members
+            if member_pid == child_pid
+        )) in previous_pairs
+        assert any(member_pid == late_pid for member_pid, _token, _pgid in current_members)
+        assert not any(
+            member_pid == late_pid and (member_pid, start_token) in previous_pairs
+            for member_pid, start_token, _member_pgid in current_members
+        )
+
+        cancelled = ProcessSupervisor().cancel_execution(
+            "execution-root-exited-late-member",
+            process_identity=identity,
+        )
+        assert cancelled.status is ProcessCancellationStatus.RECOVERY_BLOCKED
+        assert cancelled.confirmed is False
+        # The late member must still be alive: this assertion proves recovery
+        # was blocked by the untrusted newcomer, rather than passing because
+        # cleanup happened to kill it.
+        assert ProcessSupervisor._pid_exists(child_pid)
+        assert ProcessSupervisor._pid_exists(late_pid)
+    finally:
+        _terminate_owned_test_session(session_id)
+        if root is not None:
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")

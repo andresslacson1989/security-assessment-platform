@@ -893,6 +893,48 @@ class ProcessSupervisor:
             or not previous.start_token.strip()
         ):
             return None
+        previous_members = previous.member_snapshot
+        if (
+            type(previous_members) is not tuple
+            or not previous_members
+            or len(previous_members) > 512
+        ):
+            return None
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
+        previous_pairs: set[tuple[int, str]] = set()
+        previous_pids: set[int] = set()
+        previous_root: Optional[ProcessMemberIdentity] = None
+        for member in previous_members:
+            if (
+                type(member) is not ProcessMemberIdentity
+                or type(member.pid) is not int
+                or type(member.process_group_id) is not int
+                or type(member.session_id) is not int
+                or member.pid <= 1
+                or member.process_group_id <= 1
+                or member.session_id != previous.session_id
+                or not isinstance(member.start_token, str)
+                or not member.start_token.strip()
+                or member.pid in {current_pid, parent_pid}
+                or member.pid in previous_pids
+            ):
+                return None
+            pair = (member.pid, member.start_token)
+            if pair in previous_pairs:
+                return None
+            previous_pairs.add(pair)
+            previous_pids.add(member.pid)
+            if member.pid == previous.pid:
+                if (
+                    previous_root is not None
+                    or member.start_token != previous.start_token
+                    or member.process_group_id != previous.process_group_id
+                ):
+                    return None
+                previous_root = member
+        if previous_root is None:
+            return None
         # A live or PID-reused root cannot be treated as a completed root-exit
         # transition. The second token read is the current kernel fact.
         if _read_posix_start_token(previous.pid) is not None:
@@ -900,22 +942,43 @@ class ProcessSupervisor:
         members = ProcessSupervisor._posix_session_member_identities(previous.session_id)
         if members is None:
             return None
-        current_pid = os.getpid()
-        parent_pid = os.getppid() if hasattr(os, "getppid") else None
-        if any(member_pid in {current_pid, parent_pid, previous.pid} for member_pid, _, _ in members):
-            # A reused root PID or a supervisor PID in the owned session is an
-            # identity conflict, not a reason to widen recovery.
+        if not isinstance(members, list) or len(members) > 512:
             return None
-        live_members = tuple(
-            ProcessMemberIdentity(member_pid, member_pgid, previous.session_id, member_start_token)
-            for member_pid, member_start_token, member_pgid in members
-        )
-        root_member = ProcessMemberIdentity(
-            previous.pid,
-            previous.process_group_id,
-            previous.session_id,
-            previous.start_token,
-        )
+        live_members: list[ProcessMemberIdentity] = []
+        current_pids: set[int] = set()
+        current_pairs: set[tuple[int, str]] = set()
+        for raw_member in members:
+            if not isinstance(raw_member, tuple) or len(raw_member) != 3:
+                return None
+            member_pid, member_start_token, member_pgid = raw_member
+            if (
+                type(member_pid) is not int
+                or type(member_pgid) is not int
+                or member_pid <= 1
+                or member_pgid <= 1
+                or not isinstance(member_start_token, str)
+                or not member_start_token.strip()
+                or member_pid in {current_pid, parent_pid, previous.pid}
+            ):
+                return None
+            pair = (member_pid, member_start_token)
+            # The post-root snapshot is an allowlist intersection, never a
+            # new authority source. A member created after the attested
+            # snapshot, or a PID reused with a new token, is a recovery block.
+            if pair not in previous_pairs or member_pid in current_pids or pair in current_pairs:
+                return None
+            current = ProcessSupervisor._capture_process_member_identity(
+                member_pid,
+                member_pgid,
+                previous.session_id,
+                member_start_token,
+            )
+            if current is None:
+                return None
+            current_pids.add(member_pid)
+            current_pairs.add(pair)
+            live_members.append(current)
+        root_member = previous_root
         snapshot = tuple(
             sorted(
                 (root_member, *live_members),
