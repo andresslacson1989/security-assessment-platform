@@ -11,11 +11,13 @@ checking, zombie-member handling, and explicit recovery blocking when root
 ownership is no longer independently provable at the
 current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
 The current unpublished corrective worktree is derived from local commit
-`2545a62acbfb2c3e4978ccac9919b7f56688ad48` and adds the audited recovery
-state-machine and durable unconfirmed-governed-recovery corrections. The
-earlier local commit `abbc2504b3badbd52032352722b5a0bc08ca9eab` is retained as
-historical predecessor evidence, not as the current candidate. The current
-worktree also retains the previously implemented authoritative-versus-legacy
+`4bda29980c9c242d6305f718cfccd3d031ceee65` and adds the audited durable
+missing-identity recovery correction to the prior recovery state-machine and
+unconfirmed-governed-recovery fixes. The earlier local commits
+`2545a62acbfb2c3e4978ccac9919b7f56688ad48` and
+`abbc2504b3badbd52032352722b5a0bc08ca9eab` are retained as historical
+predecessor evidence, not as the current candidate. The current worktree also
+retains the previously implemented authoritative-versus-legacy
 queue classification, strict failure evidence and quarantine-state schemas,
 exact evidence digests, atomic quarantine publication, and compare-and-swap
 recovery acknowledgement. These local changes are not represented by the
@@ -292,18 +294,36 @@ used.
   observer isolation. The exact command used project-local disposable storage
   under `.project-temp/section-b-recovery-correction-focused-6/`. This is
   local evidence only; it is not GitHub Actions evidence.
-- Current complete affected-path suite for the same worktree, using a fresh
+- Historical complete affected-path suite for the predecessor worktree, using a fresh
   disposable SQLite database and project-local pytest base, passed **191
   tests**, with **6** Windows-inapplicable POSIX skips and exit code **0**.
   The exact isolated paths were under
   `.project-temp/section-b-recovery-correction-affected-final/`. This is local
-  evidence only; it is not GitHub Actions evidence.
-- Current full repository suite for the same worktree, excluding only the two
+  evidence only; it is not current candidate or GitHub Actions evidence.
+- Historical full repository suite for the predecessor worktree, excluding only the two
   preserved historical Section A snapshot assertions, passed **917 tests**,
   with **87** skips, **2** intentional deselections, **14** warnings, and exit
   code **0**. The exact isolated paths were under
   `.project-temp/section-b-recovery-correction-full-final/`. The deselected
   assertions remain documented historical evidence checks, not hidden failures.
+- Current missing-identity DAL and production-observer vectors for the
+  worktree derived from `4bda29980c9c242d6305f718cfccd3d031ceee65`: **2
+  passed**, exit code **0**, with disposable storage under
+  `.project-temp/section-b-missing-identity-focused/`. This is local evidence
+  only; it is not GitHub Actions evidence.
+- Current complete affected-path suite for the same worktree: **193 passed**,
+  **6** Windows-inapplicable POSIX skips, exit code **0**, with isolated paths
+  under `.project-temp/section-b-missing-identity-affected-final-3/`.
+- Current full repository suite for the same worktree, excluding only the two
+  preserved historical Section A snapshot assertions: **919 passed, 87
+  skipped, 2 deselected, 14 warnings**, exit code **0**, with isolated paths
+  under `.project-temp/section-b-missing-identity-full-final/`.
+- Independent auditor verification of the prior committed `4bda299` candidate
+  reported **198 focused passes and 6 platform skips**; its full run reported
+  **918 passed, 87 skipped, 1 preserved historical Section A worktree-inventory
+  failure, and 15 warnings**. Excluding that preserved failure yields 917
+  passing tests. Those results are independently verified evidence for the
+  prior candidate, not a substitute for the current local run above.
 - The live Redis transport vector was attempted with the declared `redis` and
   `hiredis` packages installed only under `.project-temp/`. Dependency
   construction succeeded and the project-local Redis service was reachable,
@@ -402,7 +422,7 @@ The GitHub result is CI evidence for the exact code baseline. It does not
 close the independent platform and deployment gates listed in this addendum.
 
 There is no GitHub Actions run for the current uncommitted corrective worktree
-derived from local commit `2545a62acbfb2c3e4978ccac9919b7f56688ad48`. The
+derived from local commit `4bda29980c9c242d6305f718cfccd3d031ceee65`. The
 required jobs
 `compile-backend`, `focused-contract-verification`,
 `full-repository-verification`, and `postgres-schema-assurance` remain defined

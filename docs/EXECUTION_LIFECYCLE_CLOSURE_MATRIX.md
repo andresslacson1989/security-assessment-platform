@@ -114,6 +114,14 @@ in-progress, exhausted, and not-yet-due deferred work. A later exact
 supervisor-confirmed result uses the post-revocation settlement fence and may
 terminalize only after the persisted identity and original worker binding are
 revalidated.
+If the exact persisted process identity cannot be reloaded for an
+`EXTERNAL_PROCESS_GOVERNED` execution, the observer records a durable
+identity-unavailable `DEFERRED` or bounded `EXHAUSTED` recovery outcome with
+retry/error/attempt/audit evidence and leaves the run and ownership
+non-terminal. It does not invoke the supervisor, infer `NO_EXTERNAL_PROCESS`,
+or accept a caller-supplied replacement identity. The condition is exposed by
+the tenant-scoped recovery-health projection and remains eligible for a later
+retry; settlement requires a newly validated exact identity.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and

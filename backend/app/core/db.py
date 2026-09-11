@@ -5555,6 +5555,218 @@ class DatabaseManager:
             ))
             return True
 
+    def record_unavailable_governed_recovery(
+        self,
+        execution_id: str,
+        organization_id: str,
+        *,
+        worker_identity: Optional[str] = None,
+        worker_generation: Optional[str] = None,
+        recovery_worker_identity: str,
+        recovery_worker_generation: str,
+        outcome: str,
+        error: str,
+        next_retry_at: Optional[datetime],
+        exhausted: bool = False,
+        actor: str = "execution-recovery-coordinator",
+    ) -> bool:
+        """Persist a retryable failure to reload governed process identity.
+
+        This operation intentionally accepts no process identity fields.  It
+        only records that the existing durable binding could not be validated,
+        leaving the run and ownership open for a later independently verified
+        recovery attempt.  The locked tenant/run/decision binding prevents an
+        observer from publishing an error for a different execution.
+        """
+        required_strings = (
+            execution_id,
+            organization_id,
+            recovery_worker_identity,
+            recovery_worker_generation,
+            outcome,
+            error,
+            actor,
+        )
+        if not all(isinstance(value, str) and value.strip() for value in required_strings):
+            return False
+        if any(len(value) > 512 for value in required_strings):
+            return False
+        if worker_identity is not None and (
+            not isinstance(worker_identity, str) or not worker_identity.strip() or len(worker_identity) > 512
+        ):
+            return False
+        if worker_generation is not None and (
+            not isinstance(worker_generation, str) or not worker_generation.strip() or len(worker_generation) > 512
+        ):
+            return False
+        if exhausted:
+            if next_retry_at is not None:
+                raise ValueError("exhausted recovery cannot carry a retry time")
+            status = "EXHAUSTED"
+        else:
+            if next_retry_at is None:
+                raise ValueError("identity-unavailable recovery requires a retry time")
+            if next_retry_at.tzinfo is None or next_retry_at.utcoffset() is None:
+                raise ValueError("recovery retry time must be timezone-aware")
+            status = "DEFERRED"
+
+        now = utc_now()
+        retry_value = next_retry_at.isoformat() if next_retry_at else None
+        with self._connection_scope() as conn:
+            lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
+            row = conn.execute(
+                """SELECT p.*, r.state AS run_state,
+                          r.worker_identity AS run_worker_identity,
+                          r.worker_generation AS run_worker_generation,
+                          r.correlation_id AS run_correlation_id,
+                          d.worker_identity AS decision_worker_identity,
+                          s.status AS recovery_status,
+                          s.attempt_number AS recovery_attempt_number,
+                          s.last_outcome AS recovery_last_outcome,
+                          s.last_error AS recovery_last_error,
+                          s.next_retry_at AS recovery_next_retry_at,
+                          s.owner AS recovery_owner,
+                          s.lease_token AS recovery_lease_token
+                     FROM execution_process_ownership p
+                     JOIN execution_runs r
+                       ON r.execution_id=p.execution_id
+                      AND r.organization_id=p.organization_id
+                     JOIN execution_decisions d
+                       ON d.id=r.approved_decision_id
+                      AND d.organization_id=r.organization_id
+                     JOIN execution_recovery_state s
+                       ON s.execution_id=p.execution_id
+                      AND s.organization_id=p.organization_id
+                    WHERE p.execution_id=? AND p.organization_id=?""" + lock,
+                (execution_id, organization_id),
+            ).fetchone()
+            if not row:
+                return False
+            if (
+                row["ownership_state"] != ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
+                or row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
+                or row["run_state"] not in {"REQUESTED", "STARTING", "RUNNING"}
+                or row["recovery_status"] == "IN_PROGRESS"
+                or row["recovery_status"] in {"CONFIRMED_TERMINATED", "EXHAUSTED"}
+                or row["recovery_owner"] is not None
+                or row["recovery_lease_token"] is not None
+                or not isinstance(row["run_worker_identity"], str)
+                or not row["run_worker_identity"].strip()
+                or row["run_worker_identity"] != row["decision_worker_identity"]
+                or not isinstance(row["run_worker_generation"], str)
+                or not row["run_worker_generation"].strip()
+                or row["worker_generation"] != row["run_worker_generation"]
+                or (worker_identity is not None and row["run_worker_identity"] != worker_identity)
+                or (worker_generation is not None and row["run_worker_generation"] != worker_generation)
+                or not isinstance(row["correlation_id"], str)
+                or not row["correlation_id"].strip()
+                or row["correlation_id"] != row["run_correlation_id"]
+            ):
+                return False
+
+            if (
+                row["recovery_status"] == status
+                and row["recovery_last_outcome"] == outcome
+                and row["recovery_last_error"] == error
+                and row["recovery_next_retry_at"] == retry_value
+            ):
+                return True
+
+            attempt_number = int(row["recovery_attempt_number"] or 0) + 1
+            attempt_id = f"recovery-identity-unavailable-{execution_id}-{attempt_number}"
+            existing_attempt = conn.execute(
+                "SELECT status, error_code, next_retry_at FROM execution_recovery_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if existing_attempt:
+                return (
+                    existing_attempt["status"] == status
+                    and existing_attempt["error_code"] == error
+                    and existing_attempt["next_retry_at"] == retry_value
+                )
+
+            recovery_updated = conn.execute(
+                """UPDATE execution_recovery_state
+                      SET status=?, worker_generation=?, attempt_number=?,
+                          last_outcome=?, last_error=?, next_retry_at=?,
+                          owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+                          updated_at=?
+                    WHERE execution_id=? AND organization_id=?
+                      AND status IN ('REQUESTED','DEFERRED','FAILED','ESCALATED')
+                      AND owner IS NULL AND lease_token IS NULL""",
+                (
+                    status,
+                    recovery_worker_generation,
+                    attempt_number,
+                    outcome[:512],
+                    error[:512],
+                    retry_value,
+                    now.isoformat(),
+                    execution_id,
+                    organization_id,
+                ),
+            )
+            if recovery_updated.rowcount != 1:
+                return False
+
+            evidence = json.dumps(
+                {
+                    "execution_id": execution_id,
+                    "organization_id": organization_id,
+                    "attempt_number": attempt_number,
+                    "outcome": outcome,
+                    "next_retry_at": retry_value,
+                    "identity_present": False,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            conn.execute(
+                """INSERT INTO execution_recovery_attempts
+                   (attempt_id, execution_id, organization_id, worker_identity,
+                    worker_generation, attempt_number, status, cancellation_status,
+                    reason_code, correlation_id, requested_at, started_at,
+                    completed_at, next_retry_at, error_code, escalation_level,
+                    health_reference)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    attempt_id,
+                    execution_id,
+                    organization_id,
+                    recovery_worker_identity,
+                    recovery_worker_generation,
+                    attempt_number,
+                    status,
+                    "IDENTITY_UNAVAILABLE",
+                    "EXECUTION_RECOVERY_IDENTITY_UNAVAILABLE",
+                    row["run_correlation_id"],
+                    now.isoformat(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    retry_value,
+                    error[:512],
+                    0,
+                    f"recovery-identity-unavailable:{hashlib.sha256(evidence.encode('utf-8')).hexdigest()}",
+                ),
+            )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                actor=recovery_worker_identity,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_RECOVERY_ATTEMPT_RECORDED,
+                object_type="execution_recovery_attempt",
+                object_id=attempt_id,
+                correlation_id=row["run_correlation_id"],
+                result="SUCCESS",
+                details={
+                    "execution_id": execution_id,
+                    "attempt_number": attempt_number,
+                    "status": status,
+                    "outcome": outcome,
+                    "identity_present": False,
+                },
+            ))
+            return True
+
     def settle_recovery_execution(
         self, execution_id: str, organization_id: str, owner: str,
         lease_token: str, worker_generation: str, *,

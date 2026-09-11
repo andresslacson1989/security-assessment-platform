@@ -385,22 +385,65 @@ class BackendObservationService:
                             reaped += 1
                         continue
 
+                if (
+                    durable_identity_api
+                    and durable_identity is None
+                    and ownership_state != "EXTERNAL_PROCESS_GOVERNED"
+                    and (
+                        candidate_run_state in {"STARTING", "RUNNING"}
+                        or candidate.get("process_id") is not None
+                        or ownership_state in {"UNKNOWN", "LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}
+                    )
+                ):
+                    message = "durable process identity unavailable; execution recovery remains fenced"
+                    self._state = ObservationState(
+                        last_started_at=self._state.last_started_at,
+                        last_completed_at=self._state.last_completed_at,
+                        last_error=self._state.last_error,
+                        last_recovery_error=message,
+                        last_recovered_count=reaped,
+                    )
+                    continue
+
                 # If a process launch was fenced but no process identity can be
                 # reattached, defer rather than risking a reused PID.  The
                 # uncertain ownership branch above applies its own recovery
                 # lease; this branch is for authority expiry/revocation.
-                if durable_identity_api and (
-                    candidate_run_state == "STARTING"
-                    or
-                    candidate_run_state == "RUNNING"
-                    or candidate.get("process_id") is not None
-                    or ownership_state in {"EXTERNAL_PROCESS_GOVERNED", "LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}
-                ) and durable_identity is None:
+                if (
+                    durable_identity_api
+                    and ownership_state == "EXTERNAL_PROCESS_GOVERNED"
+                    and durable_identity is None
+                ):
                     message = "durable process identity unavailable; execution recovery remains fenced"
                     logger.warning(
                         "Execution recovery deferred: identity unavailable execution_id=%s",
                         execution_id,
                     )
+                    attempt_number = int(candidate.get("recovery_attempt_number") or 0) + 1
+                    exhausted = attempt_number >= max_recovery_attempts
+                    retry_at = None if exhausted else datetime.now(timezone.utc) + timedelta(
+                        seconds=min(300, 5 * (2 ** min(attempt_number - 1, 6)))
+                    )
+                    persisted = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            db_manager.record_unavailable_governed_recovery,
+                            execution_id,
+                            candidate["organization_id"],
+                            worker_generation=(ownership or {}).get("worker_generation"),
+                            recovery_worker_identity=recovery_owner,
+                            recovery_worker_generation=recovery_worker_generation,
+                            outcome="identity_unavailable",
+                            error=message,
+                            next_retry_at=retry_at,
+                            exhausted=exhausted,
+                            actor="execution-reaper",
+                        ),
+                        timeout=self.refresh_timeout_seconds,
+                    )
+                    if not persisted:
+                        raise RuntimeError(
+                            "durable identity-unavailable recovery outcome was not committed"
+                        )
                     self._state = ObservationState(
                         last_started_at=self._state.last_started_at,
                         last_completed_at=self._state.last_completed_at,

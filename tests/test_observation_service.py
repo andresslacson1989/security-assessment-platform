@@ -313,6 +313,117 @@ async def test_production_reaper_persists_and_retries_unconfirmed_governed_recov
 
 
 @pytest.mark.asyncio
+async def test_production_reaper_persists_missing_identity_without_supervisor(tmp_path, monkeypatch):
+    """Missing identity is durable, tenant-scoped, retryable, and non-terminal."""
+    from app.core import db as db_module
+    from app.core import process_supervisor as supervisor_module
+    from tests.security.test_execution_decision_authority import _seed_execution_for_termination_settlement
+
+    database = db_module.DatabaseManager(tmp_path / "observer-missing-identity.db")
+    execution_id = "run-observer-missing-identity"
+    request_id = "request-observer-missing-identity"
+    _seed_execution_for_termination_settlement(
+        database,
+        execution_id=execution_id,
+        request_id=request_id,
+        decision_id="decision-observer-missing-identity",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_requests SET state='REVOKED' WHERE id=? AND organization_id=?",
+            (request_id, "org-settlement"),
+        )
+        conn.execute(
+            """UPDATE execution_process_ownership
+                  SET container_identity=NULL, root_process_id=NULL,
+                      root_process_start_token=NULL, process_group_id=NULL,
+                      session_id=NULL, identity_attestation=NULL
+                WHERE execution_id=? AND organization_id=?""",
+            (execution_id, "org-settlement"),
+        )
+
+    class NeverCalledSupervisor:
+        def cancel_execution(self, *_args, **_kwargs):
+            raise AssertionError("missing durable identity must not call supervisor")
+
+    monkeypatch.setattr(db_module, "db_manager", database)
+    monkeypatch.setattr(supervisor_module, "process_supervisor", NeverCalledSupervisor())
+    monkeypatch.setattr(
+        "app.core.execution_service.get_worker_generation",
+        lambda: "observer-recovery-generation",
+    )
+    service = BackendObservationService(interval_seconds=60, refresh_timeout_seconds=1)
+
+    assert await service.reap_execution_authority_once() == 0
+    with database._connection_scope() as conn:
+        state = conn.execute(
+            "SELECT status, next_retry_at, last_outcome, last_error, attempt_number "
+            "FROM execution_recovery_state WHERE execution_id=? AND organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+        ownership = conn.execute(
+            "SELECT ownership_state, container_identity, root_process_id, "
+            "root_process_start_token, process_group_id, session_id, identity_attestation "
+            "FROM execution_process_ownership WHERE execution_id=? AND organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+        attempt = conn.execute(
+            "SELECT worker_identity, worker_generation, status, cancellation_status, "
+            "reason_code FROM execution_recovery_attempts WHERE execution_id=? "
+            "AND organization_id=? ORDER BY attempt_number DESC LIMIT 1",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+    assert state["status"] == "DEFERRED"
+    assert state["next_retry_at"] is not None
+    assert state["last_outcome"] == "identity_unavailable"
+    assert state["last_error"] is not None
+    assert state["attempt_number"] == 1
+    assert ownership["ownership_state"] == "EXTERNAL_PROCESS_GOVERNED"
+    assert all(ownership[field] is None for field in (
+        "container_identity", "root_process_id", "root_process_start_token",
+        "process_group_id", "session_id", "identity_attestation",
+    ))
+    assert attempt["worker_identity"] == "execution-recovery-coordinator"
+    assert attempt["worker_generation"] == "observer-recovery-generation"
+    assert attempt["status"] == "DEFERRED"
+    assert attempt["cancellation_status"] == "IDENTITY_UNAVAILABLE"
+    assert attempt["reason_code"] == "EXECUTION_RECOVERY_IDENTITY_UNAVAILABLE"
+    assert len(database.recovery_health("org-settlement")) == 1
+    assert database.recovery_health("other-tenant") == []
+    assert all(item["execution_id"] != execution_id for item in database.list_execution_recovery_candidates())
+
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_recovery_state SET next_retry_at=? "
+            "WHERE execution_id=? AND organization_id=?",
+            ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), execution_id, "org-settlement"),
+        )
+    assert any(item["execution_id"] == execution_id for item in database.list_execution_recovery_candidates())
+    assert await service.reap_execution_authority_once() == 0
+
+    assert database.settle_execution_after_confirmed_termination(
+        execution_id,
+        "org-settlement",
+        terminal_state="CANCELLED",
+        reason_code="EXECUTION_CANCELLED",
+        termination_status="ALREADY_EXITED",
+        process_id=4242,
+        process_group_id="4242",
+        process_start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+        session_id=4242,
+        worker_identity="worker-settlement",
+        worker_generation="generation-settlement",
+        actor="execution-reaper",
+    ) is False
+    with database._connection_scope() as conn:
+        final = conn.execute(
+            "SELECT state FROM execution_runs WHERE execution_id=? AND organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+    assert final["state"] == "RUNNING"
+
+
+@pytest.mark.asyncio
 async def test_production_reaper_isolates_candidate_failure_and_persists_later_candidate(tmp_path, monkeypatch, caplog):
     """One candidate failure cannot prevent durable handling of the next one."""
     from types import SimpleNamespace

@@ -2311,6 +2311,76 @@ def test_deferred_complete_uncertain_recovery_preserves_provenance_and_settles(t
     ) is True
 
 
+def test_missing_identity_recovery_dal_is_tenant_bound_idempotent_and_nonterminal(tmp_path):
+    """The durable identity-unavailable projection accepts no forged binding."""
+    database = DatabaseManager(tmp_path / "recovery-missing-identity-dal.db")
+    _authority, _identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-recovery-missing-identity-dal",
+        request_id="request-recovery-missing-identity-dal",
+        decision_id="decision-recovery-missing-identity-dal",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership "
+            "SET container_identity=NULL, root_process_id=NULL, "
+            "root_process_start_token=NULL, process_group_id=NULL, "
+            "session_id=NULL, identity_attestation=NULL "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-missing-identity-dal", "org-settlement"),
+        )
+
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+    common = dict(
+        execution_id="run-recovery-missing-identity-dal",
+        organization_id="org-settlement",
+        worker_identity="worker-settlement",
+        worker_generation="generation-settlement",
+        recovery_worker_identity="execution-recovery-coordinator",
+        recovery_worker_generation="recovery-generation-missing-identity",
+        outcome="identity_unavailable",
+        error="durable identity could not be validated",
+        next_retry_at=retry_at,
+    )
+    assert database.record_unavailable_governed_recovery(
+        **{**common, "worker_generation": "wrong-generation"}
+    ) is False
+    assert database.record_unavailable_governed_recovery(
+        **{**common, "organization_id": "other-tenant"}
+    ) is False
+    assert database.record_unavailable_governed_recovery(**common) is True
+    assert database.record_unavailable_governed_recovery(**common) is True
+
+    with database._connection_scope() as conn:
+        state = conn.execute(
+            "SELECT status, attempt_number, next_retry_at, last_outcome, last_error "
+            "FROM execution_recovery_state WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-missing-identity-dal", "org-settlement"),
+        ).fetchone()
+        ownership = conn.execute(
+            "SELECT ownership_state, container_identity, root_process_id, "
+            "root_process_start_token, process_group_id, session_id, identity_attestation "
+            "FROM execution_process_ownership WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-missing-identity-dal", "org-settlement"),
+        ).fetchone()
+        attempts = conn.execute(
+            "SELECT COUNT(*) AS count FROM execution_recovery_attempts "
+            "WHERE execution_id=? AND organization_id=?",
+            ("run-recovery-missing-identity-dal", "org-settlement"),
+        ).fetchone()["count"]
+    assert state["status"] == "DEFERRED"
+    assert state["attempt_number"] == 1
+    assert state["next_retry_at"] == retry_at.isoformat()
+    assert state["last_outcome"] == "identity_unavailable"
+    assert state["last_error"] == "durable identity could not be validated"
+    assert ownership["ownership_state"] == "EXTERNAL_PROCESS_GOVERNED"
+    assert all(ownership[field] is None for field in (
+        "container_identity", "root_process_id", "root_process_start_token",
+        "process_group_id", "session_id", "identity_attestation",
+    ))
+    assert attempts == 1
+
+
 def test_terminal_process_settlement_replay_requires_the_original_proof_tuple(tmp_path):
     from app.core.execution_service import record_terminal
     from app.core.execution_context import decode_execution_proof, encode_execution_proof
