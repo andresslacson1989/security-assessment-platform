@@ -590,7 +590,11 @@ class RedisDurableQueue:
             import redis.asyncio as redis
         except ImportError as exc:
             raise RuntimeError("EXECUTION_QUEUE_URL requires the redis package") from exc
-        self._redis = redis.from_url(redis_url, decode_responses=True)
+        # The queue uses XAUTOCLAIM, so the service baseline is Redis 6.2+
+        # (the deployment workflow uses Redis 7). Explicit RESP2 keeps the
+        # client compatible with that baseline and newer redis-py releases;
+        # the queue's Lua/Streams protocol does not require RESP3 semantics.
+        self._redis = redis.from_url(redis_url, decode_responses=True, protocol=2)
         self._consumer_name = f"worker-{uuid.uuid4().hex}"
         self._group_ready = False
         self._group_lock = asyncio.Lock()
@@ -837,6 +841,13 @@ class RedisDurableQueue:
                 raise ValueError("authoritative queue binding does not match its canonical digest")
         elif queue_binding is not None:
             raise ValueError("a queue binding requires an authoritative authorization request")
+        if credential_envelope is not None and not authorization_request_id:
+            # A credential is an execution intent, not a diagnostic payload.
+            # Refuse it before encryption so an unauthorised caller cannot
+            # downgrade credentialed work into the legacy ACK path.
+            raise ValueError(
+                "credential handoff requires an authoritative authorization request and typed queue binding"
+            )
         await self._ensure_group()
         enqueued_at = datetime.now(timezone.utc).isoformat()
         fields = {
@@ -1218,6 +1229,10 @@ class RedisDurableQueue:
         else:
             if authorization_request_id or present_binding:
                 raise ValueError("legacy diagnostic message contains authoritative metadata")
+            if fields.get("credential_envelope"):
+                raise ValueError(
+                    "legacy diagnostic message cannot contain credential handoff"
+                )
         return message_kind, scan_id, organization_id or None, authorization_request_id
 
     async def consume_once(
@@ -1489,10 +1504,12 @@ class ScanQueueManager:
             raise RuntimeError("enqueue_only requires a durable execution backend")
         if authorization_request_id is None and queue_binding is not None:
             raise ValueError("a queue binding requires an authoritative authorization request")
+        if credential_envelope is not None and authorization_request_id is None:
+            raise ValueError(
+                "credential handoff requires an authoritative authorization request and typed queue binding"
+            )
         if credential_envelope is None and authorization_request_id is None:
             return await self._durable_backend.enqueue(scan_id, organization_id)
-        if authorization_request_id is None:
-            return await self._durable_backend.enqueue(scan_id, organization_id, credential_envelope)
         return await self._durable_backend.enqueue(
             scan_id,
             organization_id,

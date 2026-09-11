@@ -149,38 +149,64 @@ def load_durable_process_identity(
     if not ownership_generation or not run_generation or ownership_generation != run_generation:
         return None
 
-    attestation_json = ownership.get("identity_attestation")
-    member_snapshot: tuple[ProcessMemberIdentity, ...] = ()
-    if ownership.get("ownership_state") == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value:
-        if not isinstance(attestation_json, str) or not attestation_json.strip():
-            return None
-        try:
-            attestation = PosixProcessAttestation.model_validate_json(attestation_json)
-        except Exception:
-            return None
-        if (
-            attestation.verification_result != "VERIFIED"
-            or attestation.worker_generation != ownership_generation
-            or attestation.boot_id != token_parts[1]
-            or attestation.root_start_ticks != int(token_parts[2])
-            or attestation.session_id != session_id
-            or attestation.process_group_id != group_id
-        ):
-            return None
-        if attestation.member_snapshot:
-            member_snapshot = tuple(
-                ProcessMemberIdentity(
-                    pid=member.pid,
-                    process_group_id=member.process_group_id,
-                    session_id=member.session_id,
-                    start_token=member.start_token,
-                )
-                for member in attestation.member_snapshot
-            )
-    elif ownership.get("ownership_state") not in {
+    ownership_state = ownership.get("ownership_state")
+    if ownership_state not in {
+        ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value,
         ProcessOwnershipState.LAUNCH_UNCERTAIN.value,
         ProcessOwnershipState.RECOVERY_BLOCKED.value,
     }:
+        return None
+    # Restart recovery must use the exact attestation that was persisted by
+    # the launch handshake for every process-bearing state.  In particular,
+    # uncertain and recovery-blocked rows are not allowed to degrade into a
+    # PID-only identity after a worker restart.
+    attestation_json = ownership.get("identity_attestation")
+    if not isinstance(attestation_json, str) or not attestation_json.strip():
+        return None
+    try:
+        attestation = PosixProcessAttestation.model_validate_json(attestation_json)
+    except Exception:
+        return None
+    if (
+        attestation.verification_result != "VERIFIED"
+        or attestation.worker_generation != ownership_generation
+        or attestation.boot_id != token_parts[1]
+        or attestation.root_start_ticks != int(token_parts[2])
+        or attestation.session_id != session_id
+        or attestation.process_group_id != group_id
+        or not attestation.member_snapshot
+        or len(attestation.member_snapshot) > 512
+    ):
+        return None
+    member_snapshot = tuple(
+        ProcessMemberIdentity(
+            pid=member.pid,
+            process_group_id=member.process_group_id,
+            session_id=member.session_id,
+            start_token=member.start_token,
+        )
+        for member in attestation.member_snapshot
+    )
+    seen_member_pids: set[int] = set()
+    for member in member_snapshot:
+        member_parts = member.start_token.split(":", 2)
+        if (
+            member.pid in seen_member_pids
+            or member.session_id != session_id
+            or len(member_parts) != 3
+            or member_parts[0] != "posix"
+            or member_parts[1] != token_parts[1]
+            or not member_parts[2].isdigit()
+            or int(member_parts[2]) <= 0
+        ):
+            return None
+        seen_member_pids.add(member.pid)
+    if not any(
+        member.pid == pid
+        and member.process_group_id == group_id
+        and member.start_token == start_token
+        for member in member_snapshot
+    ):
         return None
 
     return ProcessIdentity(
@@ -1044,6 +1070,8 @@ def record_launch_uncertain(
     pid: Optional[int],
     process_group_id: Optional[int],
     start_token: Optional[str] = None,
+    session_id: Optional[int] = None,
+    member_snapshot: Any = None,
 ) -> bool:
     """Persist post-creation uncertainty before any recovery decision."""
     if not capability.execution_id:
@@ -1051,17 +1079,99 @@ def record_launch_uncertain(
     evidence = _durable_execution_evidence(capability)
     if evidence is None or not isinstance(evidence["run"].get("correlation_id"), str):
         return False
+    attestation_json: Optional[str] = None
+    container_type = ProcessContainerType.PROCESS_SET
+    container_identity = None
+    persisted_session_id: Optional[str] = None
+    persisted_group_id: Optional[str] = str(process_group_id) if process_group_id else None
+    if (
+        isinstance(start_token, str)
+        and start_token.startswith("posix:")
+        and process_group_id is not None
+        and session_id is not None
+        and member_snapshot is not None
+    ):
+        try:
+            parts = start_token.split(":", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2].isdigit():
+                raise ValueError("malformed root identity")
+            if not isinstance(member_snapshot, (tuple, list)) or not member_snapshot:
+                raise ValueError("complete member snapshot is required")
+            snapshot_values: list[dict[str, Any]] = []
+            seen_pids: set[int] = set()
+            for member in member_snapshot:
+                member_pid = int(member.pid)
+                member_group = int(member.process_group_id)
+                member_session = int(member.session_id)
+                member_token = str(member.start_token)
+                member_parts = member_token.split(":", 2)
+                if (
+                    member_pid <= 1
+                    or member_group <= 1
+                    or member_session != session_id
+                    or member_pid in seen_pids
+                    or len(member_parts) != 3
+                    or member_parts[0] != "posix"
+                    or member_parts[1] != parts[1]
+                    or not member_parts[2].isdigit()
+                    or int(member_parts[2]) <= 0
+                ):
+                    raise ValueError("inconsistent member identity")
+                seen_pids.add(member_pid)
+                snapshot_values.append({
+                    "pid": member_pid,
+                    "process_group_id": member_group,
+                    "session_id": member_session,
+                    "start_token": member_token,
+                })
+            if not any(
+                item["pid"] == pid
+                and item["process_group_id"] == process_group_id
+                and item["start_token"] == start_token
+                for item in snapshot_values
+            ):
+                raise ValueError("member snapshot does not bind root")
+            captured = utc_now()
+            attestation_values = {
+                "schema_version": "posix-process-attestation-v1",
+                "proof_type": "PROC_START_TICKS_SESSION_GROUP",
+                "boot_id": parts[1],
+                "root_start_ticks": int(parts[2]),
+                "session_id": session_id,
+                "process_group_id": process_group_id,
+                "pidfd_supported": False,
+                "pidfd_verified": False,
+                "worker_generation": capability.worker_generation,
+                "captured_at": captured,
+                "expires_at": captured + timedelta(seconds=30),
+                "verification_result": "VERIFIED",
+                "member_snapshot": tuple(snapshot_values),
+            }
+            attestation_values["digest"] = canonical_binding_digest(attestation_values)
+            attestation_json = PosixProcessAttestation(**attestation_values).model_dump_json(exclude_none=True)
+            container_type = ProcessContainerType.POSIX_SESSION
+            container_identity = f"posix-session:{session_id}:group:{process_group_id}"
+            persisted_session_id = str(session_id)
+        except (AttributeError, TypeError, ValueError):
+            # Preserve the uncertainty marker, but never manufacture a
+            # partial attestation from malformed caller data.
+            attestation_json = None
+            container_type = ProcessContainerType.PROCESS_SET
+            container_identity = None
+            persisted_session_id = None
     record = ExecutionProcessOwnershipRecord(
         execution_id=capability.execution_id,
         organization_id=capability.decision.organization_id,
         ownership_state=ProcessOwnershipState.LAUNCH_UNCERTAIN,
-        container_type=ProcessContainerType.POSIX_SESSION if process_group_id else ProcessContainerType.PROCESS_SET,
-        container_identity=(f"posix-session:group:{process_group_id}" if process_group_id else None),
+        container_type=container_type,
+        container_identity=container_identity,
         root_process_id=pid,
         root_process_start_token=start_token,
-        process_group_id=str(process_group_id) if process_group_id else None,
+        process_group_id=persisted_group_id,
+        session_id=persisted_session_id,
         worker_generation=capability.worker_generation,
         launch_commit_state=LaunchCommitState.UNCERTAIN,
+        identity_attestation=attestation_json,
         correlation_id=evidence["run"]["correlation_id"],
         last_verified_at=utc_now(),
     )

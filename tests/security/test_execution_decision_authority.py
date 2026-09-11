@@ -1529,6 +1529,82 @@ def test_confirmed_termination_settlement_requires_revocation_and_exact_identity
 
 
 @pytest.mark.parametrize(
+    ("ownership_state", "launch_commit_state"),
+    (
+        ("LAUNCH_UNCERTAIN", "UNCERTAIN"),
+        ("RECOVERY_BLOCKED", "COMMITTED"),
+    ),
+)
+def test_restart_loader_preserves_attested_identity_for_uncertain_states(
+    tmp_path, ownership_state, launch_commit_state
+):
+    """Restart recovery must not degrade a durable attestation into a PID-only identity."""
+    from app.core.execution_service import load_durable_process_identity
+    from app.core.process_supervisor import ProcessIdentity, ProcessMemberIdentity
+
+    database = DatabaseManager(tmp_path / f"restart-loader-{ownership_state}.db")
+    _authority, _attestation = _seed_execution_for_termination_settlement(
+        database,
+        execution_id=f"run-loader-{ownership_state}",
+        request_id=f"request-loader-{ownership_state}",
+        decision_id=f"decision-loader-{ownership_state}",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership SET ownership_state=?, launch_commit_state=? "
+            "WHERE execution_id=? AND organization_id=?",
+            (
+                ownership_state,
+                launch_commit_state,
+                f"run-loader-{ownership_state}",
+                "org-settlement",
+            ),
+        )
+    expected = ProcessIdentity(
+        pid=4242,
+        process_group_id=4242,
+        start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+        session_id=4242,
+        member_snapshot=(ProcessMemberIdentity(
+            pid=4242,
+            process_group_id=4242,
+            session_id=4242,
+            start_token="posix:00000000-0000-0000-0000-000000000001:12345",
+        ),),
+    )
+    assert load_durable_process_identity(
+        database,
+        f"run-loader-{ownership_state}",
+        "org-settlement",
+    ) == expected
+
+
+def test_restart_loader_blocks_incomplete_uncertain_attestation(tmp_path):
+    """A recovery row with a missing member snapshot remains operator-visible and blocked."""
+    from app.core.execution_service import load_durable_process_identity
+
+    database = DatabaseManager(tmp_path / "restart-loader-incomplete.db")
+    _authority, _attestation = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-loader-incomplete",
+        request_id="request-loader-incomplete",
+        decision_id="decision-loader-incomplete",
+    )
+    with database._connection_scope() as conn:
+        conn.execute(
+            "UPDATE execution_process_ownership SET ownership_state='LAUNCH_UNCERTAIN', "
+            "launch_commit_state='UNCERTAIN', identity_attestation=? "
+            "WHERE execution_id=? AND organization_id=?",
+            (json.dumps({"schema_version": "posix-process-attestation-v1"}), "run-loader-incomplete", "org-settlement"),
+        )
+    assert load_durable_process_identity(
+        database,
+        "run-loader-incomplete",
+        "org-settlement",
+    ) is None
+
+
+@pytest.mark.parametrize(
     "tamper",
     (
         "recovery_generation",

@@ -59,7 +59,7 @@ def test_credential_handoff_startup_validation_requires_a_32_byte_key(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_durable_queue_delivers_only_authenticated_worker_envelope(monkeypatch):
+async def test_durable_queue_rejects_credentialed_legacy_intent_before_encryption(monkeypatch):
     from app.core.queue import RedisDurableQueue
 
     key = base64.urlsafe_b64encode(b"q" * 32).decode("ascii")
@@ -92,15 +92,23 @@ async def test_durable_queue_delivers_only_authenticated_worker_envelope(monkeyp
     queue._group_lock = None
 
     envelope = _envelope()
-    assert await queue.enqueue("scan-a", "org-a", envelope) == "message-1"
-    assert "AKIA_TEST" not in queue._redis.fields["credential_envelope"]
-    received = []
+    with pytest.raises(ValueError, match="authoritative authorization request"):
+        await queue.enqueue("scan-a", "org-a", envelope)
+    assert queue._redis.fields is None
 
-    async def handler(scan_id, organization_id, delivered):
-        received.append((scan_id, organization_id, delivered))
 
-    assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
-    assert received == [("scan-a", "org-a", envelope)]
+def test_legacy_credential_wire_message_is_rejected_before_decryption():
+    from app.core.queue import RedisDurableQueue
+
+    fields = {
+        "message_kind": "LEGACY_DIAGNOSTIC",
+        "scan_id": "scan-a",
+        "organization_id": "org-a",
+        "enqueued_at": "2026-09-11T00:00:00+00:00",
+        "credential_envelope": "ciphertext-only",
+    }
+    with pytest.raises(ValueError, match="cannot contain credential handoff"):
+        RedisDurableQueue._validate_wire_message(fields)
 
 
 @pytest.mark.asyncio
@@ -118,5 +126,6 @@ async def test_queue_manager_forwards_worker_envelope_without_serializing_it(mon
     backend = Backend()
     manager = ScanQueueManager(durable_backend=backend)
     envelope = _envelope()
-    await manager.enqueue_only("scan-a", "org-a", envelope)
-    assert backend.received == ("scan-a", "org-a", envelope)
+    with pytest.raises(ValueError, match="authoritative authorization request"):
+        await manager.enqueue_only("scan-a", "org-a", envelope)
+    assert backend.received is None

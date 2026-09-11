@@ -406,6 +406,83 @@ def test_fresh_supervisor_uses_persisted_identity_after_worker_restart() -> None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+def test_launch_handshake_captures_descendant_created_after_initial_identity_sample(monkeypatch) -> None:
+    """The production handshake includes startup descendants created after its first sample."""
+    root = None
+    identity = None
+    try:
+        root_code = (
+            "import subprocess,sys,time; "
+            "print('root-ready', flush=True); time.sleep(0.05); "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+            "print(child.pid, flush=True); time.sleep(30)"
+        )
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        assert root.stdout is not None
+        assert root.stdout.readline().strip() == "root-ready"
+        initial = ProcessSupervisor._capture_process_identity(root.pid, root.pid)
+        assert initial is not None
+
+        monkeypatch.setattr(ProcessSupervisor, "_LAUNCH_HANDSHAKE_MAX_SECONDS", 0.5)
+        monkeypatch.setattr(ProcessSupervisor, "_LAUNCH_HANDSHAKE_STABLE_SECONDS", 0.15)
+        identity = ProcessSupervisor()._capture_stable_process_identity(root.pid, root.pid)
+        assert identity is not None
+        child_line = root.stdout.readline()
+        assert child_line.strip().isdigit()
+        child_pid = int(child_line.strip())
+        assert any(member.pid == child_pid for member in identity.member_snapshot)
+        assert any(member.pid == root.pid for member in identity.member_snapshot)
+    finally:
+        if root is not None:
+            if root.poll() is None:
+                if identity is not None:
+                    ProcessSupervisor().cancel_execution(
+                        "execution-startup-descendant-cleanup",
+                        process_identity=identity,
+                    )
+                try:
+                    root.kill()
+                except OSError:
+                    pass
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            if root.stdout is not None:
+                root.stdout.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
+async def test_execute_uses_stabilized_launch_identity_for_late_descendant() -> None:
+    """The actual execute path owns and closes a descendant created after Popen."""
+    root_code = (
+        "import subprocess,sys,time; "
+        "time.sleep(0.05); "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        "print(child.pid, flush=True); time.sleep(0.25)"
+    )
+    result = await ProcessSupervisor().execute(
+        [sys.executable, "-c", root_code],
+        timeout=5.0,
+        non_scan_context=issue_non_scan_execution_context(
+            "observation:stabilized-launch-descendant"
+        ),
+    )
+    assert result.returncode == 0
+    child_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert child_lines and child_lines[-1].isdigit()
+    assert not ProcessSupervisor._pid_exists(int(child_lines[-1]))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
 def test_root_exit_with_multiple_descendants_recovers_from_attested_snapshot() -> None:
     """A fully attested dead root is safely recovered through its member snapshot."""
     root = None

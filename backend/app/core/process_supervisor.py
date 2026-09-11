@@ -251,6 +251,14 @@ class ProcessSupervisor:
 
     _instance: Optional[ProcessSupervisor] = None
 
+    # Process discovery is intentionally bounded.  This handshake window is
+    # long enough for a governed tool to create its normal startup children,
+    # while a process that never reaches a stable complete snapshot remains
+    # launch-uncertain instead of being recorded with an incomplete identity.
+    _LAUNCH_HANDSHAKE_MAX_SECONDS = 1.0
+    _LAUNCH_HANDSHAKE_STABLE_SECONDS = 0.10
+    _LAUNCH_HANDSHAKE_POLL_SECONDS = 0.01
+
     def __init__(self):
         self._active_pids: Set[int] = set()
         self._execution_pids: dict[str, int] = {}
@@ -846,6 +854,41 @@ class ProcessSupervisor:
             if not any(member.pid == pid and member.start_token == start_token for member in member_snapshot):
                 return None
         return ProcessIdentity(pid, process_group_id, start_token, session_id, member_snapshot)
+
+    def _capture_stable_process_identity(
+        self,
+        pid: int,
+        process_group_id: Optional[int],
+    ) -> Optional[ProcessIdentity]:
+        """Complete the post-Popen identity handshake after startup settles.
+
+        ``Popen`` only proves that the root was created.  A governed tool may
+        create its normal worker/helper descendants immediately afterwards.
+        Capture is therefore a bounded two-phase handshake: a fresh snapshot
+        is sampled repeatedly until it remains unchanged for the required
+        stability interval.  No identity is persisted until that interval
+        completes.  If the process disappears or membership never settles,
+        callers retain launch uncertainty and recovery rather than signalling
+        an unbound PID or group.
+        """
+        if os.name == "nt":
+            return self._capture_process_identity(pid, process_group_id)
+        deadline = time.monotonic() + self._LAUNCH_HANDSHAKE_MAX_SECONDS
+        stable_since: Optional[float] = None
+        previous: Optional[ProcessIdentity] = None
+        while time.monotonic() < deadline:
+            current = self._capture_process_identity(pid, process_group_id)
+            if current is None:
+                return None
+            if previous is None or current != previous:
+                previous = current
+                stable_since = time.monotonic()
+            elif stable_since is not None and (
+                time.monotonic() - stable_since >= self._LAUNCH_HANDSHAKE_STABLE_SECONDS
+            ):
+                return current
+            time.sleep(self._LAUNCH_HANDSHAKE_POLL_SECONDS)
+        return None
 
     @staticmethod
     def _process_group_identity_matches(identity: ProcessIdentity) -> bool:
@@ -1593,7 +1636,7 @@ class ProcessSupervisor:
                     process_group_id=str(process_group_id) if process_group_id else None,
                     identity=None,
                 )
-                process_identity = self._capture_process_identity(proc.pid, process_group_id)
+                process_identity = self._capture_stable_process_identity(proc.pid, process_group_id)
                 process_identity_ref[0] = process_identity
                 process_group_ref[0] = process_group_id
                 if process_identity is None:
@@ -1637,6 +1680,8 @@ class ProcessSupervisor:
                                     pid=proc.pid,
                                     process_group_id=process_group_id,
                                     start_token=process_identity.start_token,
+                                    session_id=process_identity.session_id,
+                                    member_snapshot=process_identity.member_snapshot,
                                 )
                             except Exception:
                                 pass
@@ -1701,6 +1746,8 @@ class ProcessSupervisor:
                                 pid=proc.pid,
                                 process_group_id=process_group_id,
                                 start_token=process_identity.start_token,
+                                session_id=process_identity.session_id,
+                                member_snapshot=process_identity.member_snapshot,
                             )
                         return ProcessExecutionResult(
                             -1, stdout,
@@ -1778,6 +1825,8 @@ class ProcessSupervisor:
                                 pid=proc.pid,
                                 process_group_id=process_group_ref[0],
                                 start_token=(process_identity_ref[0].start_token if process_identity_ref[0] else None),
+                                session_id=(process_identity_ref[0].session_id if process_identity_ref[0] else None),
+                                member_snapshot=(process_identity_ref[0].member_snapshot if process_identity_ref[0] else None),
                             )
                         except Exception:
                             pass

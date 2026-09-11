@@ -136,13 +136,19 @@ used.
   excluding only that preserved historical worktree snapshot assertion:
   **881 passed, 78 skipped, 1 deselected, 15 warnings**.
 - Current full repository suite for this unpublished candidate from a fresh
-  unique disposable SQLite path, excluding only that same preserved historical
-  worktree snapshot assertion: **886 passed, 85 skipped, 1 deselected, 14
+  unique disposable SQLite path, excluding the preserved historical fixture
+  and worktree snapshot assertion: **888 passed, 84 skipped, 2 deselected, 14
   warnings**, exit code **0**. Windows process-tree termination vectors remain
   platform-gated; explicit Windows recovery rejection and non-scan uncertainty
   behavior are tested separately. The excluded inventory assertion remains a
   known local failure because the preserved `.ci/` tree is larger than its
   historical snapshot.
+- Current full repository suite after the corrective process, restart-loader,
+  queue, credential, and quarantine-API changes, from a fresh unique
+  disposable SQLite path and excluding the same two preserved historical
+  assertions: **896 passed, 86 skipped, 2 deselected, 15 warnings**, exit code
+  **0**. The two additional process vectors are POSIX-only and are skipped on
+  this Windows host; they are required to execute in Linux CI.
 - Local PostgreSQL and Redis integration could not be rerun because Docker is
   unavailable on this host and no approved local service URLs were provided.
   The authoritative PostgreSQL evidence for this baseline is the successful
@@ -150,7 +156,7 @@ used.
   claimed.
 - Current queue/quarantine closure command against the unpublished working
   tree, with an explicit disposable SQLite path and project-local pytest base:
-  **71 passed, 38 skipped**, exit code **0**. This verifies explicit wire
+  **73 passed, 38 skipped**, exit code **0**. This verifies explicit wire
   classification, strict unknown/non-string/credential-bearing evidence
   rejection, malformed binding rejection, atomic quarantine publication,
   durable original-failure evidence and both evidence/state digest bindings,
@@ -158,21 +164,36 @@ used.
   rejection.
 - Current process-boundary command against the unpublished working tree, with
   an explicit disposable SQLite path and project-local pytest base: **13
-  passed, 4 skipped**, exit code **0**. This verifies the fresh complete
-  POSIX member-identity snapshot requirement, root/session/process-group
-  vectors, membership race behavior, explicit Windows fail-closed recovery,
-  and explicit Windows fail-closed recovery behavior. The four skips are the
-  existing Windows-inapplicable POSIX vectors; they are not reported as
-  Windows passes.
+  passed, 6 skipped**, exit code **0**. This verifies the bounded post-Popen
+  stabilization handshake, fresh complete POSIX member-identity snapshot
+  requirement, positive root-exit recovery, root/session/process-group
+  vectors, membership race behavior, and explicit Windows fail-closed
+  recovery. The six skips are the Windows-inapplicable POSIX vectors,
+  including the two new late-descendant production-path vectors; they are not
+  reported as Windows passes.
 - Current affected-path compatibility regression after the Windows policy and
   queue-envelope fixture updates: **17 passed, 8 skipped**, exit code **0**.
   The skips are platform-inapplicable POSIX process-tree assertions and are
   separate from the explicit Windows fail-closed tests.
 - Combined local authority, queue, replay, and process regression against the
   unpublished working tree, with a unique project-local SQLite database and
-  project-local pytest base: **84 passed, 42 skipped, 1 warning**, exit code
+  project-local pytest base: **90 passed, 44 skipped**, exit code
   **0**. The live Redis vector remains environment-gated and was not claimed
-  locally because Docker/service availability is absent.
+  as a pass locally. The additional skips are the two POSIX-only late-
+  descendant vectors; Docker is unavailable on this host.
+- Quarantine API/authentication route tests against a disposable SQLite
+  database: **4 passed**, exit code **0**. This covers unauthenticated,
+  expired, revoked, non-admin/missing-scope, wrong-tenant, wrong-request,
+  replay, and concurrent acknowledgement behavior through the existing JWT,
+  role, scope, and durable revocation boundary.
+- The live Redis transport vector was attempted with the declared `redis` and
+  `hiredis` packages installed only under `.project-temp/`. Dependency
+  construction succeeded and the project-local Redis service was reachable,
+  but the installed service is Redis **5.0.14.1** and rejects the required
+  `XAUTOCLAIM` command. This is an **unverified/failed environment gate**, not
+  a pass; the deployment workflow's Redis 7 service remains the authoritative
+  compatible runtime target. The service was stopped and port 6380 was
+  verified closed afterward.
 - The previously published Section B focused command at `0a76593`, with an
   explicit disposable SQLite path, was **112 passed, 42 skipped**, exit code
   **0** for the real dispatch, decision-authority, process-boundary, and

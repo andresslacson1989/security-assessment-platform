@@ -34,8 +34,8 @@ been independently reviewed.
 | --- | --- | --- | --- |
 | Typed durable identity | A typed execution context binds `execution_id`, organization, worker, approved decision, target seal, operation policy, and exact command. Governed launch APIs reject missing or mismatched context. | Unit and integration tests for missing context, cross-tenant context, explicit-ID mismatch, and command/decision mismatch. Static inventory of scan-reachable process calls. | OPEN |
 | Complete launch coverage | Capability discovery, adapters, direct helpers, and child tasks either receive the same governed context or are explicitly non-scan operations with a separate capability. | Call-site inventory, CI enforcement test, and cancellation test during discovery and each engine family. | OPEN |
-| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a fresh complete bounded member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. Windows governed execution is explicitly fail-closed until a real Job Object or equivalent kernel-owned container exists. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed Windows termination remains uncertain. Termination confirms container emptiness. | POSIX root-exit/descendant and multi-child positive recovery tests; fresh member-identity and membership-race negative tests; explicit Windows recovery fail-closed test; platform-specific non-scan uncertainty handling; future Windows Job Object evidence remains required before Windows assurance. | OPEN |
-| Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted worker must attach only after independent identity and tenant validation. | Restart test with a surviving child/group, invalid worker generation, PID reuse, and operator-visible recovery escalation. | OPEN |
+| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. Windows governed execution is explicitly fail-closed until a real Job Object or equivalent kernel-owned container exists. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed Windows termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; explicit Windows recovery fail-closed test; platform-specific non-scan uncertainty handling; future Windows Job Object evidence remains required before Windows assurance. | OPEN |
+| Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted worker must attach only after independent identity and tenant validation. Valid complete attestations remain attached for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. | Restart test with a surviving child/group, valid uncertain/recovery loader states, invalid worker generation, PID reuse, incomplete/tampered attestation, and operator-visible recovery escalation. | OPEN |
 | Single cancellation coordinator | One coordinator owns cancellation request, task shutdown, process termination, authority revocation, and terminal settlement. Async cancellation cannot race a background execution thread. | Ignored-cancellation, timeout, duplicate-request, revocation-vs-finish, and exact idempotence tests. | OPEN |
 | Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | OPEN |
 | Contract and operational proof | Contracts 04/08 and traceability documentation describe the same state machine, platform threat model, and evidence boundary. Protected migration failures remain fail-closed and require operator reconciliation. | Contract consistency tests, clean tree, synchronized remote, CI results, runtime evidence, and auditor acceptance. | OPEN |
@@ -83,9 +83,12 @@ authority before governed validation and process creation, records explicit
 `NO_EXTERNAL_PROCESS` evidence for pre-`Popen` rejection/cancellation, and
 keeps the worker thread responsible for late settlement after caller
 cancellation. POSIX completion checks now require both the owned process group
-and captured session to be empty. Cancellation and observation recovery use a
-persisted `ProcessIdentity`; a missing in-memory mapping or a raw PID is not
-sufficient.
+and captured session to be empty. The post-`Popen` launch handshake waits for
+a bounded stable complete member snapshot before persisting the attestation,
+so startup descendants created after the first identity sample are included;
+failure to settle remains `LAUNCH_UNCERTAIN`. Cancellation and observation
+recovery use the persisted `ProcessIdentity`; a missing in-memory mapping or
+a raw PID is not sufficient.
 `DatabaseManager.settle_execution_after_confirmed_termination()` performs the
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and
@@ -108,14 +111,20 @@ Authoritative Redis execution messages now carry an explicit
 `AUTHORITATIVE_EXECUTION` classification; diagnostic compatibility messages
 must carry `LEGACY_DIAGNOSTIC`. Missing, malformed, conflicting, credential-
 bearing, or otherwise unsupported wire fields are rejected before handler
-entry and cannot enter an implicit legacy acknowledgement path. Quarantine
+entry and cannot enter an implicit legacy acknowledgement path. Credential
+handoffs are rejected unless the message carries the complete authoritative
+authorization request and typed binding; they are never downgraded to a
+legacy diagnostic message. Quarantine
 evidence is an exact allowlisted representation with a failure digest and a
 top-level quarantine-state digest. State publication, failure-event
 publication, and any explicit acknowledgement are fail-closed durable Redis
 transactions; acknowledgement uses a compare-and-swap Lua transaction that
 checks the exact state and requires a successful `XACK` before deleting the
 quarantine state. The queue primitive accepts only a typed tenant-bound
-operator assertion; it does not authenticate arbitrary actor strings.
+operator assertion; it does not authenticate arbitrary actor strings. The
+quarantine acknowledgement API uses the existing bearer/JWT, role, scope,
+tenant, and durable-revocation boundary to issue that internal capability;
+route-level replay and concurrency vectors are covered separately.
 
 Current implementation files are limited to the audited execution boundary:
 `backend/app/core/db.py`, `backend/app/core/execution_service.py`,
@@ -132,8 +141,11 @@ addendum. The matrix remains open because the worker-generation deployment
 binding, independent live Redis/PostgreSQL evidence for the current candidate,
 broader OS-level PID-reuse/membership-race evidence, Windows kernel-container
 implementation (or Windows assurance approval of the current fail-closed
-state), managed-tool runtime evidence, and independent auditor acceptance are
-not all closed by local tests.
+state), Redis 7-compatible live transport execution, managed-tool runtime
+evidence, and independent auditor acceptance are not all closed by local
+tests. The local Redis attempt reached a real Redis 5.0.14.1 service but was
+not counted because `XAUTOCLAIM` is unavailable there; the supported CI
+service remains Redis 7.
 
 ## Acceptance gate
 
