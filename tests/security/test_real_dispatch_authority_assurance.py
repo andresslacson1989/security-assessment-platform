@@ -982,7 +982,10 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         tampered_state_key = queue._quarantine_state_key(tampered_message_id)
         tampered_state = json.loads(await redis.get(tampered_state_key))
         assert tampered_state["message_kind"] == "AMBIGUOUS_UNCLASSIFIED"
-        assert tampered_state["reason"] == "QUEUE_BINDING_REJECTED"
+        # The tampered manifest digest makes the authoritative envelope fail
+        # complete wire classification before a binding can be handed to the
+        # worker. It must remain an ambiguous quarantine outcome.
+        assert tampered_state["reason"] == "QUEUE_MESSAGE_CLASSIFICATION_REJECTED"
         assert all(
             field_name not in tampered_state
             for field_name in (
@@ -1038,7 +1041,7 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
             and fields.get("failure_category") == "AUTHORITATIVE_DISPATCH_RECOVERY"
         ]
         assert len(recovery_events) == 1
-        assert recovery_events[0]["quarantine_reason"] == "QUEUE_BINDING_REJECTED"
+        assert recovery_events[0]["quarantine_reason"] == "QUEUE_MESSAGE_CLASSIFICATION_REJECTED"
         assert recovery_events[0]["queue_binding_digest"] == ""
         assert recovery_events[0]["manifest_hash"] == ""
         assert "credential_envelope" not in recovery_events[0]
