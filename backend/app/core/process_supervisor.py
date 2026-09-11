@@ -14,11 +14,12 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from types import MappingProxyType
-from typing import Callable, Dict, Mapping, NamedTuple, Optional, Set, Tuple
+from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Set, Tuple
 from app.core.tool_operation_policy import is_canonical_operation_policy_revision
 from app.core.execution_decision import ExecutionDecisionCapability, ExecutionDecisionError
 from app.core.execution_context import GovernedExecutionContext, NonScanExecutionContext
@@ -90,6 +91,30 @@ class ProcessIdentity:
     # exited.  Empty snapshots retain compatibility with older in-memory
     # callers but cannot authorize post-root recovery.
     member_snapshot: Tuple[ProcessMemberIdentity, ...] = ()
+    windows_attestation: Optional[str] = None
+
+
+def _windows_identity_attestation(identity: ProcessIdentity, execution_id=None):
+    from app.core.execution_context import (
+        WindowsJobAttestation,
+        parse_windows_attestation_json,
+    )
+    if type(identity) is not ProcessIdentity or not identity.windows_attestation:
+        raise ValueError("Windows governed identity is missing")
+    attestation = parse_windows_attestation_json(identity.windows_attestation)
+    if (
+        identity.pid != attestation.root_process_id
+        or identity.start_token != attestation.root_process_start_token
+        or identity.process_group_id is not None or identity.session_id is not None
+        or identity.member_snapshot
+    ):
+        raise ValueError("Windows governed identity mismatch")
+    if type(attestation) is WindowsJobAttestation:
+        if execution_id is not None and execution_id != attestation.execution_id:
+            raise ValueError("Windows governed execution identity mismatch")
+    elif execution_id is not None:
+        raise ValueError("non-scan Windows identity cannot satisfy a scan execution request")
+    return attestation
 
 
 def _read_posix_start_token(pid: int) -> Optional[str]:
@@ -318,6 +343,41 @@ class ProcessSupervisor:
         """
         if not execution_id or not isinstance(execution_id, str):
             return ProcessCancellationResult(str(execution_id or ""), ProcessCancellationStatus.INVALID_REQUEST)
+        if os.name == "nt":
+            with self._lock:
+                mapped = self._execution_identities.get(execution_id)
+                mapped_pid = self._execution_pids.get(execution_id)
+            if process_identity is None and mapped is None and mapped_pid is None:
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
+            identity = process_identity if process_identity is not None else mapped
+            try:
+                if mapped is not None and mapped != identity:
+                    raise ValueError("Windows registry identity mismatch")
+                attestation = _windows_identity_attestation(identity, execution_id)
+                from app.core.windows_job import attested_job
+                job = attested_job(attestation, for_recovery=True)
+                had_members = bool(job.members())
+                if had_members and not job.terminate():
+                    raise OSError("Windows job termination unconfirmed")
+                status = ProcessCancellationStatus.KILLED if had_members else ProcessCancellationStatus.ALREADY_EXITED
+                if status in {ProcessCancellationStatus.KILLED, ProcessCancellationStatus.ALREADY_EXITED}:
+                    with self._lock:
+                        if self._execution_identities.get(execution_id) == identity:
+                            self._execution_pids.pop(execution_id, None)
+                            self._execution_groups.pop(execution_id, None)
+                            self._execution_identities.pop(execution_id, None)
+                            self._active_pids.discard(identity.pid)
+                    try:
+                        from app.core.windows_job import release_attestation
+                        release_attestation(attestation.digest)
+                    except OSError:
+                        logger.warning(
+                            "Windows job handle cleanup failed after confirmed cancellation: execution_id=%s",
+                            execution_id,
+                        )
+                return ProcessCancellationResult(execution_id, status, identity.pid)
+            except (OSError, ValueError, TypeError):
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED)
         if process_identity is not None and (
             type(process_identity) is not ProcessIdentity
             or process_identity.pid <= 1
@@ -396,6 +456,17 @@ class ProcessSupervisor:
         """
         if not pid or pid <= 0:
             return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.INVALID_REQUEST, pid)
+        if os.name == "nt":
+            with self._lock:
+                execution_id = next((key for key, value in self._execution_pids.items() if value == pid), None)
+                identity = self._execution_identities.get(execution_id) if execution_id else None
+            if execution_id is None:
+                if self._pid_exists(pid):
+                    return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+                return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.NOT_FOUND, pid)
+            if identity is None:
+                return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+            return self.cancel_execution(execution_id, process_identity=identity)
         with self._lock:
             if pid not in self._active_pids:
                 return ProcessCancellationResult(f"pid:{pid}", ProcessCancellationStatus.NOT_FOUND, pid)
@@ -435,70 +506,6 @@ class ProcessSupervisor:
                     self._execution_groups.pop(key, None)
                     self._execution_identities.pop(key, None)
         return ProcessCancellationResult(execution_id, status, pid)
-
-    @staticmethod
-    def _windows_descendant_pids(root_pid: int) -> list[int]:
-        """Return a snapshot of descendants using the Windows process table."""
-        if sys.platform != "win32":
-            return []
-
-        current_pid = os.getpid()
-        parent_pid = os.getppid() if hasattr(os, "getppid") else None
-
-        class _ProcessEntry32(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.c_void_p),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", ctypes.c_long),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", wintypes.WCHAR * 260),
-            ]
-
-        snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
-        invalid_handle = ctypes.c_void_p(-1).value
-        if snapshot == invalid_handle:
-            return []
-        try:
-            entry = _ProcessEntry32()
-            entry.dwSize = ctypes.sizeof(_ProcessEntry32)
-            first = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-            if not first:
-                return []
-            parent_map: dict[int, list[int]] = {}
-            while first:
-                parent_map.setdefault(int(entry.th32ParentProcessID), []).append(int(entry.th32ProcessID))
-                first = ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-            descendants: list[int] = []
-            pending = list(parent_map.get(root_pid, []))
-            while pending:
-                child = pending.pop()
-                if child > 1 and child != current_pid and (parent_pid is None or child != parent_pid):
-                    descendants.append(child)
-                    pending.extend(parent_map.get(child, []))
-            return descendants
-        finally:
-            ctypes.windll.kernel32.CloseHandle(snapshot)
-
-    @staticmethod
-    def _windows_terminate_pid(pid: int) -> None:
-        """Terminate one Windows process by PID when taskkill misses a race."""
-        current_pid = os.getpid()
-        parent_pid = os.getppid() if hasattr(os, "getppid") else None
-        if pid <= 1 or pid == current_pid or (parent_pid is not None and pid == parent_pid):
-            logger.warning("Refusing to terminate current or parent process PID=%s", pid)
-            return
-
-        process = ctypes.windll.kernel32.OpenProcess(0x0001 | 0x1000, False, pid)
-        if process:
-            try:
-                ctypes.windll.kernel32.TerminateProcess(process, 1)
-            finally:
-                ctypes.windll.kernel32.CloseHandle(process)
 
     @staticmethod
     def _pid_exists(pid: int) -> bool:
@@ -959,6 +966,12 @@ class ProcessSupervisor:
         """Require both the root and its owned container to be gone."""
         if identity is None:
             return False
+        if identity.windows_attestation is not None:
+            try:
+                from app.core.windows_job import attested_job
+                return not attested_job(_windows_identity_attestation(identity)).members()
+            except (OSError, ValueError, TypeError):
+                return False
         # ``os.kill(pid, 0)`` is not a reliable post-reap liveness test on
         # Windows: the PID can remain queryable after ``Popen.wait()`` has
         # reaped the process.  The supervisor has the stronger process-handle
@@ -991,15 +1004,14 @@ class ProcessSupervisor:
         if pid == current_pid or (parent_pid is not None and pid == parent_pid) or pid <= 1:
             logger.error("Security invariant: Refusing to terminate current/parent PID=%s", pid)
             return False
-        if sys.platform == "win32":
-            # Governed execution is already launch-blocked on Windows until a
-            # real Job Object containment implementation exists.  Keep direct
-            # termination fail-closed as well; taskkill's PID tree snapshot is
-            # not an independent identity/container proof.
-            logger.error(
-                "Security invariant: Windows process-tree recovery is blocked until Job Object containment exists"
-            )
-            return False
+        if os.name == "nt":
+            try:
+                if identity is None or identity.pid != pid or process_group_id is not None:
+                    return False
+                from app.core.windows_job import attested_job
+                return attested_job(_windows_identity_attestation(identity), for_recovery=True).terminate()
+            except (OSError, ValueError, TypeError):
+                return False
         if identity is not None and identity.pid != pid:
             return False
         root_exists = ProcessSupervisor._pid_exists(pid)
@@ -1032,25 +1044,7 @@ class ProcessSupervisor:
 
         descendants: list[int] = []
         group_id: Optional[int] = process_group_id
-        if sys.platform == "win32":
-            try:
-                # Capture descendants before terminating the root.
-                descendants = ProcessSupervisor._windows_descendant_pids(pid)
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                for descendant in reversed(descendants):
-                    ProcessSupervisor._windows_terminate_pid(descendant)
-                ProcessSupervisor._windows_terminate_pid(pid)
-            except Exception as e:
-                logger.debug(f"Failed to taskkill PID +{pid}: {e}")
-                # Do not fall back to an unbound PID signal after a Windows
-                # process-table operation fails; the caller must observe failure.
-                return False
-        else:
+        if os.name != "nt":
             descendants = ProcessSupervisor._posix_descendant_pids(pid)
             try:
                 # POSIX process isolation:
@@ -1250,6 +1244,12 @@ class ProcessSupervisor:
             return ProcessExecutionResult(-1, "", "Invalid maximum output size")
         if execution_capability is None and non_scan_context is None:
             return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: launch must declare governed or non-scan capability")
+        if execution_capability is not None and non_scan_context is not None:
+            return ProcessExecutionResult(
+                126,
+                "",
+                "PROCESS_LAUNCH_REJECTED_SECURITY: launch cannot declare both governed and non-scan capabilities",
+            )
         # R3.2: Enterprise external-tool execution fails closed unconditionally when
         # enterprise egress enforcement is required until an authoritative network verifier interface exists.
         operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "").strip().upper()
@@ -1257,7 +1257,7 @@ class ProcessSupervisor:
 
         creationflags = 0
         start_new_session = False
-        if sys.platform == "win32":
+        if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             start_new_session = True
@@ -1360,6 +1360,7 @@ class ProcessSupervisor:
         proc_ref: list[Optional[subprocess.Popen]] = [None]
         process_identity_ref: list[Optional[ProcessIdentity]] = [None]
         process_group_ref: list[Optional[int]] = [None]
+        windows_job_ref: list[object | None] = [None]
         retain_execution_ref = [False]
         cancellation_requested = threading.Event()
         requested_execution_id = execution_id
@@ -1369,6 +1370,8 @@ class ProcessSupervisor:
             proc = None
             launch_committed = False
             authority_claimed = False
+            windows_job = None
+            windows_attestation = None
 
             def _settle_durable(
                 terminal_state: str,
@@ -1409,7 +1412,7 @@ class ProcessSupervisor:
                 if execution_id != execution_capability.execution_id:
                     return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_REJECTED_SECURITY: execution identity mismatch")
                 if not _settle_durable(
-                    terminal_state, reason_code or "PROCESS_TERMINALIZED",
+                    terminal_state, reason_code,
                     process_id=proc.pid if proc else None,
                     process_group_id=str(proc.pid) if proc and start_new_session else None,
                     termination_status=termination_status,
@@ -1440,6 +1443,72 @@ class ProcessSupervisor:
                             "PROCESS_FINALIZATION_FAILED: durable no-process outcome was not committed",
                         )
                 return result
+
+            def _attest_windows_process(job, nonce, process):
+                """Bind the suspended process to its kernel job before resume."""
+                from app.core.execution_context import (
+                    WindowsJobAttestation,
+                    WindowsNonScanJobAttestation,
+                    canonical_windows_job_attestation_digest,
+                    canonical_windows_non_scan_job_attestation_digest,
+                )
+                from app.core.windows_job import register_attestation
+
+                captured = datetime.now(timezone.utc)
+                initial_members = job.members()
+                if initial_members != (process.pid,):
+                    raise RuntimeError("Windows job did not contain exactly the suspended root")
+                if execution_capability is not None:
+                    values = {
+                        "schema_version": "windows-job-attestation-v1",
+                        "proof_type": "JOB_OBJECT",
+                        "job_identity": job.name,
+                        "job_nonce": nonce,
+                        "execution_id": execution_id,
+                        "organization_id": execution_capability.decision.organization_id,
+                        "worker_identity": execution_capability.worker_identity,
+                        "worker_generation": execution_capability.worker_generation,
+                        "root_process_id": process.pid,
+                        "root_process_start_token": process.start_token(),
+                        "initial_members": initial_members,
+                        "captured_at": captured,
+                        "expires_at": captured + timedelta(seconds=max(timeout, 0) + 300),
+                        "verification_result": "VERIFIED",
+                    }
+                    attestation = WindowsJobAttestation(
+                        **values,
+                        digest=canonical_windows_job_attestation_digest(values),
+                    )
+                elif non_scan_context is not None:
+                    values = {
+                        "schema_version": "windows-non-scan-job-attestation-v1",
+                        "proof_type": "JOB_OBJECT",
+                        "job_identity": job.name,
+                        "job_nonce": nonce,
+                        "purpose": non_scan_context.purpose,
+                        "worker_identity": non_scan_context.worker_identity,
+                        "worker_generation": non_scan_context.worker_generation,
+                        "root_process_id": process.pid,
+                        "root_process_start_token": process.start_token(),
+                        "initial_members": initial_members,
+                        "captured_at": captured,
+                        "expires_at": captured + timedelta(seconds=max(timeout, 0) + 300),
+                        "verification_result": "VERIFIED",
+                    }
+                    attestation = WindowsNonScanJobAttestation(
+                        **values,
+                        digest=canonical_windows_non_scan_job_attestation_digest(values),
+                    )
+                else:
+                    raise RuntimeError("Windows launch requires a governed or non-scan capability")
+                register_attestation(attestation, job)
+                identity = ProcessIdentity(
+                    pid=process.pid,
+                    process_group_id=None,
+                    start_token=attestation.root_process_start_token,
+                    windows_attestation=attestation.model_dump_json(),
+                )
+                return attestation, identity
 
             try:
                 try:
@@ -1488,16 +1557,6 @@ class ProcessSupervisor:
                         non_scan_context.assert_live()
                     else:
                         raise ExecutionDecisionError("launch must declare governed or non-scan capability")
-                    if sys.platform == "win32" and execution_capability is not None:
-                        return _settle_no_process(
-                            "EXECUTION_BLOCKED",
-                            "PROCESS_LAUNCH_REJECTED_SECURITY",
-                            ProcessExecutionResult(
-                                126,
-                                "",
-                                "PROCESS_LAUNCH_REJECTED_SECURITY: Windows Job Object implementation is required for governed execution",
-                            ),
-                        )
                     if egress_required:
                         return _settle_no_process(
                             "EXECUTION_BLOCKED",
@@ -1615,15 +1674,60 @@ class ProcessSupervisor:
                         "EXECUTION_CANCELLED_BEFORE_PROCESS_CREATION",
                         ProcessExecutionResult(130, "", "PROCESS_LAUNCH_CANCELLED: cancellation was requested before process creation"),
                     )
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=cwd,
-                    env=clean_env,
-                    creationflags=creationflags,
-                    start_new_session=start_new_session,
+                if os.name == "nt":
+                    from app.core.windows_job import WindowsJob, WindowsJobProcess, JobLaunchUncertain
+                    from app.core.execution_context import windows_job_name, windows_non_scan_job_name
+                    job_nonce = uuid.uuid4().hex
+                    if execution_capability is not None:
+                        job_identity = windows_job_name(
+                            execution_id,
+                            execution_capability.decision.organization_id,
+                            execution_capability.worker_identity,
+                            execution_capability.worker_generation,
+                            job_nonce,
+                        )
+                    elif non_scan_context is not None:
+                        job_identity = windows_non_scan_job_name(
+                            non_scan_context.purpose,
+                            non_scan_context.worker_identity,
+                            non_scan_context.worker_generation,
+                            job_nonce,
+                        )
+                    else:
+                        raise RuntimeError("Windows launch requires a governed or non-scan capability")
+                    windows_job = WindowsJob(job_identity)
+                    windows_job_ref[0] = windows_job
+                    try:
+                        proc = WindowsJobProcess(cmd, job=windows_job, cwd=cwd, env=clean_env)
+                    except JobLaunchUncertain as exc:
+                        proc = exc.process
+                        proc_ref[0] = proc
+                        try:
+                            windows_attestation, process_identity = _attest_windows_process(
+                                windows_job, job_nonce, proc,
+                            )
+                            process_identity_ref[0] = process_identity
+                            process_group_ref[0] = None
+                        except Exception:
+                            # The process is still suspended.  A local handle is
+                            # sufficient to make a best-effort containment
+                            # attempt, but no incomplete object may be treated as
+                            # a durable execution identity.
+                            try:
+                                windows_job.terminate()
+                            except Exception:
+                                pass
+                        raise
+                else:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        cwd=cwd,
+                        env=clean_env,
+                        creationflags=creationflags,
+                        start_new_session=start_new_session,
                 )
                 proc_ref[0] = proc
                 process_group_id = proc.pid if start_new_session else None
@@ -1636,7 +1740,12 @@ class ProcessSupervisor:
                     process_group_id=str(process_group_id) if process_group_id else None,
                     identity=None,
                 )
-                process_identity = self._capture_stable_process_identity(proc.pid, process_group_id)
+                if windows_job is not None:
+                    windows_attestation, process_identity = _attest_windows_process(
+                        windows_job, job_nonce, proc,
+                    )
+                else:
+                    process_identity = self._capture_stable_process_identity(proc.pid, process_group_id)
                 process_identity_ref[0] = process_identity
                 process_group_ref[0] = process_group_id
                 if process_identity is None:
@@ -1648,6 +1757,7 @@ class ProcessSupervisor:
                                 execution_capability,
                                 pid=proc.pid,
                                 process_group_id=process_group_id,
+                                windows_attestation=(process_identity_ref[0].windows_attestation if process_identity_ref[0] else None),
                             )
                         except Exception as exc:
                             logger.error(
@@ -1667,7 +1777,10 @@ class ProcessSupervisor:
                 if execution_capability is not None:
                     try:
                         from app.core.execution_service import record_posix_launch
-                        if os.name != "nt":
+                        if windows_job is not None:
+                            from app.core.execution_service import record_windows_launch
+                            record_windows_launch(execution_capability, windows_attestation)
+                        else:
                             record_posix_launch(
                                 execution_capability,
                                 pid=proc.pid,
@@ -1695,6 +1808,7 @@ class ProcessSupervisor:
                                 start_token=process_identity.start_token,
                                 session_id=process_identity.session_id,
                                 member_snapshot=process_identity.member_snapshot,
+                                windows_attestation=(process_identity_ref[0].windows_attestation if process_identity_ref[0] else None),
                             )
                         except Exception as uncertainty_exc:
                             logger.error(
@@ -1716,6 +1830,8 @@ class ProcessSupervisor:
                         process_group_id=str(process_group_id) if process_group_id else None,
                     )
                     launch_committed = True
+                if windows_job is not None:
+                    proc.resume()
                 # Replace the provisional identity-free registration with the
                 # verified process identity before any bounded communication.
                 self._register_execution(
@@ -1744,6 +1860,7 @@ class ProcessSupervisor:
                                 start_token=process_identity.start_token if process_identity else None,
                                 session_id=process_identity.session_id if process_identity else None,
                                 member_snapshot=process_identity.member_snapshot if process_identity else None,
+                                windows_attestation=(process_identity_ref[0].windows_attestation if process_identity_ref[0] else None),
                             )
                         except Exception as uncertainty_exc:
                             # The durable state remains governed only when
@@ -1788,6 +1905,7 @@ class ProcessSupervisor:
                                     start_token=process_identity.start_token,
                                     session_id=process_identity.session_id,
                                     member_snapshot=process_identity.member_snapshot,
+                                    windows_attestation=(process_identity_ref[0].windows_attestation if process_identity_ref[0] else None),
                                 )
                             except Exception as uncertainty_exc:
                                 logger.error(
@@ -1855,12 +1973,26 @@ class ProcessSupervisor:
                 termination_confirmed = True
                 if proc and proc.pid:
                     if process_identity_ref[0] is None:
-                        termination_confirmed = False
+                        if windows_job_ref[0] is not None:
+                            try:
+                                termination_confirmed = bool(windows_job_ref[0].terminate())
+                            except Exception:
+                                termination_confirmed = False
+                        else:
+                            termination_confirmed = False
                     else:
                         termination_confirmed = self.kill_process_tree(
                             proc.pid,
                             process_group_id=process_group_ref[0],
                             identity=process_identity_ref[0],
+                        )
+                if proc is not None and not termination_confirmed:
+                    retain_execution_ref[0] = True
+                    if execution_capability is None:
+                        return ProcessExecutionResult(
+                            -1,
+                            "",
+                            "PROCESS_TERMINATION_UNCONFIRMED: process container remains active after post-launch exception",
                         )
                 if execution_capability is not None:
                     if proc is not None:
@@ -1878,6 +2010,7 @@ class ProcessSupervisor:
                                 start_token=(process_identity_ref[0].start_token if process_identity_ref[0] else None),
                                 session_id=(process_identity_ref[0].session_id if process_identity_ref[0] else None),
                                 member_snapshot=(process_identity_ref[0].member_snapshot if process_identity_ref[0] else None),
+                                windows_attestation=(process_identity_ref[0].windows_attestation if process_identity_ref[0] else None),
                             )
                         except Exception as uncertainty_exc:
                             logger.error(
@@ -1896,12 +2029,26 @@ class ProcessSupervisor:
                             if not termination_confirmed
                             else "PROCESS_LAUNCH_UNCERTAIN: post-launch exception requires recovery",
                         )
-                    if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION"):
+                if proc is not None:
+                    return ProcessExecutionResult(
+                        -1,
+                        "",
+                        f"PROCESS_LAUNCH_UNCERTAIN: post-launch exception requires recovery ({type(e).__name__})",
+                    )
+                if not _settle_durable("FAILED", "PROCESS_EXECUTION_EXCEPTION"):
                         return ProcessExecutionResult(-1, "", "PROCESS_FINALIZATION_FAILED: durable exception outcome was not committed")
                 return ProcessExecutionResult(-1, "", str(e))
             finally:
                 if proc and proc.pid and not retain_execution_ref[0]:
                     self._unregister_execution(proc.pid, execution_id=execution_id)
+                    if windows_job is not None:
+                        from app.core.windows_job import release_attestation
+                        if process_identity_ref[0] and process_identity_ref[0].windows_attestation:
+                            release_attestation(_windows_identity_attestation(process_identity_ref[0]).digest)
+                        proc.close()
+                        windows_job.close()
+                elif windows_job is not None and proc is None:
+                    windows_job.close()
 
         worker_task = asyncio.create_task(
             asyncio.to_thread(_run_sync),
@@ -1928,7 +2075,13 @@ class ProcessSupervisor:
             termination_confirmed = True
             if proc_ref[0] and proc_ref[0].pid:
                 if process_identity_ref[0] is None:
-                    termination_confirmed = False
+                    if windows_job_ref[0] is not None:
+                        try:
+                            termination_confirmed = bool(windows_job_ref[0].terminate())
+                        except Exception:
+                            termination_confirmed = False
+                    else:
+                        termination_confirmed = False
                 else:
                     termination_confirmed = self.kill_process_tree(
                         proc_ref[0].pid,

@@ -14,6 +14,9 @@ from typing import Any, Optional
 from app.core.execution_context import (
     EXECUTION_PROOF_TERMINATION_KEYS,
     PosixProcessAttestation,
+    WindowsJobAttestation,
+    parse_windows_attestation_json,
+    validate_windows_ownership,
     _ISSUER_TOKEN,
     decode_execution_proof,
     _issue_non_scan_execution_context,
@@ -73,14 +76,16 @@ def load_durable_process_identity(
     execution_id: str,
     organization_id: str,
 ):
-    """Reload the exact persisted POSIX identity for one active execution.
+    """Reload the exact persisted identity for one active execution.
 
     The returned identity is suitable for the supervisor only after the
     tenant-bound run and ownership rows agree on every persisted field.  A
     current worker generation is deliberately *not* required: recovery after a
-    worker restart must be able to use the previous worker's durable identity.
+    worker restart remains a bounded, operator-visible path.  POSIX identities
+    retain their durable kernel checks; Windows Job Objects use
+    KILL_ON_JOB_CLOSE and therefore cannot be reattached after worker loss.
     The old generation is still checked for internal consistency, and malformed
-    or Windows records fail closed.
+    or unavailable Windows records fail closed without PID-only fallback.
     """
     from app.core.process_supervisor import ProcessIdentity, ProcessMemberIdentity
 
@@ -107,9 +112,28 @@ def load_durable_process_identity(
     if ownership.get("ownership_state") in {"TERMINAL", "UNKNOWN", "NO_EXTERNAL_PROCESS"}:
         return None
 
-    # Governed Windows execution is intentionally unsupported until the
-    # supervisor has a verified Job Object implementation.  Do not turn a
-    # legacy Windows-shaped row into an unbound PID operation.
+    if ownership.get("container_type") == ProcessContainerType.WINDOWS_JOB.value:
+        try:
+            attestation = validate_windows_ownership(ownership, worker_identity=run.get("worker_identity"))
+            if (
+                ownership.get("launch_commit_state") not in {"COMMITTED", "UNCERTAIN"}
+                or ownership.get("ownership_state") not in {"EXTERNAL_PROCESS_GOVERNED", "LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}
+                or ownership.get("correlation_id") != run.get("correlation_id")
+                or run.get("worker_generation") != attestation.worker_generation
+                or run.get("process_group_id") is not None
+                or run.get("process_id") not in {None, attestation.root_process_id}
+            ):
+                return None
+            from app.core.windows_job import attested_job
+            attested_job(attestation, for_recovery=True)
+            return ProcessIdentity(
+                pid=attestation.root_process_id, process_group_id=None,
+                start_token=attestation.root_process_start_token,
+                windows_attestation=attestation.model_dump_json(),
+            )
+        except (OSError, TypeError, ValueError, KeyError):
+            return None
+
     if ownership.get("container_type") != ProcessContainerType.POSIX_SESSION.value:
         return None
     if ownership.get("launch_commit_state") not in {
@@ -665,7 +689,7 @@ class ExecutionCancellationCoordinator:
                     reason_code="EXECUTION_CANCELLED",
                     termination_status=process_status,
                     process_id=durable_identity.pid,
-                    process_group_id=str(durable_identity.process_group_id),
+                    process_group_id=(str(durable_identity.process_group_id) if durable_identity.process_group_id is not None else None),
                     process_start_token=durable_identity.start_token,
                     session_id=durable_identity.session_id,
                     worker_generation=ownership.get("worker_generation") if ownership else None,
@@ -960,6 +984,37 @@ def record_no_process(
         return False
 
 
+def record_windows_launch(capability, attestation):
+    """Commit the kernel-verified Windows identity through the existing DAL fence."""
+    from app.core.windows_job import attested_job
+    evidence = _durable_execution_evidence(capability)
+    if evidence is None:
+        raise RuntimeError("durable execution correlation is unavailable")
+    record = ExecutionProcessOwnershipRecord(
+        execution_id=capability.execution_id,
+        organization_id=capability.decision.organization_id,
+        ownership_state=ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED,
+        container_type=ProcessContainerType.WINDOWS_JOB,
+        container_identity=attestation.job_identity,
+        root_process_id=attestation.root_process_id,
+        root_process_start_token=attestation.root_process_start_token,
+        worker_generation=capability.worker_generation,
+        launch_commit_state=LaunchCommitState.COMMITTED,
+        identity_attestation=attestation.model_dump_json(),
+        correlation_id=evidence["run"]["correlation_id"],
+        launched_at=attestation.captured_at,
+        last_verified_at=attestation.captured_at,
+    )
+    verified = validate_windows_ownership(record.model_dump(), worker_identity=capability.worker_identity)
+    if attested_job(verified).members() != (attestation.root_process_id,):
+        raise ValueError("Windows root must remain suspended during ownership commit")
+    if not capability.database.transition_process_ownership(
+        record, ProcessOwnershipState.UNKNOWN,
+        reason_code="PROCESS_LAUNCH_COMMITTED", worker_identity=capability.worker_identity,
+    ):
+        raise RuntimeError("durable Windows job ownership commit failed")
+
+
 def record_posix_launch(
     capability: Any,
     *,
@@ -1072,6 +1127,7 @@ def record_launch_uncertain(
     start_token: Optional[str] = None,
     session_id: Optional[int] = None,
     member_snapshot: Any = None,
+    windows_attestation: Optional[str] = None,
 ) -> bool:
     """Persist post-creation uncertainty before any recovery decision."""
     if not capability.execution_id:
@@ -1159,6 +1215,26 @@ def record_launch_uncertain(
             container_type = ProcessContainerType.PROCESS_SET
             container_identity = None
             persisted_session_id = None
+    if windows_attestation is not None:
+        try:
+            candidate = parse_windows_attestation_json(windows_attestation)
+            if (
+                type(candidate) is not WindowsJobAttestation
+                or candidate.execution_id != capability.execution_id
+                or candidate.organization_id != capability.decision.organization_id
+                or candidate.worker_identity != capability.worker_identity
+                or candidate.worker_generation != capability.worker_generation
+                or candidate.root_process_id != pid
+                or candidate.root_process_start_token != start_token
+                or candidate.verification_result != "VERIFIED"
+            ):
+                raise ValueError("Windows uncertainty binding mismatch")
+            attestation_json = candidate.model_dump_json()
+            container_type = ProcessContainerType.WINDOWS_JOB
+            container_identity = candidate.job_identity
+            persisted_group_id = persisted_session_id = None
+        except (TypeError, ValueError):
+            attestation_json = None
     complete_identity = attestation_json is not None
     record = ExecutionProcessOwnershipRecord(
         execution_id=capability.execution_id,
@@ -1226,6 +1302,7 @@ def record_terminal(
     )
     if not existing:
         return False
+    is_windows = existing.get("container_type") == ProcessContainerType.WINDOWS_JOB.value
     current = ProcessOwnershipState(existing["ownership_state"])
     if current == ProcessOwnershipState.TERMINAL:
         if (
@@ -1240,13 +1317,12 @@ def record_terminal(
         if (
             type(process_id) is not int
             or process_id <= 1
-            or not isinstance(process_group_id, str)
-            or not process_group_id.isdigit()
-            or int(process_group_id) <= 1
+            or (is_windows and process_group_id is not None)
+            or (not is_windows and (not isinstance(process_group_id, str) or not process_group_id.isdigit() or int(process_group_id) <= 1))
             or not isinstance(process_start_token, str)
             or not process_start_token.strip()
-            or type(session_id) is not int
-            or session_id < 0
+            or (is_windows and session_id is not None)
+            or (not is_windows and (type(session_id) is not int or session_id < 0))
             or termination_status not in {"KILLED", "ALREADY_EXITED"}
         ):
             return False
@@ -1330,35 +1406,41 @@ def record_terminal(
         ):
             if payload.get(field_name) != expected:
                 return False
-        try:
-            attestation = PosixProcessAttestation.model_validate_json(existing["identity_attestation"])
-            expected_pid = int(str(existing.get("root_process_id")))
-            expected_group = int(str(existing.get("process_group_id")))
-            expected_session = int(str(existing.get("session_id")))
-        except Exception:
-            return False
-        token_parts = str(existing.get("root_process_start_token") or "").split(":", 2)
-        if (
-            expected_pid <= 1
-            or expected_group <= 1
-            or expected_session < 0
-            or attestation.verification_result != "VERIFIED"
-            or attestation.worker_generation != str(existing.get("worker_generation") or "")
-            or len(token_parts) != 3
-            or token_parts[0] != "posix"
-            or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "")
-            or not token_parts[2].isdigit()
-            or int(token_parts[2]) <= 0
-            or attestation.boot_id != token_parts[1]
-            or attestation.root_start_ticks != int(token_parts[2])
-            or attestation.root_start_ticks <= 0
-            or attestation.session_id != expected_session
-            or attestation.process_group_id != expected_group
-            or attestation.process_group_id <= 1
-            or existing.get("container_identity")
-            != f"posix-session:{expected_session}:group:{expected_group}"
-        ):
-            return False
+        if is_windows:
+            try:
+                validate_windows_ownership(existing, worker_identity=capability.worker_identity, historical=True)
+            except (TypeError, ValueError, KeyError):
+                return False
+        else:
+            try:
+                attestation = PosixProcessAttestation.model_validate_json(existing["identity_attestation"])
+                expected_pid = int(str(existing.get("root_process_id")))
+                expected_group = int(str(existing.get("process_group_id")))
+                expected_session = int(str(existing.get("session_id")))
+            except Exception:
+                return False
+            token_parts = str(existing.get("root_process_start_token") or "").split(":", 2)
+            if (
+                expected_pid <= 1
+                or expected_group <= 1
+                or expected_session < 0
+                or attestation.verification_result != "VERIFIED"
+                or attestation.worker_generation != str(existing.get("worker_generation") or "")
+                or len(token_parts) != 3
+                or token_parts[0] != "posix"
+                or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "")
+                or not token_parts[2].isdigit()
+                or int(token_parts[2]) <= 0
+                or attestation.boot_id != token_parts[1]
+                or attestation.root_start_ticks != int(token_parts[2])
+                or attestation.root_start_ticks <= 0
+                or attestation.session_id != expected_session
+                or attestation.process_group_id != expected_group
+                or attestation.process_group_id <= 1
+                or existing.get("container_identity")
+                != f"posix-session:{expected_session}:group:{expected_group}"
+            ):
+                return False
         try:
             observed_at = datetime.fromisoformat(str(payload.get("observed_at")))
             terminalized_at = datetime.fromisoformat(str(existing.get("terminalized_at")))
@@ -1393,67 +1475,78 @@ def record_terminal(
         termination_status = "ALREADY_EXITED"
     if termination_status not in {"KILLED", "ALREADY_EXITED"}:
         return False
-    try:
-        expected_pid = int(existing["root_process_id"])
-        expected_group = str(existing["process_group_id"])
-        expected_session = int(str(existing["session_id"]))
-    except (TypeError, ValueError):
-        return False
-    if (
-        expected_pid <= 1
-        or not expected_group.isdigit()
-        or int(expected_group) <= 1
-        or expected_session < 0
-    ):
-        return False
-    if (
-        type(process_id) is not int
-        or process_id <= 1
-        or not isinstance(process_group_id, str)
-        or not process_group_id.isdigit()
-        or int(process_group_id) <= 1
-        or not isinstance(process_start_token, str)
-        or not process_start_token.strip()
-        or type(session_id) is not int
-        or session_id < 0
-        or termination_status not in {"KILLED", "ALREADY_EXITED"}
-    ):
-        return False
-    if process_id != expected_pid:
-        return False
-    if str(process_group_id) != expected_group:
-        return False
-    if session_id != expected_session:
-        return False
-    if process_start_token != existing.get("root_process_start_token"):
-        return False
-    attestation_json = existing.get("identity_attestation")
-    if not isinstance(attestation_json, str) or not attestation_json.strip():
-        return False
-    try:
-        attestation = PosixProcessAttestation.model_validate_json(attestation_json)
-    except Exception:
-        return False
-    start_parts = str(existing.get("root_process_start_token") or "").split(":", 2)
-    if (
-        attestation.verification_result != "VERIFIED"
-        or attestation.worker_generation != str(existing.get("worker_generation") or "")
-        or len(start_parts) != 3
-        or start_parts[0] != "posix"
-        or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "")
-        or not start_parts[2].isdigit()
-        or int(start_parts[2]) <= 0
-        or int(expected_group) <= 1
-        or attestation.boot_id != start_parts[1]
-        or attestation.root_start_ticks != int(start_parts[2])
-        or attestation.root_start_ticks <= 0
-        or attestation.session_id != int(str(existing.get("session_id")))
-        or attestation.process_group_id != int(str(existing.get("process_group_id")))
-        or attestation.process_group_id <= 1
-        or existing.get("container_identity")
-        != f"posix-session:{existing.get('session_id')}:group:{existing.get('process_group_id')}"
-    ):
-        return False
+    if is_windows:
+        try:
+            from app.core.windows_job import require_empty_job
+            attestation = require_empty_job(existing, worker_identity=capability.worker_identity)
+            expected_pid, expected_group, expected_session = attestation.root_process_id, None, None
+            attestation_json = existing["identity_attestation"]
+            if process_id != expected_pid or process_group_id is not None or session_id is not None or process_start_token != attestation.root_process_start_token:
+                return False
+        except (OSError, TypeError, ValueError, KeyError):
+            return False
+    else:
+        try:
+            expected_pid = int(existing["root_process_id"])
+            expected_group = str(existing["process_group_id"])
+            expected_session = int(str(existing["session_id"]))
+        except (TypeError, ValueError):
+            return False
+        if (
+            expected_pid <= 1
+            or not expected_group.isdigit()
+            or int(expected_group) <= 1
+            or expected_session < 0
+        ):
+            return False
+        if (
+            type(process_id) is not int
+            or process_id <= 1
+            or not isinstance(process_group_id, str)
+            or not process_group_id.isdigit()
+            or int(process_group_id) <= 1
+            or not isinstance(process_start_token, str)
+            or not process_start_token.strip()
+            or type(session_id) is not int
+            or session_id < 0
+            or termination_status not in {"KILLED", "ALREADY_EXITED"}
+        ):
+            return False
+        if process_id != expected_pid:
+            return False
+        if str(process_group_id) != expected_group:
+            return False
+        if session_id != expected_session:
+            return False
+        if process_start_token != existing.get("root_process_start_token"):
+            return False
+        attestation_json = existing.get("identity_attestation")
+        if not isinstance(attestation_json, str) or not attestation_json.strip():
+            return False
+        try:
+            attestation = PosixProcessAttestation.model_validate_json(attestation_json)
+        except Exception:
+            return False
+        start_parts = str(existing.get("root_process_start_token") or "").split(":", 2)
+        if (
+            attestation.verification_result != "VERIFIED"
+            or attestation.worker_generation != str(existing.get("worker_generation") or "")
+            or len(start_parts) != 3
+            or start_parts[0] != "posix"
+            or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "")
+            or not start_parts[2].isdigit()
+            or int(start_parts[2]) <= 0
+            or int(expected_group) <= 1
+            or attestation.boot_id != start_parts[1]
+            or attestation.root_start_ticks != int(start_parts[2])
+            or attestation.root_start_ticks <= 0
+            or attestation.session_id != int(str(existing.get("session_id")))
+            or attestation.process_group_id != int(str(existing.get("process_group_id")))
+            or attestation.process_group_id <= 1
+            or existing.get("container_identity")
+            != f"posix-session:{existing.get('session_id')}:group:{existing.get('process_group_id')}"
+        ):
+            return False
     evidence = _durable_execution_evidence(capability)
     if evidence is None:
         return False

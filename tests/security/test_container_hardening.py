@@ -101,6 +101,7 @@ def test_ci_workflow_static_contract_is_complete():
         "full-repository-verification",
         "postgres-schema-assurance",
         "container",
+        "windows-job-object-assurance",
     }
     focused_job = workflow["jobs"]["focused-contract-verification"]
     assert focused_job["services"]["redis"]["image"] == "redis:7.2-alpine"
@@ -117,6 +118,26 @@ def test_ci_workflow_static_contract_is_complete():
     assert full_job["services"]["redis"]["image"] == "redis:7.2-alpine"
     assert full_job["services"]["redis"]["ports"] == ["6379:6379"]
     assert full_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/15"
+    windows_job = workflow["jobs"]["windows-job-object-assurance"]
+    assert windows_job["runs-on"] == "windows-2022"
+    assert windows_job["timeout-minutes"] == 20
+    assert windows_job["env"]["CYBERASSESS_WORKER_IDENTITY"] == "ci-windows-worker"
+    assert "${{ github.run_id }}" in windows_job["env"]["CYBERASSESS_WORKER_GENERATION"]
+    assert windows_job["env"]["CI_ROOT"].endswith("/windows-job-object-assurance")
+    assert windows_job["env"]["CI_REPORT_DIR"].endswith("/windows-job-object-assurance/reports")
+    assert windows_job["env"]["CI_PYTEST_BASETEMP"].endswith("/windows-job-object-assurance/pytest")
+    assert windows_job["env"]["CYBERASSESS_DB_PATH"].endswith("/windows-job-object-assurance/cyberassess.db")
+    assert any(
+        step.get("name") == "Reject Windows assurance skips"
+        for step in windows_job["steps"]
+        if isinstance(step, dict)
+    )
+    assert any(
+        step.get("name") == "Upload Windows assurance evidence"
+        and step.get("if") == "${{ always() }}"
+        for step in windows_job["steps"]
+        if isinstance(step, dict)
+    )
     assert "tests/security/test_real_dispatch_authority_assurance.py" in workflow_text
     for job_id in ("focused-contract-verification", "full-repository-verification"):
         checkout_step = next(
@@ -162,9 +183,9 @@ def test_ci_workflow_static_contract_is_complete():
             if key in {"CYBERASSESS_DB_PATH", "FULL_EVIDENCE_DIR", "POSTGRES_EVIDENCE_DIR"}:
                 assert str(value).startswith(job_root + "/")
     assert workflow_text.count('>> "$GITHUB_ENV"') == 4
-    assert workflow_text.count('python -m pytest -p no:cacheprovider -q') == 3
+    assert workflow_text.count('python -m pytest -p no:cacheprovider -q') == 4
     assert workflow_text.count('--basetemp="$PYTEST_BASETEMP"') == 3
-    assert workflow_text.count('path: ${{ env.CI_REPORT_DIR }}/') == 3
+    assert workflow_text.count('path: ${{ env.CI_REPORT_DIR }}/') == 4
     assert "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite" not in workflow_text
     for line in workflow_text.splitlines():
         if "/tmp" in line:
@@ -183,8 +204,12 @@ def test_ci_workflow_static_contract_is_complete():
     assert "focused-contract.xml" in workflow_text
     assert "full-suite.xml" in workflow_text
     assert "postgres-suite.xml" in workflow_text
-    assert workflow_text.count("if-no-files-found: error") == 3
-    assert workflow_text.count("retention-days: 14") == 3
+    assert workflow_text.count("if-no-files-found: error") == 4
+    assert workflow_text.count("retention-days: 14") == 4
+    assert '"--basetemp=$env:CI_PYTEST_BASETEMP"' in workflow_text
+    assert "test_windows_job_atomic_assignment_and_descendant_termination" in workflow_text
+    assert "test_windows_worker_crash_kill_on_close_blocks_durable_reattachment" in workflow_text
+    assert "test_windows_supervisor_cancellation_requires_attested_identity" in workflow_text
 
 
 def _extract_workflow_guard(workflow: str, step_name: str) -> str:

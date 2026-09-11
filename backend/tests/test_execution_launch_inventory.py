@@ -80,6 +80,45 @@ def test_all_process_creation_is_inventory_classified() -> None:
     assert launches["app/core/process_supervisor.py"]
 
 
+def test_windows_governed_launch_uses_native_job_list_and_has_no_pid_fallback() -> None:
+    source = (APP / "core" / "windows_job.py").read_text(encoding="utf-8")
+    assert "CreateProcessW" in source
+    assert "PROC_THREAD_ATTRIBUTE_JOB_LIST" in source
+    assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in source
+    assert "TerminateJobObject" in source
+    assert "taskkill" not in source.lower()
+
+
+def test_every_windows_supervisor_launch_uses_a_typed_job_attestation() -> None:
+    source = (APP / "core" / "process_supervisor.py").read_text(encoding="utf-8")
+    assert 'if os.name == "nt":' in source
+    assert 'if os.name == "nt" and execution_capability is not None:' not in source
+    for required in (
+        "WindowsJobProcess",
+        "WindowsNonScanJobAttestation",
+        "parse_windows_attestation_json",
+        "windows_non_scan_job_name",
+    ):
+        assert required in source
+
+
+def test_production_recovery_never_reopens_windows_jobs_by_name() -> None:
+    for path in APP.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if any(
+                keyword.arg == "reopen"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            ):
+                raise AssertionError(f"production code reopens a Windows job at {path}:{node.lineno}")
+
+
 def test_installer_launches_are_non_scan_capabilities() -> None:
     for path in (APP / "installers").glob("*.py"):
         calls = _calls(path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from dataclasses import replace
 import json
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 
 import pytest
 
@@ -25,6 +27,554 @@ from app.core.process_supervisor import (
 )
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 from app.core.execution_service import issue_non_scan_execution_context
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows kernel Job Object API")
+def test_windows_job_atomic_assignment_and_descendant_termination(tmp_path):
+    from app.core.windows_job import WindowsJob, WindowsJobProcess
+
+    marker = tmp_path / "child.pid"
+    child = "import time; time.sleep(60)"
+    root = (
+        "import subprocess,sys,time; from pathlib import Path; "
+        f"p=subprocess.Popen([sys.executable,'-c',{child!r}]); "
+        f"Path({str(marker)!r}).write_text(str(p.pid)); time.sleep(0.4)"
+    )
+    job = WindowsJob()
+    process = None
+    try:
+        process = WindowsJobProcess([sys.executable, "-c", root], job=job, env=dict(os.environ))
+        assert job.members() == (process.pid,)
+        assert not marker.exists(), "suspended root must not execute before durable registration"
+        assert job.verify_root(process.pid, process.start_token())
+        assert not job.verify_root(process.pid, "windows:1")
+        process.resume()
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert marker.exists()
+        child_pid = int(marker.read_text())
+        assert child_pid in job.members()
+        process.wait(timeout=10)
+        assert child_pid in job.members(), "root exit must not hide the surviving child"
+        assert job.terminate()
+        assert job.members() == ()
+    finally:
+        job.terminate()
+        if process:
+            process.wait(timeout=5)
+            process.close()
+        job.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows kernel Job Object API")
+def test_windows_job_restart_attachment_and_name_collision():
+    from app.core.windows_job import JobError, WindowsJob, WindowsJobProcess
+
+    job = WindowsJob()
+    process = None
+    reopened = None
+    try:
+        process = WindowsJobProcess([sys.executable, "-c", "import time;time.sleep(60)"], job=job)
+        token = process.start_token()
+        process.resume()
+        reopened = WindowsJob(job.name, reopen=True)
+        assert reopened.verify_root(process.pid, token)
+        with pytest.raises(JobError, match="already exists"):
+            WindowsJob(job.name)
+        assert reopened.terminate()
+        assert job.members() == ()
+    finally:
+        job.terminate()
+        if process:
+            process.wait(timeout=5)
+            process.close()
+        if reopened:
+            reopened.close()
+        job.close()
+    with pytest.raises(JobError):
+        WindowsJob(job.name, reopen=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows kernel Job Object API")
+def test_windows_job_recovery_attachment_accepts_only_attested_surviving_members(tmp_path):
+    """A root-exit survivor is recoverable only through its exact job proof."""
+    from app.core.execution_context import WindowsJobAttestation, canonical_windows_job_attestation_digest, windows_job_name
+    from app.core.windows_job import WindowsJob, WindowsJobProcess, attested_job, register_attestation, release_attestation
+
+    execution_id = f"windows-recovery-{uuid.uuid4().hex}"
+    organization_id = "org-windows-recovery"
+    worker_identity = "worker-windows-recovery"
+    worker_generation = "generation-windows-recovery"
+    job_nonce = uuid.uuid4().hex
+    job = WindowsJob(
+        windows_job_name(
+            execution_id,
+            organization_id,
+            worker_identity,
+            worker_generation,
+            job_nonce,
+        )
+    )
+    marker = tmp_path / "surviving-child.pid"
+    child_code = "import time; time.sleep(60)"
+    root_code = (
+        "import subprocess,sys,time; from pathlib import Path; "
+        f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
+        f"Path({str(marker)!r}).write_text(str(p.pid)); time.sleep(.2)"
+    )
+    process = None
+    reopened = None
+    attestation = None
+    try:
+        process = WindowsJobProcess(
+            [sys.executable, "-c", root_code],
+            job=job,
+            env=dict(os.environ),
+        )
+        initial_members = job.members()
+        captured = datetime.now(timezone.utc)
+        values = {
+            "schema_version": "windows-job-attestation-v1",
+            "proof_type": "JOB_OBJECT",
+            "job_identity": job.name,
+            "job_nonce": job_nonce,
+            "execution_id": execution_id,
+            "organization_id": organization_id,
+            "worker_identity": worker_identity,
+            "worker_generation": worker_generation,
+            "root_process_id": process.pid,
+            "root_process_start_token": process.start_token(),
+            "initial_members": initial_members,
+            "captured_at": captured,
+            "expires_at": captured + timedelta(minutes=5),
+            "verification_result": "VERIFIED",
+        }
+        attestation = WindowsJobAttestation(
+            **values,
+            digest=canonical_windows_job_attestation_digest(values),
+        )
+        register_attestation(attestation, job)
+        assert initial_members == (process.pid,)
+        process.resume()
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert marker.exists()
+        child_pid = int(marker.read_text())
+        process.wait(timeout=10)
+        assert child_pid in job.members(), "root exit must not hide a live job member"
+
+        reopened = WindowsJob(job.name, reopen=True)
+        assert child_pid in tuple(pid for pid, _token in reopened.member_identities())
+        with pytest.raises(OSError, match="exact process-local attested binding"):
+            reopened.verify_attachment(attestation)
+        assert child_pid in attested_job(attestation, for_recovery=True).members()
+        assert job.terminate()
+        assert job.members() == ()
+    finally:
+        if reopened:
+            try:
+                reopened.terminate()
+            except OSError:
+                pass
+            reopened.close()
+        try:
+            job.terminate()
+        except OSError:
+            pass
+        if process:
+            try:
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            process.close()
+        if attestation:
+            try:
+                release_attestation(attestation.digest)
+            except OSError:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_process_supervisor_rejects_ambiguous_governed_and_non_scan_capabilities():
+    result = await ProcessSupervisor().execute(
+        [sys.executable, "-c", "raise SystemExit(99)"],
+        execution_capability=object(),
+        non_scan_context=issue_non_scan_execution_context("observation:ambiguous-capability"),
+    )
+
+    assert result.returncode == 126
+    assert result.execution_status is ProcessExecutionStatus.SECURITY_REJECTED
+    assert "both governed and non-scan capabilities" in result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows kernel Job Object API")
+def test_windows_worker_crash_kill_on_close_blocks_durable_reattachment(tmp_path):
+    """Worker loss kills members and prevents same-name durable reattachment."""
+    from app.core.execution_context import WindowsJobAttestation, canonical_windows_job_attestation_digest, windows_job_name
+    from app.core.execution_service import load_durable_process_identity
+    from app.core.windows_job import JobError, WindowsJob, attested_job
+
+    execution_id = f"windows-loader-{uuid.uuid4().hex}"
+    organization_id = "org-windows-loader"
+    worker_identity = "worker-windows-loader"
+    worker_generation = "generation-windows-loader"
+    job_nonce = uuid.uuid4().hex
+    job_name = windows_job_name(
+        execution_id,
+        organization_id,
+        worker_identity,
+        worker_generation,
+        job_nonce,
+    )
+    worker = None
+    recreated = None
+    attestation = None
+
+    helper_code = f"""
+import importlib.util
+import json
+import os
+import sys
+import time
+
+spec = importlib.util.spec_from_file_location("windows_job_worker", {str(Path(__file__).resolve().parents[2] / "backend" / "app" / "core" / "windows_job.py")!r})
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+assert spec.loader is not None
+spec.loader.exec_module(module)
+job = module.WindowsJob(sys.argv[1])
+process = module.WindowsJobProcess([sys.executable, "-c", "import time; time.sleep(120)"], job=job, env=dict(os.environ))
+print(json.dumps({{"job_name": job.name, "pid": process.pid, "start_token": process.start_token()}}), flush=True)
+process.resume()
+while True:
+    time.sleep(1)
+"""
+
+    class DurableRestartDatabase:
+        def __init__(self, run, ownership):
+            self.run = run
+            self.ownership = ownership
+
+        def get_execution_run(self, requested_execution_id, requested_organization_id):
+            assert (requested_execution_id, requested_organization_id) == (execution_id, organization_id)
+            return self.run
+
+        def get_process_ownership(self, requested_execution_id, requested_organization_id):
+            assert (requested_execution_id, requested_organization_id) == (execution_id, organization_id)
+            return self.ownership
+
+    try:
+        worker = subprocess.Popen(
+            [sys.executable, "-c", helper_code, job_name],
+            cwd=str(Path(__file__).resolve().parents[2]),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        line = worker.stdout.readline() if worker.stdout is not None else ""
+        launch = json.loads(line)
+        assert launch["job_name"] == job_name
+        pid = int(launch["pid"])
+        assert ProcessSupervisor._pid_exists(pid)
+        captured = datetime.now(timezone.utc)
+        values = {
+            "schema_version": "windows-job-attestation-v1",
+            "proof_type": "JOB_OBJECT",
+            "job_identity": job_name,
+            "job_nonce": job_nonce,
+            "execution_id": execution_id,
+            "organization_id": organization_id,
+            "worker_identity": worker_identity,
+            "worker_generation": worker_generation,
+            "root_process_id": pid,
+            "root_process_start_token": launch["start_token"],
+            "initial_members": (pid,),
+            "captured_at": captured,
+            "expires_at": captured + timedelta(minutes=5),
+            "verification_result": "VERIFIED",
+        }
+        attestation = WindowsJobAttestation(
+            **values,
+            digest=canonical_windows_job_attestation_digest(values),
+        )
+        ownership = {
+            "container_type": "WINDOWS_JOB",
+            "container_identity": attestation.job_identity,
+            "execution_id": execution_id,
+            "organization_id": organization_id,
+            "root_process_id": pid,
+            "root_process_start_token": attestation.root_process_start_token,
+            "process_group_id": None,
+            "session_id": None,
+            "worker_generation": worker_generation,
+            "launch_commit_state": "COMMITTED",
+            "ownership_state": "EXTERNAL_PROCESS_GOVERNED",
+            "correlation_id": f"corr-{execution_id}",
+            "identity_attestation": attestation.model_dump_json(),
+        }
+        database = DurableRestartDatabase(
+            {
+                "execution_id": execution_id,
+                "organization_id": organization_id,
+                "state": "RUNNING",
+                "worker_identity": worker_identity,
+                "worker_generation": worker_generation,
+                "process_id": None,
+                "process_group_id": None,
+                "correlation_id": f"corr-{execution_id}",
+            },
+            ownership,
+        )
+
+        # A real worker process exit closes its only job handle.  KILL_ON_CLOSE
+        # must terminate the child and remove the named object.
+        worker.terminate()
+        worker.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while ProcessSupervisor._pid_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not ProcessSupervisor._pid_exists(pid)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                reopened = WindowsJob(job_name, reopen=True)
+            except JobError:
+                break
+            else:
+                reopened.close()
+                time.sleep(0.02)
+        else:
+            raise AssertionError("named Windows job remained open after worker exit")
+
+        # A same-name object can now be recreated, but it is a new empty
+        # container and must never satisfy the old durable attestation.
+        recreated = WindowsJob(job_name)
+        assert recreated.members() == ()
+        with pytest.raises(JobError, match="exact process-local attested binding"):
+            recreated.verify_attachment(attestation)
+        with pytest.raises(JobError, match="unavailable after worker restart"):
+            attested_job(attestation, for_recovery=True)
+        loaded = load_durable_process_identity(database, execution_id, organization_id)
+        assert loaded is None
+    finally:
+        if recreated:
+            try:
+                recreated.terminate()
+            except OSError:
+                pass
+            recreated.close()
+        if worker:
+            if worker.poll() is None:
+                worker.terminate()
+            try:
+                worker.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                worker.kill()
+                worker.wait(timeout=10)
+            if worker.stdout is not None:
+                worker.stdout.close()
+            if worker.stderr is not None:
+                worker.stderr.close()
+
+
+def test_expired_windows_attestation_stays_recovery_blocked_without_refresh():
+    """Expiry fences loader/attachment; changing expiry cannot create a job binding."""
+    from app.core.execution_context import (
+        ExecutionContextExpiredError,
+        WindowsJobAttestation,
+        canonical_windows_job_attestation_digest,
+        validate_windows_ownership,
+        windows_job_name,
+    )
+    from app.core.windows_job import JobError, attested_job
+    from app.core.execution_service import load_durable_process_identity
+
+    execution_id = f"windows-expired-{uuid.uuid4().hex}"
+    organization_id = "org-windows-expired"
+    worker_identity = "worker-windows-expired"
+    worker_generation = "generation-windows-expired"
+    job_nonce = uuid.uuid4().hex
+    captured = datetime.now(timezone.utc) - timedelta(minutes=10)
+    values = {
+        "schema_version": "windows-job-attestation-v1", "proof_type": "JOB_OBJECT",
+        "job_identity": windows_job_name(execution_id, organization_id, worker_identity, worker_generation, job_nonce),
+        "job_nonce": job_nonce, "execution_id": execution_id, "organization_id": organization_id,
+        "worker_identity": worker_identity, "worker_generation": worker_generation,
+        "root_process_id": 789, "root_process_start_token": "windows:789", "initial_members": (789,),
+        "captured_at": captured, "expires_at": captured + timedelta(minutes=5),
+        "verification_result": "VERIFIED",
+    }
+    attestation = WindowsJobAttestation(
+        **values,
+        digest=canonical_windows_job_attestation_digest(values),
+    )
+    ownership = {
+        "container_type": "WINDOWS_JOB", "container_identity": attestation.job_identity,
+        "execution_id": execution_id, "organization_id": organization_id,
+        "root_process_id": attestation.root_process_id,
+        "root_process_start_token": attestation.root_process_start_token,
+        "process_group_id": None, "session_id": None,
+        "worker_generation": worker_generation,
+        "identity_attestation": attestation.model_dump_json(),
+    }
+
+    with pytest.raises(ExecutionContextExpiredError):
+        validate_windows_ownership(ownership, worker_identity=worker_identity)
+    assert validate_windows_ownership(
+        ownership, worker_identity=worker_identity, historical=True,
+    ) == attestation
+    with pytest.raises(JobError, match="unverified or expired"):
+        attested_job(attestation, for_recovery=True)
+
+    class ExpiredDatabase:
+        def get_execution_run(self, requested_execution_id, requested_organization_id):
+            assert (requested_execution_id, requested_organization_id) == (execution_id, organization_id)
+            return {
+                "execution_id": execution_id, "organization_id": organization_id,
+                "state": "RUNNING", "worker_identity": worker_identity,
+                "worker_generation": worker_generation, "process_id": None,
+                "process_group_id": None, "correlation_id": f"corr-{execution_id}",
+            }
+
+        def get_process_ownership(self, requested_execution_id, requested_organization_id):
+            assert (requested_execution_id, requested_organization_id) == (execution_id, organization_id)
+            return {
+                **ownership,
+                "ownership_state": "EXTERNAL_PROCESS_GOVERNED",
+                "launch_commit_state": "COMMITTED",
+                "correlation_id": f"corr-{execution_id}",
+            }
+
+    assert load_durable_process_identity(ExpiredDatabase(), execution_id, organization_id) is None
+
+    refreshed_values = {**values, "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5)}
+    refreshed = WindowsJobAttestation(
+        **refreshed_values,
+        digest=canonical_windows_job_attestation_digest(refreshed_values),
+    )
+    with pytest.raises(JobError, match="unavailable after worker restart"):
+        attested_job(refreshed, for_recovery=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows kernel Job Object API")
+def test_windows_supervisor_cancellation_requires_attested_identity():
+    """Windows cancellation terminates the job and rejects PID-only recovery."""
+    from app.core.execution_context import WindowsJobAttestation, canonical_windows_job_attestation_digest, windows_job_name
+    from app.core.windows_job import WindowsJob, WindowsJobProcess, register_attestation, release_attestation
+
+    execution_id = f"windows-cancel-{uuid.uuid4().hex}"
+    organization_id = "org-windows-cancel"
+    worker_identity = "worker-windows-cancel"
+    worker_generation = "generation-windows-cancel"
+    job_nonce = uuid.uuid4().hex
+    job = WindowsJob(
+        windows_job_name(
+            execution_id,
+            organization_id,
+            worker_identity,
+            worker_generation,
+            job_nonce,
+        )
+    )
+    process = None
+    reopened = None
+    attestation = None
+    unbound_job = None
+    unbound_process = None
+    try:
+        process = WindowsJobProcess(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            job=job,
+            env=dict(os.environ),
+        )
+        captured = datetime.now(timezone.utc)
+        values = {
+            "schema_version": "windows-job-attestation-v1",
+            "proof_type": "JOB_OBJECT",
+            "job_identity": job.name,
+            "job_nonce": job_nonce,
+            "execution_id": execution_id,
+            "organization_id": organization_id,
+            "worker_identity": worker_identity,
+            "worker_generation": worker_generation,
+            "root_process_id": process.pid,
+            "root_process_start_token": process.start_token(),
+            "initial_members": job.members(),
+            "captured_at": captured,
+            "expires_at": captured + timedelta(minutes=5),
+            "verification_result": "VERIFIED",
+        }
+        attestation = WindowsJobAttestation(
+            **values,
+            digest=canonical_windows_job_attestation_digest(values),
+        )
+        register_attestation(attestation, job)
+        process.resume()
+        supervisor = ProcessSupervisor()
+        identity = ProcessIdentity(
+            pid=process.pid,
+            process_group_id=None,
+            start_token=attestation.root_process_start_token,
+            windows_attestation=attestation.model_dump_json(),
+        )
+        supervisor._register_execution(process.pid, execution_id=execution_id, identity=identity)
+        reopened = WindowsJob(job.name, reopen=True)
+        tampered = replace(identity, start_token="windows:1")
+        assert supervisor.cancel_execution(execution_id, process_identity=tampered).status is ProcessCancellationStatus.RECOVERY_BLOCKED
+
+        cancelled = supervisor.cancel_execution(execution_id, process_identity=identity)
+        assert cancelled.status is ProcessCancellationStatus.KILLED
+        assert reopened.members() == ()
+        assert supervisor.cancel_pid(process.pid).status is ProcessCancellationStatus.NOT_FOUND
+
+        unbound_execution_id = f"windows-unbound-{uuid.uuid4().hex}"
+        unbound_job = WindowsJob(
+            windows_job_name(
+                unbound_execution_id,
+                organization_id,
+                worker_identity,
+                worker_generation,
+                uuid.uuid4().hex,
+            )
+        )
+        unbound_process = WindowsJobProcess(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            job=unbound_job,
+            env=dict(os.environ),
+        )
+        assert supervisor.cancel_pid(unbound_process.pid).status is ProcessCancellationStatus.RECOVERY_BLOCKED
+    finally:
+        if attestation:
+            try:
+                release_attestation(attestation.digest)
+            except OSError:
+                pass
+        if unbound_job:
+            try:
+                unbound_job.terminate()
+            except OSError:
+                pass
+        if unbound_process:
+            try:
+                unbound_process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            unbound_process.close()
+        if reopened:
+            reopened.close()
+        try:
+            job.terminate()
+        except OSError:
+            pass
+        if process:
+            try:
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            process.close()
 
 
 def _terminate_owned_test_session(session_id: int | None) -> None:
@@ -148,6 +698,99 @@ async def test_supervisor_child_observes_only_reviewed_environment(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object lifecycle is covered by the native assurance job")
+async def test_windows_non_scan_launch_uses_attested_job_boundary(monkeypatch):
+    """Installer/observation launches cannot use ordinary Windows Popen."""
+    import app.core.process_supervisor as process_supervisor_module
+
+    def forbidden_popen(*_args, **_kwargs):
+        raise AssertionError("Windows non-scan launch bypassed the Job Object boundary")
+
+    monkeypatch.setattr(process_supervisor_module.subprocess, "Popen", forbidden_popen)
+    result = await ProcessSupervisor().execute(
+        [sys.executable, "-c", "print('windows-non-scan-job', flush=True)"],
+        timeout=10.0,
+        non_scan_context=issue_non_scan_execution_context("observation:windows-job-boundary"),
+    )
+    assert result.execution_status is ProcessExecutionStatus.COMPLETED
+    assert result.stdout.strip() == "windows-non-scan-job"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Requires the Windows kernel Job Object API")
+async def test_windows_non_scan_timeout_output_cancellation_and_exception_are_typed(monkeypatch, tmp_path):
+    """Every post-creation non-scan outcome stays inside the exact Job Object."""
+    supervisor = ProcessSupervisor()
+
+    timeout_marker = tmp_path / "timeout.pid"
+    timeout_code = (
+        "from pathlib import Path; import os,time; "
+        f"Path({str(timeout_marker)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    timed_out = await supervisor.execute(
+        [sys.executable, "-c", timeout_code],
+        timeout=0.25,
+        non_scan_context=issue_non_scan_execution_context("observation:windows-timeout"),
+    )
+    assert timed_out.execution_status is ProcessExecutionStatus.TIMED_OUT
+    timeout_pid = int(timeout_marker.read_text())
+    assert not ProcessSupervisor._pid_exists(timeout_pid)
+
+    output_limited = await supervisor.execute(
+        [sys.executable, "-c", "print('x' * 100000, flush=True)"],
+        timeout=10.0,
+        max_output_bytes=1024,
+        non_scan_context=issue_non_scan_execution_context("observation:windows-output-limit"),
+    )
+    assert output_limited.execution_status is ProcessExecutionStatus.OUTPUT_LIMIT_EXCEEDED
+
+    cancellation_marker = tmp_path / "cancellation.pid"
+    cancellation_code = (
+        "from pathlib import Path; import os,time; "
+        f"Path({str(cancellation_marker)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    cancellation_task = asyncio.create_task(
+        supervisor.execute(
+            [sys.executable, "-c", cancellation_code],
+            timeout=30.0,
+            non_scan_context=issue_non_scan_execution_context("observation:windows-cancellation"),
+        )
+    )
+    deadline = time.monotonic() + 10
+    while not cancellation_marker.exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert cancellation_marker.exists()
+    cancellation_pid = int(cancellation_marker.read_text())
+    cancellation_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancellation_task
+    deadline = time.monotonic() + 10
+    while ProcessSupervisor._pid_exists(cancellation_pid) and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert not ProcessSupervisor._pid_exists(cancellation_pid)
+
+    from app.core.windows_job import WindowsJobProcess
+
+    launched = {}
+
+    def fail_resume(process):
+        launched["pid"] = process.pid
+        raise RuntimeError("test post-launch resume failure")
+
+    monkeypatch.setattr(WindowsJobProcess, "resume", fail_resume)
+    post_launch_failure = await supervisor.execute(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        timeout=10.0,
+        non_scan_context=issue_non_scan_execution_context("observation:windows-post-launch-exception"),
+    )
+    assert post_launch_failure.execution_status is ProcessExecutionStatus.LAUNCH_UNCERTAIN
+    assert not ProcessSupervisor._pid_exists(launched["pid"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX identity-capture path is not the Windows Job Object path")
 async def test_identity_capture_failure_after_popen_is_typed_uncertain_and_recoverable(monkeypatch):
     """A real child created before identity capture cannot become ordinary failure."""
     supervisor = ProcessSupervisor()
@@ -710,8 +1353,9 @@ def test_group_identity_requires_complete_fresh_member_identity(monkeypatch) -> 
 
 
 def test_windows_process_tree_recovery_is_explicitly_fail_closed(monkeypatch) -> None:
-    """Windows cannot claim containment until the Job Object boundary exists."""
+    """A Windows recovery request without a typed job identity is blocked."""
     import app.core.process_supervisor as supervisor_module
 
+    monkeypatch.setattr(supervisor_module.os, "name", "nt")
     monkeypatch.setattr(supervisor_module.sys, "platform", "win32")
     assert ProcessSupervisor.kill_process_tree(4100) is False

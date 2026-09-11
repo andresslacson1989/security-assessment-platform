@@ -7,17 +7,14 @@ This addendum records the durable approval-to-dispatch and cancellation-
 coordination implementation pass, including the subsequent authority-to-launch
 preflight, exact identity settlement rework, PostgreSQL settlement correction,
 explicit deployment identity/generation binding, process-session emptiness
-checking, zombie-member handling, and explicit recovery blocking when root
-ownership is no longer independently provable at the
-current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
-The current local corrective candidate is committed at exact SHA
-`aa819b68cf636903b2e5b6126d16a4abb88b6dff`, parent
-`cc16c35720e05d8114ad956e8d1b8f34b3c22af6`; it adds durable
-missing-identity recovery for active `UNKNOWN` ownership, corrects recovery
-attempt projection lookup, and retains the earlier external-process
-correction. The earlier local commits
-`2545a62acbfb2c3e4978ccac9919b7f56688ad48` and
-`abbc2504b3badbd52032352722b5a0bc08ca9eab` are retained as historical
+checking, zombie-member handling, explicit recovery blocking when root
+ownership is no longer independently provable, and the native Windows Job
+Object execution path. The previously published baseline remains
+`0a76593045e9d9957bfa1c601d36b2d19b77ee4c`. The current working-tree candidate
+is based on the grouped local parent
+`2ce759f95639dd2dcd90e74485244d3213b721d9` and is not yet assigned a delivery
+SHA; no commit or CI result is claimed for the uncommitted Windows
+implementation. Earlier local commits remain retained as historical
 predecessor evidence, not as the current candidate. The current worktree also
 retains the previously implemented authoritative-versus-legacy
 queue classification, strict failure evidence and quarantine-state schemas,
@@ -63,6 +60,25 @@ An incomplete identity never receives a fabricated attestation and remains
 `RECOVERY_BLOCKED`; the observer cannot terminalize it through a missing-PID or
 `NOT_FOUND` inference.
 
+On Windows, the governed branch replaces POSIX process-group/session identity
+with a named kernel Job Object and a typed `WindowsJobAttestation`. The root is
+created suspended through `CreateProcessW` with the extended-startup
+`PROC_THREAD_ATTRIBUTE_JOB_LIST` assignment, so the process is in the Job
+Object before resumption. The Job Object is restricted to
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the attestation binds the job name,
+nonce, execution, tenant, worker identity/generation, root PID/start token,
+exact initial membership, expiry, verification result, and canonical digest.
+The durable launch record is written while the root remains suspended, then
+the root is resumed. Recovery uses the process-local attestation-to-handle
+binding and verifies every currently reported member in that exact kernel
+object. It never reopens a named object after worker loss: `KILL_ON_JOB_CLOSE`
+terminates the members and releases the named object, while a same-name object
+created later is a new container and is rejected. `reopen=True` remains a
+diagnostic-only native observation facility and cannot verify or register a
+durable attestation. A zero-member proof is required for terminal settlement.
+This reduces the check-to-launch exposure but cannot make the final
+operating-system transition mathematically race-free.
+
 ## Scope
 
 The implementation binds approved scan dispatch to the real orchestrator,
@@ -82,11 +98,15 @@ reaching native work that might not later call an external adapter.
 Scan cancellation and direct execution-request revocation use the same
 `ExecutionCancellationCoordinator`. The coordinator revokes authority before
 exact execution-identity cancellation, joins an owning task when one is
-available, reloads the durable process identity after a worker restart, and
-preserves a recoverable state for `NOT_FOUND`, `FAILED`, missing mappings, or
-an unjoined task. Positive `NO_EXTERNAL_PROCESS` evidence is settled through a
-durable no-process path and is never inferred from a missing PID. Only the
-durable `EXECUTION_CANCELLED_BEFORE_DISPATCH` transition is accepted as the
+available, and reloads the durable process identity when a worker restart is
+recoverable. POSIX recovery may use its complete persisted session/group
+identity; Windows recovery after worker loss is intentionally bounded because
+the Job Object is destroyed with the worker handle and the loader refuses
+same-name reattachment. Both paths preserve a recoverable state for
+`NOT_FOUND`, `FAILED`, missing mappings, or an unjoined task. Positive
+`NO_EXTERNAL_PROCESS` evidence is settled through a durable no-process path
+and is never inferred from a missing PID. Only the durable
+`EXECUTION_CANCELLED_BEFORE_DISPATCH` transition is accepted as the
 pre-dispatch no-process proof.
 
 The post-revocation settlement primitive validates all authority, tenant,
@@ -127,7 +147,8 @@ durable quarantine record. The queue's session-binding field is an opaque
 authenticated-service handoff and is not independently enforced by the queue
 state comparison.
 
-The changed implementation files in this candidate are:
+The cumulative Section B candidate includes changes in the following audited
+implementation and test files:
 
 - `backend/app/core/db.py`
 - `backend/app/core/execution_service.py`
@@ -152,6 +173,16 @@ The changed implementation files in this candidate are:
 - `tests/security/test_code_sast_assurance.py`
 - `tests/security/test_nmap_assurance.py`
 
+The current uncommitted Windows Job Object assurance increment additionally
+changes:
+
+- `backend/app/core/execution_context.py`
+- `backend/app/core/scan_execution_authority.py`
+- `backend/app/core/windows_job.py`
+- `backend/tests/test_execution_context_contract.py`
+- `tests/security/test_container_hardening.py`
+- `.github/workflows/contract-verification.yml`
+
 The current Section B candidate also adds a fail-closed deployment binding:
 production execution identity and generation now require explicit environment
 configuration, and the enterprise Compose API and worker services require the
@@ -161,10 +192,13 @@ Non-scan contexts are revalidated against that binding at the process-launch
 boundary. If an enterprise egress rejection is already active, the supervisor
 returns the egress rejection before identity diagnostics; otherwise a missing
 or mismatched deployment binding is rejected before process creation. Windows
-governed execution remains unsupported until a verified Job Object or
-equivalent kernel-owned containment implementation exists. Non-scan launches
-retain their separate non-authoritative capability, but Windows termination or
-recovery that cannot prove the process container is surfaced as
+governed execution now has the verified-in-code Job Object implementation
+described above, but its assurance remains conditional on the independent
+Windows CI run and auditor review recorded below. Every Windows launch,
+including installer and observation launches, uses `WindowsJobProcess` and a
+typed attestation. Non-scan launches retain their separate
+non-authoritative capability, and termination or recovery that cannot prove
+the process container is surfaced as
 `PROCESS_TERMINATION_UNCONFIRMED`/`LAUNCH_UNCERTAIN`; it is never reported as a
 confirmed completion or scan authorization.
 
@@ -391,12 +425,68 @@ excluded because its recorded `.ci/` inventory is stale; that user-owned
 evidence tree was not changed or removed.
 
 The current Windows host cannot execute the POSIX proof natively. The
-container-local proof is the available local OS-level evidence; Windows
-governed external execution remains fail-closed until its Job Object
-implementation and independent platform evidence exist. Non-scan Windows
+container-local proof remains the available local POSIX evidence; the native
+Windows Job Object vectors are recorded separately below. Non-scan Windows
 launches remain non-authoritative, but unconfirmed termination is explicitly
 reported as uncertain. The local session-emptiness assertion is therefore
-recorded as an environment skip, not as a Windows pass.
+recorded as an environment skip, not as a Windows pass. The Windows governed
+path is not counted as independently accepted until the dedicated Windows CI
+job and auditor review are complete.
+
+## Current Windows Job Object implementation evidence
+
+The current Windows host executed the native Job Object implementation in the
+working tree. The focused run used an isolated project-local database,
+temporary directory, Python bytecode directory, and pytest base directory
+under `.project-temp/section-b-windows-native-final-20260911-001/`. Its exact
+selection covered the strict Windows attestation contract, launch inventory,
+native Job Object atomic assignment and descendant termination, diagnostic
+named-object collision/inspection, exact local surviving-member recovery,
+worker-crash no-reattachment, all-Windows non-scan launch handling,
+supervisor cancellation, and the production-path durable settlement vectors:
+
+```text
+19 passed, 0 skipped, exit code 0
+```
+
+The JUnit report is retained at:
+
+- `.project-temp/section-b-windows-native-final-20260911-001/windows.xml`
+
+The workflow contract and launch-inventory regression run used
+`.project-temp/section-b-windows-ci-20260911-002/` and completed with:
+
+```text
+21 passed, exit code 0
+```
+
+These are local implementation and workflow-definition results. The
+authoritative workflow now contains a dedicated `windows-job-object-assurance`
+job on `windows-2022`; it has not yet run for the current uncommitted
+candidate, so no GitHub Windows result is claimed here. The local interpreter
+was Python 3.13, while the workflow is pinned to Python 3.11; that supported
+runtime difference remains an explicit CI verification item.
+
+After the cancellation compatibility correction, the focused cancellation
+regression run covered the existing process-isolation unknown-ID behavior, the
+Windows attested cancellation vector, and the explicit Windows recovery-block
+vector for a live unbound PID:
+
+```text
+3 passed, 26 deselected, exit code 0
+```
+
+Its JUnit report is retained at
+`.project-temp/section-b-cancellation-regression-20260911-004/reports/cancellation.xml`.
+The resulting status distinction is deliberate: a dead, untracked PID is
+`NOT_FOUND`, while a live PID without the required attested execution binding
+is `RECOVERY_BLOCKED`.
+
+The implementation uses the atomic Windows startup `JOB_LIST` association and
+a suspended root rather than a post-launch `AssignProcessToJobObject` race.
+The repository therefore records the native kernel-container control as
+implemented in code and locally exercised, while retaining the distinction
+between minimized TOCTOU exposure and a mathematically race-free guarantee.
 
 ## GitHub Actions verification
 
@@ -499,6 +589,36 @@ The `.ci/` tree was not deleted, relocated, or staged. A clean GitHub checkout
 does not contain that untracked tree and is the authoritative environment for
 the corresponding CI result.
 
+The latest complete local regression for the current working candidate, with
+only that historical artifact-snapshot assertion deselected, completed with
+**949 passed, 84 skipped, 1 deselected, 15 warnings**, exit code **0**. The
+four formerly obsolete Windows-only skip vectors were active in this run and
+passed. The JUnit report is retained at:
+
+- `.project-temp/section-b-full-regression-20260911-003/full-suite.xml`
+
+The 84 skips were explicitly classified as environment/dependency or
+platform capability conditions: 37 isolated-PostgreSQL assurance skips, 29
+isolated-PostgreSQL integration skips, one live-Redis assurance skip, two
+managed Subfinder availability skips, one managed Nmap availability skip,
+one historical provenance fixture skip, and the remaining POSIX/symlink
+platform skips. No obsolete Windows Job Object skip remained. This is local
+evidence only; the historical `.ci/` snapshot assertion was the sole
+deselected test and the current candidate has not yet been published to or
+verified by GitHub Actions.
+
+The preceding local candidate run remains retained as historical evidence at
+`.project-temp/section-b-full-no-inventory-20260911-001/` with its original
+937-pass count; it is not the latest candidate result.
+
+An unfiltered run was performed before the final cancellation compatibility
+correction and reported two failures: the preserved `.ci/` snapshot mismatch
+described above and the Windows PID-only status assertion. The latter was
+corrected, and the targeted cancellation rerun plus the complete scoped
+regression then passed. No unfiltered full-suite pass is claimed because the
+preserved artifact-snapshot assertion remains a known mismatch; the user-owned
+`.ci/` evidence tree was not changed.
+
 ## Protected database evidence
 
 The exact authorized read-only fingerprint check for `data/cyberassess.db`
@@ -518,9 +638,9 @@ the test database. All SQLite tests used project-local disposable paths under
 
 - No real security scan or unrestricted external target activity was run.
 - The local POSIX proof is process-container evidence only; it does not prove
-  PID-reuse or every membership-race permutation, and it does not provide the
-  missing Windows Job Object evidence. The explicit Windows recovery test
-  verifies only fail-closed behavior, not Windows containment assurance.
+  PID-reuse or every membership-race permutation. The native Windows vectors
+  below are local implementation evidence and do not replace the independent
+  Windows CI execution or auditor acceptance required for Windows assurance.
 - `CYBERASSESS_WORKER_GENERATION` and `CYBERASSESS_WORKER_IDENTITY` are
   deployment-configured. The enterprise Compose definition requires the same
   explicit values for the API and worker services, and the process boundary
@@ -556,8 +676,8 @@ The following evidence remains required before lifecycle acceptance:
 - Deployment evidence for a shared, explicitly provisioned worker generation
   between approval and worker processes.
 - Independent OS-level process-container, restart-attachment, PID-reuse,
-  membership-race, and Windows fail-closed evidence beyond the local POSIX
-  vector.
+  membership-race, and Windows Job Object evidence beyond the local POSIX and
+  local Windows vectors.
 - Managed Nmap/Subfinder runtime and artifact-provenance evidence where the
   environment permits it.
 - Independent auditor review of the exact published commit, test artifacts,

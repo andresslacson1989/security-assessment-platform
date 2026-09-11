@@ -122,7 +122,7 @@ class TestBaseToolAdapter:
     async def test_execute_command_success(self):
         adapter = DummyAdapter()
         code, stdout, stderr = await adapter.execute_command(
-            ["python", "-c", "import sys; print('hello'); sys.stderr.write('warn')"],
+            [sys.executable, "-c", "import sys; print('hello'); sys.stderr.write('warn')"],
             timeout=5.0,
             non_scan_context=issue_non_scan_execution_context("observation:test-adapter-success"),
         )
@@ -161,17 +161,17 @@ class TestBaseToolAdapter:
             logs.append((lvl, msg))
 
         code, stdout, stderr = await adapter.execute_command(
-            ["python", "-c", "import time; time.sleep(10)"],
+            [sys.executable, "-c", "import time; time.sleep(10)"],
             timeout=0.2,
             emit_log=mock_log,
             non_scan_context=issue_non_scan_execution_context("observation:test-adapter-timeout"),
         )
         if sys.platform == "win32":
             assert code == -1
-            assert stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED")
+            assert stderr.startswith("Execution timed out")
             assert "Output exceeded maximum" not in stderr
             assert stdout == ""
-            assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+            assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_TIMED_OUT
             return
         assert code == -1
         assert "timed out" in stderr
@@ -184,7 +184,7 @@ class TestBaseToolAdapter:
     async def test_execute_command_output_limit_is_explicitly_degraded(self):
         adapter = DummyAdapter()
         code, stdout, stderr = await adapter.execute_command(
-            ["python", "-c", "print('x' * 10000)"],
+            [sys.executable, "-c", "print('x' * 10000)"],
             timeout=5.0,
             max_output_bytes=128,
             non_scan_context=issue_non_scan_execution_context("observation:test-adapter-output"),

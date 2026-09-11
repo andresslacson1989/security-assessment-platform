@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 import inspect
 import json
+import os
 import sqlite3
 from types import SimpleNamespace
 
@@ -2632,8 +2633,15 @@ def test_no_external_process_and_pre_dispatch_settlement_are_durable(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("launch_case", [
+    "reject",
+    pytest.param("windows_success", marks=pytest.mark.skipif(os.name != "nt", reason="Windows kernel required")),
+    pytest.param("windows_timeout", marks=pytest.mark.skipif(os.name != "nt", reason="Windows kernel required")),
+    pytest.param("windows_descendant", marks=pytest.mark.skipif(os.name != "nt", reason="Windows kernel required")),
+])
 @pytest.mark.asyncio
-async def test_governed_process_rejection_is_durably_settled_after_authority_claim(tmp_path, monkeypatch):
+async def test_governed_process_rejection_is_durably_settled_after_authority_claim(tmp_path, monkeypatch, launch_case):
+    import sys
     from app.core.correlation import reset_correlation_id, set_correlation_id
     from app.core.execution_decision import issue_execution_capability
     from app.core.execution_service import get_worker_generation
@@ -2717,7 +2725,14 @@ async def test_governed_process_rejection_is_durably_settled_after_authority_cla
     assert approval[0] == "AUTHORIZED"
     decision_id, execution_id = approval[1], approval[2]
 
-    command = ["process-test", "--bounded"]
+    if launch_case == "reject":
+        command = ["process-test", "--bounded"]
+    elif launch_case == "windows_timeout":
+        command = [sys.executable, "-c", "import time; time.sleep(60)"]
+    elif launch_case == "windows_descendant":
+        command = [sys.executable, "-c", "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']); print('root completed')"]
+    else:
+        command = [sys.executable, "-c", "print('governed Windows runtime')"]
     capability = issue_execution_capability(
         decision_id=decision_id,
         validated_target=target,
@@ -2732,18 +2747,23 @@ async def test_governed_process_rejection_is_durably_settled_after_authority_cla
 
     result = await ProcessSupervisor().execute(
         command,
-        timeout=5,
+        timeout=0.3 if launch_case == "windows_timeout" else 5,
         max_output_bytes=1024,
-        pre_launch_check=lambda: False,
+        pre_launch_check=lambda: launch_case != "reject",
         execution_capability=capability,
         operation_family="cloud_audit",
         operation_options=operation_options,
         tool_id="prowler",
     )
 
-    assert result.returncode in {126, -1}
-    assert result.execution_status.value == "SECURITY_REJECTED"
-    assert "PROCESS_LAUNCH_REJECTED_SECURITY" in result.stderr
+    if launch_case == "reject":
+        assert result.returncode in {126, -1}
+        assert result.execution_status.value == "SECURITY_REJECTED"
+        assert "PROCESS_LAUNCH_REJECTED_SECURITY" in result.stderr
+    elif launch_case == "windows_timeout":
+        assert result.execution_status.value == "TIMED_OUT", result
+    else:
+        assert result.returncode == 0, result
     with database._connection_scope() as conn:
         states = conn.execute(
             "SELECT r.state, r.reason_code, p.ownership_state, i.state "
@@ -2753,6 +2773,23 @@ async def test_governed_process_rejection_is_durably_settled_after_authority_cla
             "WHERE r.execution_id=? AND r.organization_id=?",
             (execution_id, "org-process"),
         ).fetchone()
+    if launch_case != "reject":
+        from app.core.execution_context import WindowsJobAttestation, decode_execution_proof
+        ownership = database.get_process_ownership(execution_id, "org-process")
+        proof = decode_execution_proof(ownership["no_process_proof"], expected_proof_type="TERMINATION_CONFIRMED")
+        attestation = WindowsJobAttestation.model_validate_json(ownership["identity_attestation"])
+        assert attestation.execution_id == execution_id
+        assert attestation.organization_id == "org-process"
+        assert attestation.worker_identity == worker_identity
+        assert attestation.worker_generation == worker_generation
+        assert ownership["container_type"] == "WINDOWS_JOB"
+        assert proof["process_group_id"] is None and proof["session_id"] is None
+        assert tuple(states) == (
+            "TIMED_OUT" if launch_case == "windows_timeout" else "SUCCEEDED",
+            "EXECUTION_TIMEOUT" if launch_case == "windows_timeout" else None,
+            "TERMINAL", "FAILED" if launch_case == "windows_timeout" else "COMPLETED",
+        )
+        return
     assert tuple(states) == (
         "EXECUTION_BLOCKED",
         "PROCESS_LAUNCH_REJECTED_SECURITY",

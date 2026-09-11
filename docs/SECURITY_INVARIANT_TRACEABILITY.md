@@ -19,7 +19,7 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 | **INV-006** | Pre-Resolution DNS & DNS Rebinding Defenses | Contract 01 Section 5.1, Contract 04 Section 3, Contract 08 Section 12.1 | backend/app/core/ssrf_protector.py | tests/security/test_adversarial_sec_matrix.py::test_sec_009_ssrf_dns_rebinding_pre_resolution | **VERIFIED** |
 | **INV-007** | Workspace Jail & Path Traversal / Symlink Containment | Contract 01 Section 6, Contract 08 Section 12.3 | backend/app/core/path_sandbox.py | tests/security/test_adversarial_sec_matrix.py::test_sec_010_filesystem_escape_blocked, test_sec_011_symlink_escape_blocked | **VERIFIED** |
 | **INV-008** | Tool Supply Chain Integrity & Pinned SHA-256 Checksums | Contract 01 Section 7, Contract 03 Section 2, Contract 08 Section 4, Contract 09 | backend/app/installers/tool_manifest.py, backend/app/installers/github_release_installer.py | tests/security/test_adversarial_sec_matrix.py::test_sec_017_tool_hash_mismatch_rejection, test_sec_018_unpinned_tool_rejection, test_sec_019_malicious_archive_zipslip_rejection | **VERIFIED** |
-| **INV-009** | Process Supervisor & Subprocess Tree Termination | Contract 03 Section 3, Contract 08 Section 8, Contract 09 | backend/app/core/process_supervisor.py, backend/app/core/binary_resolver.py | tests/security/test_adversarial_sec_matrix.py::test_sec_020_scan_cancellation_lifecycle | **VERIFIED** |
+| **INV-009** | Process Supervisor & Subprocess Tree Termination | Contract 03 Section 3, Contract 08 Section 8, Contract 09 | backend/app/core/process_supervisor.py, backend/app/core/windows_job.py, backend/app/core/execution_context.py, backend/app/core/execution_service.py | tests/security/test_adversarial_sec_matrix.py::test_sec_020_scan_cancellation_lifecycle; tests/security/test_process_launch_boundary.py::test_windows_job_atomic_assignment_and_descendant_termination; tests/security/test_process_launch_boundary.py::test_windows_supervisor_cancellation_requires_attested_identity; tests/security/test_execution_decision_authority.py::test_governed_process_rejection_is_durably_settled_after_authority_claim | **REPOSITORY VERIFIED / WINDOWS CI PENDING** |
 | **INV-010** | Resource Governance & Scan Concurrency Bounding | Contract 01 Section 8, Contract 04 Section 1, Contract 09 | backend/app/core/queue.py | tests/security/test_adversarial_sec_matrix.py::test_sec_021_resource_exhaustion_concurrency_governance | **VERIFIED** |
 | **INV-011** | Secret Sanitization in Evidence, Logs & Reports | Contract 01 Section 6, Contract 02 Section 4, Contract 09 | backend/app/core/models.py, backend/app/exporters/sarif_exporter.py, backend/app/exporters/html_exporter.py | tests/security/test_adversarial_sec_matrix.py::test_sec_022_evidence_secret_masking, test_sec_028_report_secret_leakage_sanitization | **VERIFIED** |
 | **INV-012** | Immutable Chained Cryptographic Audit Logging | Contract 01 Section 4, Contract 02 Section 6, Contract 08 Section 1 | backend/app/core/db.py | tests/security/test_adversarial_sec_matrix.py::test_sec_023_audit_log_integrity | **VERIFIED** |
@@ -80,8 +80,17 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 - **Contract Specification:** Contracts 03 Section 3, 08 Section 8.
 - **Implementation:**
   - ProcessSupervisor encapsulates all subprocess execution across adapters and resolvers.
-  - Uses CREATE_NEW_PROCESS_GROUP on Windows and process groups on POSIX.
-  - Recursively terminates child and grandchild process trees via taskkill /F /T /PID or killpg on timeout or scan cancellation.
+  - Governed Windows launches use `CreateProcessW` with an atomic
+    `PROC_THREAD_ATTRIBUTE_JOB_LIST` association, a suspended root, and the
+    `KILL_ON_JOB_CLOSE` limit in `backend/app/core/windows_job.py`; POSIX
+    launches use a dedicated process session/group.
+  - Every Windows external launch, including non-scan installer and observation
+    work, uses the Job Object path and its distinct typed attestation. Windows
+    cancellation and live recovery require the exact process-local attested
+    kernel container and verify every current member; worker loss destroys the
+    container under `KILL_ON_JOB_CLOSE`, and same-name reattachment is blocked.
+    POSIX cancellation uses the attested session/group identity. Governed paths
+    do not use `taskkill`, PID-tree reconstruction, or a PID-only fallback.
 
 ### INV-012: Cryptographic Tamper-Evident Audit Logging
 - **Contract Specification:** Contracts 01 Section 4, 02 Section 6, 08 Section 1.

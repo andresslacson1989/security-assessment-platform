@@ -237,7 +237,6 @@ async def test_e13_process_supervisor_uses_isolated_unix_session_when_available(
         assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows execution remains blocked until Job Object containment exists")
 @pytest.mark.asyncio
 async def test_e13_process_supervisor_terminates_real_child_process_tree(tmp_path):
     """Exercise actual parent/child termination instead of mocking Popen."""

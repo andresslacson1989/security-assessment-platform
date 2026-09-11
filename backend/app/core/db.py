@@ -5350,7 +5350,6 @@ class DatabaseManager:
         required_strings = (
             execution_id,
             organization_id,
-            process_group_id,
             process_start_token,
             recovery_worker_identity,
             recovery_worker_generation,
@@ -5363,24 +5362,30 @@ class DatabaseManager:
             return False
         if any(len(value) > 512 for value in required_strings):
             return False
-        if (
-            not isinstance(process_id, int)
-            or process_id <= 1
-            or not isinstance(session_id, int)
-            or session_id < 0
-            or not process_group_id.isdigit()
-            or int(process_group_id) <= 1
-        ):
-            return False
-        token_parts = process_start_token.split(":", 2)
-        if (
-            len(token_parts) != 3
-            or token_parts[0] != "posix"
-            or re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "") is None
-            or not token_parts[2].isdigit()
-            or int(token_parts[2]) <= 0
-        ):
-            return False
+        windows_input = re.fullmatch(r"windows:[1-9][0-9]*", process_start_token) is not None
+        if windows_input:
+            if type(process_id) is not int or process_id <= 1 or process_group_id is not None or session_id is not None:
+                return False
+        else:
+            if (
+                not isinstance(process_id, int)
+                or process_id <= 1
+                or not isinstance(session_id, int)
+                or session_id < 0
+                or not isinstance(process_group_id, str)
+                or not process_group_id.isdigit()
+                or int(process_group_id) <= 1
+            ):
+                return False
+            token_parts = process_start_token.split(":", 2)
+            if (
+                len(token_parts) != 3
+                or token_parts[0] != "posix"
+                or re.fullmatch(r"[0-9a-fA-F-]{8,128}", token_parts[1] or "") is None
+                or not token_parts[2].isdigit()
+                or int(token_parts[2]) <= 0
+            ):
+                return False
         if exhausted:
             if next_retry_at is not None:
                 raise ValueError("exhausted recovery cannot carry a retry time")
@@ -5442,15 +5447,22 @@ class DatabaseManager:
                 or row["correlation_id"] != row["run_correlation_id"]
                 or not isinstance(row["correlation_id"], str)
                 or not row["correlation_id"].strip()
-                or row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                or row["container_type"] not in {ProcessContainerType.POSIX_SESSION.value, ProcessContainerType.WINDOWS_JOB.value}
                 or row["root_process_id"] != process_id
-                or str(row["process_group_id"]) != process_group_id
+                or row["process_group_id"] != process_group_id
                 or row["root_process_start_token"] != process_start_token
                 or str(row["session_id"]) != str(session_id)
                 or not isinstance(row["identity_attestation"], str)
                 or not row["identity_attestation"].strip()
             ):
                 return False
+
+            if row["container_type"] == ProcessContainerType.WINDOWS_JOB.value:
+                try:
+                    from app.core.execution_context import validate_windows_ownership
+                    validate_windows_ownership(row, worker_identity=row["run_worker_identity"], historical=True)
+                except (KeyError, TypeError, ValueError):
+                    return False
 
             if (
                 row["recovery_status"] == status
@@ -5846,37 +5858,46 @@ class DatabaseManager:
             }
             if row["ownership_state"] == ProcessOwnershipState.LAUNCH_UNCERTAIN.value:
                 valid_recovery_commit_states = {LaunchCommitState.UNCERTAIN.value}
-            if (
-                row["container_type"] != ProcessContainerType.POSIX_SESSION.value
-                or row["launch_commit_state"] not in valid_recovery_commit_states
-                or not row["identity_attestation"]
-                or not row["root_process_id"]
-                or not row["root_process_start_token"]
-                or not row["process_group_id"]
-                or not row["session_id"]
-                or row["worker_generation"] != row["run_worker_generation"]
-            ):
-                # An uncertain row without a complete, verified identity is
-                # not safe to classify as terminated after a restart.
-                return False
-            try:
-                attestation = PosixProcessAttestation.model_validate_json(row["identity_attestation"])
-            except Exception:
-                return False
-            start_parts = str(row["root_process_start_token"]).split(":", 2)
-            if len(start_parts) != 3 or start_parts[0] != "posix" or not start_parts[1] or not start_parts[2].isdigit():
-                return False
-            if (
-                attestation.verification_result != "VERIFIED"
-                or attestation.worker_generation != row["run_worker_generation"]
-                or attestation.boot_id != start_parts[1]
-                or attestation.root_start_ticks != int(start_parts[2])
-                or attestation.session_id != int(str(row["session_id"]))
-                or attestation.process_group_id != int(str(row["process_group_id"]))
-                or row["container_identity"]
-                != f"posix-session:{row['session_id']}:group:{row['process_group_id']}"
-            ):
-                return False
+            if row["container_type"] == ProcessContainerType.WINDOWS_JOB.value:
+                try:
+                    from app.core.windows_job import require_empty_job
+                    require_empty_job(row, worker_identity=row["run_worker_identity"])
+                    if row["launch_commit_state"] not in valid_recovery_commit_states or row["worker_generation"] != row["run_worker_generation"]:
+                        return False
+                except (OSError, KeyError, TypeError, ValueError):
+                    return False
+            else:
+                if (
+                    row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                    or row["launch_commit_state"] not in valid_recovery_commit_states
+                    or not row["identity_attestation"]
+                    or not row["root_process_id"]
+                    or not row["root_process_start_token"]
+                    or not row["process_group_id"]
+                    or not row["session_id"]
+                    or row["worker_generation"] != row["run_worker_generation"]
+                ):
+                    # An uncertain row without a complete, verified identity is
+                    # not safe to classify as terminated after a restart.
+                    return False
+                try:
+                    attestation = PosixProcessAttestation.model_validate_json(row["identity_attestation"])
+                except Exception:
+                    return False
+                start_parts = str(row["root_process_start_token"]).split(":", 2)
+                if len(start_parts) != 3 or start_parts[0] != "posix" or not start_parts[1] or not start_parts[2].isdigit():
+                    return False
+                if (
+                    attestation.verification_result != "VERIFIED"
+                    or attestation.worker_generation != row["run_worker_generation"]
+                    or attestation.boot_id != start_parts[1]
+                    or attestation.root_start_ticks != int(start_parts[2])
+                    or attestation.session_id != int(str(row["session_id"]))
+                    or attestation.process_group_id != int(str(row["process_group_id"]))
+                    or row["container_identity"]
+                    != f"posix-session:{row['session_id']}:group:{row['process_group_id']}"
+                ):
+                    return False
 
             claim_digests = {"decision": None, "dispatch": None}
             claim_rows = conn.execute(
@@ -5935,9 +5956,9 @@ class DatabaseManager:
                 "recovery_attempt_id": attempt_id,
                 "termination_status": "ALREADY_EXITED",
                 "process_id": int(row["root_process_id"]),
-                "process_group_id": str(row["process_group_id"]),
+                "process_group_id": row["process_group_id"],
                 "process_start_token": row["root_process_start_token"],
-                "session_id": int(str(row["session_id"])),
+                "session_id": int(row["session_id"]) if row["session_id"] is not None else None,
                 "identity_attestation": row["identity_attestation"],
                 "identity_attestation_digest": canonical_binding_digest(row["identity_attestation"]),
             }
@@ -6073,69 +6094,76 @@ class DatabaseManager:
                 or not row["correlation_id"].strip()
             ):
                 return False
-            if (
-                row["container_type"] != ProcessContainerType.POSIX_SESSION.value
-                or not isinstance(row["container_identity"], str)
-                or row["container_identity"]
-                != f"posix-session:{row['session_id']}:group:{row['process_group_id']}"
-                or not isinstance(row["root_process_id"], int)
-                or row["root_process_id"] <= 1
-                or not isinstance(row["process_group_id"], str)
-                or not row["process_group_id"].isdigit()
-                or int(row["process_group_id"]) <= 1
-                or not isinstance(row["session_id"], str)
-                or not row["session_id"].isdigit()
-                or int(row["session_id"]) < 0
-                or not isinstance(row["root_process_start_token"], str)
-                or not row["root_process_start_token"].strip()
-                or not isinstance(row["identity_attestation"], str)
-                or not row["identity_attestation"].strip()
-            ):
-                return False
-            try:
-                attestation = PosixProcessAttestation.model_validate_json(row["identity_attestation"])
-            except Exception:
-                return False
-            token_parts = row["root_process_start_token"].split(":", 2)
-            if (
-                len(token_parts) != 3
-                or token_parts[0] != "posix"
-                or not token_parts[1]
-                or not token_parts[2].isdigit()
-                or int(token_parts[2]) <= 0
-                or attestation.verification_result != "VERIFIED"
-                or attestation.worker_generation != worker_generation
-                or attestation.boot_id != token_parts[1]
-                or attestation.root_start_ticks != int(token_parts[2])
-                or attestation.session_id != int(row["session_id"])
-                or attestation.process_group_id != int(row["process_group_id"])
-                or not attestation.member_snapshot
-                or len(attestation.member_snapshot) > 512
-            ):
-                return False
-            seen_pids: set[int] = set()
-            root_bound = False
-            for member in attestation.member_snapshot:
-                member_parts = member.start_token.split(":", 2)
+            if row["container_type"] == ProcessContainerType.WINDOWS_JOB.value:
+                try:
+                    from app.core.execution_context import validate_windows_ownership
+                    validate_windows_ownership(row, worker_identity=worker_identity, historical=True)
+                except (OSError, KeyError, TypeError, ValueError):
+                    return False
+            else:
                 if (
-                    member.pid in seen_pids
-                    or member.pid <= 1
-                    or member.session_id != int(row["session_id"])
-                    or len(member_parts) != 3
-                    or member_parts[0] != "posix"
-                    or member_parts[1] != token_parts[1]
-                    or not member_parts[2].isdigit()
-                    or int(member_parts[2]) <= 0
+                    row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                    or not isinstance(row["container_identity"], str)
+                    or row["container_identity"]
+                    != f"posix-session:{row['session_id']}:group:{row['process_group_id']}"
+                    or not isinstance(row["root_process_id"], int)
+                    or row["root_process_id"] <= 1
+                    or not isinstance(row["process_group_id"], str)
+                    or not row["process_group_id"].isdigit()
+                    or int(row["process_group_id"]) <= 1
+                    or not isinstance(row["session_id"], str)
+                    or not row["session_id"].isdigit()
+                    or int(row["session_id"]) < 0
+                    or not isinstance(row["root_process_start_token"], str)
+                    or not row["root_process_start_token"].strip()
+                    or not isinstance(row["identity_attestation"], str)
+                    or not row["identity_attestation"].strip()
                 ):
                     return False
-                seen_pids.add(member.pid)
-                root_bound = root_bound or (
-                    member.pid == row["root_process_id"]
-                    and member.process_group_id == int(row["process_group_id"])
-                    and member.start_token == row["root_process_start_token"]
-                )
-            if not root_bound:
-                return False
+                try:
+                    attestation = PosixProcessAttestation.model_validate_json(row["identity_attestation"])
+                except Exception:
+                    return False
+                token_parts = row["root_process_start_token"].split(":", 2)
+                if (
+                    len(token_parts) != 3
+                    or token_parts[0] != "posix"
+                    or not token_parts[1]
+                    or not token_parts[2].isdigit()
+                    or int(token_parts[2]) <= 0
+                    or attestation.verification_result != "VERIFIED"
+                    or attestation.worker_generation != worker_generation
+                    or attestation.boot_id != token_parts[1]
+                    or attestation.root_start_ticks != int(token_parts[2])
+                    or attestation.session_id != int(row["session_id"])
+                    or attestation.process_group_id != int(row["process_group_id"])
+                    or not attestation.member_snapshot
+                    or len(attestation.member_snapshot) > 512
+                ):
+                    return False
+                seen_pids: set[int] = set()
+                root_bound = False
+                for member in attestation.member_snapshot:
+                    member_parts = member.start_token.split(":", 2)
+                    if (
+                        member.pid in seen_pids
+                        or member.pid <= 1
+                        or member.session_id != int(row["session_id"])
+                        or len(member_parts) != 3
+                        or member_parts[0] != "posix"
+                        or member_parts[1] != token_parts[1]
+                        or not member_parts[2].isdigit()
+                        or int(member_parts[2]) <= 0
+                    ):
+                        return False
+                    seen_pids.add(member.pid)
+                    root_bound = root_bound or (
+                        member.pid == row["root_process_id"]
+                        and member.process_group_id == int(row["process_group_id"])
+                        and member.start_token == row["root_process_start_token"]
+                    )
+                if not root_bound:
+                    return False
             updated = conn.execute(
                 """UPDATE execution_process_ownership
                       SET ownership_state=?, updated_at=?
@@ -6226,25 +6254,30 @@ class DatabaseManager:
         if termination_status not in process_statuses | no_process_statuses:
             raise ValueError("confirmed-termination settlement status is not allowlisted")
         if termination_status in process_statuses:
-            if (
-                not isinstance(process_id, int)
-                or process_id <= 1
-                or not isinstance(process_group_id, str)
-                or not process_group_id.isdigit()
-                or int(process_group_id) <= 1
-                or not isinstance(process_start_token, str)
-                or len(process_start_token.split(":", 2)) != 3
-                or process_start_token.split(":", 2)[0] != "posix"
-                or re.fullmatch(
-                    r"[0-9a-fA-F-]{8,128}",
-                    process_start_token.split(":", 2)[1],
-                ) is None
-                or not process_start_token.split(":", 2)[2].isdigit()
-                or int(process_start_token.split(":", 2)[2]) <= 0
-                or not isinstance(session_id, int)
-                or session_id < 0
-            ):
-                return False
+            windows_input = isinstance(process_start_token, str) and re.fullmatch(r"windows:[1-9][0-9]*", process_start_token) is not None
+            if windows_input:
+                if type(process_id) is not int or process_id <= 1 or process_group_id is not None or session_id is not None:
+                    return False
+            else:
+                if (
+                    not isinstance(process_id, int)
+                    or process_id <= 1
+                    or not isinstance(process_group_id, str)
+                    or not process_group_id.isdigit()
+                    or int(process_group_id) <= 1
+                    or not isinstance(process_start_token, str)
+                    or len(process_start_token.split(":", 2)) != 3
+                    or process_start_token.split(":", 2)[0] != "posix"
+                    or re.fullmatch(
+                        r"[0-9a-fA-F-]{8,128}",
+                        process_start_token.split(":", 2)[1],
+                    ) is None
+                    or not process_start_token.split(":", 2)[2].isdigit()
+                    or int(process_start_token.split(":", 2)[2]) <= 0
+                    or not isinstance(session_id, int)
+                    or session_id < 0
+                ):
+                    return False
         elif any(value is not None for value in (process_id, process_group_id, process_start_token, session_id)):
             return False
         elif identity_attestation is not None:
@@ -6324,61 +6357,71 @@ class DatabaseManager:
                     identity_attestation = row["identity_attestation"]
                 if not isinstance(identity_attestation, str) or identity_attestation != row["identity_attestation"]:
                     return False
-                if row["container_type"] != ProcessContainerType.POSIX_SESSION.value:
-                    return False
-                try:
-                    attestation = PosixProcessAttestation.model_validate_json(identity_attestation)
-                    process_group = int(str(row["process_group_id"]))
-                    process_session = int(str(row["session_id"]))
-                except Exception:
-                    return False
-                start_parts = str(row["root_process_start_token"] or "").split(":", 2)
-                if (
-                    len(start_parts) != 3
-                    or start_parts[0] != "posix"
-                    or re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "") is None
-                    or not start_parts[2].isdigit()
-                    or process_group <= 1
-                    or process_session < 0
-                ):
-                    return False
-                if (
-                    attestation.verification_result != "VERIFIED"
-                    or attestation.worker_generation != str(row["worker_generation"] or "")
-                    or attestation.boot_id != start_parts[1]
-                    or attestation.root_start_ticks != int(start_parts[2])
-                    or attestation.session_id != process_session
-                    or attestation.process_group_id != process_group
-                    or row["container_identity"]
-                    != f"posix-session:{process_session}:group:{process_group}"
-                ):
-                    return False
-                if not attestation.member_snapshot or len(attestation.member_snapshot) > 512:
-                    return False
-                seen_pids: set[int] = set()
-                root_bound = False
-                for member in attestation.member_snapshot:
-                    member_parts = member.start_token.split(":", 2)
+                if row["container_type"] == ProcessContainerType.WINDOWS_JOB.value:
+                    try:
+                        from app.core.execution_context import validate_windows_ownership
+                        validate_windows_ownership(row, worker_identity=worker_identity, historical=row["ownership_state"] == "TERMINAL")
+                        if row["ownership_state"] != "TERMINAL":
+                            from app.core.windows_job import require_empty_job
+                            require_empty_job(row, worker_identity=worker_identity)
+                    except (OSError, KeyError, TypeError, ValueError):
+                        return False
+                else:
+                    if row["container_type"] != ProcessContainerType.POSIX_SESSION.value:
+                        return False
+                    try:
+                        attestation = PosixProcessAttestation.model_validate_json(identity_attestation)
+                        process_group = int(str(row["process_group_id"]))
+                        process_session = int(str(row["session_id"]))
+                    except Exception:
+                        return False
+                    start_parts = str(row["root_process_start_token"] or "").split(":", 2)
                     if (
-                        member.pid in seen_pids
-                        or member.pid <= 1
-                        or member.process_group_id <= 1
-                        or member.session_id != process_session
-                        or len(member_parts) != 3
-                        or member_parts[0] != "posix"
-                        or member_parts[1] != start_parts[1]
-                        or not member_parts[2].isdigit()
-                        or int(member_parts[2]) <= 0
+                        len(start_parts) != 3
+                        or start_parts[0] != "posix"
+                        or re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "") is None
+                        or not start_parts[2].isdigit()
+                        or process_group <= 1
+                        or process_session < 0
                     ):
                         return False
-                    seen_pids.add(member.pid)
-                    root_bound = root_bound or (
-                        member.pid == int(row["root_process_id"] or 0)
-                        and member.process_group_id == process_group
-                        and member.start_token == row["root_process_start_token"]
-                    )
-                if not root_bound:
-                    return False
+                    if (
+                        attestation.verification_result != "VERIFIED"
+                        or attestation.worker_generation != str(row["worker_generation"] or "")
+                        or attestation.boot_id != start_parts[1]
+                        or attestation.root_start_ticks != int(start_parts[2])
+                        or attestation.session_id != process_session
+                        or attestation.process_group_id != process_group
+                        or row["container_identity"]
+                        != f"posix-session:{process_session}:group:{process_group}"
+                    ):
+                        return False
+                    if not attestation.member_snapshot or len(attestation.member_snapshot) > 512:
+                        return False
+                    seen_pids: set[int] = set()
+                    root_bound = False
+                    for member in attestation.member_snapshot:
+                        member_parts = member.start_token.split(":", 2)
+                        if (
+                            member.pid in seen_pids
+                            or member.pid <= 1
+                            or member.process_group_id <= 1
+                            or member.session_id != process_session
+                            or len(member_parts) != 3
+                            or member_parts[0] != "posix"
+                            or member_parts[1] != start_parts[1]
+                            or not member_parts[2].isdigit()
+                            or int(member_parts[2]) <= 0
+                        ):
+                            return False
+                        seen_pids.add(member.pid)
+                        root_bound = root_bound or (
+                            member.pid == int(row["root_process_id"] or 0)
+                            and member.process_group_id == process_group
+                            and member.start_token == row["root_process_start_token"]
+                        )
+                    if not root_bound:
+                        return False
 
             current_ownership = str(row["ownership_state"])
             if current_ownership == ProcessOwnershipState.TERMINAL.value:
@@ -6550,12 +6593,12 @@ class DatabaseManager:
                 if proof_type == "TERMINATION_CONFIRMED":
                     try:
                         expected_pid = int(row["root_process_id"])
-                        expected_group = str(row["process_group_id"])
-                        expected_session = int(str(row["session_id"]))
+                        expected_group = row["process_group_id"]
+                        expected_session = int(row["session_id"]) if row["session_id"] is not None else None
                     except (TypeError, ValueError):
                         return False
                     if (
-                        row["container_type"] != ProcessContainerType.POSIX_SESSION.value
+                        row["container_type"] not in {ProcessContainerType.POSIX_SESSION.value, ProcessContainerType.WINDOWS_JOB.value}
                         or row["launch_commit_state"] != LaunchCommitState.COMMITTED.value
                         or payload.get("termination_status") != termination_status
                         or payload.get("process_id") != expected_pid
@@ -6599,9 +6642,9 @@ class DatabaseManager:
                     return False
                 if (
                     int(row["root_process_id"] or 0) != process_id
-                    or str(row["process_group_id"] or "") != process_group_id
+                    or row["process_group_id"] != process_group_id
                     or str(row["root_process_start_token"] or "") != process_start_token
-                    or str(row["session_id"] or "") != str(session_id)
+                    or (str(row["session_id"]) if row["session_id"] is not None else None) != (str(session_id) if session_id is not None else None)
                     or (row["run_process_id"] is not None and int(row["run_process_id"]) != process_id)
                     or (row["run_process_group_id"] is not None and str(row["run_process_group_id"]) != process_group_id)
                     or row["dispatch_state"] not in {"CLAIMED", "BLOCKED"}
@@ -6846,9 +6889,9 @@ class DatabaseManager:
                     **common_proof,
                     "termination_status": termination_status,
                     "process_id": int(row["root_process_id"]),
-                    "process_group_id": str(row["process_group_id"]),
+                    "process_group_id": row["process_group_id"],
                     "process_start_token": row["root_process_start_token"],
-                    "session_id": int(str(row["session_id"])),
+                    "session_id": int(row["session_id"]) if row["session_id"] is not None else None,
                     "identity_attestation": row["identity_attestation"],
                     "identity_attestation_digest": canonical_binding_digest(row["identity_attestation"]),
                 }

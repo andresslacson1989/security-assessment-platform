@@ -1,6 +1,7 @@
 """Pure contract tests for verifier-issued execution contexts."""
 
 import importlib.util
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -63,6 +64,7 @@ def _load_execution_service_without_application_startup():
     models_stub.ProcessContainerType = object
     models_stub.ProcessOwnershipState = object
     models_stub.LaunchCommitState = object
+    models_stub.is_valid_execution_terminal_outcome = lambda *_args, **_kwargs: True
     models_stub.utc_now = lambda: datetime.now(timezone.utc)
     sys.modules.setdefault("app.core.models", models_stub)
     service_path = MODULE_PATH.with_name("execution_service.py")
@@ -115,14 +117,206 @@ def test_attestation_digest_is_recomputed_from_canonical_fields():
     captured = datetime.now(timezone.utc)
     values = {
         "schema_version": "windows-job-attestation-v1", "proof_type": "JOB_OBJECT",
-        "job_identity": "job", "root_process_start_token": "start", "worker_generation": "gen",
+        "job_identity": module.windows_job_name("run", "org", "worker", "gen", "a" * 32),
+        "job_nonce": "a" * 32,
+        "root_process_start_token": "windows:123", "worker_generation": "gen",
+        "execution_id": "run", "organization_id": "org", "worker_identity": "worker",
+        "root_process_id": 123, "initial_members": (123,),
         "captured_at": captured, "expires_at": captured + timedelta(seconds=1),
         "verification_result": "UNVERIFIED",
     }
     with pytest.raises(Exception):
         module.WindowsJobAttestation(**values, digest="0" * 64)
-    values["digest"] = module.canonical_binding_digest(values)
+    values["digest"] = module.canonical_windows_job_attestation_digest(values)
     module.WindowsJobAttestation(**values)
+
+
+def test_windows_attestation_json_is_strict_and_representation_preserving():
+    """Wire-type changes cannot be normalized into the same identity proof."""
+    captured = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    values = {
+        "schema_version": "windows-job-attestation-v1", "proof_type": "JOB_OBJECT",
+        "job_identity": module.windows_job_name("strict-run", "strict-org", "strict-worker", "strict-generation", "c" * 32),
+        "job_nonce": "c" * 32,
+        "execution_id": "strict-run", "organization_id": "strict-org", "worker_identity": "strict-worker",
+        "root_process_id": 321, "root_process_start_token": "windows:321", "worker_generation": "strict-generation",
+        "initial_members": (321,), "captured_at": captured,
+        "expires_at": captured + timedelta(minutes=5), "verification_result": "VERIFIED",
+    }
+    attestation = module.WindowsJobAttestation(
+        **values,
+        digest=module.canonical_windows_job_attestation_digest(values),
+    )
+    wire = attestation.model_dump_json()
+    assert module.WindowsJobAttestation.model_validate_json(wire) == attestation
+
+    base = json.loads(wire)
+    mutations = {
+        "schema_version": 1,
+        "proof_type": ["JOB_OBJECT"],
+        "job_identity": 7,
+        "job_nonce": ["c" * 32],
+        "execution_id": 7,
+        "organization_id": 7,
+        "worker_identity": 7,
+        "root_process_id": "321",
+        "root_process_start_token": 321,
+        "worker_generation": 7,
+        "initial_members": ["321"],
+        "captured_at": "2026-01-01T00:00:00+00:00",
+        "expires_at": 1767225900,
+        "verification_result": 1,
+        "digest": 7,
+    }
+    for field, replacement in mutations.items():
+        mutated = {**base, field: replacement}
+        with pytest.raises(Exception):
+            module.WindowsJobAttestation.model_validate_json(json.dumps(mutated))
+
+    reordered_members = {**base, "initial_members": [999, 321]}
+    with pytest.raises(Exception):
+        module.WindowsJobAttestation.model_validate_json(json.dumps(reordered_members))
+    with pytest.raises(Exception):
+        module.WindowsJobAttestation.model_validate_json(
+            '{"schema_version":"windows-job-attestation-v1","schema_version":"windows-job-attestation-v1"}'
+        )
+    with pytest.raises(Exception):
+        module.WindowsJobAttestation.model_validate_json(json.dumps({**base, "extra": True}))
+
+
+def test_posix_attestation_json_rejects_identity_type_coercion():
+    """The adjacent POSIX proof uses the same strict wire codec."""
+    captured = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    values = {
+        "schema_version": "posix-process-attestation-v1",
+        "proof_type": "PROC_START_TICKS_SESSION_GROUP",
+        "boot_id": "01234567-89ab-cdef-0123-456789abcdef",
+        "root_start_ticks": 42, "session_id": 10, "process_group_id": 11,
+        "pidfd_supported": False, "pidfd_verified": False, "worker_generation": "generation",
+        "captured_at": captured, "expires_at": captured + timedelta(minutes=5),
+        "verification_result": "VERIFIED",
+        "member_snapshot": ({
+            "pid": 42, "process_group_id": 11, "session_id": 10,
+            "start_token": "posix:01234567-89ab-cdef-0123-456789abcdef:42",
+        },),
+    }
+    attestation = module.PosixProcessAttestation(
+        **values,
+        digest=module.canonical_binding_digest(values),
+    )
+    base = json.loads(attestation.model_dump_json())
+    for field, replacement in (
+        ("root_start_ticks", "42"),
+        ("pidfd_supported", "false"),
+        ("member_snapshot", [{"pid": "42", "process_group_id": 11, "session_id": 10, "start_token": "posix:01234567-89ab-cdef-0123-456789abcdef:42"}]),
+        ("captured_at", "2026-01-01T00:00:00+00:00"),
+    ):
+        with pytest.raises(Exception):
+            module.PosixProcessAttestation.model_validate_json(
+                json.dumps({**base, field: replacement})
+            )
+
+
+def test_windows_non_scan_attestation_has_a_distinct_non_authoritative_schema():
+    captured = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    values = {
+        "schema_version": "windows-non-scan-job-attestation-v1", "proof_type": "JOB_OBJECT",
+        "job_identity": module.windows_non_scan_job_name(
+            "observation:strict-boundary", "worker", "generation", "d" * 32,
+        ),
+        "job_nonce": "d" * 32,
+        "purpose": "observation:strict-boundary",
+        "worker_identity": "worker", "worker_generation": "generation",
+        "root_process_id": 456, "root_process_start_token": "windows:456",
+        "initial_members": (456,), "captured_at": captured,
+        "expires_at": captured + timedelta(minutes=5), "verification_result": "VERIFIED",
+    }
+    attestation = module.WindowsNonScanJobAttestation(
+        **values,
+        digest=module.canonical_windows_non_scan_job_attestation_digest(values),
+    )
+    wire = attestation.model_dump_json()
+    assert module.parse_windows_attestation_json(wire) == attestation
+    with pytest.raises(Exception):
+        module.WindowsJobAttestation.model_validate_json(wire)
+    with pytest.raises(Exception):
+        module.validate_windows_ownership({
+            "container_type": "WINDOWS_JOB",
+            "container_identity": attestation.job_identity,
+            "execution_id": "not-a-scan-attestation",
+            "organization_id": "org",
+            "root_process_id": attestation.root_process_id,
+            "root_process_start_token": attestation.root_process_start_token,
+            "process_group_id": None, "session_id": None,
+            "identity_attestation": wire,
+        })
+
+
+def test_windows_ownership_rejects_replayed_incomplete_and_cross_binding_proofs():
+    captured = datetime.now(timezone.utc)
+    values = {
+        "schema_version": "windows-job-attestation-v1",
+        "proof_type": "JOB_OBJECT",
+        "job_identity": module.windows_job_name(
+            "run-bound", "org-bound", "worker-bound", "generation-bound", "b" * 32,
+        ),
+        "job_nonce": "b" * 32,
+        "execution_id": "run-bound",
+        "organization_id": "org-bound",
+        "worker_identity": "worker-bound",
+        "worker_generation": "generation-bound",
+        "root_process_id": 234,
+        "root_process_start_token": "windows:234",
+        "initial_members": (234,),
+        "captured_at": captured,
+        "expires_at": captured + timedelta(minutes=5),
+        "verification_result": "VERIFIED",
+    }
+    attestation = module.WindowsJobAttestation(
+        **values,
+        digest=module.canonical_windows_job_attestation_digest(values),
+    )
+    ownership = {
+        "container_type": "WINDOWS_JOB",
+        "container_identity": attestation.job_identity,
+        "execution_id": attestation.execution_id,
+        "organization_id": attestation.organization_id,
+        "root_process_id": attestation.root_process_id,
+        "root_process_start_token": attestation.root_process_start_token,
+        "worker_generation": attestation.worker_generation,
+        "process_group_id": None,
+        "session_id": None,
+        "identity_attestation": attestation.model_dump_json(),
+    }
+    assert module.validate_windows_ownership(ownership, worker_identity="worker-bound") == attestation
+
+    for field, replacement in (
+        ("container_identity", "Local\\CyberAssess-" + "c" * 64),
+        ("execution_id", "run-replayed"),
+        ("organization_id", "org-other-tenant"),
+        ("root_process_start_token", "windows:235"),
+        ("worker_generation", "generation-replayed"),
+    ):
+        tampered = {**ownership, field: replacement}
+        with pytest.raises(Exception):
+            module.validate_windows_ownership(tampered, worker_identity="worker-bound")
+
+    for field in ("identity_attestation", "container_identity", "root_process_id", "root_process_start_token"):
+        incomplete = dict(ownership)
+        incomplete.pop(field)
+        with pytest.raises(Exception):
+            module.validate_windows_ownership(incomplete, worker_identity="worker-bound")
+
+    unverified_values = {**values, "verification_result": "UNVERIFIED"}
+    unverified = module.WindowsJobAttestation(
+        **unverified_values,
+        digest=module.canonical_windows_job_attestation_digest(unverified_values),
+    )
+    with pytest.raises(Exception):
+        module.validate_windows_ownership(
+            {**ownership, "identity_attestation": unverified.model_dump_json()},
+            worker_identity="worker-bound",
+        )
 
 
 def test_non_scan_capability_factory_is_purpose_and_ttl_bounded():

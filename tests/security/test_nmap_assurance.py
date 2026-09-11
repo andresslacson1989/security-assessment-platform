@@ -583,9 +583,8 @@ class TestNmapXMLParserHardening:
 # ============================================================================
 
 class TestNmapProcessTreeTermination:
-    @pytest.mark.skipif(os.name == "nt", reason="Windows execution remains blocked until Job Object containment exists")
     @pytest.mark.asyncio
-    async def test_process_tree_descendant_termination_os_level(self):
+    async def test_process_tree_descendant_termination_os_level(self, tmp_path):
         """
         Contract 03 §3 & Contract 09 TOOL-NMAP §40:
         Spawns a multi-level process tree (parent -> child -> grandchild)
@@ -594,10 +593,11 @@ class TestNmapProcessTreeTermination:
         supervisor = ProcessSupervisor.get_instance()
         
         # Script that launches child python process which sleeps
-        script = """
+        grandchild_pid_path = tmp_path / "grandchild.pid"
+        script = f"""
 import subprocess, sys, time
 proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-with open("grandchild.pid", "w") as f:
+with open({str(grandchild_pid_path)!r}, "w") as f:
     f.write(str(proc.pid))
 time.sleep(60)
 """
@@ -612,11 +612,11 @@ time.sleep(60)
 
         # Read grandchild PID if written
         grandchild_pid = None
-        if os.path.exists("grandchild.pid"):
+        if grandchild_pid_path.exists():
             try:
-                with open("grandchild.pid", "r") as f:
+                with grandchild_pid_path.open("r", encoding="utf-8") as f:
                     grandchild_pid = int(f.read().strip())
-                os.remove("grandchild.pid")
+                grandchild_pid_path.unlink()
             except Exception:
                 pass
 
@@ -624,8 +624,7 @@ time.sleep(60)
         if grandchild_pid:
             # Check OS process existence
             if sys.platform == "win32":
-                out = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild_pid}"], capture_output=True, text=True)
-                assert str(grandchild_pid) not in out.stdout or "No tasks" in out.stdout
+                assert not ProcessSupervisor._pid_exists(grandchild_pid)
             else:
                 with pytest.raises(OSError):
                     os.kill(grandchild_pid, 0)

@@ -9,9 +9,19 @@ import hmac
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from typing import Any, Dict, Optional, Tuple, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 
 class ExecutionContextError(ValueError):
@@ -67,36 +77,127 @@ def _is_registered_context(context: object) -> bool:
     return _ISSUED_CONTEXTS.get(id(context)) is context
 
 
-class PosixProcessMemberAttestation(BaseModel):
+def _reject_duplicate_json_keys(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError("attestation JSON contains a duplicate field")
+        values[key] = value
+    return values
+
+
+def _reject_nonfinite_json(value):
+    raise ValueError(f"attestation JSON contains unsupported constant {value!r}")
+
+
+def _load_strict_attestation_json(json_data: str | bytes | bytearray) -> dict[str, Any]:
+    if not isinstance(json_data, (str, bytes, bytearray)):
+        raise TypeError("attestation JSON must be text or bytes")
+    try:
+        payload = json.loads(
+            json_data,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonfinite_json,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("attestation JSON is invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("attestation JSON root must be an object")
+    return payload
+
+
+def _canonical_attestation_timestamp(value: Any) -> datetime:
+    """Require one UTC ISO-8601 representation instead of accepting coercions."""
+    if type(value) is datetime:
+        parsed = value
+    elif type(value) is str:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("attestation timestamp is not valid ISO-8601") from exc
+    else:
+        raise TypeError("attestation timestamp must be a datetime or canonical string")
+
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("attestation timestamps must use UTC")
+    normalized = parsed.astimezone(timezone.utc)
+    canonical_text = normalized.isoformat().replace("+00:00", "Z")
+    if type(value) is str and value != canonical_text:
+        raise ValueError("attestation timestamp is not in canonical UTC form")
+    return normalized
+
+
+class _StrictAttestationModel(BaseModel):
+    """Base codec for identity proofs; JSON parsing must preserve field types."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        extra: str | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ):
+        # Identity proofs never permit a caller to opt into coercive parsing or
+        # an alternate extra-field policy.  The raw object is parsed first so
+        # duplicate fields cannot be normalized by a last-value-wins decoder.
+        if strict is False or (extra is not None and extra != "forbid"):
+            raise TypeError("identity attestation parsing is always strict and extra-forbidden")
+        payload = _load_strict_attestation_json(json_data)
+        # JSON has no tuple type.  The versioned wire representation uses an
+        # ordered array for tuple-backed identity collections; convert only
+        # those explicitly documented fields after raw JSON type validation.
+        for field in ("initial_members", "member_snapshot"):
+            if isinstance(payload.get(field), list):
+                payload[field] = tuple(payload[field])
+        return cls.model_validate(
+            payload,
+            strict=True,
+            extra="forbid",
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+
+
+class PosixProcessMemberAttestation(_StrictAttestationModel):
     """One bounded, start-token-bound member of a governed POSIX session."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    pid: int = Field(ge=2)
-    process_group_id: int = Field(ge=2)
-    session_id: int = Field(ge=0)
-    start_token: str = Field(min_length=10, max_length=256)
+    pid: StrictInt = Field(ge=2)
+    process_group_id: StrictInt = Field(ge=2)
+    session_id: StrictInt = Field(ge=0)
+    start_token: StrictStr = Field(min_length=10, max_length=256)
 
 
-class PosixProcessAttestation(BaseModel):
+class PosixProcessAttestation(_StrictAttestationModel):
     """Canonical, bounded POSIX identity proof; a PID alone is never authority."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
     schema_version: Literal["posix-process-attestation-v1"]
     proof_type: Literal["PROC_START_TICKS_SESSION_GROUP"]
-    boot_id: str
-    root_start_ticks: int = Field(ge=0)
-    session_id: int = Field(ge=0)
-    process_group_id: int = Field(ge=0)
-    pidfd_supported: bool
-    pidfd_verified: bool
-    worker_generation: str
+    boot_id: StrictStr
+    root_start_ticks: StrictInt = Field(ge=0)
+    session_id: StrictInt = Field(ge=0)
+    process_group_id: StrictInt = Field(ge=0)
+    pidfd_supported: StrictBool
+    pidfd_verified: StrictBool
+    worker_generation: StrictStr
     captured_at: datetime
     expires_at: datetime
     verification_result: Literal["VERIFIED", "UNVERIFIED", "FAILED"]
     # Older durable records may not contain a snapshot.  They remain valid for
     # live-root checks but cannot authorize recovery after the root disappears.
     member_snapshot: Optional[Tuple[PosixProcessMemberAttestation, ...]] = None
-    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("captured_at", "expires_at", mode="before")
+    @classmethod
+    def _canonical_timestamps(cls, value: Any) -> datetime:
+        return _canonical_attestation_timestamp(value)
 
     @model_validator(mode="after")
     def _valid_window(self) -> "PosixProcessAttestation":
@@ -115,27 +216,237 @@ class PosixProcessAttestation(BaseModel):
         return self
 
 
-class WindowsJobAttestation(BaseModel):
-    """Canonical Windows job identity proof; unsupported proof is explicit."""
+class WindowsJobAttestation(_StrictAttestationModel):
+    """Durable binding; kernel verification is separately required at use."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
     schema_version: Literal["windows-job-attestation-v1"]
     proof_type: Literal["JOB_OBJECT"]
-    job_identity: str
-    root_process_start_token: str
-    worker_generation: str
+    job_identity: StrictStr = Field(pattern=r"^Local\\CyberAssess-[0-9a-f]{64}$")
+    job_nonce: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
+    execution_id: StrictStr = Field(min_length=1, max_length=256)
+    organization_id: StrictStr = Field(min_length=1, max_length=256)
+    worker_identity: StrictStr = Field(min_length=1, max_length=256)
+    root_process_id: StrictInt = Field(ge=2)
+    root_process_start_token: StrictStr = Field(pattern=r"^windows:[1-9][0-9]*$")
+    worker_generation: StrictStr = Field(min_length=1, max_length=256)
+    initial_members: Tuple[StrictInt, ...]
     captured_at: datetime
     expires_at: datetime
     verification_result: Literal["VERIFIED", "UNVERIFIED", "FAILED"]
-    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("captured_at", "expires_at", mode="before")
+    @classmethod
+    def _canonical_timestamps(cls, value: Any) -> datetime:
+        return _canonical_attestation_timestamp(value)
 
     @model_validator(mode="after")
     def _valid_window(self) -> "WindowsJobAttestation":
         if self.captured_at.tzinfo is None or self.expires_at.tzinfo is None or self.expires_at <= self.captured_at:
             raise ExecutionContextExpiredError("Windows job attestation window is invalid")
-        if self.digest != canonical_binding_digest(self.model_dump(exclude={"digest"})):
+        if self.initial_members != (self.root_process_id,):
+            raise ValueError("Windows launch must attest exactly the suspended root")
+        if self.job_identity != windows_job_name(
+            self.execution_id,
+            self.organization_id,
+            self.worker_identity,
+            self.worker_generation,
+            self.job_nonce,
+        ):
+            raise ValueError("Windows job name is not bound to the execution authority")
+        if self.digest != canonical_windows_job_attestation_digest(self.model_dump(exclude={"digest"})):
             raise ValueError("Windows job attestation digest does not match canonical fields")
         return self
+
+
+class WindowsNonScanJobAttestation(_StrictAttestationModel):
+    """Typed Job Object proof for installer/observation launches only.
+
+    This proof is intentionally not accepted by the durable scan ownership
+    validators.  It proves containment for a non-scan capability without
+    creating an execution or tenant authorization claim.
+    """
+
+    schema_version: Literal["windows-non-scan-job-attestation-v1"]
+    proof_type: Literal["JOB_OBJECT"]
+    job_identity: StrictStr = Field(pattern=r"^Local\\CyberAssess-[0-9a-f]{64}$")
+    job_nonce: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
+    purpose: StrictStr = Field(min_length=1, max_length=160)
+    worker_identity: StrictStr = Field(min_length=1, max_length=256)
+    worker_generation: StrictStr = Field(min_length=1, max_length=256)
+    root_process_id: StrictInt = Field(ge=2)
+    root_process_start_token: StrictStr = Field(pattern=r"^windows:[1-9][0-9]*$")
+    initial_members: Tuple[StrictInt, ...]
+    captured_at: datetime
+    expires_at: datetime
+    verification_result: Literal["VERIFIED", "UNVERIFIED", "FAILED"]
+    digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("captured_at", "expires_at", mode="before")
+    @classmethod
+    def _canonical_timestamps(cls, value: Any) -> datetime:
+        return _canonical_attestation_timestamp(value)
+
+    @model_validator(mode="after")
+    def _valid_window(self) -> "WindowsNonScanJobAttestation":
+        if self.expires_at <= self.captured_at:
+            raise ExecutionContextExpiredError("Windows non-scan job attestation window is invalid")
+        if not (self.purpose.startswith("installer:") or self.purpose.startswith("observation:")):
+            raise UnsupportedNonScanContextError("Windows non-scan job purpose is outside the approved registry")
+        if self.initial_members != (self.root_process_id,):
+            raise ValueError("Windows launch must attest exactly the suspended root")
+        if self.job_identity != windows_non_scan_job_name(
+            self.purpose,
+            self.worker_identity,
+            self.worker_generation,
+            self.job_nonce,
+        ):
+            raise ValueError("Windows non-scan job name is not bound to its capability")
+        if self.digest != canonical_windows_non_scan_job_attestation_digest(
+            self.model_dump(exclude={"digest"})
+        ):
+            raise ValueError("Windows non-scan job attestation digest does not match canonical fields")
+        return self
+
+
+def parse_windows_attestation_json(
+    json_data: str | bytes | bytearray,
+) -> WindowsJobAttestation | WindowsNonScanJobAttestation:
+    """Parse one of the two explicit Windows proof types without coercion."""
+    payload = _load_strict_attestation_json(json_data)
+    for field in ("initial_members", "member_snapshot"):
+        if isinstance(payload.get(field), list):
+            payload[field] = tuple(payload[field])
+    model = {
+        "windows-job-attestation-v1": WindowsJobAttestation,
+        "windows-non-scan-job-attestation-v1": WindowsNonScanJobAttestation,
+    }.get(payload.get("schema_version"))
+    if model is None:
+        raise ValueError("unknown Windows attestation schema")
+    return model.model_validate(payload, strict=True, extra="forbid")
+
+
+def windows_job_name(
+    execution_id: str,
+    organization_id: str,
+    worker_identity: str,
+    worker_generation: str,
+    nonce: str,
+) -> str:
+    """Create the opaque named-kernel-object identity for one execution."""
+    return "Local\\CyberAssess-" + canonical_binding_digest({
+        "execution_id": execution_id,
+        "organization_id": organization_id,
+        "worker_identity": worker_identity,
+        "worker_generation": worker_generation,
+        "nonce": nonce,
+    })
+
+
+def windows_non_scan_job_name(
+    purpose: str,
+    worker_identity: str,
+    worker_generation: str,
+    nonce: str,
+) -> str:
+    """Create an opaque Job Object name for a non-scan capability."""
+    return "Local\\CyberAssess-" + canonical_binding_digest({
+        "purpose": purpose,
+        "worker_identity": worker_identity,
+        "worker_generation": worker_generation,
+        "nonce": nonce,
+    })
+
+
+_WINDOWS_JOB_ATTESTATION_FIELDS = (
+    "schema_version", "proof_type", "job_identity", "job_nonce", "execution_id",
+    "organization_id", "worker_identity", "root_process_id", "root_process_start_token",
+    "worker_generation", "initial_members", "captured_at", "expires_at", "verification_result",
+)
+_WINDOWS_NON_SCAN_ATTESTATION_FIELDS = (
+    "schema_version", "proof_type", "job_identity", "job_nonce", "purpose",
+    "worker_identity", "worker_generation", "root_process_id", "root_process_start_token",
+    "initial_members", "captured_at", "expires_at", "verification_result",
+)
+
+
+def _canonical_windows_attestation_payload(
+    value: Mapping[str, Any],
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != set(fields):
+        raise ValueError("Windows attestation fields do not match the versioned schema")
+    normalized: dict[str, Any] = {}
+    for field in fields:
+        item = value[field]
+        if field in {"captured_at", "expires_at"}:
+            normalized[field] = _canonical_attestation_timestamp(item).isoformat().replace("+00:00", "Z")
+        elif field == "initial_members":
+            if (
+                not isinstance(item, (tuple, list))
+                or not item
+                or len(item) > 512
+                or any(type(member) is not int or member < 2 for member in item)
+            ):
+                raise ValueError("Windows attestation member collection is invalid")
+            # JSON has no tuple type; the documented canonical representation
+            # is an ordered array, so changing member order changes the digest.
+            normalized[field] = list(item)
+        elif field == "root_process_id":
+            if type(item) is not int or item < 2:
+                raise ValueError("Windows attestation root PID is invalid")
+            normalized[field] = item
+        else:
+            if type(item) is not str:
+                raise TypeError(f"Windows attestation field {field} must be a string")
+            normalized[field] = item
+    return normalized
+
+
+def _canonical_windows_attestation_digest(value: Mapping[str, Any], fields: tuple[str, ...]) -> str:
+    payload = _canonical_windows_attestation_payload(value, fields)
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_windows_job_attestation_digest(value: Mapping[str, Any]) -> str:
+    """Digest the exact documented governed Windows attestation payload."""
+    return _canonical_windows_attestation_digest(value, _WINDOWS_JOB_ATTESTATION_FIELDS)
+
+
+def canonical_windows_non_scan_job_attestation_digest(value: Mapping[str, Any]) -> str:
+    """Digest the exact documented non-scan Windows attestation payload."""
+    return _canonical_windows_attestation_digest(value, _WINDOWS_NON_SCAN_ATTESTATION_FIELDS)
+
+
+def validate_windows_ownership(ownership, *, worker_identity=None, historical=False):
+    """Validate the complete durable binding without mistaking a digest for OS proof."""
+    row = dict(ownership)
+    attestation = WindowsJobAttestation.model_validate_json(row["identity_attestation"])
+    if (
+        row.get("container_type") != "WINDOWS_JOB"
+        or row.get("process_group_id") is not None
+        or row.get("session_id") is not None
+        or attestation.verification_result != "VERIFIED"
+        or attestation.job_identity != row.get("container_identity")
+        or attestation.execution_id != row.get("execution_id")
+        or attestation.organization_id != row.get("organization_id")
+        or attestation.root_process_id != row.get("root_process_id")
+        or attestation.root_process_start_token != row.get("root_process_start_token")
+        or attestation.worker_generation != row.get("worker_generation")
+        or (worker_identity is not None and attestation.worker_identity != worker_identity)
+    ):
+        raise ExecutionContextMismatchError("Windows job ownership binding mismatch")
+    now = datetime.now(timezone.utc)
+    if attestation.captured_at > now or (not historical and attestation.expires_at <= now):
+        raise ExecutionContextExpiredError("Windows job attestation is not current")
+    return attestation
 
 
 def canonical_command_digest(command: Tuple[str, ...]) -> str:
@@ -453,15 +764,19 @@ __all__ = [
     "ExecutionContextExpiredError", "ExecutionContextTenantError", "ExecutionContextCommandError",
     "UnsupportedNonScanContextError", "GovernedExecutionContext", "NonScanExecutionContext",
     "PosixProcessMemberAttestation", "PosixProcessAttestation", "WindowsJobAttestation",
+    "WindowsNonScanJobAttestation",
     "canonical_command_digest",
     "canonical_binding_digest",
+    "canonical_windows_job_attestation_digest",
+    "canonical_windows_non_scan_job_attestation_digest",
+    "windows_job_name", "windows_non_scan_job_name", "parse_windows_attestation_json",
     "execution_claim_digest",
     "EXECUTION_PROOF_COMMON_KEYS",
     "EXECUTION_PROOF_NO_PROCESS_KEYS",
     "EXECUTION_PROOF_TERMINATION_KEYS",
     "encode_execution_proof",
     "decode_execution_proof",
-    "PosixProcessAttestation", "WindowsJobAttestation",
+    "PosixProcessAttestation", "WindowsJobAttestation", "WindowsNonScanJobAttestation",
     "_issue_non_scan_execution_context",
     "_register_issued_context",
     "_is_registered_context",

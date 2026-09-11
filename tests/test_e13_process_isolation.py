@@ -59,7 +59,6 @@ async def test_cancel_nonexistent_execution_fails_cleanly():
     assert supervisor.cancel_pid(99999999).status is ProcessCancellationStatus.NOT_FOUND
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows execution remains blocked until Job Object containment exists")
 @pytest.mark.asyncio
 async def test_concurrent_sibling_execution_isolation():
     """
@@ -101,7 +100,6 @@ async def test_concurrent_sibling_execution_isolation():
     res_b = await exec_b_task
     assert "sibling done" in res_b.stdout
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows execution remains blocked until Job Object containment exists")
 @pytest.mark.asyncio
 async def test_asyncio_cancellation_does_not_kill_siblings():
     """

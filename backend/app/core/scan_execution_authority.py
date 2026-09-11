@@ -673,7 +673,7 @@ def validate_terminal_replay_proof(binding: Any, *, database: Any) -> None:
 
     if (
         ownership_state != ProcessOwnershipState.TERMINAL.value
-        or container_type != ProcessContainerType.POSIX_SESSION.value
+        or container_type not in {ProcessContainerType.POSIX_SESSION.value, ProcessContainerType.WINDOWS_JOB.value}
         or launch_state != LaunchCommitState.COMMITTED.value
     ):
         raise ScanExecutionAuthorityError("terminal replay process ownership is not a supported terminal proof")
@@ -681,50 +681,60 @@ def validate_terminal_replay_proof(binding: Any, *, database: Any) -> None:
         raise ScanExecutionAuthorityError("terminal replay process proof has no durable claim evidence")
     if ownership.get("no_process_proof") is None:
         raise ScanExecutionAuthorityError("terminal replay process proof is missing")
-    for field_name in (
-        "container_identity", "root_process_start_token", "process_group_id",
-        "session_id", "identity_attestation", "last_verified_at", "terminalized_at",
-    ):
+    is_windows = container_type == ProcessContainerType.WINDOWS_JOB.value
+    required_identity_fields = ("container_identity", "root_process_start_token", "identity_attestation", "last_verified_at", "terminalized_at")
+    if not is_windows:
+        required_identity_fields += ("process_group_id", "session_id")
+    for field_name in required_identity_fields:
         if not _nonblank(ownership.get(field_name)):
             raise ScanExecutionAuthorityError(
                 f"terminal replay process proof field {field_name} is missing"
             )
     if type(ownership.get("root_process_id")) is not int or ownership["root_process_id"] <= 1:
         raise ScanExecutionAuthorityError("terminal replay root process identity is invalid")
-    start_parts = str(ownership["root_process_start_token"]).split(":", 2)
-    if (
-        len(start_parts) != 3
-        or start_parts[0] != "posix"
-        or re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "") is None
-        or not start_parts[2].isdigit()
-        or int(start_parts[2]) <= 0
-        or not str(ownership["process_group_id"]).isdigit()
-        or int(str(ownership["process_group_id"])) <= 1
-        or not str(ownership["session_id"]).isdigit()
-    ):
-        raise ScanExecutionAuthorityError("terminal replay POSIX process proof is malformed")
-    expected_container = (
-        f"posix-session:{ownership['session_id']}:group:{ownership['process_group_id']}"
-    )
-    if ownership.get("container_identity") != expected_container:
-        raise ScanExecutionAuthorityError("terminal replay process container identity is inconsistent")
-    if run.get("process_id") != ownership.get("root_process_id") or str(run.get("process_group_id")) != str(ownership.get("process_group_id")):
-        raise ScanExecutionAuthorityError("terminal replay process identity is not bound to the run")
-    try:
-        attestation = PosixProcessAttestation.model_validate_json(ownership["identity_attestation"])
-    except Exception as exc:
-        raise ScanExecutionAuthorityError("terminal replay process attestation is invalid") from exc
-    if (
-        attestation.verification_result != "VERIFIED"
-        or attestation.worker_generation != ownership["worker_generation"]
-        or attestation.boot_id != start_parts[1]
-        or attestation.root_start_ticks != int(start_parts[2])
-        or attestation.root_start_ticks <= 0
-        or attestation.session_id != int(ownership["session_id"])
-        or attestation.process_group_id != int(ownership["process_group_id"])
-        or attestation.process_group_id <= 1
-    ):
-        raise ScanExecutionAuthorityError("terminal replay process attestation is inconsistent")
+    if is_windows:
+        try:
+            from app.core.execution_context import validate_windows_ownership
+            validate_windows_ownership(ownership, worker_identity=_binding_value(binding, "child_run_worker_identity"), historical=True)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ScanExecutionAuthorityError("terminal replay Windows job attestation is invalid") from exc
+        if run.get("process_id") != ownership["root_process_id"] or run.get("process_group_id") is not None:
+            raise ScanExecutionAuthorityError("terminal replay Windows root is not bound to run")
+    else:
+        start_parts = str(ownership["root_process_start_token"]).split(":", 2)
+        if (
+            len(start_parts) != 3
+            or start_parts[0] != "posix"
+            or re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1] or "") is None
+            or not start_parts[2].isdigit()
+            or int(start_parts[2]) <= 0
+            or not str(ownership["process_group_id"]).isdigit()
+            or int(str(ownership["process_group_id"])) <= 1
+            or not str(ownership["session_id"]).isdigit()
+        ):
+            raise ScanExecutionAuthorityError("terminal replay POSIX process proof is malformed")
+        expected_container = (
+            f"posix-session:{ownership['session_id']}:group:{ownership['process_group_id']}"
+        )
+        if ownership.get("container_identity") != expected_container:
+            raise ScanExecutionAuthorityError("terminal replay process container identity is inconsistent")
+        if run.get("process_id") != ownership.get("root_process_id") or str(run.get("process_group_id")) != str(ownership.get("process_group_id")):
+            raise ScanExecutionAuthorityError("terminal replay process identity is not bound to the run")
+        try:
+            attestation = PosixProcessAttestation.model_validate_json(ownership["identity_attestation"])
+        except Exception as exc:
+            raise ScanExecutionAuthorityError("terminal replay process attestation is invalid") from exc
+        if (
+            attestation.verification_result != "VERIFIED"
+            or attestation.worker_generation != ownership["worker_generation"]
+            or attestation.boot_id != start_parts[1]
+            or attestation.root_start_ticks != int(start_parts[2])
+            or attestation.root_start_ticks <= 0
+            or attestation.session_id != int(ownership["session_id"])
+            or attestation.process_group_id != int(ownership["process_group_id"])
+            or attestation.process_group_id <= 1
+        ):
+            raise ScanExecutionAuthorityError("terminal replay process attestation is inconsistent")
     try:
         payload = decode_execution_proof(
             proof_text, expected_proof_type="TERMINATION_CONFIRMED",
@@ -732,7 +742,7 @@ def validate_terminal_replay_proof(binding: Any, *, database: Any) -> None:
     except Exception as exc:
         raise ScanExecutionAuthorityError("terminal replay termination proof is invalid") from exc
     _require_proof_fields(payload, EXECUTION_PROOF_TERMINATION_KEYS)
-    if payload.get("reason_code") not in EXECUTION_REASON_CODES:
+    if not is_valid_execution_terminal_outcome(run_state, payload.get("reason_code")):
         raise ScanExecutionAuthorityError("terminal replay termination reason is not canonical")
     if type(payload.get("recovery_attempt_number")) is not int or payload["recovery_attempt_number"] < 0:
         raise ScanExecutionAuthorityError("terminal replay termination recovery attempt number is invalid")
@@ -740,22 +750,26 @@ def validate_terminal_replay_proof(binding: Any, *, database: Any) -> None:
         raise ScanExecutionAuthorityError("terminal replay termination status is invalid")
     if type(payload.get("process_id")) is not int or payload["process_id"] <= 1:
         raise ScanExecutionAuthorityError("terminal replay termination process identity is invalid")
-    if (
-        type(payload.get("process_group_id")) is not str
-        or not payload["process_group_id"].isdigit()
-        or int(payload["process_group_id"]) <= 1
-    ):
-        raise ScanExecutionAuthorityError("terminal replay termination process group is invalid")
-    if type(payload.get("session_id")) is not int or payload["session_id"] < 0:
-        raise ScanExecutionAuthorityError("terminal replay termination session is invalid")
-    start_parts = str(payload.get("process_start_token") or "").split(":", 2)
-    if (
-        len(start_parts) != 3
-        or start_parts[0] != "posix"
-        or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1])
-        or not start_parts[2].isdigit()
-    ):
-        raise ScanExecutionAuthorityError("terminal replay termination start token is invalid")
+    if is_windows:
+        if payload.get("process_group_id") is not None or payload.get("session_id") is not None:
+            raise ScanExecutionAuthorityError("terminal replay Windows proof contains POSIX identity")
+    else:
+        if (
+            type(payload.get("process_group_id")) is not str
+            or not payload["process_group_id"].isdigit()
+            or int(payload["process_group_id"]) <= 1
+        ):
+            raise ScanExecutionAuthorityError("terminal replay termination process group is invalid")
+        if type(payload.get("session_id")) is not int or payload["session_id"] < 0:
+            raise ScanExecutionAuthorityError("terminal replay termination session is invalid")
+        start_parts = str(payload.get("process_start_token") or "").split(":", 2)
+        if (
+            len(start_parts) != 3
+            or start_parts[0] != "posix"
+            or not re.fullmatch(r"[0-9a-fA-F-]{8,128}", start_parts[1])
+            or not start_parts[2].isdigit()
+        ):
+            raise ScanExecutionAuthorityError("terminal replay termination start token is invalid")
     for field_name, expected in (
         ("proof_type", "TERMINATION_CONFIRMED"),
         ("execution_id", execution_id),
@@ -765,7 +779,7 @@ def validate_terminal_replay_proof(binding: Any, *, database: Any) -> None:
         ("terminal_state", run_state),
         ("dispatch_state", expected_dispatch),
         ("ownership_state", ProcessOwnershipState.TERMINAL.value),
-        ("container_type", ProcessContainerType.POSIX_SESSION.value),
+        ("container_type", container_type),
         ("launch_commit_state", LaunchCommitState.COMMITTED.value),
         ("worker_identity", _binding_value(binding, "child_run_worker_identity")),
         ("worker_generation", _binding_value(binding, "child_run_worker_generation")),
@@ -780,7 +794,7 @@ def validate_terminal_replay_proof(binding: Any, *, database: Any) -> None:
         ("process_id", ownership.get("root_process_id")),
         ("process_group_id", ownership.get("process_group_id")),
         ("process_start_token", ownership.get("root_process_start_token")),
-        ("session_id", int(ownership.get("session_id"))),
+        ("session_id", None if is_windows else int(ownership.get("session_id"))),
         ("identity_attestation", ownership.get("identity_attestation")),
         ("identity_attestation_digest", canonical_binding_digest(ownership["identity_attestation"])),
     ):

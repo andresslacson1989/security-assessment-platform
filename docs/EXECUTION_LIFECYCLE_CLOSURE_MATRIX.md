@@ -34,8 +34,8 @@ been independently reviewed.
 | --- | --- | --- | --- |
 | Typed durable identity | A typed execution context binds `execution_id`, organization, worker, approved decision, target seal, operation policy, and exact command. Governed launch APIs reject missing or mismatched context. | Unit and integration tests for missing context, cross-tenant context, explicit-ID mismatch, and command/decision mismatch. Static inventory of scan-reachable process calls. | OPEN |
 | Complete launch coverage | Capability discovery, adapters, direct helpers, and child tasks either receive the same governed context or are explicitly non-scan operations with a separate capability. | Call-site inventory, CI enforcement test, and cancellation test during discovery and each engine family. | OPEN |
-| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. A committed governed row is downgraded atomically to `RECOVERY_BLOCKED` without rebuilding its identity. Windows governed execution is explicitly fail-closed until a real Job Object or equivalent kernel-owned container exists. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed Windows termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; committed-to-recovery database transition, tamper, replay, and concurrency tests; explicit Windows recovery fail-closed test; platform-specific non-scan uncertainty handling; future Windows Job Object evidence remains required before Windows assurance. | OPEN |
-| Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted worker must attach only after independent identity and tenant validation. Valid complete attestations remain attached for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. A post-commit recovery primitive preserves the committed launch state and consumes the persisted attestation. | Restart test with a surviving child/group, valid uncertain/recovery loader states, production-path governed-to-recovery transition, invalid worker generation, PID/PGID/SID reuse, incomplete/tampered attestation, concurrency/replay, and operator-visible recovery escalation. | OPEN |
+| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. A committed governed row is downgraded atomically to `RECOVERY_BLOCKED` without rebuilding its identity. Windows governed execution uses a native Job Object: the root is created suspended, atomically associated through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, durably attested before resume, and governed by `KILL_ON_JOB_CLOSE`; live cancellation/recovery uses the exact process-local attested job, verifies every current member, and never falls back to a raw PID. Worker loss intentionally destroys the container and blocks durable reattachment; same-name recreation is not the original job. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; committed-to-recovery database transition, tamper, replay, and concurrency tests; Windows atomic Job Object assignment, descendant termination, worker-crash `KILL_ON_JOB_CLOSE`, same-name non-reattachment, exact-member recovery, cancellation, and durable settlement tests; platform-specific non-scan uncertainty handling; independent Windows CI evidence remains required before Windows assurance is accepted. | OPEN |
+| Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted POSIX worker may attach only after independent identity and tenant validation. Windows does not perform durable named-object reattachment after worker loss: the `KILL_ON_JOB_CLOSE` lifecycle destroys the original container, the loader returns an operator-visible recovery-unavailable result, and a same-name object cannot satisfy the persisted attestation. Valid complete POSIX attestations remain attachable for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. A post-commit recovery primitive preserves the committed launch state and consumes the persisted attestation only after exact termination proof. | Restart test with a surviving POSIX child/group, valid uncertain/recovery loader states, production-path governed-to-recovery transition, invalid worker generation, PID/PGID/SID reuse, incomplete/tampered identity, native Windows worker-crash kill-on-close and same-name negative, exact local-member recovery, concurrency/replay, and operator-visible recovery escalation. | OPEN |
 | Single cancellation coordinator | One coordinator owns cancellation request, task shutdown, process termination, authority revocation, and terminal settlement. Async cancellation cannot race a background execution thread. | Ignored-cancellation, timeout, duplicate-request, revocation-vs-finish, and exact idempotence tests. | OPEN |
 | Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | OPEN |
 | Contract and operational proof | Contracts 04/08 and traceability documentation describe the same state machine, platform threat model, and evidence boundary. Protected migration failures remain fail-closed and require operator reconciliation. | Contract consistency tests, clean tree, synchronized remote, CI results, runtime evidence, and auditor acceptance. | OPEN |
@@ -91,6 +91,26 @@ so startup descendants created after the first identity sample are included;
 failure to settle remains `LAUNCH_UNCERTAIN`. Cancellation and observation
 recovery use the persisted `ProcessIdentity`; a missing in-memory mapping or
 a raw PID is not sufficient.
+
+The Windows governed path now has a native kernel-owned process container.
+`WindowsJobProcess` creates the root with `CreateProcessW` while suspended and
+uses the extended-startup `PROC_THREAD_ATTRIBUTE_JOB_LIST` assignment so the
+root is associated with the named Job Object before it can execute. The Job
+Object permits only the required `KILL_ON_JOB_CLOSE` limit; the implementation
+captures and verifies the root PID/start token, exact initial membership, tenant
+and worker-generation binding, and attestation digest before resuming the
+root. Descendants remain in the same container, and cancellation/recovery
+terminates the exact process-local attested Job Object and requires a
+zero-member proof. The process-local binding is mandatory for assurance; the
+loader does not reopen a named object after worker loss. A worker crash closes
+the last owned handle, kills members, and releases the named object. A later
+same-name object is therefore a new empty or unrelated container and cannot
+satisfy the old digest binding. `reopen=True` is retained only for diagnostic
+native inspection. The implementation does not use `taskkill`, PID-tree
+reconstruction, or a PID-only fallback. The final operating-system launch
+boundary still has an unavoidable check-to-kernel timing window, so the
+control is described as minimized TOCTOU exposure rather than mathematically
+race-free.
 If the launch row has already committed as `EXTERNAL_PROCESS_GOVERNED`, a
 post-launch termination or ownership failure uses a dedicated atomic database
 transition to `RECOVERY_BLOCKED`. That transition verifies the durable tenant,
@@ -172,25 +192,31 @@ the opaque in-process handoff is not a second authentication system and its
 session binding is not independently enforced by the queue state comparison.
 Route-level replay and concurrency vectors are covered separately.
 
-Current implementation files are limited to the audited execution boundary:
-`backend/app/core/db.py`, `backend/app/core/execution_service.py`,
-`backend/app/core/observation_service.py`, `backend/app/core/orchestrator.py`,
-`backend/app/core/process_supervisor.py`, `backend/app/core/auth.py`,
-`run_worker.py`, and the execution identity/lifecycle invariant in
-`docker-compose.yml`, plus the authoritative
-queue quarantine implementation in `backend/app/core/queue.py`, with the
-corresponding launch, authority, cancellation, observation, process, and
-orchestrator, queue, and replay tests. Contracts, migrations, `AGENTS.md`, the protected
-database, `.ci/`, and `.project-temp/` are not part of this rework.
+Current implementation files for this candidate are limited to the audited
+execution boundary and its Windows assurance path:
+`backend/app/core/db.py`, `backend/app/core/execution_context.py`,
+`backend/app/core/execution_service.py`,
+`backend/app/core/observation_service.py`,
+`backend/app/core/process_supervisor.py`,
+`backend/app/core/scan_execution_authority.py`,
+`backend/app/core/windows_job.py`,
+`backend/tests/test_execution_context_contract.py`,
+`backend/tests/test_execution_launch_inventory.py`,
+`tests/security/test_container_hardening.py`,
+`tests/security/test_execution_decision_authority.py`,
+`tests/security/test_process_launch_boundary.py`, and
+`.github/workflows/contract-verification.yml`. Contracts, migrations,
+`AGENTS.md`, the protected database, `.ci/`, and `.project-temp/` are not part
+of this rework.
 
 The required acceptance evidence is now recorded in the dated Section B
 addendum. The matrix remains open because the worker-generation deployment
 binding, independent live Redis/PostgreSQL evidence for the current candidate,
 broader OS-level PID-reuse/membership-race evidence, Windows kernel-container
-implementation (or Windows assurance approval of the current fail-closed
-state), Redis 7-compatible live transport execution, managed-tool runtime
-evidence, and independent auditor acceptance are not all closed by local
-tests. The local Redis attempt reached a real Redis 5.0.14.1 service but was
+implementation and its independent Windows CI execution, Redis 7-compatible
+live transport execution, managed-tool runtime evidence, and independent
+auditor acceptance are not all closed by local tests. The local Redis attempt
+reached a real Redis 5.0.14.1 service but was
 not counted because `XAUTOCLAIM` is unavailable there; the supported CI
 service remains Redis 7.
 

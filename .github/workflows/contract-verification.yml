@@ -526,3 +526,123 @@ jobs:
             exit 1
           fi
 
+  windows-job-object-assurance:
+    name: Windows Job Object assurance
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      OPERATING_MODE: TEST
+      JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
+      CYBERASSESS_WORKER_IDENTITY: ci-windows-worker
+      CYBERASSESS_WORKER_GENERATION: ci-windows-generation-${{ github.run_id }}
+      CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/windows-job-object-assurance
+      CI_REPORT_DIR: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/windows-job-object-assurance/reports
+      CI_PYTEST_BASETEMP: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/windows-job-object-assurance/pytest
+      CYBERASSESS_DB_PATH: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/windows-job-object-assurance/cyberassess.db
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set project-local CI paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $directories = @(
+            $env:CI_ROOT,
+            $env:CI_REPORT_DIR,
+            $env:CI_PYTEST_BASETEMP,
+            (Join-Path $env:CI_ROOT "tmp"),
+            (Join-Path $env:CI_ROOT "pycache")
+          )
+          foreach ($directory in $directories) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
+          }
+          @(
+            "TEMP=$(Join-Path $env:CI_ROOT 'tmp')",
+            "TMP=$(Join-Path $env:CI_ROOT 'tmp')",
+            "TMPDIR=$(Join-Path $env:CI_ROOT 'tmp')",
+            "PYTHONPYCACHEPREFIX=$(Join-Path $env:CI_ROOT 'pycache')",
+            "PYTEST_BASETEMP=$env:CI_PYTEST_BASETEMP"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --no-cache-dir --require-hashes --requirement backend/requirements.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Compile backend modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m compileall -q backend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows Job Object assurance tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $reportPath = Join-Path $env:CI_REPORT_DIR "windows-job-object.xml"
+          $logPath = Join-Path $env:CI_REPORT_DIR "windows-job-object.log"
+          $nodeids = @(
+            "backend/tests/test_execution_context_contract.py::test_windows_ownership_rejects_replayed_incomplete_and_cross_binding_proofs",
+            "backend/tests/test_execution_context_contract.py::test_windows_attestation_json_is_strict_and_representation_preserving",
+            "backend/tests/test_execution_context_contract.py::test_posix_attestation_json_rejects_identity_type_coercion",
+            "backend/tests/test_execution_launch_inventory.py::test_windows_governed_launch_uses_native_job_list_and_has_no_pid_fallback",
+            "backend/tests/test_execution_launch_inventory.py::test_every_windows_supervisor_launch_uses_a_typed_job_attestation",
+            "backend/tests/test_execution_launch_inventory.py::test_production_recovery_never_reopens_windows_jobs_by_name",
+            "tests/security/test_process_launch_boundary.py::test_windows_job_atomic_assignment_and_descendant_termination",
+            "tests/security/test_process_launch_boundary.py::test_windows_job_restart_attachment_and_name_collision",
+            "tests/security/test_process_launch_boundary.py::test_windows_job_recovery_attachment_accepts_only_attested_surviving_members",
+            "tests/security/test_process_launch_boundary.py::test_windows_worker_crash_kill_on_close_blocks_durable_reattachment",
+            "tests/security/test_process_launch_boundary.py::test_expired_windows_attestation_stays_recovery_blocked_without_refresh",
+            "tests/security/test_process_launch_boundary.py::test_windows_supervisor_cancellation_requires_attested_identity",
+            "tests/security/test_process_launch_boundary.py::test_windows_non_scan_launch_uses_attested_job_boundary",
+            "tests/security/test_process_launch_boundary.py::test_windows_non_scan_timeout_output_cancellation_and_exception_are_typed",
+            "tests/security/test_process_launch_boundary.py::test_process_supervisor_rejects_ambiguous_governed_and_non_scan_capabilities",
+            "tests/security/test_execution_decision_authority.py::test_governed_process_rejection_is_durably_settled_after_authority_claim"
+          )
+          & python -m pytest -p no:cacheprovider -q `
+            "--basetemp=$env:CI_PYTEST_BASETEMP" `
+            @nodeids `
+            "--junitxml=$reportPath" 2>&1 | Tee-Object -FilePath $logPath
+          $pytestExit = $LASTEXITCODE
+          if ($pytestExit -ne 0) { exit $pytestExit }
+
+      - name: Reject Windows assurance skips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $reportPath = Join-Path $env:CI_REPORT_DIR "windows-job-object.xml"
+          if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+            throw "Windows Job Object JUnit evidence was not produced"
+          }
+          [xml]$report = Get-Content -LiteralPath $reportPath -Raw
+          $suites = @($report.testsuites.testsuite)
+          $testCount = ($suites | ForEach-Object { [int]$_.tests } | Measure-Object -Sum).Sum
+          $skipCount = ($suites | ForEach-Object { [int]$_.skipped } | Measure-Object -Sum).Sum
+          $failureCount = ($suites | ForEach-Object { [int]$_.failures } | Measure-Object -Sum).Sum
+          $errorCount = ($suites | ForEach-Object { [int]$_.errors } | Measure-Object -Sum).Sum
+          if ($testCount -le 0) { throw "Windows Job Object assurance produced no tests" }
+          if ($skipCount -ne 0) { throw "Windows Job Object assurance contained $skipCount skipped test(s)" }
+          if ($failureCount -ne 0 -or $errorCount -ne 0) {
+            throw "Windows Job Object assurance JUnit evidence reports failures or errors"
+          }
+
+      - name: Upload Windows assurance evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-job-object-evidence-${{ github.run_id }}
+          path: ${{ env.CI_REPORT_DIR }}/
+          if-no-files-found: error
+          retention-days: 14
+
