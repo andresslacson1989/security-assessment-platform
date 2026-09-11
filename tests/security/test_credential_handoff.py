@@ -82,6 +82,9 @@ async def test_durable_queue_delivers_only_authenticated_worker_envelope(monkeyp
         async def xack(self, *_args):
             return None
 
+        async def get(self, _key):
+            return None
+
     queue = object.__new__(RedisDurableQueue)
     queue._redis = FakeRedis()
     queue._consumer_name = "worker-test"

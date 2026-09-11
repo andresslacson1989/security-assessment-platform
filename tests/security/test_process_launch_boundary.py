@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -24,6 +25,23 @@ from app.core.process_supervisor import (
 )
 from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 from app.core.execution_service import issue_non_scan_execution_context
+
+
+def _terminate_owned_test_session(session_id: int | None) -> None:
+    """Clean up only the disposable session created by the current test."""
+    if not session_id:
+        return
+    for member in ProcessSupervisor._posix_session_member_identities(session_id) or []:
+        pid, _start_token, _pgid = member
+        if pid in {os.getpid(), os.getppid()}:
+            continue
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError):
+            continue
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and ProcessSupervisor._process_session_exists(session_id):
+        time.sleep(0.02)
 
 
 FORBIDDEN_IMPORTS = {"subprocess", "asyncio.subprocess"}
@@ -354,7 +372,7 @@ def test_fresh_supervisor_uses_persisted_identity_after_worker_restart() -> None
             "execution-restart-proof",
             process_identity=forged_identity,
         )
-        assert rejected.status.value == "FAILED"
+        assert rejected.status is ProcessCancellationStatus.RECOVERY_BLOCKED
         assert root.poll() is None
         assert ProcessSupervisor._pid_exists(child_pid)
 
@@ -388,8 +406,8 @@ def test_fresh_supervisor_uses_persisted_identity_after_worker_restart() -> None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
-def test_root_exit_with_multiple_descendants_requires_session_and_group_empty() -> None:
-    """A dead root does not make a surviving multi-child session terminal."""
+def test_root_exit_with_multiple_descendants_blocks_unproven_recovery() -> None:
+    """A dead root blocks recovery when only numeric group/session identity remains."""
     root = None
     identity = None
     child_pids: list[int] = []
@@ -423,11 +441,10 @@ def test_root_exit_with_multiple_descendants_requires_session_and_group_empty() 
             "execution-root-exited-multi-child",
             process_identity=identity,
         )
-        assert cancelled.confirmed is True
-        assert not any(ProcessSupervisor._pid_exists(pid) for pid in child_pids)
-        assert not ProcessSupervisor._process_group_exists(identity.process_group_id)
-        assert not ProcessSupervisor._process_session_exists(identity.session_id)
+        assert cancelled.status is ProcessCancellationStatus.RECOVERY_BLOCKED
+        assert any(ProcessSupervisor._pid_exists(pid) for pid in child_pids)
     finally:
+        _terminate_owned_test_session(identity.session_id if identity is not None else None)
         if root is not None and root.poll() is None:
             if identity is not None:
                 ProcessSupervisor().cancel_execution(
@@ -447,8 +464,8 @@ def test_root_exit_with_multiple_descendants_requires_session_and_group_empty() 
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
-def test_root_exit_with_descendant_in_new_group_is_not_empty_and_is_reaped() -> None:
-    """A PGID escape inside the owned session remains recoverable and bounded."""
+def test_root_exit_with_descendant_in_new_group_blocks_unproven_recovery() -> None:
+    """A PGID escape after root exit remains blocked without a stronger container proof."""
     root = None
     identity = None
     try:
@@ -488,10 +505,10 @@ def test_root_exit_with_descendant_in_new_group_is_not_empty_and_is_reaped() -> 
             "execution-root-exited-pgid-escape",
             process_identity=identity,
         )
-        assert cancelled.confirmed is True
-        assert not ProcessSupervisor._pid_exists(child_pid)
-        assert not ProcessSupervisor._process_session_exists(identity.session_id)
+        assert cancelled.status is ProcessCancellationStatus.RECOVERY_BLOCKED
+        assert ProcessSupervisor._pid_exists(child_pid)
     finally:
+        _terminate_owned_test_session(identity.session_id if identity is not None else None)
         if root is not None and root.poll() is None:
             if identity is not None:
                 ProcessSupervisor().cancel_execution(
@@ -511,8 +528,8 @@ def test_root_exit_with_descendant_in_new_group_is_not_empty_and_is_reaped() -> 
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session identity proof is not implemented on Windows")
-def test_session_member_created_during_cancellation_is_reaped_or_fails_closed() -> None:
-    """Repeated session snapshots handle members created during termination."""
+def test_session_member_created_during_cancellation_blocks_unproven_recovery() -> None:
+    """A membership race fails closed when root ownership can no longer be proven."""
     root = None
     identity = None
     try:
@@ -547,20 +564,9 @@ def test_session_member_created_during_cancellation_is_reaped_or_fails_closed() 
             "execution-session-membership-race",
             process_identity=identity,
         )
-        assert cancelled.confirmed is True or cancelled.status is ProcessCancellationStatus.FAILED
-        if cancelled.confirmed:
-            assert not ProcessSupervisor._process_session_exists(identity.session_id)
+        assert cancelled.status is ProcessCancellationStatus.RECOVERY_BLOCKED
     finally:
-        if identity is not None:
-            cleanup_supervisor = ProcessSupervisor()
-            for attempt in range(3):
-                if not ProcessSupervisor._process_session_exists(identity.session_id):
-                    break
-                cleanup_supervisor.cancel_execution(
-                    f"execution-session-membership-race-cleanup-{attempt}",
-                    process_identity=identity,
-                )
-            assert not ProcessSupervisor._process_session_exists(identity.session_id)
+        _terminate_owned_test_session(identity.session_id if identity is not None else None)
         if root is not None and root.poll() is None:
             try:
                 root.kill()
@@ -590,6 +596,7 @@ def test_session_emptiness_ignores_zombie_members_but_keeps_live_members(monkeyp
     )
     assert ProcessSupervisor._process_session_exists(42) is True
 
+
     class ZombieOnly:
         returncode = 0
         stdout = "10 42 Z\n"
@@ -600,3 +607,30 @@ def test_session_emptiness_ignores_zombie_members_but_keeps_live_members(monkeyp
         lambda *args, **kwargs: ZombieOnly(),
     )
     assert ProcessSupervisor._process_session_exists(42) is False
+
+
+def test_group_identity_requires_complete_fresh_member_identity(monkeypatch) -> None:
+    """PGID/SID numbers alone cannot authorize recovery after root exit."""
+    identity = ProcessIdentity(4100, 4100, "posix:boot:root", 4100)
+    monkeypatch.setattr(
+        ProcessSupervisor,
+        "_posix_session_member_identities",
+        lambda _session_id: [(4101, "posix:boot:foreign", 4100)],
+    )
+    monkeypatch.setattr(ProcessSupervisor, "_pid_exists", staticmethod(lambda _pid: False))
+    monkeypatch.setattr(
+        ProcessSupervisor,
+        "_capture_process_identity",
+        staticmethod(lambda pid, pgid: ProcessIdentity(pid, pgid, "posix:boot:actual", 4100)),
+    )
+    assert ProcessSupervisor._process_group_identity_matches(identity) is False
+    monkeypatch.setattr(ProcessSupervisor, "_posix_session_member_identities", staticmethod(lambda _sid: None))
+    assert ProcessSupervisor._process_group_identity_matches(identity) is False
+
+
+def test_windows_process_tree_recovery_is_explicitly_fail_closed(monkeypatch) -> None:
+    """Windows cannot claim containment until the Job Object boundary exists."""
+    import app.core.process_supervisor as supervisor_module
+
+    monkeypatch.setattr(supervisor_module.sys, "platform", "win32")
+    assert ProcessSupervisor.kill_process_tree(4100) is False

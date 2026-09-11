@@ -7,8 +7,14 @@ This addendum records the durable approval-to-dispatch and cancellation-
 coordination implementation pass, including the subsequent authority-to-launch
 preflight, exact identity settlement rework, PostgreSQL settlement correction,
 explicit deployment identity/generation binding, process-session emptiness
-checking, and zombie-member handling at the current code baseline
-`5cf443711e74bde9be7a7f028b4b87e2477d7ad1`.
+checking, zombie-member handling, and explicit recovery blocking when root
+ownership is no longer independently provable at the
+current published code baseline `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`.
+The current unpublished closure candidate additionally enforces explicit
+authoritative-versus-legacy queue classification, strict failure evidence and
+quarantine-state schemas, exact evidence digests, atomic quarantine
+publication, and compare-and-swap recovery acknowledgement. Those local
+changes are recorded below and are not represented by the published baseline.
 It is evidence for the Section B review and does not claim that the
 execution-lifecycle closure matrix is accepted.
 
@@ -44,6 +50,21 @@ an auditable termination-proof digest. A current, still-valid authorization
 cannot use that primitive as a replacement for the ordinary authority-held
 finish path. No schema or migration change is part of this section.
 
+The queue closure candidate makes the wire classification explicit. Production
+execution intents are `AUTHORITATIVE_EXECUTION`; diagnostic compatibility
+messages are `LEGACY_DIAGNOSTIC`. A missing, malformed, conflicting, unknown,
+non-string, or credential-bearing message field is rejected before handler
+entry and cannot fall through to legacy acknowledgement. Failure evidence is
+allowlisted and canonicalized without caller-payload passthrough. Quarantine
+state stores the canonical evidence, its digest, a top-level state digest, and
+the validated tenant/request relationship. Quarantine state, operational
+marker, failure event, and the optional bounded acknowledgement are governed
+by fail-closed Redis transactions. Explicit recovery requires a typed,
+tenant-bound operator assertion; the queue primitive itself does not
+authenticate an arbitrary actor string. The acknowledgement transaction uses
+an exact state compare and requires a successful `XACK` before deleting the
+durable quarantine record.
+
 The changed implementation files in this candidate are:
 
 - `backend/app/core/db.py`
@@ -51,14 +72,21 @@ The changed implementation files in this candidate are:
 - `backend/app/core/observation_service.py`
 - `backend/app/core/orchestrator.py`
 - `backend/app/core/process_supervisor.py`
+- `backend/app/core/queue.py`
 - `docker-compose.yml`
 - `backend/tests/test_execution_launch_inventory.py`
 - `run_worker.py`
 - `tests/security/test_execution_cancellation_coordinator.py`
 - `tests/security/test_execution_decision_authority.py`
 - `tests/security/test_process_launch_boundary.py`
+- `tests/security/test_database_backend.py`
 - `tests/test_observation_service.py`
 - `tests/test_orchestrator.py`
+- `tests/security/test_credential_handoff.py`
+- `tests/test_adapters.py`
+- `tests/test_e13_process_isolation.py`
+- `tests/security/test_code_sast_assurance.py`
+- `tests/security/test_nmap_assurance.py`
 
 The current Section B candidate also adds a fail-closed deployment binding:
 production execution identity and generation now require explicit environment
@@ -68,9 +96,13 @@ fallback so isolated unit tests do not become deployment configuration tests.
 Non-scan contexts are revalidated against that binding at the process-launch
 boundary. If an enterprise egress rejection is already active, the supervisor
 returns the egress rejection before identity diagnostics; otherwise a missing
-or mismatched deployment binding is rejected before process creation. A
-non-scan context created while the binding is unavailable is therefore not a
-launch authorization and cannot bypass the supervisor gate.
+or mismatched deployment binding is rejected before process creation. Windows
+governed execution remains unsupported until a verified Job Object or
+equivalent kernel-owned containment implementation exists. Non-scan launches
+retain their separate non-authoritative capability, but Windows termination or
+recovery that cannot prove the process container is surfaced as
+`PROCESS_TERMINATION_UNCONFIRMED`/`LAUNCH_UNCERTAIN`; it is never reported as a
+confirmed completion or scan authorization.
 
 The evidence below separates the previously published baseline from the
 current working-tree implementation candidate. The final delivery commit and
@@ -85,11 +117,10 @@ No migration or runtime database change is part of this section.
 ## Current local verification
 
 The prior baseline checks below are retained as historical evidence for
-`0e56c766ca96b046a5392d5e92e48dd02122c4f3`. The current focused verification
-was executed against the grouped implementation at
-`5cf443711e74bde9be7a7f028b4b87e2477d7ad1`; the earlier generation-binding
-run at `89 passed, 1 skipped` is retained only as the pre-publication
-checkpoint. Every disposable SQLite database was created under the
+`0e56c766ca96b046a5392d5e92e48dd02122c4f3`. The current published CI
+verification applies to `0a76593045e9d9957bfa1c601d36b2d19b77ee4c`; the
+unpublished queue-quarantine closure candidate is tested locally and is not
+represented by that CI run. Every disposable SQLite database was created under the
 project-local `.project-temp/` tree; the protected runtime database was not
 used.
 
@@ -104,18 +135,49 @@ used.
 - Full local repository suite from a fresh unique disposable SQLite path,
   excluding only that preserved historical worktree snapshot assertion:
   **881 passed, 78 skipped, 1 deselected, 15 warnings**.
+- Current full repository suite for this unpublished candidate from a fresh
+  unique disposable SQLite path, excluding only that same preserved historical
+  worktree snapshot assertion: **886 passed, 85 skipped, 1 deselected, 14
+  warnings**, exit code **0**. Windows process-tree termination vectors remain
+  platform-gated; explicit Windows recovery rejection and non-scan uncertainty
+  behavior are tested separately. The excluded inventory assertion remains a
+  known local failure because the preserved `.ci/` tree is larger than its
+  historical snapshot.
 - Local PostgreSQL and Redis integration could not be rerun because Docker is
   unavailable on this host and no approved local service URLs were provided.
   The authoritative PostgreSQL evidence for this baseline is the successful
   GitHub Actions PostgreSQL 16 job recorded below; no local substitute is
   claimed.
-- Current Section B focused command at `5cf4437`, with an explicit disposable
-  SQLite path: **153 passed, 40 skipped**, exit code **0**. This covered the
-  launch inventory, worker handoff, decision authority, cancellation
-  coordinator, process boundary, real dispatch assurance, observation, and
-  orchestrator tests. The newly added POSIX root-exit/multiple-descendant
-  test is correctly skipped on this Windows host; it is intended for the
-  Linux CI environment.
+- Current queue/quarantine closure command against the unpublished working
+  tree, with an explicit disposable SQLite path and project-local pytest base:
+  **71 passed, 38 skipped**, exit code **0**. This verifies explicit wire
+  classification, strict unknown/non-string/credential-bearing evidence
+  rejection, malformed binding rejection, atomic quarantine publication,
+  durable original-failure evidence and both evidence/state digest bindings,
+  no credential persistence, compare-and-swap acknowledgement, and tamper
+  rejection.
+- Current process-boundary command against the unpublished working tree, with
+  an explicit disposable SQLite path and project-local pytest base: **14
+  passed, 4 skipped**, exit code **0**. This verifies the fresh complete
+  POSIX member-identity snapshot requirement, root/session/process-group
+  vectors, membership race behavior, explicit Windows fail-closed recovery,
+  and explicit Windows fail-closed recovery behavior. The four skips are the
+  existing Windows-inapplicable POSIX vectors; they are not reported as
+  Windows passes.
+- Current affected-path compatibility regression after the Windows policy and
+  queue-envelope fixture updates: **17 passed, 8 skipped**, exit code **0**.
+  The skips are platform-inapplicable POSIX process-tree assertions and are
+  separate from the explicit Windows fail-closed tests.
+- Combined local authority, queue, replay, and process regression against the
+  unpublished working tree, with a unique project-local SQLite database and
+  project-local pytest base: **84 passed, 42 skipped, 1 warning**, exit code
+  **0**. The live Redis vector remains environment-gated and was not claimed
+  locally because Docker/service availability is absent.
+- The previously published Section B focused command at `0a76593`, with an
+  explicit disposable SQLite path, was **112 passed, 42 skipped**, exit code
+  **0** for the real dispatch, decision-authority, process-boundary, and
+  terminal-replay files. The supported POSIX vectors execute in Linux CI;
+  their Windows skips are platform skips, not passes.
 - A prior exploratory invocation without `CYBERASSESS_DB_PATH` exited with
   code **2** during module collection on the protected database's existing
   migration-ledger mismatch; no test body ran. A subsequent exploratory
@@ -144,19 +206,21 @@ evidence tree was not changed or removed.
 
 The current Windows host cannot execute the POSIX proof natively. The
 container-local proof is the available local OS-level evidence; Windows
-governed execution remains fail-closed until its Job Object implementation and
-independent platform evidence exist. The local session-emptiness assertion is
-therefore recorded as an environment skip, not as a Windows pass.
+governed external execution remains fail-closed until its Job Object
+implementation and independent platform evidence exist. Non-scan Windows
+launches remain non-authoritative, but unconfirmed termination is explicitly
+reported as uncertain. The local session-emptiness assertion is therefore
+recorded as an environment skip, not as a Windows pass.
 
 ## GitHub Actions verification
 
 The current code baseline was published first to GitHub as:
 
 ```text
-commit: 5cf443711e74bde9be7a7f028b4b87e2477d7ad1
+commit: 0a76593045e9d9957bfa1c601d36b2d19b77ee4c
 ref:    security/nmap-installer-closure
-run:    34543417823
-url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34543417823
+run:    34547535485
+url:    https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34547535485
 ```
 
 The required GitHub Actions workflow completed successfully for that exact
@@ -164,19 +228,28 @@ commit. The independently inspected job records were:
 
 | Job | Job ID | Result | Evidence |
 | --- | ---: | --- | --- |
-| Compile backend | 103090865464 | success | backend compilation completed |
-| Focused contract verification | 103090865352 | success | focused contract suite and skip policy completed |
-| Full repository verification | 103090865485 | success | full repository suite and skip classification completed |
-| PostgreSQL 16 schema assurance | 103090865501 | success | PostgreSQL schema assurance completed |
-| Hardened production image verification | 103090865562 | success | hardened image and health smoke checks completed |
+| Compile backend | 103103291272 | success | backend compilation completed |
+| Focused contract verification | 103103291248 | success | focused contract suite and skip policy completed |
+| Full repository verification | 103103291396 | success | full repository suite and skip classification completed |
+| PostgreSQL 16 schema assurance | 103103291118 | success | PostgreSQL schema assurance completed |
+| Hardened production image verification | 103103291265 | success | hardened image and health smoke checks completed |
+
+The workflow itself enforces project-local CI roots, report directories,
+pytest temporary directories, and disposable database paths under the checked
+out repository for its compile, focused, full, and PostgreSQL jobs. The
+PostgreSQL job used an authenticated disposable `postgres:16-alpine` service,
+waited for readiness, ran the schema assurance suite, and rejected any
+dependency-gated skip. These CI facts apply to the published `0a76593` base;
+the unpublished queue-quarantine refinement has not been published or run in
+GitHub Actions.
 
 The run's retained, non-expired artifacts are:
 
 | Artifact | Artifact ID | Digest |
 | --- | ---: | --- |
-| `focused-contract-evidence-34543417823` | 10178191405 | `sha256:8e6d65f79dcb9e57e21288f5e1bc67ce0422f591c336621eb786ecd575b65de4` |
-| `full-repository-evidence-34543417823` | 10178220444 | `sha256:f8f3865fe129c6d0d2887d8282f724fa5c3001741fdba7a83e278f6b9541ce8a` |
-| `postgres-schema-evidence-34543417823` | 10178152499 | `sha256:7f65cd048e3d8325a098bb30828bbd6fbb09ea8403be91feb5a9f33c28afc6f9` |
+| `focused-contract-evidence-34547535485` | 10179614874 | `sha256:33f199b4b5fe5156cbe3c3f691668c83d50adb2ce8341379ce5c20f8594530d9` |
+| `full-repository-evidence-34547535485` | 10179652547 | `sha256:b783011d76d7428ae6b8929d1fcc254dff03e89365ec07a2a3b80dab18c3f975` |
+| `postgres-schema-evidence-34547535485` | 10179588150 | `sha256:628083558d4f627a8c760d91b5ae59f9f282aa3d2f5d817cb02a9e9d3ef87cd` |
 
 The immediately preceding documentation/session-containment commit
 `350bd541e7c1dd52edaea713f9b7f9a20b2df88a` had one focused-job failure. The
@@ -250,7 +323,8 @@ the test database. All SQLite tests used project-local disposable paths under
 - No real security scan or unrestricted external target activity was run.
 - The local POSIX proof is process-container evidence only; it does not prove
   PID-reuse or every membership-race permutation, and it does not provide the
-  missing Windows Job Object evidence.
+  missing Windows Job Object evidence. The explicit Windows recovery test
+  verifies only fail-closed behavior, not Windows containment assurance.
 - `CYBERASSESS_WORKER_GENERATION` and `CYBERASSESS_WORKER_IDENTITY` are
   deployment-configured. The enterprise Compose definition requires the same
   explicit values for the API and worker services, and the process boundary
@@ -266,12 +340,13 @@ the test database. All SQLite tests used project-local disposable paths under
 
 ## Delivery and remaining gates
 
-The current Section B rework was delivered through the grouped GitHub-first
-publication sequence ending at `5cf443711e74bde9be7a7f028b4b87e2477d7ad1` on
+The current published Section B baseline is the grouped GitHub-first
+publication at `0a76593045e9d9957bfa1c601d36b2d19b77ee4c` on
 `security/nmap-installer-closure`, with the successful run and job records
-above. GitLab was intentionally not promoted for this auditor-bounded pass.
-This evidence update does not change the implementation or lifecycle
-acceptance status.
+above. The strict queue and process-boundary changes documented as the current
+candidate remain unpublished pending independent auditor acceptance. GitLab
+was intentionally not promoted for this auditor-bounded pass. This evidence
+update does not change the implementation or lifecycle acceptance status.
 `AGENTS.md`, the pre-existing `.ci/` evidence tree, and other pre-existing
 `.project-temp/` artifacts remain outside the staged delivery scope. Their
 presence means the working directory is not a policy-clean tree for GitLab

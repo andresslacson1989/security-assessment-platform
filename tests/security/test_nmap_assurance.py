@@ -583,6 +583,7 @@ class TestNmapXMLParserHardening:
 # ============================================================================
 
 class TestNmapProcessTreeTermination:
+    @pytest.mark.skipif(os.name == "nt", reason="Windows execution remains blocked until Job Object containment exists")
     @pytest.mark.asyncio
     async def test_process_tree_descendant_termination_os_level(self):
         """

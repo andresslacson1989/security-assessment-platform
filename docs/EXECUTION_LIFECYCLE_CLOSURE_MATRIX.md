@@ -34,7 +34,7 @@ been independently reviewed.
 | --- | --- | --- | --- |
 | Typed durable identity | A typed execution context binds `execution_id`, organization, worker, approved decision, target seal, operation policy, and exact command. Governed launch APIs reject missing or mismatched context. | Unit and integration tests for missing context, cross-tenant context, explicit-ID mismatch, and command/decision mismatch. Static inventory of scan-reachable process calls. | OPEN |
 | Complete launch coverage | Capability discovery, adapters, direct helpers, and child tasks either receive the same governed context or are explicitly non-scan operations with a separate capability. | Call-site inventory, CI enforcement test, and cancellation test during discovery and each engine family. | OPEN |
-| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a verified launch session/process container; Windows uses a Job Object or equivalent kernel-owned container. Termination confirms container emptiness. | POSIX root-exit/descendant and multi-child tests; Windows Job Object tests; PID reuse and membership-race tests. | OPEN |
+| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; recovery is blocked when the original root is no longer independently provable. Windows governed execution is explicitly fail-closed until a real Job Object or equivalent kernel-owned container exists. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed Windows termination remains uncertain. Termination confirms container emptiness. | POSIX root-exit/descendant and multi-child tests; fresh member-identity and membership-race tests; explicit Windows recovery fail-closed test; platform-specific non-scan uncertainty handling; future Windows Job Object evidence remains required before Windows assurance. | OPEN |
 | Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted worker must attach only after independent identity and tenant validation. | Restart test with a surviving child/group, invalid worker generation, PID reuse, and operator-visible recovery escalation. | OPEN |
 | Single cancellation coordinator | One coordinator owns cancellation request, task shutdown, process termination, authority revocation, and terminal settlement. Async cancellation cannot race a background execution thread. | Ignored-cancellation, timeout, duplicate-request, revocation-vs-finish, and exact idempotence tests. | OPEN |
 | Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | OPEN |
@@ -63,7 +63,10 @@ proof.
 
 The current candidate closes the production handoff and durable settlement
 gaps identified by the independent auditor, while deliberately leaving the
-matrix open for independent acceptance.
+matrix open for independent acceptance. The current working-tree closure
+candidate also makes authoritative queue quarantine state and its original
+sanitized failure evidence one integrity-bound record; it does not treat an
+expiring operational marker or a stream entry alone as the safety state.
 
 The production Redis worker in `run_worker.py` now calls only the public
 `ScanOrchestrator.execute_dispatched_scan()` handoff after message
@@ -87,7 +90,12 @@ sufficient.
 post-revocation transition only after authority invalidity, tenant, identity,
 dispatch, run, and recovery fences have all been validated. SQLite and
 PostgreSQL execute the durable mutation within their existing transaction
-boundaries; no schema or migration change is part of this checkpoint.
+boundaries; no schema or migration change is part of this checkpoint. Terminal
+replay remains gated by the complete durable proof tuple: terminal run and
+dispatch projections, tenant/worker bindings, process ownership proof,
+recovery projection and latest confirmed attempt where applicable, and both
+claim digests. Missing or inconsistent inputs fail closed before executor
+entry.
 
 The observation/reaper path does not infer a process from positive
 `NO_EXTERNAL_PROCESS` evidence and defers `STARTING`/`UNKNOWN` ownership when
@@ -96,20 +104,36 @@ runtime tests exercise the actual worker entry point and reject direct private
 executor bypasses. These are implementation claims only; the acceptance gate
 still requires the evidence listed below and independent auditor review.
 
+Authoritative Redis execution messages now carry an explicit
+`AUTHORITATIVE_EXECUTION` classification; diagnostic compatibility messages
+must carry `LEGACY_DIAGNOSTIC`. Missing, malformed, conflicting, credential-
+bearing, or otherwise unsupported wire fields are rejected before handler
+entry and cannot enter an implicit legacy acknowledgement path. Quarantine
+evidence is an exact allowlisted representation with a failure digest and a
+top-level quarantine-state digest. State publication, failure-event
+publication, and any explicit acknowledgement are fail-closed durable Redis
+transactions; acknowledgement uses a compare-and-swap Lua transaction that
+checks the exact state and requires a successful `XACK` before deleting the
+quarantine state. The queue primitive accepts only a typed tenant-bound
+operator assertion; it does not authenticate arbitrary actor strings.
+
 Current implementation files are limited to the audited execution boundary:
 `backend/app/core/db.py`, `backend/app/core/execution_service.py`,
 `backend/app/core/observation_service.py`, `backend/app/core/orchestrator.py`,
 `backend/app/core/process_supervisor.py`, `run_worker.py`, and the execution
-identity/lifecycle invariant in `docker-compose.yml`, with the
+identity/lifecycle invariant in `docker-compose.yml`, plus the authoritative
+queue quarantine implementation in `backend/app/core/queue.py`, with the
 corresponding launch, authority, cancellation, observation, process, and
-orchestrator tests. Contracts, migrations, `AGENTS.md`, the protected
+orchestrator, queue, and replay tests. Contracts, migrations, `AGENTS.md`, the protected
 database, `.ci/`, and `.project-temp/` are not part of this rework.
 
 The required acceptance evidence is now recorded in the dated Section B
 addendum. The matrix remains open because the worker-generation deployment
-binding, broader PID-reuse/membership-race evidence, Windows kernel-container
-implementation, managed-tool runtime evidence, and independent auditor
-acceptance are not all closed by local tests.
+binding, independent live Redis/PostgreSQL evidence for the current candidate,
+broader OS-level PID-reuse/membership-race evidence, Windows kernel-container
+implementation (or Windows assurance approval of the current fail-closed
+state), managed-tool runtime evidence, and independent auditor acceptance are
+not all closed by local tests.
 
 ## Acceptance gate
 

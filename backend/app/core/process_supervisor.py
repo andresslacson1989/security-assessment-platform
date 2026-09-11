@@ -47,6 +47,7 @@ class ProcessCancellationStatus(str, Enum):
     ALREADY_EXITED = "ALREADY_EXITED"
     NOT_FOUND = "NOT_FOUND"
     FAILED = "FAILED"
+    RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
     INVALID_REQUEST = "INVALID_REQUEST"
 
 
@@ -127,6 +128,8 @@ class ProcessExecutionResult(NamedTuple):
             return ProcessExecutionStatus.LAUNCH_UNCERTAIN
         if self.stderr.startswith("PROCESS_LAUNCH_REJECTED_SECURITY"):
             return ProcessExecutionStatus.SECURITY_REJECTED
+        if self.stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED"):
+            return ProcessExecutionStatus.LAUNCH_UNCERTAIN
         if self.stderr.startswith("PROCESS_LAUNCH_CANCELLED"):
             return ProcessExecutionStatus.CANCELLED
         if self.stderr.startswith("Output exceeded maximum"):
@@ -310,11 +313,11 @@ class ProcessSupervisor:
             mapped_identity = self._execution_identities.get(execution_id)
         if process_identity is not None:
             if mapped_pid is not None and mapped_pid != process_identity.pid:
-                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, mapped_pid)
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, mapped_pid)
             if mapped_group_id is not None and mapped_group_id != process_identity.process_group_id:
-                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, process_identity.pid)
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, process_identity.pid)
             if mapped_identity is not None and mapped_identity != process_identity:
-                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, process_identity.pid)
+                return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, process_identity.pid)
             pid = process_identity.pid
             group_id = process_identity.process_group_id
             identity = process_identity
@@ -326,25 +329,29 @@ class ProcessSupervisor:
             return ProcessCancellationResult(execution_id, ProcessCancellationStatus.NOT_FOUND)
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
+        session_exists = identity is not None and self._process_session_exists(identity.session_id)
         if identity is None and (root_exists or group_exists):
             # A missing launch identity is an uncertainty condition, never
             # permission to signal a possibly reused PID or process group.
-            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-        # A live root must pass its own start-token check.  Do not let a
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+        # A live root must pass its own start-token check. Do not let a
         # matching session/group mask a root PID reuse or start-token
-        # mismatch.  Group-only validation is reserved for the narrow case
-        # where the original root has exited but descendants remain in the
-        # persisted POSIX container.
+        # mismatch. Once the root exits, numeric group/session membership is
+        # not sufficient for recovery without a stronger container proof.
         identity_valid = identity is not None and (
             self._identity_matches(identity)
             if root_exists
-            else (group_exists and self._process_group_identity_matches(identity))
+            else (
+                self._process_group_identity_matches(identity)
+                if group_exists
+                else False
+            )
         )
-        if identity is not None and not identity_valid and (root_exists or group_exists):
-            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-        if root_exists or group_exists:
+        if identity is not None and not identity_valid and (root_exists or group_exists or session_exists):
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+        if root_exists or group_exists or session_exists:
             terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
-            status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
+            status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.RECOVERY_BLOCKED
         else:
             status = ProcessCancellationStatus.ALREADY_EXITED
         if status in {ProcessCancellationStatus.KILLED, ProcessCancellationStatus.ALREADY_EXITED}:
@@ -371,16 +378,21 @@ class ProcessSupervisor:
             identity = self._execution_identities.get(execution_id)
         root_exists = self._pid_exists(pid)
         group_exists = self._process_group_exists(group_id)
+        session_exists = identity is not None and self._process_session_exists(identity.session_id)
         identity_valid = identity is not None and (
             self._identity_matches(identity)
             if root_exists
-            else (group_exists and self._process_group_identity_matches(identity))
+            else (
+                self._process_group_identity_matches(identity)
+                if group_exists
+                else False
+            )
         )
-        if identity is not None and not identity_valid and (root_exists or group_exists):
-            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.FAILED, pid)
-        if root_exists or group_exists:
+        if identity is not None and not identity_valid and (root_exists or group_exists or session_exists):
+            return ProcessCancellationResult(execution_id, ProcessCancellationStatus.RECOVERY_BLOCKED, pid)
+        if root_exists or group_exists or session_exists:
             terminated = self.kill_process_tree(pid, process_group_id=group_id, identity=identity)
-            status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.FAILED
+            status = ProcessCancellationStatus.KILLED if terminated else ProcessCancellationStatus.RECOVERY_BLOCKED
         else:
             status = ProcessCancellationStatus.ALREADY_EXITED
         if status in {ProcessCancellationStatus.KILLED, ProcessCancellationStatus.ALREADY_EXITED}:
@@ -718,12 +730,16 @@ class ProcessSupervisor:
                 return False
             if process_group_id is not None and member_pgid == process_group_id:
                 continue
-            if (
-                _read_posix_start_token(member_pid) != start_token
-                or ProcessSupervisor._capture_process_identity(member_pid, member_pgid)
-                != ProcessIdentity(member_pid, member_pgid, start_token, identity.session_id)
-            ):
+            current_start_token = _read_posix_start_token(member_pid)
+            if current_start_token is None:
                 continue
+            current = ProcessSupervisor._capture_process_identity(member_pid, member_pgid)
+            if current is None:
+                if not ProcessSupervisor._pid_exists(member_pid):
+                    continue
+                return False
+            if current != ProcessIdentity(member_pid, member_pgid, start_token, identity.session_id):
+                return False
             try:
                 os.kill(member_pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -752,29 +768,43 @@ class ProcessSupervisor:
 
     @staticmethod
     def _process_group_identity_matches(identity: ProcessIdentity) -> bool:
-        """Verify an owned POSIX session/group when its root has exited."""
+        """Verify a fresh, complete identity snapshot while the root lives.
+
+        Numeric PGID/SID values are not an ownership proof after the root has
+        exited. Every currently live member is read with its PID, PGID, SID,
+        and kernel start token while the root remains observable. Any
+        incomplete or inconsistent snapshot fails closed; callers retain
+        durable recovery instead of signalling an unbound process group.
+        """
         if os.name == "nt" or identity.process_group_id is None or identity.session_id is None:
             return False
-        try:
-            result = subprocess.run(
-                ["ps", "-e", "-o", "pid=", "-o", "pgid=", "-o", "sid="],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, timeout=1.0, check=False,
-            )
-            members = []
-            for line in result.stdout.splitlines():
-                fields = line.split()
-                if len(fields) != 3:
-                    continue
-                try:
-                    member_pid, member_pgid, member_sid = (int(value) for value in fields)
-                except ValueError:
-                    continue
-                if member_pgid == identity.process_group_id:
-                    members.append((member_pid, member_sid))
-            return bool(members) and all(member_sid == identity.session_id for _, member_sid in members)
-        except (OSError, subprocess.SubprocessError):
+        members = ProcessSupervisor._posix_session_member_identities(identity.session_id)
+        if members is None:
             return False
+        if not ProcessSupervisor._pid_exists(identity.pid):
+            # A surviving numeric PGID/SID is not an ownership proof after
+            # the original root exits. Without a kernel-owned container or a
+            # durable member attestation, recovery must remain blocked.
+            return False
+        group_members = [
+            (member_pid, start_token)
+            for member_pid, start_token, member_pgid in members
+            if member_pgid == identity.process_group_id
+        ]
+        if not group_members:
+            return False
+        current_pid = os.getpid()
+        parent_pid = os.getppid() if hasattr(os, "getppid") else None
+        if any(member_pid in {current_pid, parent_pid} for member_pid, _ in group_members):
+            return False
+        matching_root = [token for pid, token in group_members if pid == identity.pid]
+        if matching_root != [identity.start_token]:
+            return False
+        return all(
+            ProcessSupervisor._capture_process_identity(pid, identity.process_group_id)
+            == ProcessIdentity(pid, identity.process_group_id, start_token, identity.session_id)
+            for pid, start_token in group_members
+        )
 
     @staticmethod
     def _identity_matches(identity: ProcessIdentity) -> bool:
@@ -832,18 +862,34 @@ class ProcessSupervisor:
         if pid == current_pid or (parent_pid is not None and pid == parent_pid) or pid <= 1:
             logger.error("Security invariant: Refusing to terminate current/parent PID=%s", pid)
             return False
+        if sys.platform == "win32":
+            # Governed execution is already launch-blocked on Windows until a
+            # real Job Object containment implementation exists.  Keep direct
+            # termination fail-closed as well; taskkill's PID tree snapshot is
+            # not an independent identity/container proof.
+            logger.error(
+                "Security invariant: Windows process-tree recovery is blocked until Job Object containment exists"
+            )
+            return False
         if identity is not None and identity.pid != pid:
             return False
         root_exists = ProcessSupervisor._pid_exists(pid)
+        session_exists = identity is not None and ProcessSupervisor._process_session_exists(identity.session_id)
         identity_matches = identity is not None and (
             ProcessSupervisor._identity_matches(identity)
             if root_exists
-            else ProcessSupervisor._process_group_identity_matches(identity)
+            else (
+                ProcessSupervisor._process_group_identity_matches(identity)
+                if ProcessSupervisor._process_group_exists(process_group_id)
+                else False
+            )
         )
         if identity is not None and not identity_matches and (
-            ProcessSupervisor._pid_exists(pid) or ProcessSupervisor._process_group_exists(process_group_id)
+            ProcessSupervisor._pid_exists(pid)
+            or ProcessSupervisor._process_group_exists(process_group_id)
+            or session_exists
         ):
-            logger.error("Refusing to terminate process with mismatched launch identity PID=%s", pid)
+            logger.error("Recovery blocked: process launch identity could not be proven PID=%s", pid)
             return False
 
         descendants: list[int] = []
@@ -1066,7 +1112,6 @@ class ProcessSupervisor:
             return ProcessExecutionResult(-1, "", "Invalid maximum output size")
         if execution_capability is None and non_scan_context is None:
             return ProcessExecutionResult(126, "", "PROCESS_LAUNCH_REJECTED_SECURITY: launch must declare governed or non-scan capability")
-
         # R3.2: Enterprise external-tool execution fails closed unconditionally when
         # enterprise egress enforcement is required until an authoritative network verifier interface exists.
         operating_mode = (os.environ.get("OPERATING_MODE") or os.environ.get("ENVIRONMENT") or "").strip().upper()

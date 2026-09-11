@@ -465,6 +465,7 @@ async def test_redis_enqueue_is_idempotent_per_tenant_authorization_request():
         binding.execution_ids_json,
         binding.operation_ids_json,
         binding.schema_version,
+        "AUTHORITATIVE_EXECUTION",
     )
     changed_binding = QueueDispatchBinding.create(
         scan_id="scan-changed",
@@ -501,7 +502,7 @@ async def test_redis_enqueue_rejects_authoritative_intent_without_typed_binding(
 
 @pytest.mark.asyncio
 async def test_redis_consumer_passes_typed_authoritative_binding_to_worker():
-    from app.core.queue import QueueDispatchBinding, RedisDurableQueue
+    from app.core.queue import QueueDispatchBinding, QueueQuarantineOperatorAuthorization, RedisDurableQueue
 
     binding = QueueDispatchBinding.create(
         scan_id="scan-consumer-binding",
@@ -522,6 +523,8 @@ async def test_redis_consumer_passes_typed_authoritative_binding_to_worker():
                 [(
                     "message-consumer-binding",
                     {
+                    "message_kind": "AUTHORITATIVE_EXECUTION",
+                    "enqueued_at": "2026-09-11T00:00:00+00:00",
                         "scan_id": binding.scan_id,
                         "organization_id": binding.organization_id,
                         "authorization_request_id": binding.authorization_request_id,
@@ -570,7 +573,7 @@ async def test_redis_consumer_passes_typed_authoritative_binding_to_worker():
 async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine_and_explicit_ack(monkeypatch):
     """Authoritative failures are retryable evidence, never implicit ACKs."""
     from app.core import queue as queue_module
-    from app.core.queue import QueueDispatchBinding, RedisDurableQueue
+    from app.core.queue import QueueDispatchBinding, QueueQuarantineOperatorAuthorization, RedisDurableQueue
 
     monkeypatch.setattr(queue_module, "_QUEUE_MAX_DELIVERY_ATTEMPTS", 3)
     binding = QueueDispatchBinding.create(
@@ -582,6 +585,8 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
         operation_ids=("network:nmap",),
     )
     fields = {
+        "message_kind": "AUTHORITATIVE_EXECUTION",
+        "enqueued_at": "2026-09-11T00:00:00+00:00",
         "scan_id": binding.scan_id,
         "organization_id": binding.organization_id,
         "authorization_request_id": binding.authorization_request_id,
@@ -624,6 +629,18 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
         async def get(self, key):
             return self.markers.get(key)
 
+        async def eval(self, _script, number_of_keys, *args):
+            assert number_of_keys == 4
+            if self.markers.get(args[0]) != args[4] or not self.message_pending:
+                return 0
+            fields = dict(zip(args[7::2], args[8::2]))
+            self.failures.append(fields)
+            self.acks.append(args[6])
+            self.message_pending = False
+            self.markers.pop(args[0], None)
+            self.markers.pop(args[1], None)
+            return 1
+
         async def set(self, key, value, *, ex=None):
             if ex is not None:
                 assert ex == queue_module._QUEUE_QUARANTINE_TTL_SECONDS
@@ -637,6 +654,18 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
             class FakePipeline:
                 def __init__(self):
                     self.operations = []
+
+                async def watch(self, *_keys):
+                    return None
+
+                async def get(self, key):
+                    return parent.markers.get(key)
+
+                def multi(self):
+                    return self
+
+                async def reset(self):
+                    return None
 
                 def set(self, key, value, *, ex=None):
                     self.operations.append(("set", key, value, ex))
@@ -718,6 +747,30 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
     quarantine_state_key = queue._quarantine_state_key("message-authoritative-failure")
     assert quarantine_key in queue._redis.markers
     assert quarantine_state_key in queue._redis.markers
+    persisted_quarantine = json.loads(queue._redis.markers[quarantine_state_key])
+    assert persisted_quarantine["schema_version"] == queue_module._QUEUE_QUARANTINE_SCHEMA_VERSION
+    assert persisted_quarantine["status"] == "QUARANTINED"
+    assert persisted_quarantine["failure_evidence"] == queue._redis.failures[-1]
+    assert persisted_quarantine["failure_evidence_digest"] == hashlib.sha256(
+        json.dumps(
+            persisted_quarantine["failure_evidence"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert "credential_envelope" not in persisted_quarantine["failure_evidence"]
+    tampered_quarantine = json.loads(json.dumps(persisted_quarantine))
+    tampered_quarantine["failure_evidence"]["error_code"] = "TAMPERED"
+    queue._redis.markers[quarantine_state_key] = json.dumps(tampered_quarantine)
+    assert await queue.acknowledge_quarantined(
+        "message-authoritative-failure",
+        operator=QueueQuarantineOperatorAuthorization(
+            actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
+        ),
+        authorization_request_id=binding.authorization_request_id,
+    ) is False
+    queue._redis.markers[quarantine_state_key] = json.dumps(persisted_quarantine)
 
     failure_count = len(queue._redis.failures)
     # The expiring review marker may be gone by the time a delivery is
@@ -732,8 +785,9 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
 
     assert await queue.acknowledge_quarantined(
         "message-authoritative-failure",
-        actor="security-admin",
-        organization_id=binding.organization_id,
+        operator=QueueQuarantineOperatorAuthorization(
+            actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
+        ),
         authorization_request_id=binding.authorization_request_id,
     ) is True
     assert queue._redis.acks == ["message-authoritative-failure"]
@@ -743,8 +797,12 @@ async def test_authoritative_queue_failure_stays_in_pel_until_bounded_quarantine
     assert recovery["failure_category"] == "AUTHORITATIVE_DISPATCH_RECOVERY"
     assert recovery["recovery_action"] == "ACKNOWLEDGED_AFTER_QUARANTINE"
     assert recovery["recovery_actor"] == "security-admin"
+    assert recovery["original_failure_evidence_digest"] == persisted_quarantine["failure_evidence_digest"]
     assert await queue.acknowledge_quarantined(
-        "message-authoritative-failure", actor="security-admin"
+        "message-authoritative-failure",
+        operator=QueueQuarantineOperatorAuthorization(
+            actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
+        ),
     ) is False
 
 
@@ -762,6 +820,8 @@ async def test_authoritative_queue_delivery_counter_failure_quarantines_without_
         operation_ids=("network:nmap",),
     )
     fields = {
+        "message_kind": "AUTHORITATIVE_EXECUTION",
+        "enqueued_at": "2026-09-11T00:00:00+00:00",
         "scan_id": binding.scan_id,
         "organization_id": binding.organization_id,
         "authorization_request_id": binding.authorization_request_id,
@@ -787,6 +847,15 @@ async def test_authoritative_queue_delivery_counter_failure_quarantines_without_
         async def get(self, key):
             return self.markers.get(key)
 
+        async def eval(self, _script, number_of_keys, *args):
+            assert number_of_keys == 4
+            if self.markers.get(args[0]) != args[4]:
+                return 0
+            self.acks.append(args[6])
+            self.markers.pop(args[0], None)
+            self.markers.pop(args[1], None)
+            return 1
+
         async def set(self, key, value, *, ex=None):
             self.markers[key] = value
             return True
@@ -798,6 +867,18 @@ async def test_authoritative_queue_delivery_counter_failure_quarantines_without_
             class FakePipeline:
                 def __init__(self):
                     self.operations = []
+
+                async def watch(self, *_keys):
+                    return None
+
+                async def get(self, key):
+                    return parent.markers.get(key)
+
+                def multi(self):
+                    return self
+
+                async def reset(self):
+                    return None
 
                 def set(self, key, value, *, ex=None):
                     self.operations.append(("set", key, value, ex))
@@ -878,17 +959,20 @@ async def test_authoritative_queue_delivery_counter_failure_quarantines_without_
     assert await queue.consume_once(handler, block_ms=0, reclaim_idle_ms=1) is True
     assert handler_calls == 0
     assert len(queue._redis.failures) == 1
+    from app.core.queue import QueueQuarantineOperatorAuthorization
     assert await queue.acknowledge_quarantined(
         "message-counter-unavailable",
-        actor="security-admin",
-        organization_id="wrong-tenant",
+        operator=QueueQuarantineOperatorAuthorization(
+            actor_id="security-admin", organization_id="wrong-tenant", session_binding="test-session"
+        ),
         authorization_request_id=binding.authorization_request_id,
     ) is False
     assert queue._redis.acks == []
     assert await queue.acknowledge_quarantined(
         "message-counter-unavailable",
-        actor="security-admin",
-        organization_id=binding.organization_id,
+        operator=QueueQuarantineOperatorAuthorization(
+            actor_id="security-admin", organization_id=binding.organization_id, session_binding="test-session"
+        ),
         authorization_request_id=binding.authorization_request_id,
     ) is True
     assert queue._redis.acks == ["message-counter-unavailable"]
@@ -1007,6 +1091,8 @@ def test_queue_binding_payload_rejects_digest_valid_reordered_wire_tuples():
     reordered_execution_ids = list(reversed(canonical.execution_ids))
     reordered_operation_ids = list(reversed(canonical.operation_ids))
     fields = {
+        "message_kind": "AUTHORITATIVE_EXECUTION",
+        "enqueued_at": "2026-09-11T00:00:00+00:00",
         "scan_id": canonical.scan_id,
         "organization_id": canonical.organization_id,
         "authorization_request_id": canonical.authorization_request_id,
@@ -1040,13 +1126,24 @@ async def test_redis_consumer_claims_new_intent_and_acknowledges_after_handler()
 
         async def xreadgroup(self, *args, **kwargs):
             self.read_blocks.append(kwargs["block"])
-            return [("stream", [("message-1", {"scan_id": "scan-1", "organization_id": "org-1"})])]
+            return [(
+                "stream",
+                [("message-1", {
+                    "message_kind": "LEGACY_DIAGNOSTIC",
+                    "enqueued_at": "2026-09-11T00:00:00+00:00",
+                    "scan_id": "scan-1",
+                    "organization_id": "org-1",
+                })],
+            )]
 
         async def xack(self, *args):
             self.acked = args[-1]
 
         async def xadd(self, *args, **kwargs):
             self.failed = (args[0], kwargs)
+
+        async def get(self, _key):
+            return None
 
     queue = object.__new__(RedisDurableQueue)
     queue._redis = FakeRedis()
@@ -1070,7 +1167,15 @@ async def test_redis_consumer_reclaims_pending_intent_before_new_messages():
 
     class FakeRedis:
         async def xautoclaim(self, *args, **kwargs):
-            return ("0-0", [("reclaimed-1", {"scan_id": "scan-reclaimed", "organization_id": "org-1"})], [])
+            return ("0-0", [(
+                "reclaimed-1",
+                {
+                    "message_kind": "LEGACY_DIAGNOSTIC",
+                    "enqueued_at": "2026-09-11T00:00:00+00:00",
+                    "scan_id": "scan-reclaimed",
+                    "organization_id": "org-1",
+                },
+            )], [])
 
         async def xreadgroup(self, *args, **kwargs):
             raise AssertionError("new messages must not be read when a pending intent was reclaimed")
@@ -1080,6 +1185,9 @@ async def test_redis_consumer_reclaims_pending_intent_before_new_messages():
 
         async def xadd(self, *args, **kwargs):
             raise AssertionError("successful reclaimed intent must not enter the failure stream")
+
+        async def get(self, _key):
+            return None
 
     queue = object.__new__(RedisDurableQueue)
     queue._redis = FakeRedis()
@@ -1105,13 +1213,24 @@ async def test_redis_consumer_moves_handler_failure_to_failure_stream():
             return ("0-0", [], [])
 
         async def xreadgroup(self, *args, **kwargs):
-            return [("stream", [("message-2", {"scan_id": "scan-2", "organization_id": "org-2"})])]
+            return [(
+                "stream",
+                [("message-2", {
+                    "message_kind": "LEGACY_DIAGNOSTIC",
+                    "enqueued_at": "2026-09-11T00:00:00+00:00",
+                    "scan_id": "scan-2",
+                    "organization_id": "org-2",
+                })],
+            )]
 
         async def xack(self, *args):
             self.acked = args[-1]
 
         async def xadd(self, *args, **kwargs):
             self.failure = (args, kwargs)
+
+        async def get(self, _key):
+            return None
 
     queue = object.__new__(RedisDurableQueue)
     queue._redis = FakeRedis()
@@ -1126,3 +1245,87 @@ async def test_redis_consumer_moves_handler_failure_to_failure_stream():
     assert queue._redis.failure[0][0] == "cyberassess:scan-execution:failures"
     assert queue._redis.failure[0][1]["message_id"] == "message-2"
     assert queue._redis.acked == "message-2"
+
+
+def test_queue_failure_evidence_rejects_unknown_and_credential_fields() -> None:
+    from app.core.queue import _canonical_failure_evidence
+
+    evidence = {
+        "message_id": "message-strict",
+        "dispatch_message_id": "message-strict",
+        "error_code": "Failure",
+        "failure_category": "AUTHORITATIVE_DISPATCH",
+        "failure_observed_at": "2026-09-11T00:00:00+00:00",
+        "requeue_required": "1",
+        "escalated": "1",
+        "quarantined": "1",
+        "message_kind": "AUTHORITATIVE_EXECUTION",
+        "credential_envelope": "must-not-persist",
+    }
+    with pytest.raises(ValueError, match="unsupported fields"):
+        _canonical_failure_evidence("message-strict", evidence)
+
+
+def test_queue_binding_payload_rejects_non_string_identity_material() -> None:
+    from app.core.queue import QueueDispatchBinding
+
+    with pytest.raises(ValueError, match="non-string"):
+        QueueDispatchBinding.from_payload({
+            "scan_id": "scan-strict",
+            "organization_id": "org-strict",
+            "authorization_request_id": "request-strict",
+            "manifest_hash": "a" * 64,
+            "execution_ids_json": ["execution-strict"],
+            "operation_ids_json": "[\"network:nmap\"]",
+            "queue_binding_digest": "b" * 64,
+            "queue_binding_schema_version": "queue-dispatch-binding-v1",
+        })
+
+
+@pytest.mark.asyncio
+async def test_quarantine_acknowledgement_fails_closed_on_compare_and_swap_race(monkeypatch):
+    from app.core.queue import (
+        QueueQuarantineOperatorAuthorization,
+        RedisDurableQueue,
+    )
+
+    queue = object.__new__(RedisDurableQueue)
+    queue._group_ready = True
+    queue._group_lock = asyncio.Lock()
+    state = {
+        "organization_id": "org-cas",
+        "authorization_request_id": "request-cas",
+        "message_kind": "AUTHORITATIVE_EXECUTION",
+        "failure_evidence_digest": "a" * 64,
+        "reason": "QUEUE_FAILURE",
+        "scan_id": "scan-cas",
+        "queue_binding_digest": "b" * 64,
+        "manifest_hash": "c" * 64,
+        "execution_ids": ["execution-cas"],
+        "operation_ids": ["network:nmap"],
+    }
+
+    class FakeRedis:
+        async def get(self, _key):
+            return "original-state"
+
+        async def eval(self, _script, number_of_keys, *args):
+            assert number_of_keys == 4
+            assert args[4] == "original-state"
+            return 0
+
+    queue._redis = FakeRedis()
+    async def fake_get(_message_id):
+        return state
+
+    monkeypatch.setattr(queue, "_get_quarantine_state", fake_get)
+    operator = QueueQuarantineOperatorAuthorization(
+        actor_id="operator-cas",
+        organization_id="org-cas",
+        session_binding="session-cas",
+    )
+    assert await queue.acknowledge_quarantined(
+        "message-cas",
+        operator=operator,
+        authorization_request_id="request-cas",
+    ) is False

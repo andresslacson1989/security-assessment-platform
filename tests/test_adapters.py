@@ -166,6 +166,11 @@ class TestBaseToolAdapter:
             emit_log=mock_log,
             non_scan_context=issue_non_scan_execution_context("observation:test-adapter-timeout"),
         )
+        if sys.platform == "win32":
+            assert code == -1
+            assert stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED")
+            assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+            return
         assert code == -1
         assert "timed out" in stderr
         assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_TIMED_OUT
@@ -180,6 +185,11 @@ class TestBaseToolAdapter:
             max_output_bytes=128,
             non_scan_context=issue_non_scan_execution_context("observation:test-adapter-output"),
         )
+        if sys.platform == "win32":
+            assert code == -1
+            assert stderr.startswith("PROCESS_TERMINATION_UNCONFIRMED")
+            assert adapter.last_execution_state == NormalizedExecutionState.EXECUTION_BLOCKED
+            return
         assert code == -1
         assert len(stdout.encode("utf-8")) <= 128
         assert "Output exceeded maximum" in stderr

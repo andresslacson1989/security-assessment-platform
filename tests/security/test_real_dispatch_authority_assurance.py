@@ -637,6 +637,8 @@ async def test_real_queue_consumer_handoff_is_idempotent_and_rejects_tampered_bi
 
     def fields_for(binding):
         return {
+            "message_kind": "AUTHORITATIVE_EXECUTION",
+            "enqueued_at": "2026-09-11T00:00:00+00:00",
             "scan_id": binding.scan_id,
             "organization_id": binding.organization_id,
             "authorization_request_id": binding.authorization_request_id,
@@ -766,6 +768,7 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
     from app.core import queue as queue_module
     from app.core.queue import (
         DurableQueueIdentityConflict,
+        QueueQuarantineOperatorAuthorization,
         QueueDispatchBinding,
         RedisDurableQueue,
     )
@@ -899,14 +902,20 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         assert len(failure_calls) == 2
         assert await queue.acknowledge_quarantined(
             failure_message_id,
-            actor="live-redis-operator",
-            organization_id=f"wrong-tenant-{suffix}",
+            operator=QueueQuarantineOperatorAuthorization(
+                actor_id="live-redis-operator",
+                organization_id=f"wrong-tenant-{suffix}",
+                session_binding=f"session-{suffix}",
+            ),
             authorization_request_id=failure_request_id,
         ) is False
         assert await queue.acknowledge_quarantined(
             failure_message_id,
-            actor="live-redis-operator",
-            organization_id=organization_id,
+            operator=QueueQuarantineOperatorAuthorization(
+                actor_id="live-redis-operator",
+                organization_id=organization_id,
+                session_binding=f"session-{suffix}",
+            ),
             authorization_request_id=failure_request_id,
         ) is True
         assert await redis.get(quarantine_state_key) is None
@@ -943,6 +952,8 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         tampered_message_id = await redis.xadd(
             queue.stream_name,
             {
+                "message_kind": "AUTHORITATIVE_EXECUTION",
+                "enqueued_at": "2026-09-11T00:00:00+00:00",
                 "scan_id": tampered_binding.scan_id,
                 "organization_id": organization_id,
                 "authorization_request_id": tampered_request_id,
@@ -967,8 +978,11 @@ async def test_live_redis_stream_transport_enforces_authoritative_delivery_bound
         assert not tamper_calls
         assert await queue.acknowledge_quarantined(
             tampered_message_id,
-            actor="live-redis-operator",
-            organization_id=organization_id,
+            operator=QueueQuarantineOperatorAuthorization(
+                actor_id="live-redis-operator",
+                organization_id=organization_id,
+                session_binding=f"session-{suffix}",
+            ),
             authorization_request_id=tampered_request_id,
         ) is True
         assert await redis.get(tampered_state_key) is None
