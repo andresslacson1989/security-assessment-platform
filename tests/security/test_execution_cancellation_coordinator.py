@@ -55,6 +55,164 @@ async def test_missing_process_mapping_does_not_confirm_an_active_run():
 
 
 @pytest.mark.asyncio
+async def test_active_cancellation_durably_settles_exact_identity_and_replays(tmp_path):
+    """An active disposable run settles once from its durable process identity."""
+    from app.core.db import DatabaseManager
+    from app.core.execution_service import (
+        ExecutionCancellationCoordinator,
+        load_durable_process_identity,
+    )
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+    from tests.security.test_execution_decision_authority import _seed_execution_for_termination_settlement
+
+    database = DatabaseManager(tmp_path / "coordinator-active-cancellation.db")
+    _authority, identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id="run-coordinator-active-cancellation",
+        request_id="request-coordinator-active-cancellation",
+        decision_id="decision-coordinator-active-cancellation",
+    )
+    assert identity is not None
+    expected_identity = load_durable_process_identity(
+        database,
+        "run-coordinator-active-cancellation",
+        "org-settlement",
+    )
+    assert expected_identity is not None
+    calls = []
+
+    class Supervisor:
+        def cancel_execution(self, execution_id, *, process_identity=None):
+            calls.append((execution_id, process_identity))
+            assert process_identity == expected_identity
+            return ProcessCancellationResult(
+                execution_id,
+                ProcessCancellationStatus.KILLED,
+                expected_identity.pid,
+            )
+
+    coordinator = ExecutionCancellationCoordinator(database, Supervisor())
+    outcome = await coordinator.cancel_request(
+        "request-coordinator-active-cancellation",
+        "org-settlement",
+        actor="admin-settlement",
+    )
+
+    assert outcome.confirmed is True
+    assert outcome.process_status == "KILLED"
+    assert outcome.durable_terminal is True
+    assert outcome.task_stopped is True
+    assert outcome.recovery_required is False
+    assert len(calls) == 1
+
+    with database._connection_scope() as conn:
+        durable = conn.execute(
+            "SELECT r.state, r.reason_code, p.ownership_state, "
+            "p.no_process_proof, i.state AS dispatch_state, "
+            "s.status AS recovery_status, s.attempt_number "
+            "FROM execution_runs r "
+            "JOIN execution_process_ownership p ON p.execution_id=r.execution_id "
+            "AND p.organization_id=r.organization_id "
+            "JOIN execution_dispatch_intents i ON i.execution_id=r.execution_id "
+            "AND i.organization_id=r.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=r.execution_id "
+            "AND s.organization_id=r.organization_id "
+            "WHERE r.execution_id=? AND r.organization_id=?",
+            ("run-coordinator-active-cancellation", "org-settlement"),
+        ).fetchone()
+    assert tuple(durable)[:3] == ("CANCELLED", "EXECUTION_CANCELLED", "TERMINAL")
+    assert durable["no_process_proof"].startswith("TERMINATION_CONFIRMED:v2:")
+    assert durable["dispatch_state"] == "BLOCKED"
+    assert durable["recovery_status"] == "CONFIRMED_TERMINATED"
+    assert durable["attempt_number"] == 1
+
+    replay = await coordinator.cancel_request(
+        "request-coordinator-active-cancellation",
+        "org-settlement",
+        actor="admin-settlement",
+    )
+    assert replay.confirmed is True
+    assert replay.process_status == "ALREADY_EXITED"
+    assert replay.durable_terminal is True
+    assert replay.recovery_required is False
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "process_status",
+    ["NOT_FOUND", "FAILED"],
+)
+async def test_not_found_and_failed_cancellation_remain_durable_recovery_candidates(
+    tmp_path, process_status
+):
+    """Unconfirmed cancellation outcomes never become false terminal success."""
+    from app.core.db import DatabaseManager
+    from app.core.execution_service import (
+        ExecutionCancellationCoordinator,
+        load_durable_process_identity,
+    )
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+    from tests.security.test_execution_decision_authority import _seed_execution_for_termination_settlement
+
+    database = DatabaseManager(tmp_path / f"coordinator-{process_status.lower()}-recovery.db")
+    execution_id = f"run-coordinator-{process_status.lower()}-recovery"
+    request_id = f"request-coordinator-{process_status.lower()}-recovery"
+    _authority, identity = _seed_execution_for_termination_settlement(
+        database,
+        execution_id=execution_id,
+        request_id=request_id,
+        decision_id=f"decision-coordinator-{process_status.lower()}-recovery",
+    )
+    assert identity is not None
+    expected_identity = load_durable_process_identity(
+        database,
+        execution_id,
+        "org-settlement",
+    )
+    assert expected_identity is not None
+
+    class Supervisor:
+        def cancel_execution(self, requested_execution_id, *, process_identity=None):
+            assert requested_execution_id == execution_id
+            assert process_identity == expected_identity
+            return ProcessCancellationResult(
+                requested_execution_id,
+                ProcessCancellationStatus(process_status),
+                expected_identity.pid,
+            )
+
+    outcome = await ExecutionCancellationCoordinator(database, Supervisor()).cancel_request(
+        request_id,
+        "org-settlement",
+        actor="admin-settlement",
+    )
+
+    assert outcome.authority_revoked is True
+    assert outcome.process_status == process_status
+    assert outcome.process_confirmed is False
+    assert outcome.durable_terminal is False
+    assert outcome.recovery_required is True
+    assert outcome.confirmed is False
+    assert any(
+        candidate["execution_id"] == execution_id
+        for candidate in database.list_execution_recovery_candidates()
+    )
+    with database._connection_scope() as conn:
+        state = conn.execute(
+            "SELECT r.state, p.ownership_state, s.status "
+            "FROM execution_runs r "
+            "JOIN execution_process_ownership p ON p.execution_id=r.execution_id "
+            "AND p.organization_id=r.organization_id "
+            "JOIN execution_recovery_state s ON s.execution_id=r.execution_id "
+            "AND s.organization_id=r.organization_id "
+            "WHERE r.execution_id=? AND r.organization_id=?",
+            (execution_id, "org-settlement"),
+        ).fetchone()
+    assert tuple(state) == ("RUNNING", "EXTERNAL_PROCESS_GOVERNED", "REQUESTED")
+
+
+@pytest.mark.asyncio
 async def test_durable_active_run_without_identity_never_uses_supervisor_inference():
     from app.core.execution_service import ExecutionCancellationCoordinator
 

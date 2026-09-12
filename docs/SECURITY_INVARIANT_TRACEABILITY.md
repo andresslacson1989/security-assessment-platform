@@ -205,8 +205,8 @@ recorded in the final Section B section below.
 | **INV-R4.4** | Docker Compose Standalone/Enterprise Profile Isolation | Audit R4.4 | `docker-compose.yml`, `README.md` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
 | **INV-R4.5** | Egress Fail-Closed Documentation Truthfulness | Audit R4.5 | `README.md`, `docs/DOCKER_COMPOSE_DEPLOYMENT.md` | Doc & Code Inspection | **VERIFIED** |
 | **INV-R4.6** | Reconciled Supported Python Interpreters (3.11/3.13) | Audit R4.6 | `README.md`, `contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md` | Doc & Code Inspection | **VERIFIED** |
-| **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (historical baseline) and 34685317236 (current published commit) | **VERIFIED — current published run 34685317236** |
-| **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (historical baseline) and 34685317236 (current published commit) | **VERIFIED — current published run 34685317236** |
+| **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (historical baseline), 34685317236 (exact runtime-source publication), and 34688040973 (preceding corrective publication `3c8b191`) | **VERIFIED — preceding corrective publication run 34688040973; runtime source remains 031cda1/run 34685317236** |
+| **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (historical baseline), 34685317236 (exact CT108 runtime source), and 34688040973 (preceding corrective publication `3c8b191`) | **VERIFIED — CT108 runtime is bound to 031cda1; preceding corrective publication run 34688040973 also passed the hardened image smoke job** |
 
 ---
 
@@ -314,4 +314,63 @@ not an independent acceptance decision: the lifecycle criteria and auditor
 acceptance remain open. GitLab was not updated because the mirror remote
 returned HTTP `530`; GitLab is mirror-only and cannot satisfy this acceptance
 gate.
+
+## Section B corrective lifecycle assurance following the verified publication — 2026-09-12
+
+The preceding corrective publication is commit
+`3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2` on
+`security/nmap-installer-closure`, parent
+`031cda1f93fd0e7cebf6ec50452da43dc7bf980f`, tree
+`1a8b60f8446772a2eefa998b8c124bbae91cccef`; its GitHub Actions gate was run
+`34688040973`. The parent is the exact application/test source used for the
+CT108 runtime and image evidence. The current grouped corrective candidate is
+a descendant and must not be described as a CT108 redeployment.
+
+| Contract trace | Implementation and verification evidence | Status |
+| --- | --- | --- |
+| Contract 03 §1.1.3 — exact identity, authority revocation, and confirmed termination | `backend/app/core/execution_service.py` now supplies both durable worker identity and generation to confirmed-termination settlement. `tests/security/test_execution_cancellation_coordinator.py::test_active_cancellation_durably_settles_exact_identity_and_replays` proves exact identity handoff, digest-bound `TERMINATION_CONFIRMED:v2`, terminal settlement, and idempotent replay. | Evidence added; independent acceptance remains open |
+| Contract 03 §1.1.3 — unresolved cancellation remains recoverable | The parameterized coordinator test proves `NOT_FOUND` and `FAILED` revoke authority without falsely terminalizing the run and leave a durable recovery candidate. Existing missing-identity and unjoined-task tests remain active. | Evidence added; independent acceptance remains open |
+| Contract 04 §1.5/lifecycle — authenticated, tenant-scoped recovery visibility | `tests/security/test_execution_quarantine_api.py::test_recovery_health_is_authenticated_tenant_scoped_and_identity_safe` uses two disposable organizations and real admin JWTs. Unauthenticated access is rejected; each tenant receives only its own deferred recovery row; process identity fields are not exposed as route authority. | Evidence added; CT108 remains health-only because it has no live recovery rows |
+| Contract 08 §6.1.2 — restart-safe recovery and graceful worker shutdown | Existing decision-authority and observation-service vectors cover launch uncertainty, recovery-blocked transitions, exact attestation replay, tamper resistance, bounded retries, and missing identity. `backend/tests/test_execution_launch_inventory.py::test_worker_signals_during_active_handler_finish_work_then_exit` covers awaited graceful signal shutdown. | OPEN pending independent acceptance and non-empty deployed recovery proof |
+| Contract 03/04/08 — evidence and state are not inferred from in-memory process maps | The coordinator vectors and existing observation/recovery tests require durable execution, tenant, worker, launch-commit, and attestation bindings; the API vector demonstrates the operator view is tenant-scoped and does not treat process identity fields as authorization. | OPEN pending auditor review |
+
+The bounded local corrective suites used disposable project-local databases and
+temporary roots:
+
+- cancellation coordinator plus observation service: `28 passed`;
+- recovery-health/quarantine API: `5 passed, 1 warning`;
+- execution decision authority: `90 passed`;
+- selected real-dispatch assurance plus launch inventory: `30 passed, 29
+  skipped, 30 deselected`.
+
+The authoritative GitHub Actions run is
+`34688040973` ([run](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34688040973))
+for exact SHA `3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2`. Its six required jobs
+all passed: focused contract `103538383120` (`341 passed, 11 skipped`),
+PostgreSQL schema `103538383209` (`29 passed`), hardened production image
+`103538383215`, Windows Job Object assurance `103538383234` (`19 passed`),
+compile backend `103538383245`, and full repository `103538383253` (`1026
+passed, 14 skipped, 15 warnings`). The archive digests are retained in the
+companion dated evidence record.
+
+The 14 full-suite skips remain explicitly classified: one unavailable managed
+Nmap binary, two unavailable managed Subfinder binaries, ten
+Windows/platform-capability skips covered by the native Windows assurance job,
+and one historical provenance-blocked `a1c4fc4` fixture. They are not counted
+as passes; the historical provenance item remains outside current Section B
+proof.
+
+The already-performed CT108 account-only operation is recorded as authorized
+by the direct user instruction in the coordinating task conversation. No
+repository artifact or independently verifiable message identifier exists for
+that instruction, so this is task-context governance evidence rather than an
+independently cryptographically verifiable authorization record. No further
+database or account operation is authorized by this entry. The protected
+repository SQLite database remains unchanged and outside delivery operations.
+
+GitLab remains mirror-only and was not updated because the remote returned
+HTTP `530`. This traceability entry does not close Section B: independent
+auditor acceptance, non-empty deployed recovery evidence, broader worker
+restart/OS-level proof, and the authorization-reference limitation remain
+visible open items.
 

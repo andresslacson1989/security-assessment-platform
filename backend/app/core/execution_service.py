@@ -693,6 +693,7 @@ class ExecutionCancellationCoordinator:
                     process_start_token=durable_identity.start_token,
                     session_id=durable_identity.session_id,
                     worker_generation=ownership.get("worker_generation") if ownership else None,
+                    worker_identity=after_revoke.get("worker_identity") if after_revoke else None,
                     actor="execution-cancellation-coordinator",
                 ))
                 if not durable_settlement:

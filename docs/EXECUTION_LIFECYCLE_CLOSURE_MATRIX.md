@@ -4,10 +4,14 @@ Status: OPEN — the exact application/test source used for the current Section 
 runtime and CI evidence is commit
 `031cda1f93fd0e7cebf6ec50452da43dc7bf980f` on
 `security/nmap-installer-closure`, with authoritative GitHub Actions evidence
-in run `34685317236`. This document records that source's final evidence
-publication; historical baseline and pre-publication candidate records remain
-below. Independent auditor acceptance and the remaining lifecycle criteria are
-still open.
+in run `34685317236`. The preceding corrective documentation and lifecycle-test
+publication is commit `3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2`, whose exact
+GitHub Actions gate is run `34688040973`; it is a documentation-and-assurance
+descendant and does not replace the exact runtime source binding to `031cda1`.
+This document records both publication layers and the additional corrective
+candidate evidence below; historical baseline and pre-publication candidate
+records remain below. Independent auditor acceptance and the remaining
+lifecycle criteria are still open.
 
 This matrix is the authoritative implementation checklist for the execution-
 lifecycle hardening work. It supplements Contracts 04 and 08; it does not
@@ -40,7 +44,7 @@ been independently reviewed.
 | --- | --- | --- | --- |
 | Typed durable identity | A typed execution context binds `execution_id`, organization, worker, approved decision, target seal, operation policy, and exact command. Governed launch APIs reject missing or mismatched context. | Unit and integration tests for missing context, cross-tenant context, explicit-ID mismatch, and command/decision mismatch. Static inventory of scan-reachable process calls. | OPEN |
 | Complete launch coverage | Capability discovery, adapters, direct helpers, and child tasks either receive the same governed context or are explicitly non-scan operations with a separate capability. | Call-site inventory, CI enforcement test, and cancellation test during discovery and each engine family. | OPEN |
-| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. A committed governed row is downgraded atomically to `RECOVERY_BLOCKED` without rebuilding its identity. Windows governed execution uses a native Job Object: the root is created suspended, atomically associated through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, durably attested before resume, and governed by `KILL_ON_JOB_CLOSE`; live cancellation/recovery uses the exact process-local attested job, verifies every current member, and never falls back to a raw PID. Worker loss intentionally destroys the container and blocks durable reattachment; same-name recreation is not the original job. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; committed-to-recovery database transition, tamper, replay, and concurrency tests; Windows atomic Job Object assignment, descendant termination, worker-crash `KILL_ON_JOB_CLOSE`, same-name non-reattachment, exact-member recovery, cancellation, and durable settlement tests; platform-specific non-scan uncertainty handling; accepted-baseline GitHub Windows assurance evidence is recorded in historical run `34659175863`, job `103457915354`; current published GitHub Windows assurance evidence is recorded in run `34685317236`, job `103531200228`; independent auditor acceptance remains required. | OPEN |
+| Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. A committed governed row is downgraded atomically to `RECOVERY_BLOCKED` without rebuilding its identity. Windows governed execution uses a native Job Object: the root is created suspended, atomically associated through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, durably attested before resume, and governed by `KILL_ON_JOB_CLOSE`; live cancellation/recovery uses the exact process-local attested job, verifies every current member, and never falls back to a raw PID. Worker loss intentionally destroys the container and blocks durable reattachment; same-name recreation is not the original job. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; committed-to-recovery database transition, tamper, replay, and concurrency tests; Windows atomic Job Object assignment, descendant termination, worker-crash `KILL_ON_JOB_CLOSE`, same-name non-reattachment, exact-member recovery, cancellation, and durable settlement tests; platform-specific non-scan uncertainty handling; accepted-baseline GitHub Windows assurance evidence is recorded in historical run `34659175863`, job `103457915354`; current runtime-source GitHub Windows assurance evidence is recorded in run `34685317236`, job `103531200228`; the corrective descendant publication and six-job gate are recorded in run `34688040973`, job `103538383234`; independent auditor acceptance remains required. | OPEN |
 | Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted POSIX worker may attach only after independent identity and tenant validation. Windows does not perform durable named-object reattachment after worker loss: the `KILL_ON_JOB_CLOSE` lifecycle destroys the original container, the loader returns an operator-visible recovery-unavailable result, and a same-name object cannot satisfy the persisted attestation. Valid complete POSIX attestations remain attachable for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. A post-commit recovery primitive preserves the committed launch state and consumes the persisted attestation only after exact termination proof. | Restart test with a surviving POSIX child/group, valid uncertain/recovery loader states, production-path governed-to-recovery transition, invalid worker generation, PID/PGID/SID reuse, incomplete/tampered identity, native Windows worker-crash kill-on-close and same-name negative, exact local-member recovery, concurrency/replay, and operator-visible recovery escalation. | OPEN |
 | Single cancellation coordinator | One coordinator owns cancellation request, task shutdown, process termination, authority revocation, and terminal settlement. Async cancellation cannot race a background execution thread. | Ignored-cancellation, timeout, duplicate-request, revocation-vs-finish, and exact idempotence tests. | OPEN |
 | Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | CT108 exact-source authenticated recovery-health and restart evidence recorded; implementation and independent acceptance remain OPEN |
@@ -447,3 +451,67 @@ auditor acceptance. Docker Compose network segmentation remains a container
 network boundary, not dynamic destination-level egress enforcement. This
 matrix remains `OPEN` pending the auditor's independent acceptance and the
 unresolved lifecycle criteria above.
+
+## 2026-09-12 corrective lifecycle assurance following the verified publication
+
+The preceding corrective publication commit is
+`3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2` on
+`security/nmap-installer-closure`, parent
+`031cda1f93fd0e7cebf6ec50452da43dc7bf980f`, tree
+`1a8b60f8446772a2eefa998b8c124bbae91cccef`. Its GitHub Actions gate was run
+`34688040973`. The grouped corrective candidate recorded in this section is a
+descendant of that verified publication. The parent of the preceding
+publication remains the exact source of the previously deployed CT108 runtime
+and image; neither publication is represented as a redeployment of CT108.
+
+The bounded production correction is in
+`backend/app/core/execution_service.py`: confirmed termination settlement now
+passes both the durable worker generation and the durable run worker identity
+to the database settlement primitive. The database already requires both
+values; omitting the identity caused a valid confirmed termination to remain
+unsettled, so the fail-closed behavior was preserved while the real coordinator
+path was completed. The associated vectors are in
+`tests/security/test_execution_cancellation_coordinator.py` and
+`tests/security/test_execution_quarantine_api.py`.
+
+| Contract / lifecycle vector | Evidence in this publication | Status |
+| --- | --- | --- |
+| Contract 03 §1.1.3 — exact process identity, authority revocation, confirmed termination, and no-process proof | Coordinator vector proves the exact durable `ProcessIdentity` is handed to the supervisor, a `KILLED` result produces digest-bound `TERMINATION_CONFIRMED:v2` evidence and terminal settlement, and a duplicate request is an `ALREADY_EXITED` read-only replay. Existing decision-authority and process-supervision tests cover tamper, replay, generation, launch-commit, and tenant fences. | OPEN pending independent acceptance and broader platform evidence |
+| Contract 03 §1.1.3 — `NOT_FOUND` and `FAILED` are recoverable | Parameterized coordinator vectors prove both statuses revoke authority without terminalizing the run and leave a durable recovery candidate. Existing missing-identity and unjoined-task vectors remain in the same suite. | Evidence added; independent acceptance required |
+| Contract 04 §1.5 and lifecycle requirements — durable recovery and operator visibility | The quarantine API vector seeds one deferred recovery row for each of two disposable organizations and verifies unauthenticated rejection, authenticated tenant scoping, and omission of process identity fields. Observation-service vectors cover bounded retries, missing identity, uncertain state, and durable settlement. | Evidence added; CT108 production endpoint remains health-only with no live recovery rows |
+| Contract 08 §6.1.2 — worker restart, recovery, and graceful shutdown | Existing decision-authority/observation vectors cover restart-safe attestation and recovery; the worker launch-inventory vector covers signal handling and awaited graceful shutdown. CT108 restart evidence is exact-source health evidence only and did not exercise a non-empty recovery queue. | OPEN pending independent acceptance and non-empty deployed recovery proof |
+| Contract 03/04/08 — tenant isolation at the recovery-health boundary | Two real disposable admin identities receive only their own organization's deferred recovery row through the authenticated route; direct DAL results are also organization-filtered. No process identity is treated as route authority. | Evidence added; independent acceptance required |
+
+The current authoritative GitHub Actions gate is run
+`34688040973` ([run](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34688040973))
+for exact SHA `3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2`. All six required jobs
+passed: focused contract verification `103538383120` (`341 passed, 11
+skipped`), PostgreSQL schema assurance `103538383209` (`29 passed`), hardened
+production image verification `103538383215`, Windows Job Object assurance
+`103538383234` (`19 passed`), compile backend `103538383245`, and full
+repository verification `103538383253` (`1026 passed, 14 skipped, 15
+warnings`). The four retained artifact archive digests are recorded in the
+dated evidence companion file.
+
+The full-suite skip classifier recorded exactly 14 skips: one unavailable
+managed Nmap binary, two unavailable managed Subfinder binaries, ten
+Windows/platform-capability skips covered by the native Windows assurance job,
+and one historical provenance-blocked `a1c4fc4` fixture. The managed-tool
+availability items remain environment-unavailable rather than passes. The
+historical provenance-blocked fixture is not silently reclassified as current
+Section B evidence and remains an open broader-provenance item.
+
+The explicit CT108 account-operation authorization is traceable to the direct
+user instruction in the coordinating task conversation, but no repository
+artifact or independently verifiable message identifier exists for that
+instruction. The evidence therefore records the operation as user-authorized
+task-context maintenance, not as independently cryptographically verifiable
+authorization. No further database or account operation is authorized by this
+entry. The protected repository SQLite database remains unchanged and outside
+delivery operations.
+
+GitLab publication remains deferred. The mirror-only remote returned HTTP
+`530`; no GitLab ref was updated. The matrix remains `OPEN` until the
+independent auditor evaluates this corrective publication and the remaining
+non-empty durable recovery, worker-restart, tenant-isolation, and broader
+OS-level criteria.

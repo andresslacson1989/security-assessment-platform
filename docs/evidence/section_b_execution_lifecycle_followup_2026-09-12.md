@@ -678,6 +678,174 @@ auditor gates are satisfied. GitLab is not an acceptance provider. Docker
 Compose network segmentation remains a container-network boundary and is not
 dynamic destination-level egress enforcement.
 
+## Corrective cancellation/recovery assurance following the verified publication — 2026-09-12
+
+### Publication identity and source boundary
+
+The preceding corrective grouped publication is commit
+`3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2` on
+`security/nmap-installer-closure`, parent
+`031cda1f93fd0e7cebf6ec50452da43dc7bf980f`, tree
+`1a8b60f8446772a2eefa998b8c124bbae91cccef`; its GitHub Actions gate was run
+`34688040973`. The parent is the exact application/test source used to build
+and run the previously recorded CT108 runtime. The current grouped corrective
+candidate adds the coordinator fix, assurance tests, and the documentation
+reconciliation; it is not represented as a new CT108 deployment.
+
+The production correction is limited to
+`backend/app/core/execution_service.py`. The cancellation coordinator already
+loaded the exact durable process identity and worker generation, but omitted
+the durable run worker identity when invoking
+`settle_execution_after_confirmed_termination`. The database correctly failed
+closed when that required binding was absent. The coordinator now passes the
+identity from the tenant-bound run record as well as the existing generation;
+no weaker identity or PID fallback was introduced.
+
+### Durable cancellation and recovery vectors
+
+`tests/security/test_execution_cancellation_coordinator.py` now exercises the
+actual coordinator against disposable `DatabaseManager` storage:
+
+- A `KILLED` result is accepted only with the exact reloaded durable
+  `ProcessIdentity`. The run becomes `CANCELLED`, the process ownership becomes
+  `TERMINAL`, dispatch becomes `BLOCKED`, recovery becomes
+  `CONFIRMED_TERMINATED`, and the ownership record contains a
+  digest-bound `TERMINATION_CONFIRMED:v2` proof. A duplicate cancellation is an
+  `ALREADY_EXITED` replay and does not call the supervisor again.
+- `NOT_FOUND` and `FAILED` are parameterized negative vectors. Both revoke
+  authority but leave the run non-terminal, preserve the governed process
+  ownership, retain recovery status `REQUESTED`, and keep the execution in the
+  durable recovery-candidate set.
+- Existing vectors in the same suite continue to prove that a missing durable
+  identity is not inferred safe from an in-memory supervisor map, that a
+  pre-dispatch cancellation uses only the atomic durable no-process proof, that
+  an unjoined task remains recoverable, and that terminal replay still revokes
+  remaining authority.
+
+`tests/test_observation_service.py` and
+`tests/security/test_execution_decision_authority.py` continue to cover the
+reaper/recovery path, bounded retry and escalation, missing identity,
+`LAUNCH_UNCERTAIN`, `RECOVERY_BLOCKED`, worker-generation and identity
+binding, tamper rejection, restart-safe attestation replay, exact settlement,
+and concurrency/idempotence. The worker launch-inventory tests continue to
+cover signal handling with an awaited active handoff and queue cleanup.
+
+`tests/security/test_execution_quarantine_api.py` now uses two disposable
+organizations and two real admin JWT identities. It proves unauthenticated
+recovery-health access is rejected, each authenticated tenant receives only
+its own non-empty deferred recovery row, and process identity fields are not
+exposed as route authorization material. CT108 itself remains a health-only
+deployment check because it has no live recovery rows; no live recovery record
+was created to manufacture evidence.
+
+### Corrective local verification
+
+All local evidence below used project-local disposable database and temporary
+roots under `.project-temp/`; the protected repository database was not used
+as a test database and was not modified. The broad local run below used the
+supported local profile with live Redis/PostgreSQL overrides removed; live
+backend transport remains a CI-only evidence path on this workstation.
+
+| Suite / retained JUnit evidence | Result | SHA-256 |
+| --- | --- | --- |
+| `.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/cancellation/cancellation-observation-final.xml` | 28 passed in 29.84s | `712C391C8A21728CA09DF818903DF94E0E3BB1EC00F9C8E69B76FC97B1ABB21C` |
+| `.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/quarantine/recovery-health-api.xml` | 5 passed, 1 warning in 12.37s | `F255584266F0547763B27F02E89E6599FB66D8B554A851EE5126B2DA620444EA` |
+| `.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/decision-authority/decision-authority.xml` | 90 passed in 120.98s | `5DB3A25A99253E7BC81679C0D1BCABB3931C7AE1AEE79651207F426965A5D8CA` |
+| `.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/dispatch-inventory/dispatch-inventory.xml` | 30 passed, 29 skipped, 30 deselected in 65.88s | `7452698397F8D45440301C231485B5B7EC19414FA759D41E17B60D1F9106E33A` |
+| `.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/governance-rerun/governance.xml` | 18 passed, 1 deselected in 2.84s | `0B8D3ED36EC5425242C486B8C63DEF3FFDD6D14D33786F10D0AD0B93452F2FE3` |
+| `.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/focused-contract-local/focused-contract.xml` | 330 passed, 47 skipped, 1 deselected, 1 warning in 302.68s | `0393D67A638C40B5CD2790EB11A0125CC43750EBB96FA017AD0B4020DB51D055` |
+
+The broad local run log is
+`.project-temp/section-b-recovery-closure-20260912/final-corrective-pass/focused-contract-local/focused-contract.log`
+with SHA-256
+`975436B86007118D5EEF46E61CFFF71F4D21B7AC405A9BFFAC5101BC6275607E`.
+
+The deselected items in the selected real-dispatch command were outside its
+bounded selection; they are not counted as passes. The skip output remains
+explicit and was not converted into success.
+
+### Authoritative GitHub Actions evidence for the corrective publication
+
+GitHub Actions run
+`34688040973` ([run](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34688040973))
+completed successfully for exact SHA
+`3c8b191116977b25d1cd3aa8c3129d5a1c9a37a2`. The six required jobs were:
+
+| Job | Job ID | Result |
+| --- | --- | --- |
+| Focused contract verification | `103538383120` | 341 passed, 11 skipped |
+| PostgreSQL 16 schema assurance | `103538383209` | 29 passed |
+| Hardened production image verification | `103538383215` | passed |
+| Windows Job Object assurance | `103538383234` | 19 passed |
+| Compile backend | `103538383245` | passed |
+| Full repository verification | `103538383253` | 1026 passed, 14 skipped, 15 warnings |
+
+Retained artifact archive digests are:
+
+| Artifact archive | SHA-256 |
+| --- | --- |
+| `focused-contract-evidence-34688040973` | `sha256:8060a56cf716570586d32e7017060e7dedd5316a4c3535daf9653cddd85620ca` |
+| `full-repository-evidence-34688040973` | `sha256:66c9c7a85a98e73c3833989f0eaaf25d704949a3749def8a0f816357b3cffa0c` |
+| `postgres-schema-evidence-34688040973` | `sha256:e7782c3a3439dc0be499c72e6731c475aa700cf1f4e68158d2a8c5eaaf855a5f` |
+| `windows-job-object-evidence-34688040973` | `sha256:0a3f255fba38fe969f442d31cff347d44f651fce2bba95e995b6c8a73b45cdab` |
+
+The downloaded evidence files remain under
+`.project-temp/section-b-recovery-closure-20260912/github-34688040973/`.
+Their recorded hashes are:
+
+| Evidence file | SHA-256 |
+| --- | --- |
+| focused log | `BDD337278611A4073DB81C8E6B26E676D180FA901C4366360DD61F70EA984F3C` |
+| focused JUnit XML | `CEA6A40022F3DD916D810D47E7EFD60C3E7D1CC06D9EAF631D0762A979AC291D` |
+| full skip classifier | `FE9BCDB7B4DBB76CA538738236F9969766D91C0A834328A24F835264E0F18555` |
+| full log | `160F40F2DC3A39587696CBA8C72E4DF9BA9AA588C77AB9ADD431BD411A4A0F13` |
+| full JUnit XML | `596D4A81036BFD3A97D72F06C8CE9B5A4F207D522B790542E921CCBCDE5BF671` |
+| PostgreSQL log | `73A3DD02F5186971CA217528E00B6A4A8972B82CEF23F1FEE708B50932008446` |
+| PostgreSQL JUnit XML | `2E669FA9A2A51BA7C669454E31E733068D9AA2FBE873FA7367A8DAE5E18FC045` |
+| Windows log | `F943E82BA328BDBECF2A29EAB2F184945AFA44A15013251A779E29D5BE2B005A` |
+| Windows JUnit XML | `3E26B0B442EC31B9C963971674CEA49FB71CB40CE3859FC74C2845209D8F9CF8` |
+
+The full-suite classifier recorded exactly 14 skips: one unavailable managed
+Nmap binary, two unavailable managed Subfinder binaries, ten
+Windows/platform-capability skips covered by the native Windows assurance
+job, and one historical provenance-blocked `a1c4fc4` fixture. Managed-tool
+availability is not a pass. The historical provenance fixture remains a
+broader open item and is not silently counted as current Section B lifecycle
+evidence. Warnings include the upload-artifact Node.js migration notice and
+Python deprecation warnings; no warning was treated as a pass or failure.
+
+### Authorization and data-governance boundary
+
+The already-performed CT108 account-only operation is traceable to the direct
+user authorization in the coordinating task conversation. No repository
+artifact or independently verifiable message identifier exists for that
+instruction. Accordingly, this record treats it as task-context governance
+evidence, not as independently cryptographically verifiable authorization; no
+further database or account operation is authorized by this record. No raw
+credential or password hash is recorded.
+
+The PostgreSQL counts remain `users=1`, `scans=0`, `findings=0`,
+`finding_occurrences=0`, `execution_requests=0`, `execution_runs=0`, and
+`audit_events=10`. No scan, finding, execution, or test history was deleted.
+The protected repository SQLite database remains unchanged at `10285056`
+bytes, mtime `2026-09-04T23:24:42.6548237Z`, SHA-256
+`7a5a019389f69574b7bae31c355efeeed47fbe9f203e2c2a65c946e21cba6ecc`.
+
+### Acceptance boundary and delivery state
+
+GitHub is authoritative for this publication. Local branch and GitHub branch
+must resolve to the same final SHA before release; GitLab publication remains
+deferred until the independent auditor accepts this Section B closure. The
+GitLab mirror-only remote currently returns HTTP `530`; no GitLab ref was
+updated. Docker Compose network segmentation remains a container-network
+boundary and is not dynamic destination-level egress enforcement.
+
+This evidence closes the documented stale-publication gap and adds the
+durable cancellation/recovery vectors, but it does not declare Section B
+accepted. Non-empty deployed recovery behavior, broader OS-level proof, and
+the authorization-reference limitation remain explicitly open for independent
+auditor disposition.
+
 This current evidence closes the stale publication references but does not
 close the lifecycle matrix. The rows remain `OPEN` pending independent
 auditor acceptance and the remaining durable cancellation/recovery,

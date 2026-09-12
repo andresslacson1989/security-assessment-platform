@@ -1,6 +1,7 @@
 """Route-level authentication and tenant-binding tests for quarantine recovery."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -10,9 +11,11 @@ import app.core.auth as auth_module
 import app.core.db as db_module
 import app.api.executions as executions_api
 from app.core.auth import create_access_token, hash_password
+from app.core.correlation import reset_correlation_id, set_correlation_id
 from app.core.db import DatabaseManager
-from app.core.models import UserProfile, UserRole
+from app.core.models import ExecutionRequestRecord, UserProfile, UserRole
 from app.core.queue import ScanQueueManager
+from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 from app.main import app
 
 
@@ -69,6 +72,168 @@ def _token(user: UserProfile, *, scopes=None) -> str:
 
 def _payload(request_id: str) -> dict[str, str]:
     return {"authorization_request_id": request_id}
+
+
+def _seed_recovery_health_execution(
+    database: DatabaseManager,
+    *,
+    organization_id: str,
+    user_id: str,
+    suffix: str,
+) -> str:
+    """Create one authorized disposable execution with visible recovery state."""
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    asset_id = f"asset-recovery-health-{suffix}"
+    request_id = f"request-recovery-health-{suffix}"
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO assets "
+            "(id, organization_id, name, type, target_value, active_probing_granted, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'CLOUD_ACCOUNT', ?, 1, ?, ?)",
+            (asset_id, organization_id, f"Recovery health asset {suffix}", "aws://123456789012", created_at, created_at),
+        )
+
+    request = ExecutionRequestRecord(
+        id=request_id,
+        idempotency_key=f"idempotency-recovery-health-{suffix}",
+        request_fingerprint=("a" * 64),
+        organization_id=organization_id,
+        asset_id=asset_id,
+        target_id=f"target-recovery-health-{suffix}",
+        authorization_decision_id=f"authorization-recovery-health-{suffix}",
+        target_policy_version="v1",
+        tool_id="prowler",
+        operation_family="cloud_audit",
+        operation_options={"output_format": "json-asff", "provider": "aws", "quiet": True},
+        operation_policy_revision=OPERATION_POLICY_REVISION,
+        resource_budget={"timeout_seconds": 300, "max_output_bytes": 10485760},
+        account_impact_budget={"max_operations": 1},
+        credential_scope={"provider": "aws"},
+        requested_by_user_id=user_id,
+        created_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+    assert database.create_execution_request(request) is not None
+    correlation_token = set_correlation_id(f"corr-recovery-health-{suffix}")
+    try:
+        result, _decision_id, execution_id = database.approve_execution_request(
+            request.id,
+            organization_id,
+            request.request_fingerprint,
+            f"approval-recovery-health-{suffix}",
+            user_id,
+            f"session-recovery-health-{suffix}",
+            f"worker-recovery-health-{suffix}",
+            f"generation-recovery-health-{suffix}",
+        )
+    finally:
+        reset_correlation_id(correlation_token)
+    assert result == "AUTHORIZED"
+    assert execution_id
+
+    retry_at = (now + timedelta(minutes=1)).isoformat()
+    with database._connection_scope() as conn:
+        updated = conn.execute(
+            "UPDATE execution_recovery_state SET status='DEFERRED', attempt_number=1, "
+            "last_outcome=?, last_error=?, next_retry_at=?, worker_generation=?, updated_at=? "
+            "WHERE execution_id=? AND organization_id=?",
+            (
+                "termination_not_found",
+                "controlled test recovery remains operator-visible",
+                retry_at,
+                f"generation-recovery-health-{suffix}",
+                created_at,
+                execution_id,
+                organization_id,
+            ),
+        )
+    assert updated.rowcount == 1
+    return execution_id
+
+
+@pytest.fixture
+def recovery_health_api_state(tmp_path, monkeypatch):
+    """Provide two real tenant identities and durable disposable recovery rows."""
+    database = DatabaseManager(tmp_path / "recovery-health-api.db")
+    monkeypatch.setattr(DatabaseManager, "_instance", database)
+    monkeypatch.setattr(db_module, "db_manager", database)
+    monkeypatch.setattr(executions_api, "db_manager", database)
+    monkeypatch.setattr(auth_module, "OPERATING_MODE", auth_module.OperatingMode.TEST)
+
+    admin_a, organization_a = database.bootstrap_system(
+        "recovery-health-a",
+        "recovery-health-a@example.test",
+        hash_password("RecoveryHealthA123!"),
+        "Recovery Health A",
+    )
+    organization_b = "org-recovery-health-b"
+    user_b = "usr-recovery-health-b"
+    now = datetime.now(timezone.utc).isoformat()
+    with database._connection_scope() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug, created_at, is_active) VALUES (?, ?, ?, ?, 1)",
+            (organization_b, "Recovery Health B", "recovery-health-b", now),
+        )
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, role, organization_id, is_active, created_at) "
+            "VALUES (?, ?, ?, ?, 'ADMIN', ?, 1, ?)",
+            (user_b, "recovery-health-b", "recovery-health-b@example.test", hash_password("RecoveryHealthB123!"), organization_b, now),
+        )
+    admin_b = UserProfile(
+        id=user_b,
+        username="recovery-health-b",
+        email="recovery-health-b@example.test",
+        role=UserRole.ADMIN,
+        organization_id=organization_b,
+    )
+    execution_a = _seed_recovery_health_execution(
+        database, organization_id=organization_a.id, user_id=admin_a.id, suffix="a"
+    )
+    execution_b = _seed_recovery_health_execution(
+        database, organization_id=organization_b, user_id=user_b, suffix="b"
+    )
+    return database, admin_a, admin_b, execution_a, execution_b
+
+
+def test_recovery_health_is_authenticated_tenant_scoped_and_identity_safe(
+    recovery_health_api_state,
+):
+    database, admin_a, admin_b, execution_a, execution_b = recovery_health_api_state
+    client = TestClient(app)
+    endpoint = "/api/system/executions/recovery/health"
+
+    assert client.get(endpoint).status_code == 401
+
+    response_a = client.get(
+        endpoint,
+        headers={"Authorization": f"Bearer {create_access_token(admin_a)}"},
+    )
+    response_b = client.get(
+        endpoint,
+        headers={"Authorization": f"Bearer {create_access_token(admin_b)}"},
+    )
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+    body_a = response_a.json()
+    body_b = response_b.json()
+    assert body_a["organization_id"] == admin_a.organization_id
+    assert body_b["organization_id"] == admin_b.organization_id
+    assert [row["execution_id"] for row in body_a["recovery"]] == [execution_a]
+    assert [row["execution_id"] for row in body_b["recovery"]] == [execution_b]
+    assert execution_b not in {row["execution_id"] for row in body_a["recovery"]}
+    assert execution_a not in {row["execution_id"] for row in body_b["recovery"]}
+    assert all(row["status"] == "DEFERRED" for row in body_a["recovery"] + body_b["recovery"])
+    assert all(
+        "process_id" not in row
+        and "root_process_id" not in row
+        and "process_group_id" not in row
+        and "identity_attestation" not in row
+        for row in body_a["recovery"] + body_b["recovery"]
+    )
+    assert database.recovery_health(admin_a.organization_id)[0]["organization_id"] == admin_a.organization_id
+    assert database.recovery_health(admin_b.organization_id)[0]["organization_id"] == admin_b.organization_id
 
 
 def test_quarantine_route_requires_authenticated_admin_session(quarantine_api_state):
