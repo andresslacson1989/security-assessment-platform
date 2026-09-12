@@ -441,3 +441,89 @@ full result is retained at
 `.project-temp/section-b-runtime-deploy-20260912/local-source-verification-003/result.log`
 with SHA-256
 `826052ed8c2c0b97024296962f82b87e05f41d6071ea989d8044fd7201d72622`.
+
+## Current CT108 authentication and active-handler evidence — 2026-09-12
+
+The earlier runtime-candidate observation that the supplied administrator
+credential returned HTTP 401 is retained as historical evidence. It was
+resolved for the current CT108 runtime through a narrow, explicitly
+authorized demo-account recovery; this section supersedes only that
+authentication observation and does not rewrite the earlier build or lifecycle
+claims.
+
+The exact runtime target was CT108 at `192.168.99.66`, using PostgreSQL
+`16.15`, database `cyberassess`, and the application role `cyberassess`. A
+read-only pre-change inspection found one active `ADMIN` user named `admin` in
+organization `org-7f0c365a`. The user explicitly authorized resetting that
+demo administrator credential. No full database reset was performed. One
+transaction matched the existing user identity, username, role, organization,
+and active state and reported `UPDATE 1` for `users.hashed_password`. Raw
+credentials and raw password hashes were not recorded.
+
+The pre-change counts were `users=1`, `scans=0`, `findings=0`,
+`finding_occurrences=0`, `execution_requests=0`, `execution_runs=0`, and
+`audit_events=6`. The post-change counts were unchanged for all persistence
+and history tables except `audit_events=9`; the three additional rows are the
+normal successful-login audit events produced by the verification calls. No
+scan, finding, execution, or test history was deleted or reset. The
+project-local operational record is
+`.project-temp/section-b-recovery-closure-20260912/runtime-auth-recovery.md`.
+
+The current authenticated checks returned:
+
+- `POST /api/auth/login`: HTTP `200`;
+- `GET /api/auth/me`: HTTP `200`, `admin`, role `ADMIN`, organization
+  `org-7f0c365a`; and
+- `GET /api/system/executions/recovery/health`: HTTP `200`, organization
+  `org-7f0c365a`, `recovery=[]`.
+
+Bearer tokens were used only in memory and were not printed or retained. The
+password chosen for this demo-only recovery is intentionally below the normal
+application password-strength policy because the user explicitly authorized
+that exact credential; it must not be treated as production-safe.
+
+The CT108 worker was stopped with a 30-second grace period and restarted. Its
+PID changed from `2206036` to `2231656` while the API and worker remained on
+image `sha256:02555401d3e53d23ab8037e7bf6b87755cdb65e7658d2321eb39e6e6678dc9bc`.
+Both containers remained `cyberassess`, read-only, `cap_drop=ALL`, and
+`no-new-privileges=true`. PostgreSQL accepted connections, Redis returned
+`PONG`, and the `cyberassess-workers` stream group had zero pending messages and
+zero lag before and after restart. The API returned `HEALTHY`, version `14.3.0`,
+with five registered engines. No scan was run.
+
+The added test
+`backend/tests/test_execution_launch_inventory.py::test_worker_signals_during_active_handler_finish_work_then_exit`
+invokes both SIGINT and SIGTERM while the actual nested worker handler is
+awaiting completion. It proves that signal delivery requests an orderly loop
+stop, allows the active public orchestrator handoff to finish, prevents a
+second consume cycle, and closes the queue.
+
+Post-change disposable local verification completed as follows:
+
+| Evidence | Result | SHA-256 |
+| --- | --- | --- |
+| `.project-temp/section-b-recovery-closure-20260912/post-change/section-b-targeted.log` | 96 passed, 46 skipped, 1 warning in 144.01s | `4ca83165f6cb3961e40f56e3957e2ec151b033c9ad94ae9e25e2b3544cddc77b` |
+| `.project-temp/section-b-recovery-closure-20260912/post-change/section-b-targeted.xml` | JUnit for the targeted lifecycle suite | `67e1f8e09828e14d8ad6f19c26e4ea162622cf1c244d5a498732d3212d5ba781` |
+| `.project-temp/section-b-recovery-closure-20260912/post-change/database-backend.log` | 36 passed, 1 warning in 7.95s | `aa9a166257e9b3ede04a080266be56bfdb0e253ee0b726e8f520ffdc0c0bdf1f` |
+| `.project-temp/section-b-recovery-closure-20260912/post-change/database-backend.xml` | JUnit for the database-backend suite | `95cd5f0ad477e0ee716e3f8602e8ece3684019c7699d94fad770fce7b18e05e4` |
+
+The full substantive local regression, run with the same project-local
+database and temporary roots, completed with `954 passed, 85 skipped, 1
+deselected, 15 warnings in 516.41s`. The only deselection was the preserved
+historical `.ci` worktree-inventory assertion, whose untracked local evidence
+tree is intentionally not modified or deleted. The full regression log SHA-256
+is `fc315cc10c575c2e8e3d2105f018c94bdd1f74b0e171e9e10bf2dd5c4521a370` and its
+JUnit SHA-256 is
+`aa0a81f0fe04386868888c766b293e8965ba99f0d19a59f7fdc04f91d1af9fee`.
+
+The protected repository SQLite database remained `10285056` bytes with mtime
+`2026-09-04T23:24:42.6548237Z` and SHA-256
+`7a5a019389f69574b7bae31c355efeeed47fbe9f203e2c2a65c946e21cba6ecc`. The
+saved delivery goal's prior no-destructive-database-change rule was
+superseded only for the exact, user-authorized CT108 account operation; the
+repository database remains outside delivery operations and was not modified.
+
+This evidence remains a pre-publication update. The new test and documentation
+must be included in one grouped Section B commit, pushed to GitHub first, and
+verified by the required GitHub Actions jobs. GitLab remains a mirror-only
+destination until independent auditor acceptance.

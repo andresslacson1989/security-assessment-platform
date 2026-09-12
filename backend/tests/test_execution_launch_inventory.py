@@ -239,6 +239,119 @@ async def test_worker_shutdown_handlers_request_loop_stop_and_clean_up(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_worker_signals_during_active_handler_finish_work_then_exit(monkeypatch) -> None:
+    """Signals request loop shutdown without interrupting an active handoff."""
+    import importlib
+    import run_worker
+
+    import app.core.orchestrator as orchestrator_module
+    import app.core.queue as queue_module
+
+    callbacks = {}
+    removed = []
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda shutdown_signal, callback, *args: callbacks.__setitem__(
+            shutdown_signal, (callback, args)
+        ),
+    )
+    monkeypatch.setattr(
+        loop,
+        "remove_signal_handler",
+        lambda shutdown_signal: removed.append(shutdown_signal) or True,
+    )
+
+    active_started = asyncio.Event()
+    allow_active_completion = asyncio.Event()
+
+    class FakeOrchestrator:
+        instances = []
+
+        def __init__(self):
+            self.__class__.instances.append(self)
+
+        def register_engine(self, _engine):
+            pass
+
+        async def execute_dispatched_scan(self, *args, **kwargs):
+            assert args[:3] == (
+                "scan-active-shutdown",
+                "org-active-shutdown",
+                "request-active-shutdown",
+            )
+            assert kwargs["queue_binding"] is not None
+            active_started.set()
+            await allow_active_completion.wait()
+
+    from app.core.queue import QueueDispatchBinding
+
+    queue_binding = QueueDispatchBinding.create(
+        scan_id="scan-active-shutdown",
+        organization_id="org-active-shutdown",
+        authorization_request_id="request-active-shutdown",
+        manifest_hash="b" * 64,
+        execution_ids=("execution-active-shutdown",),
+        operation_ids=("network:nmap",),
+    )
+
+    class FakeQueue:
+        instance = None
+
+        def __init__(self, url):
+            self.url = url
+            self.calls = 0
+            self.closed = False
+            self.__class__.instance = self
+
+        async def consume_once(self, handler, **_kwargs):
+            self.calls += 1
+            assert self.calls == 1
+            active_task = asyncio.create_task(
+                handler(
+                    "scan-active-shutdown",
+                    "org-active-shutdown",
+                    "request-active-shutdown",
+                    None,
+                    queue_binding,
+                )
+            )
+            await active_started.wait()
+            assert not active_task.done()
+            callbacks[signal.SIGINT][0](*callbacks[signal.SIGINT][1])
+            callbacks[signal.SIGTERM][0](*callbacks[signal.SIGTERM][1])
+            assert not active_task.done()
+            allow_active_completion.set()
+            await active_task
+            return True
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(orchestrator_module, "ScanOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(queue_module, "EXECUTION_QUEUE_URL", "redis://active-shutdown-test")
+    monkeypatch.setattr(queue_module, "RedisDurableQueue", FakeQueue)
+    monkeypatch.setattr(queue_module, "ScanQueueManager", lambda: object())
+    for module_name, class_name in (
+        ("app.engines.network.engine", "NetworkAssessmentEngine"),
+        ("app.engines.web_dast.engine", "WebDastAssessmentEngine"),
+        ("app.engines.code_sast.engine", "CodeSastAssessmentEngine"),
+        ("app.engines.infra_iac.engine", "InfraIacAssessmentEngine"),
+        ("app.engines.cicd_audit.engine", "CicdAuditAssessmentEngine"),
+    ):
+        module = importlib.import_module(module_name)
+        monkeypatch.setattr(module, class_name, lambda: object())
+
+    await run_worker.run_worker()
+
+    assert FakeQueue.instance is not None
+    assert FakeQueue.instance.calls == 1
+    assert FakeQueue.instance.closed is True
+    assert removed == [signal.SIGINT, signal.SIGTERM]
+
+
+@pytest.mark.asyncio
 async def test_production_worker_runtime_handler_calls_public_handoff(monkeypatch) -> None:
     """Exercise the actual nested Redis handler without launching a scan."""
     import importlib

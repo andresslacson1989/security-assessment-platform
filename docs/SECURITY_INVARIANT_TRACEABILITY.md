@@ -206,3 +206,42 @@ acceptance status of the execution-lifecycle matrix.
 | **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (baseline) and 34666036688 (current candidate) | **VERIFIED — current candidate run 34666036688** |
 | **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (baseline) and 34666036688 (current candidate) | **VERIFIED — current candidate run 34666036688** |
 
+---
+
+## Section B current authenticated recovery and active-handler evidence — 2026-09-12
+
+The previous Section B runtime note recorded an HTTP 401 for the supplied
+administrator credential. That observation remains historical. CT108 was
+subsequently recovered through an explicitly authorized, account-only
+administrator credential operation against PostgreSQL `16.15` database
+`cyberassess`; no repository SQLite database, schema, scan history, finding
+history, execution history, or test history was reset. The exact operation and
+before/after fingerprints are recorded in
+`docs/evidence/section_b_execution_lifecycle_followup_2026-09-12.md` and the
+project-local evidence record it names.
+
+Current CT108 evidence is:
+
+- authenticated login and `/api/auth/me` returned HTTP `200` for the active
+  `ADMIN` in `org-7f0c365a`;
+- the tenant-scoped `/api/system/executions/recovery/health` endpoint returned
+  HTTP `200` with `recovery=[]`;
+- the worker restarted with a new PID on the exact candidate image while
+  PostgreSQL, Redis, and the zero-pending/zero-lag queue-group checks remained
+  healthy; and
+- `backend/tests/test_execution_launch_inventory.py::test_worker_signals_during_active_handler_finish_work_then_exit`
+  exercises SIGINT and SIGTERM during an active public worker handoff and
+  verifies orderly completion and queue cleanup.
+
+The post-change disposable local lifecycle suite recorded `96 passed, 46
+skipped, 1 warning`; the database-backend suite recorded `36 passed, 1
+warning`. This is implementation/runtime evidence only. The lifecycle matrix
+remains open pending exact-SHA GitHub Actions verification and independent
+auditor acceptance.
+
+The full substantive local regression recorded `954 passed, 85 skipped, 1
+deselected, 15 warnings`; the deselected item is the preserved historical
+`.ci` worktree-inventory assertion and is not counted as a pass. The local
+result remains supplementary until the exact grouped commit is verified by
+GitHub Actions.
+

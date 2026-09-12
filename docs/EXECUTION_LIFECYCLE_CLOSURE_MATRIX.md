@@ -39,7 +39,7 @@ been independently reviewed.
 | Run-level process ownership | A run cannot overwrite an earlier member. POSIX uses a bounded post-Popen stabilization handshake followed by a fresh complete member-identity snapshot with PID, PGID, SID, and start-token checks; root-exit recovery is allowed only when the attested snapshot remains exact and the final container-emptiness proof succeeds, otherwise it is recovery-blocked. A committed governed row is downgraded atomically to `RECOVERY_BLOCKED` without rebuilding its identity. Windows governed execution uses a native Job Object: the root is created suspended, atomically associated through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, durably attested before resume, and governed by `KILL_ON_JOB_CLOSE`; live cancellation/recovery uses the exact process-local attested job, verifies every current member, and never falls back to a raw PID. Worker loss intentionally destroys the container and blocks durable reattachment; same-name recreation is not the original job. Non-scan launches remain separately classified and cannot authorize or terminalize scans; unconfirmed termination remains uncertain. Termination confirms container emptiness. | POSIX production-path late-descendant, root-exit/multi-child positive recovery tests; fresh member-identity and membership-race negative tests; committed-to-recovery database transition, tamper, replay, and concurrency tests; Windows atomic Job Object assignment, descendant termination, worker-crash `KILL_ON_JOB_CLOSE`, same-name non-reattachment, exact-member recovery, cancellation, and durable settlement tests; platform-specific non-scan uncertainty handling; accepted-baseline GitHub Windows assurance evidence is recorded in run `34659175863`, job `103457915354`; current-candidate GitHub Windows assurance evidence is recorded in run `34666036688`, job `103477994643`; independent auditor acceptance remains required. | OPEN |
 | Durable restart attachment | Launch identity and worker ownership needed for recovery are durably recorded without storing a raw PID as authority. A restarted POSIX worker may attach only after independent identity and tenant validation. Windows does not perform durable named-object reattachment after worker loss: the `KILL_ON_JOB_CLOSE` lifecycle destroys the original container, the loader returns an operator-visible recovery-unavailable result, and a same-name object cannot satisfy the persisted attestation. Valid complete POSIX attestations remain attachable for `LAUNCH_UNCERTAIN` and `RECOVERY_BLOCKED`; incomplete or tampered identity remains blocked. A post-commit recovery primitive preserves the committed launch state and consumes the persisted attestation only after exact termination proof. | Restart test with a surviving POSIX child/group, valid uncertain/recovery loader states, production-path governed-to-recovery transition, invalid worker generation, PID/PGID/SID reuse, incomplete/tampered identity, native Windows worker-crash kill-on-close and same-name negative, exact local-member recovery, concurrency/replay, and operator-visible recovery escalation. | OPEN |
 | Single cancellation coordinator | One coordinator owns cancellation request, task shutdown, process termination, authority revocation, and terminal settlement. Async cancellation cannot race a background execution thread. | Ignored-cancellation, timeout, duplicate-request, revocation-vs-finish, and exact idempotence tests. | OPEN |
-| Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | OPEN |
+| Durable recovery | Recovery attempts, status, bounded retry/backoff, next attempt, and escalation are persisted by execution ID and organization. Timed-out work cannot silently mutate after lifecycle shutdown. | SQLite clean-database tests and PostgreSQL row-lock/concurrency tests; health/audit endpoint evidence. | CT108 authenticated recovery-health and restart evidence now recorded; implementation and independent acceptance remain OPEN |
 | Contract and operational proof | Contracts 04/08 and traceability documentation describe the same state machine, platform threat model, and evidence boundary. Protected migration failures remain fail-closed and require operator reconciliation. | Contract consistency tests, clean tree, synchronized remote, CI results, runtime evidence, and auditor acceptance. | OPEN |
 
 ## Required state model
@@ -274,3 +274,53 @@ the exact grouped GitHub commit, retain the six required GitHub Actions job
 results and skip explanations, preserve the protected database, and receive
 independent auditor acceptance. Docker Compose network separation remains a
 network boundary and is not dynamic destination-level egress enforcement.
+
+## 2026-09-12 authenticated recovery and active-handler evidence
+
+This entry supersedes only the earlier authentication blocker recorded in the
+runtime-candidate update above. The prior observation that
+`admin/admin` returned HTTP 401 remains historically accurate for the time it
+was collected; the current CT108 runtime was subsequently recovered through a
+narrow, explicitly authorized account operation.
+
+- The exact target was CT108 (`192.168.99.66`), PostgreSQL `16.15`, database
+  `cyberassess`, with one active `ADMIN` account named `admin` in
+  `org-7f0c365a`.
+- The user explicitly authorized resetting that demo administrator credential.
+  The operation matched the existing user identity, role, and active state and
+  updated exactly one `users.hashed_password` row in one transaction. It did
+  not reset the database, recreate the account, change the schema, or touch
+  scan, finding, execution, or test-history rows.
+- Before/after persistence counts were `users=1`, `scans=0`, `findings=0`,
+  `finding_occurrences=0`, `execution_requests=0`, and `execution_runs=0`.
+  Audit-event count increased only from `6` to `9` as the authenticated
+  verification calls produced normal successful-login audit events. Raw
+  credentials and password hashes were not recorded.
+- The authenticated runtime checks returned HTTP `200` for login, `/me`, and
+  `/api/system/executions/recovery/health`. The recovery response was bound to
+  `org-7f0c365a` and contained an empty recovery list.
+- The worker restarted from PID `2206036` to `2231656` on the same exact image
+  digest. PostgreSQL readiness, Redis `PONG`, and zero pending/zero lag for
+  the `cyberassess-workers` stream group held before and after restart.
+- The active-handler assurance test
+  `backend/tests/test_execution_launch_inventory.py::test_worker_signals_during_active_handler_finish_work_then_exit`
+  invokes SIGINT and SIGTERM during the public worker handoff, proves the
+  active handoff completes, prevents a second consume cycle, and verifies
+  queue cleanup.
+- The post-change disposable local lifecycle suite completed with `96 passed,
+  46 skipped, 1 warning`; the database-backend suite completed with `36
+  passed, 1 warning`. Full paths and hashes are retained in
+  `.project-temp/section-b-recovery-closure-20260912/runtime-auth-recovery.md`.
+- The full substantive local regression completed with `954 passed, 85
+  skipped, 1 deselected, 15 warnings`; the single deselection is the preserved
+  historical `.ci` worktree-inventory assertion and is not counted as a pass.
+- The protected repository SQLite database remained unchanged at
+  `10285056` bytes, mtime `2026-09-04T23:24:42.6548237Z`, SHA-256
+  `7a5a019389f69574b7bae31c355efeeed47fbe9f203e2c2a65c946e21cba6ecc`.
+
+This operational recovery does not close the lifecycle section. Exact-SHA
+GitHub publication, the required current-candidate GitHub Actions jobs, final
+runtime evidence integration, GitLab mirror verification after GitHub, and
+independent auditor acceptance remain required. Docker Compose network
+separation remains a network boundary and is not dynamic destination-level
+egress enforcement.
