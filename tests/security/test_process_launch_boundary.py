@@ -738,10 +738,16 @@ async def test_windows_non_scan_timeout_output_cancellation_and_exception_are_ty
     )
     assert timed_out.execution_status is ProcessExecutionStatus.TIMED_OUT
     deadline = time.monotonic() + 10
-    while not timeout_marker.exists() and time.monotonic() < deadline:
-        await asyncio.sleep(0.02)
-    assert timeout_marker.exists(), "timed-out child did not publish its readiness marker"
-    timeout_pid = int(timeout_marker.read_text())
+    timeout_pid = None
+    while time.monotonic() < deadline:
+        try:
+            timeout_pid = int(timeout_marker.read_text(encoding="utf-8"))
+            break
+        except (FileNotFoundError, ValueError):
+            await asyncio.sleep(0.02)
+    assert timeout_pid is not None, (
+        "timed-out child did not publish a complete readiness marker"
+    )
     assert not ProcessSupervisor._pid_exists(timeout_pid)
 
     output_limited = await supervisor.execute(
@@ -766,10 +772,16 @@ async def test_windows_non_scan_timeout_output_cancellation_and_exception_are_ty
         )
     )
     deadline = time.monotonic() + 10
-    while not cancellation_marker.exists() and time.monotonic() < deadline:
-        await asyncio.sleep(0.02)
-    assert cancellation_marker.exists()
-    cancellation_pid = int(cancellation_marker.read_text())
+    cancellation_pid = None
+    while time.monotonic() < deadline:
+        try:
+            cancellation_pid = int(cancellation_marker.read_text(encoding="utf-8"))
+            break
+        except (FileNotFoundError, ValueError):
+            await asyncio.sleep(0.02)
+    assert cancellation_pid is not None, (
+        "cancellation child did not publish a complete readiness marker"
+    )
     cancellation_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await cancellation_task
