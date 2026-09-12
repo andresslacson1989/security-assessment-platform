@@ -234,24 +234,22 @@ six substantive contract/fleet checks passed. No `.ci` artifact was deleted or
 modified to obtain that result. These local results supplement, but do not
 replace, the current-candidate GitHub evidence above.
 
-The current repository does not provide independent deployment evidence that
-the enterprise API and worker have been started with the same explicitly
+The 2ff8dde evidence snapshot did not provide independent deployment evidence
+that the enterprise API and worker had been started with the same explicitly
 provisioned `CYBERASSESS_WORKER_IDENTITY` and
-`CYBERASSESS_WORKER_GENERATION`. The Compose file requires those values, but a
-required environment declaration is not runtime proof. This gate remains
-`UNVERIFIED`.
+`CYBERASSESS_WORKER_GENERATION`. The Compose file required those values, but a
+required environment declaration was not runtime proof. That historical gate
+was `UNVERIFIED` at the time of the snapshot.
 
-The authorized CT 108 observation supplies managed-tool evidence for the old
-deployed checkout only, not for the current candidate. CT 108 was running with
-healthy API, worker, PostgreSQL 16, and Redis 7 containers, and the API health
-endpoint returned HTTP 200 with `HEALTHY`. However, the deployed checkout was
-detached at commit `5195389044400d923f84230f4e835fd1d7fadfc5`, not the current
-candidate, and the deployed Compose/runtime environment and both live API and
-worker containers lacked `CYBERASSESS_WORKER_IDENTITY` and
-`CYBERASSESS_WORKER_GENERATION`. The current repository Compose file requires
-both values for the enterprise API and worker. The same image ID was observed
-for the old API and worker, but that does not establish current-candidate
-deployment or shared worker binding.
+The earlier authorized CT 108 observation supplies managed-tool evidence for
+the old deployed checkout only, not for the 2ff8dde candidate. CT 108 was
+running with healthy API, worker, PostgreSQL 16, and Redis 7 containers, and
+the API health endpoint returned HTTP 200 with `HEALTHY`. However, the deployed
+checkout was detached at commit `5195389044400d923f84230f4e835fd1d7fadfc5`,
+not the 2ff8dde candidate, and the deployed Compose/runtime environment and
+both live API and worker containers lacked the two worker binding variables.
+The same image ID was observed for the old API and worker, but that did not
+establish current-candidate deployment or shared worker binding.
 
 The old deployed runtime reported Nmap 7.95 and Subfinder v2.6.5. Their
 executable hashes matched their valid trust-record executable hashes:
@@ -269,10 +267,11 @@ The CT 108 runtime logs are retained below
 - `ct108-managed-tool-verification-002.log`, SHA-256
   `79c57f772aee410692cbf460513892637a9904ff5198577ed5647bb76dd58a1c`.
 
-No scan was run. The local environment's Docker daemon was unavailable, so no
-local runtime claim is substituted for the authorized CT observation. The
-managed-tool skips above remain applicable to the current candidate, and no
-current-candidate tool provenance claim is fabricated.
+For that earlier observation, no scan was run. The local environment's Docker
+daemon was unavailable, so no local runtime claim was substituted for the
+authorized CT observation. The managed-tool skips above remained applicable to
+the 2ff8dde candidate, and no current-candidate tool provenance claim was
+fabricated in that historical record.
 
 Docker Compose network separation remains a container-network boundary, not
 dynamic destination-level egress enforcement. Provider egress governance is
@@ -319,3 +318,126 @@ current-candidate managed-tool runtime/provenance evidence, and independent
 auditor acceptance. The delivery scope itself is clean; the global worktree
 intentionally retains pre-existing user-owned changes and artifacts outside
 the delivery scope.
+
+## Section B bounded runtime-candidate evidence — 2026-09-12
+
+This section is appended after the 2ff8dde documentation reconciliation. It
+records a real CT 108 deployment of the bounded source candidate before the
+grouped GitHub publication commit was created. The later publication must
+rebuild and redeploy the exact GitHub commit; this pre-publication evidence is
+not silently relabeled as proof for an earlier commit.
+
+### Demonstrated implementation defects and bounded corrections
+
+The CT 108 Docker daemon is Docker 29.1.3 using the legacy builder and has no
+BuildKit `buildx` command. The unmodified Dockerfile therefore failed before
+the first build step because `FROM --platform=$BUILDPLATFORM` received an empty
+platform value. A subsequent constrained build reached the pinned Trivy Go
+compilation and failed with `signal: killed`, identifying compiler parallelism
+as the second reproducible resource defect. The source candidate makes only
+these demonstrated build corrections:
+
+- declares `ARG BUILDPLATFORM=linux/amd64` before the first `FROM` and
+  `ARG TARGETARCH=amd64` after it, while retaining the pinned base image and
+  amd64-only Nmap source-build guard; and
+- invokes the pinned Trivy source build with `go build -p=1` to bound compiler
+  parallelism on the constrained CT builder.
+
+The runtime stop vector then demonstrated a separate production defect: the
+worker process did not exit on Docker's standard SIGTERM within the 30-second
+grace period, while SIGINT terminated it. `run_worker.py` now installs
+event-loop-owned SIGTERM/SIGINT handlers, exits the consume loop, removes its
+handlers, and always closes the Redis queue. No scan or tool operation was
+added to this fix.
+
+### Candidate image and hardened runtime evidence
+
+The corrected source context was archived locally under
+`.project-temp/section-b-runtime-deploy-20260912/context-worker-signal-001-modified.tar`
+with size `6282240` bytes and SHA-256
+`f70c55e83d0786139397294cfc27eb0f9edb385df4056a42c19f710feb8bfa36`. Its
+extracted Dockerfile SHA-256 is
+`b5848f63cd202b19209e84c52304174eb28896df886fdf11020a9e69c6ba3123`, and its
+`run_worker.py` SHA-256 is
+`3202e473e9c72aa2b31f6ee10350d985c69d268c1b7db3c4e1ecd69ee1f9c336`.
+
+The CT build completed successfully with the temporary tag
+`ghcr.io/andresslacson1989/security-assessment-platform:section-b-worker-signal-candidate`.
+The image is Linux amd64, size `750902792` bytes, and has image ID
+`sha256:f9bf37685c7f5660faf12fc31dc0a5a814ba45ceafbbfd985652651c8895eae9`.
+The complete remote build log has SHA-256
+`f4301e42d8a57a3f891bd3138eea9314a39cef730e60a2324be780b9ff11002e` and is
+retained at the CT deployment staging path
+`/opt/cyberassess/.codex-deploy-section-b-2ff8dde/context-worker-signal-002/build.log`.
+The local evidence copy is
+`.project-temp/section-b-runtime-deploy-20260912/ct108-worker-signal-build.log`
+with SHA-256
+`da73052ac4b10c9aeba6fb5984bee9597ffcd0fda360c085795b5241eb08ec3e`.
+
+The candidate API and worker ran in CT 108 with the exact image ID above. The
+API health endpoint returned HTTP 200 and `HEALTHY` with five registered
+engines. PostgreSQL 16 returned `pg_isready` accepting connections; Redis 7
+returned `PONG`; the `cyberassess-workers` Redis Stream group existed with
+zero pending messages. The existing PostgreSQL and Redis container image IDs
+remained the pinned
+`sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685`
+and
+`sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf`.
+
+The deployment environment was updated atomically at
+`/etc/cyberassess/runtime.env` with non-empty worker identity and generation
+values, preserving root ownership and mode `0600`; raw values were not
+recorded. The sorted hash of the two provisioned environment entries was
+`9976acb434fc0a78fe02dccb25a7bbd5d5e5b14a8200c724ab516d655c4a19b2` in both
+containers. The application getters resolved matching identity hashes
+`82a8b3bf03dbf76ea1c268dfa923018bb72f92ce2f776267f4ec702b0a4dfcf3` and
+generation hashes
+`0b78e476653ad4187343d1d34c81fad5606c8596d4daff0eb23525f57fb3f9f3` in both
+the API and worker processes. This proves the binding was available from the
+service runtime, without exposing the values or accepting them from a scan
+request.
+
+The standard Docker shutdown vector completed with worker PID `2086802`
+exiting with code `0` under `docker stop -t 30`; a subsequent start produced
+worker PID `2088212`, and the queue pending count remained zero. The local
+runtime evidence ledger is
+`.project-temp/section-b-runtime-deploy-20260912/ct108-runtime-candidate.log`,
+size `1849` bytes, SHA-256
+`62d8f0eb85ee00e4ffa65df740b7752e27bebcc5c00a5a06982e4eb5e4e8c0c9`.
+
+Under the hardened one-shot container vector, UID `999` could not write the
+managed Nmap or Subfinder paths. Nmap reported `7.95`; Subfinder reported
+`v2.6.5` using an ephemeral test configuration. Direct managed trust
+verification returned true for both tools. Importing the authoritative
+registry in the disposable container reported `FLEET_COUNT=26`. No scan was
+run.
+
+### Authentication and assurance boundary
+
+The authenticated recovery-health vector remains unverified for this runtime
+candidate because the previously supplied `admin/admin` credentials returned
+HTTP 401. Read-only PostgreSQL metadata showed one active administrator
+account (`admin`, role `ADMIN`, organization `org-7f0c365a`), but no password
+was inspected or reset. This is an explicit evidence blocker, not a reason to
+delete or recreate history. The protected database fingerprint recorded above
+remained unchanged, and no scan/test history was deleted.
+
+The source candidate was not yet a GitHub-published commit when this runtime
+evidence was collected. The required next delivery step is one grouped
+Section B commit containing the demonstrated source changes and the evidence
+record updates, followed by GitHub-first publication and all six required
+GitHub Actions jobs. GitLab remains an unmodified mirror-only destination until
+the independent auditor accepts the final evidence.
+
+### Local source verification after the worker correction
+
+After the worker signal-handling correction, the bounded Section B source suite
+was rerun against a disposable project-local database and project-local pytest
+base directory. The result was `201 passed, 8 skipped, 1 deselected`, with one
+Starlette/httpx deprecation warning. The deselection was the historical
+`.ci`-snapshot inventory test whose retained snapshot does not match the
+current 26-tool registry; it is not counted as a passing acceptance test. The
+full result is retained at
+`.project-temp/section-b-runtime-deploy-20260912/local-source-verification-003/result.log`
+with SHA-256
+`826052ed8c2c0b97024296962f82b87e05f41d6071ea989d8044fd7201d72622`.

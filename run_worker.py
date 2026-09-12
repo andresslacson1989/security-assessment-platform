@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -31,6 +32,32 @@ def should_process_scan(status: object) -> bool:
         ScanStatus.FAILED,
         ScanStatus.CANCELLED,
     }
+
+
+def _install_shutdown_handlers(stop_event: asyncio.Event):
+    """Arrange for container termination signals to stop the worker loop."""
+    loop = asyncio.get_running_loop()
+    installed: list[signal.Signals] = []
+    for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(shutdown_signal, stop_event.set)
+        except (NotImplementedError, RuntimeError, ValueError):
+            # Windows event loops and non-main-thread loops may not expose
+            # POSIX signal registration. The container production path is
+            # Linux; unsupported loop implementations remain unchanged.
+            continue
+        installed.append(shutdown_signal)
+    return loop, tuple(installed)
+
+
+def _remove_shutdown_handlers(loop, installed: tuple[signal.Signals, ...]) -> None:
+    """Remove worker-owned signal handlers before the event loop is closed."""
+    for shutdown_signal in installed:
+        try:
+            loop.remove_signal_handler(shutdown_signal)
+        except (RuntimeError, ValueError):
+            # Cleanup must not mask the queue's terminal close path.
+            continue
 
 
 async def handle_consumed_scan(
@@ -99,6 +126,8 @@ async def run_worker() -> None:
 
     queue = RedisDurableQueue(EXECUTION_QUEUE_URL)
     local_executor = ScanQueueManager()
+    stop_event = asyncio.Event()
+    signal_loop, installed_signals = _install_shutdown_handlers(stop_event)
 
     async def handle(
         scan_id: str,
@@ -122,13 +151,14 @@ async def run_worker() -> None:
         )
 
     try:
-        while True:
+        while not stop_event.is_set():
             await queue.consume_once(
                 handle,
                 block_ms=int(os.getenv("EXECUTION_QUEUE_BLOCK_MS", "5000")),
                 reclaim_idle_ms=int(os.getenv("EXECUTION_QUEUE_RECLAIM_IDLE_MS", "60000")),
             )
     finally:
+        _remove_shutdown_handlers(signal_loop, installed_signals)
         await queue.close()
 
 

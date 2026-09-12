@@ -85,6 +85,27 @@ def test_ci_verifies_the_hash_locked_runtime_dependency_set():
     assert "backend/requirements.txt" not in workflow
 
 
+def test_dockerfile_has_explicit_legacy_builder_platform_defaults():
+    """The CT108 legacy builder must not receive an empty platform argument."""
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    first_from = dockerfile.index("FROM --platform=$BUILDPLATFORM")
+    build_platform_arg = dockerfile.index("ARG BUILDPLATFORM=linux/amd64")
+    target_arch_arg = dockerfile.index("ARG TARGETARCH=amd64")
+
+    assert build_platform_arg < first_from
+    assert target_arch_arg > first_from
+
+
+def test_dockerfile_serializes_trivy_source_compilation():
+    """The constrained deployment builder must bound Go compiler parallelism."""
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    trivy_build = dockerfile[
+        dockerfile.index("go build") : dockerfile.index("go build") + 140
+    ]
+
+    assert "go build -p=1" in trivy_build
+
+
 def test_ci_workflow_static_contract_is_complete():
     workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml"
     workflow_text = workflow_path.read_text().replace("\r\n", "\n")

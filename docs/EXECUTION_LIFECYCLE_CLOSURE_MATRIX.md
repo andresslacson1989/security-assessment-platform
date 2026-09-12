@@ -242,3 +242,35 @@ database, PostgreSQL concurrency coverage is recorded, the protected shared
 database has not been altered, and the independent auditor confirms that no
 contract requirement remains open. Until then, the overall lifecycle status
 remains `REWORK / IN PROGRESS`.
+
+## 2026-09-12 bounded runtime-candidate evidence update
+
+The previous 2ff8dde reconciliation left current-candidate deployment binding,
+managed-tool runtime evidence, and graceful worker shutdown unverified. A
+real, pre-publication CT 108 deployment of the bounded source candidate now
+supplies those implementation/platform observations without changing the
+acceptance state of any row.
+
+| Matrix area | New evidence | Current status |
+| --- | --- | --- |
+| Buildable production candidate | CT 108 Docker 29.1.3 legacy-builder build completed after the demonstrated platform-default and Trivy compiler-parallelism corrections; image `sha256:f9bf37685c7f5660faf12fc31dc0a5a814ba45ceafbbfd985652651c8895eae9` | Evidence added; exact GitHub publication still required |
+| Typed durable worker identity | API and worker received the same non-empty provisioned identity/generation; redacted environment-entry hashes and application getter hashes matched across both containers | Evidence added; independent auditor review still required |
+| Complete launch coverage | Existing production launch inventory remains the authoritative static evidence; no new direct launch path was introduced | Previously verified; final publication/CI gate still required |
+| Durable restart attachment | Worker stopped and restarted with a new PID while Redis pending count remained zero; no scan was run | Evidence added; broader restart proof and auditor review still required |
+| Single cancellation coordinator | No cancellation implementation changed in this bounded pass; existing coordinator evidence remains applicable | Open pending full acceptance |
+| Durable recovery | PostgreSQL readiness, Redis readiness, and worker queue-group readiness were observed; authenticated recovery-health endpoint could not be exercised because the supplied `admin/admin` credentials returned HTTP 401 | Partially evidenced; authenticated recovery proof remains open |
+| Contract and operational proof | Source, test, and dated evidence updates are grouped for the next GitHub-first publication; GitLab remains mirror-only | Open pending exact published SHA, six CI jobs, and independent auditor acceptance |
+
+The candidate API returned HTTP 200 with `HEALTHY`; PostgreSQL 16 returned
+`pg_isready` accepting connections; Redis 7 returned `PONG`; and the
+`cyberassess-workers` stream group reported zero pending messages. The API and
+worker ran the same candidate image under the existing Compose project and the
+existing persistent data bind. Docker's standard `docker stop -t 30`
+terminated the worker with exit code 0 after the SIGTERM handler correction.
+
+This update does not claim that the pre-publication temporary image is the
+final GitHub candidate. The final acceptance package must rebuild and deploy
+the exact grouped GitHub commit, retain the six required GitHub Actions job
+results and skip explanations, preserve the protected database, and receive
+independent auditor acceptance. Docker Compose network separation remains a
+network boundary and is not dynamic destination-level egress enforcement.

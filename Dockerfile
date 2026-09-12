@@ -8,9 +8,15 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Builder Stage (Download & verify official pre-compiled tool binaries)
 # ------------------------------------------------------------------------------
+# Legacy Docker builders do not populate BuildKit's automatic platform
+# arguments. The production source-build path is amd64-only (the pinned Nmap
+# source build below enforces that), so explicit defaults keep this Dockerfile
+# usable on the CT108 daemon while BuildKit may still override them for a
+# supported cross-platform build.
+ARG BUILDPLATFORM=linux/amd64
 FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS builder
 
-ARG TARGETARCH
+ARG TARGETARCH=amd64
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -79,7 +85,7 @@ RUN curl -fsSL https://github.com/aquasecurity/trivy/archive/refs/tags/v0.50.0.t
     echo "16fa56d6c3549657baa49f1de8ffef5b6a976d7bf11d378d0f097189b70bae2b  trivy-source.tar.gz" | sha256sum -c - && \
     tar -xzf trivy-source.tar.gz && cd trivy-0.50.0 && \
     go mod download && \
-    CGO_ENABLED=0 GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -buildvcs=false \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$TARGETARCH" go build -p=1 -trimpath -buildvcs=false \
       -ldflags "-s -w -X=github.com/aquasecurity/trivy/pkg/version.ver=0.50.0" \
       -o /tmp/bin/trivy ./cmd/trivy && \
     chmod +x /tmp/bin/trivy && \

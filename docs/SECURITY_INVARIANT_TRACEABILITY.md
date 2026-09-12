@@ -132,6 +132,51 @@ Repository-level controls for the documented invariants are implemented and veri
 - **Tests:** `tests/security/test_code_sast_assurance.py`, E13 adapter tests, `tests/test_engine_code_sast.py`, persistence/API tests, and full regression.
 - **Status:** `REPOSITORY_VERIFIED` for the corrected shared process-supervision, fallback-provenance, execution-state attribution, evidence-sanitization, authoritative-persistence, explicit discovery-admission boundary, platform-owned provider destination allowlists, observation-only cloud fallback, hardened production containers, and 26-tool registry controls. The current Linux production image verified managed trust records and runtime paths for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and source-built Nmap, plus Retire.js and the six lock-bound Python environments, all under UID 999. No unmanaged runtime is treated as evidence; Prowler remains fail-closed without a worker-side tenant-scoped credential envelope and provider egress controls, while missing native cloud observations are explicitly degraded rather than treated as clean. OS-level external-process egress governance and diagnostic-only auxiliary tools remain documented limitations.
 
+## Section B execution-lifecycle runtime-candidate evidence — 2026-09-12
+
+This dated entry records bounded implementation and platform evidence gathered
+before the final grouped GitHub publication. It supplements, and does not
+rewrite, the historical E11.3/E13 entries above. The temporary CT 108 image is
+not treated as a published revision, and this entry does not change the
+acceptance status of the execution-lifecycle matrix.
+
+- **Demonstrated source corrections:** `Dockerfile` now supplies explicit
+  legacy-builder `BUILDPLATFORM`/`TARGETARCH` defaults and serializes the
+  pinned Trivy source compilation with `go build -p=1`; `run_worker.py` now
+  handles SIGTERM/SIGINT by requesting an orderly consume-loop stop, removes
+  its handlers, and closes the queue. Focused tests cover both corrections.
+- **Bounded local verification:** the Section B source suite ran against a
+  disposable project-local database and project-local pytest base directory:
+  `201 passed, 8 skipped, 1 deselected`, with one Starlette/httpx deprecation
+  warning. The historical `.ci`-snapshot inventory test was the deselected
+  item because its retained snapshot does not match the current 26-tool
+  registry; it is not counted as passing acceptance evidence.
+- **CT 108 runtime evidence:** the corrected Linux amd64 candidate image was
+  built and ran under the existing Compose project. The API returned HTTP 200
+  with `HEALTHY` and five registered engines; PostgreSQL readiness accepted
+  connections; Redis returned `PONG`; and the `cyberassess-workers` stream
+  group had zero pending messages. The worker terminated with Docker's
+  standard 30-second grace period and exit code 0 after the signal-handler
+  correction, then restarted with a new PID. No scan was run.
+- **Identity binding observation:** the existing deployment configuration
+  supplied non-empty worker identity and generation values to both API and
+  worker containers. Redacted environment-entry hashes and application getter
+  hashes matched across the two containers. The values were not accepted from
+  scan requests and raw values were not recorded. This is deployment evidence,
+  not a claim that the independent auditor has closed every durable ownership
+  or recovery row.
+- **Managed tool evidence:** the hardened one-shot container ran as UID 999,
+  could not write the managed Nmap or Subfinder paths, reported Nmap `7.95`
+  and Subfinder `v2.6.5`, and returned successful managed trust verification
+  for both. The authoritative registry reported `FLEET_COUNT=26`. No upstream
+  provenance beyond the recorded artifact/install controls is claimed.
+- **Open assurance boundary:** authenticated recovery-health could not be
+  exercised because the supplied `admin/admin` credentials returned HTTP 401;
+  no password was inspected or reset. The protected database was not modified,
+  and no scan/test history was deleted. The exact final GitHub commit, six
+  GitHub Actions jobs, GitHub-first verification, and independent auditor
+  acceptance remain required before GitLab mirroring or Section B acceptance.
+
 ---
 
 ## 4. E13-R3 Final Technical Closure & Truthfulness Invariants

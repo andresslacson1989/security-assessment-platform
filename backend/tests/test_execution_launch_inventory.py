@@ -6,6 +6,8 @@ classified here before it can be merged.
 """
 
 import ast
+import asyncio
+import signal
 from pathlib import Path
 
 import pytest
@@ -200,6 +202,40 @@ def test_enterprise_compose_requires_shared_worker_identity_and_generation() -> 
         expected = f'{variable}: "${{{variable}:?{variable} must be shared by the enterprise API and worker}}"'
         assert expected in api_section
         assert expected in worker_section
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_handlers_request_loop_stop_and_clean_up(monkeypatch) -> None:
+    """SIGTERM/SIGINT must request an orderly queue shutdown on POSIX loops."""
+    import run_worker
+
+    loop = asyncio.get_running_loop()
+    callbacks = {}
+    removed = []
+
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda shutdown_signal, callback, *args: callbacks.__setitem__(
+            shutdown_signal, (callback, args)
+        ),
+    )
+    monkeypatch.setattr(
+        loop,
+        "remove_signal_handler",
+        lambda shutdown_signal: removed.append(shutdown_signal) or True,
+    )
+
+    stop_event = asyncio.Event()
+    signal_loop, installed = run_worker._install_shutdown_handlers(stop_event)
+
+    assert signal_loop is loop
+    assert installed == (signal.SIGINT, signal.SIGTERM)
+    callbacks[signal.SIGTERM][0](*callbacks[signal.SIGTERM][1])
+    assert stop_event.is_set()
+
+    run_worker._remove_shutdown_handlers(signal_loop, installed)
+    assert removed == [signal.SIGINT, signal.SIGTERM]
 
 
 @pytest.mark.asyncio

@@ -177,4 +177,16 @@ Remaining:
 Final Status:
 ACCEPTED — READY FOR REVIEW (DO NOT MERGE TO MAIN)
 
+## Historical checkpoint scope — 2026-09-12
+
+The checkpoint table, test counts, CI counts, and `Working Tree` value above
+are historical Nmap-installer closure snapshots for the commits and runs named
+in this document; they are not a statement about the current Section B
+execution-lifecycle worktree or its final publication state. The current
+Section B implementation, CT 108 runtime observations, fresh bounded test
+result, and remaining acceptance gates are recorded in
+`docs/evidence/section_b_execution_lifecycle_followup_2026-09-12.md` and
+`docs/EXECUTION_LIFECYCLE_CLOSURE_MATRIX.md`. No historical test count was
+recalculated or relabeled by this note.
+
 
