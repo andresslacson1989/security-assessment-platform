@@ -1,9 +1,10 @@
 # Section B Execution-Lifecycle Follow-up — 2026-09-12
 
-Status: implementation evidence update; independent acceptance remains open.
+Status: published exact-source evidence update; independent acceptance remains open.
 
-This dated follow-up records the current Section B verification pass. It does
-not rewrite or supersede the historical record in
+This dated follow-up preserves the historical Section B verification record
+and appends the current published exact-source evidence. It does not rewrite
+or supersede the historical record in
 `docs/evidence/section_b_execution_lifecycle_2026-09-09.md`; that document
 continues to preserve the evidence and limitations known at that time.
 
@@ -17,17 +18,17 @@ publication and GitHub Actions is the authoritative CI provider. The same
 baseline commit is present on the governed GitLab mirror, but GitLab is not an
 acceptance gate.
 
-The implementation and evidence candidate under review is commit
+The former implementation and evidence candidate was commit
 `285094882dca0108ad7a32eee2c230f668202956` on the same branch, with tree
 `32cde38c6b003ee5ec7d6c35b17acd480ffe72db` and parent
 `66d609bb9c1a9ce83b44d50868d3d8ecac471e27`. The GitHub branch ref resolves to
 that exact candidate. The candidate contains the bounded Windows assurance-test
-correction; the current document-only reconciliation records evidence
+correction; the historical document-only reconciliation records evidence
 associated with that candidate. It does not change the production process
-supervisor or execution contract. This reconciliation is delivered as a child
-commit and does not alter the implementation or evidence run being reconciled.
+supervisor or execution contract. The current published closure commit and
+exact-source runtime evidence are recorded in the final section below.
 
-The current Section B follow-up is deliberately bounded to:
+The historical pre-publication Section B follow-up was deliberately bounded to:
 
 1. correcting a readiness-marker race in the Windows non-scan process-boundary
    assurance test; and
@@ -139,18 +140,18 @@ confirm the following current production boundary:
 
 | Lifecycle matrix row | Implementation and exact repository evidence | Current evidence category | Remaining gate |
 | --- | --- | --- | --- |
-| Typed durable identity | `backend/app/core/execution_context.py`, `execution_service.py`, `execution_decision.py`, `scan_execution_authority.py`; `backend/tests/test_execution_context_contract.py`, `backend/tests/test_execution_launch_inventory.py`, and execution-decision tests | configured, unit-tested, locally executed, and executed in current candidate run `34666036688` | independent auditor review of the complete current delivery |
-| Complete launch coverage | `backend/tests/test_execution_launch_inventory.py`; adapter/base-adapter, installer, engine, worker, and supervisor call sites | statically inventoried, locally executed, and executed in current candidate run `34666036688` | independent production-path review and auditor acceptance |
-| Run-level process ownership | `backend/app/core/process_supervisor.py`, `windows_job.py`, `execution_service.py`, `db.py`; process-boundary and decision-authority vectors | locally executed; current candidate Windows, full, and focused jobs passed in run `34666036688` | broader independent OS/deployment evidence and auditor acceptance |
-| Durable restart attachment | `execution_service.py`, `observation_service.py`, `windows_job.py`; restart, tamper, replay, and recovery tests | unit-tested and locally executed; supported-platform evidence re-executed in current candidate run `34666036688` | shared worker deployment evidence and independent restart/platform evidence |
-| Single cancellation coordinator | `execution_service.py`, `orchestrator.py`, `observation_service.py`; cancellation-coordinator and API vectors | locally executed and executed in current candidate run `34666036688` | independent review and auditor acceptance |
-| Durable recovery | `db.py`, `execution_service.py`, `observation_service.py`; SQLite recovery vectors and PostgreSQL workflow definition | SQLite locally executed; PostgreSQL and Redis service readiness/suite evidence recorded in current candidate run `34666036688` | current-candidate deployment binding, broader independent runtime evidence, and auditor acceptance |
-| Contract and operational proof | Contracts 03/04/08, lifecycle matrix, traceability matrix, this follow-up, GitHub workflow | documentation reconciled; focused/full local evidence and current-candidate CI evidence recorded below | current-candidate deployment/runtime gaps and independent auditor acceptance |
+| Typed durable identity | `backend/app/core/execution_context.py`, `execution_service.py`, `execution_decision.py`, `scan_execution_authority.py`; `backend/tests/test_execution_context_contract.py`, `backend/tests/test_execution_launch_inventory.py`, and execution-decision tests | configured, unit-tested, locally executed, and executed in historical pre-publication candidate run `34666036688` | independent auditor review of the complete current delivery |
+| Complete launch coverage | `backend/tests/test_execution_launch_inventory.py`; adapter/base-adapter, installer, engine, worker, and supervisor call sites | statically inventoried, locally executed, and executed in historical pre-publication candidate run `34666036688` | independent production-path review and auditor acceptance |
+| Run-level process ownership | `backend/app/core/process_supervisor.py`, `windows_job.py`, `execution_service.py`, `db.py`; process-boundary and decision-authority vectors | locally executed; historical candidate Windows, full, and focused jobs passed in run `34666036688` | broader independent OS/deployment evidence and auditor acceptance |
+| Durable restart attachment | `execution_service.py`, `observation_service.py`, `windows_job.py`; restart, tamper, replay, and recovery tests | unit-tested and locally executed; supported-platform evidence re-executed in historical pre-publication candidate run `34666036688` | shared worker deployment evidence and independent restart/platform evidence |
+| Single cancellation coordinator | `execution_service.py`, `orchestrator.py`, `observation_service.py`; cancellation-coordinator and API vectors | locally executed and executed in historical pre-publication candidate run `34666036688` | independent review and auditor acceptance |
+| Durable recovery | `db.py`, `execution_service.py`, `observation_service.py`; SQLite recovery vectors and PostgreSQL workflow definition | SQLite locally executed; PostgreSQL and Redis service readiness/suite evidence recorded in historical pre-publication candidate run `34666036688` | exact-source deployment evidence, broader independent runtime evidence, and auditor acceptance |
+| Contract and operational proof | Contracts 03/04/08, lifecycle matrix, traceability matrix, this follow-up, GitHub workflow | historical documentation reconciliation; current published evidence is recorded below | exact-source deployment/runtime review and independent auditor acceptance |
 
 Rows remain `OPEN` in the authoritative lifecycle matrix unless both the
 implementation and the required independent/platform evidence are complete.
 
-## CI, runtime, and mirror boundary
+## Historical pre-publication CI, runtime, and mirror boundary
 
 The accepted baseline GitHub Actions run remains
 [34659175863](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34659175863)
@@ -158,7 +159,7 @@ historical evidence for the exact accepted baseline SHA. Its required compile,
 focused, full, PostgreSQL, Windows Job Object, and hardened-container jobs
 succeeded.
 
-The current candidate was independently verified in GitHub Actions run
+The former pre-publication candidate was independently verified in GitHub Actions run
 [34666036688](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34666036688)
 for exact SHA
 `285094882dca0108ad7a32eee2c230f668202956`. The run was created at
@@ -221,7 +222,7 @@ passes:
 | `PLATFORM_CAPABILITY_UNAVAILABLE_WINDOWS_ASSURANCE_COVERED` | 3 | Windows kernel is required |
 | `PROVENANCE_BLOCKED_ESCALATION_REQUIRED` | 1 | historical `a1c4fc4` fixture is blocked by a committed v1 artifact mismatch |
 
-The current candidate's local process-boundary evidence is 22 passed and 8
+The historical pre-publication candidate's local process-boundary evidence is 22 passed and 8
 skipped; the focused local suite is 300 passed, 47 skipped, and one preserved
 `.ci` inventory assertion deselected; the full local suite is 950 passed, 85
 skipped, and one preserved `.ci` inventory assertion deselected. The exact
@@ -232,7 +233,7 @@ expects 1,709 entries while the intentionally retained local `.ci` tree
 contains 3,038. With only that historical inventory assertion deselected, the
 six substantive contract/fleet checks passed. No `.ci` artifact was deleted or
 modified to obtain that result. These local results supplement, but do not
-replace, the current-candidate GitHub evidence above.
+replace, the historical pre-publication candidate GitHub evidence above.
 
 The 2ff8dde evidence snapshot did not provide independent deployment evidence
 that the enterprise API and worker had been started with the same explicitly
@@ -249,7 +250,7 @@ checkout was detached at commit `5195389044400d923f84230f4e835fd1d7fadfc5`,
 not the 2ff8dde candidate, and the deployed Compose/runtime environment and
 both live API and worker containers lacked the two worker binding variables.
 The same image ID was observed for the old API and worker, but that did not
-establish current-candidate deployment or shared worker binding.
+establish deployment of that historical candidate or shared worker binding.
 
 The old deployed runtime reported Nmap 7.95 and Subfinder v2.6.5. Their
 executable hashes matched their valid trust-record executable hashes:
@@ -270,16 +271,17 @@ The CT 108 runtime logs are retained below
 For that earlier observation, no scan was run. The local environment's Docker
 daemon was unavailable, so no local runtime claim was substituted for the
 authorized CT observation. The managed-tool skips above remained applicable to
-the 2ff8dde candidate, and no current-candidate tool provenance claim was
-fabricated in that historical record.
+the 2ff8dde candidate, and no tool provenance claim for the later published
+commit was fabricated in that historical record.
 
 Docker Compose network separation remains a container-network boundary, not
 dynamic destination-level egress enforcement. Provider egress governance is
 therefore not claimed complete by this evidence.
 
-No GitLab operation was performed during this follow-up. GitLab promotion is
-blocked until the new grouped commit has passed the GitHub-first publication
-and independent-auditor gates.
+No GitLab operation was performed during this historical follow-up. GitLab
+promotion remained blocked until the grouped publication passed the
+GitHub-first and independent-auditor gates; the current exact GitHub
+publication and mirror state are recorded in the final section below.
 
 ## Protected database and worktree state
 
@@ -309,17 +311,17 @@ manufacture a clean status.
 
 ## Acceptance status
 
-This follow-up improves the evidence quality, removes the demonstrated Windows
-assurance-test race, and records successful current-candidate GitHub CI. It
-does not close the lifecycle matrix. Rows 35–41 remain `OPEN`. Remaining gates
-include deployment of the current candidate with explicitly shared worker
-identity/generation, broader independent OS-level and restart evidence,
-current-candidate managed-tool runtime/provenance evidence, and independent
-auditor acceptance. The delivery scope itself is clean; the global worktree
+This historical follow-up improves the evidence quality, removes the
+demonstrated Windows assurance-test race, and records successful historical
+pre-publication GitHub CI. It does not close the lifecycle matrix. Rows 35–41
+remain `OPEN`. Remaining gates at that time included exact-source deployment
+with explicitly shared worker identity/generation, broader independent
+OS-level and restart evidence, current published managed-tool
+runtime/provenance evidence, and independent auditor acceptance. The delivery scope itself is clean; the global worktree
 intentionally retains pre-existing user-owned changes and artifacts outside
 the delivery scope.
 
-## Section B bounded runtime-candidate evidence — 2026-09-12
+## Section B historical pre-publication bounded runtime-candidate evidence — 2026-09-12
 
 This section is appended after the 2ff8dde documentation reconciliation. It
 records a real CT 108 deployment of the bounded source candidate before the
@@ -442,7 +444,7 @@ full result is retained at
 with SHA-256
 `826052ed8c2c0b97024296962f82b87e05f41d6071ea989d8044fd7201d72622`.
 
-## Current CT108 authentication and active-handler evidence — 2026-09-12
+## Historical pre-final-source CT108 authentication and active-handler evidence — 2026-09-12
 
 The earlier runtime-candidate observation that the supplied administrator
 credential returned HTTP 401 is retained as historical evidence. It was
@@ -523,7 +525,161 @@ saved delivery goal's prior no-destructive-database-change rule was
 superseded only for the exact, user-authorized CT108 account operation; the
 repository database remains outside delivery operations and was not modified.
 
-This evidence remains a pre-publication update. The new test and documentation
-must be included in one grouped Section B commit, pushed to GitHub first, and
-verified by the required GitHub Actions jobs. GitLab remains a mirror-only
-destination until independent auditor acceptance.
+The preceding authentication and active-handler evidence is historical
+pre-publication evidence. The current published exact-source build, runtime,
+CI, database, and mirror status are appended below. GitLab remains a
+mirror-only destination and cannot satisfy the independent-auditor gate.
+
+## Current published exact-source runtime and CI closure evidence — 2026-09-12
+
+### Publication and source binding
+
+The exact application/test source used for the current Section B runtime and CI
+evidence is commit
+`031cda1f93fd0e7cebf6ec50452da43dc7bf980f` on
+`security/nmap-installer-closure`, with parent
+`cb563414a1721a780ed0d0184ed8e9ee6c6dbcd8` and tree
+`0a43ef6b895f059a991173122bd220ac37140579` ([GitHub commit](https://github.com/andresslacson1989/security-assessment-platform/commit/031cda1f93fd0e7cebf6ec50452da43dc7bf980f)).
+The exact source archive
+`security-assessment-platform-031cda1f.tar` was `6,318,080` bytes with
+SHA-256
+`32066405c11f07e4b94d17c1b43136bfd0bff54035aa54843828db1b687ead25`.
+The archive transferred to CT108 matched the same size and digest; the
+extracted source was verified against that archive. The corrective publication changes only the three
+evidence documents named by this record; it does not modify contracts, Nmap
+implementation, Dockerfile, protected data, or unrelated Section A work.
+
+### Exact CT108 build and deployment
+
+The exact archive was built on CT108 as Linux/amd64 image
+`ghcr.io/andresslacson1989/security-assessment-platform:section-b-final-031cda1`.
+The image ID/RepoDigest is
+`sha256:a66b873c679d1f3873c3c093d70e0ac3f05ee907aff5ff082c4517f35a55c4e1`,
+created `2026-09-12T09:54:32.364976258Z`, with size `751654768` bytes. Its
+labels bind the image to revision
+`031cda1f93fd0e7cebf6ec50452da43dc7bf980f`, source archive digest
+`32066405c11f07e4b94d17c1b43136bfd0bff54035aa54843828db1b687ead25`, and
+source `github.com/andresslacson1989/security-assessment-platform`. The
+retained build log is
+`/opt/cyberassess/.codex-deploy-section-b-final-031cda1/build-031cda1-legacy.log`
+on CT108; its project-local copy is
+`.project-temp/section-b-recovery-closure-20260912/final-source-031cda1/ct108-build-031cda1.log`.
+Both copies are `28,667` bytes with SHA-256
+`19c7bcbe7eda35cd9a5b25950f8045b08fda06869b87b277d792b8a692fdbbd6`.
+
+Only the API and worker application services were recreated from this exact
+image. The API container is
+`3b281c1f48a9c12fcf501aaa6c40ba162ded7175db6537c0818c951ad780fb03`, created
+`2026-09-12T09:55:36.987748198Z`, running and healthy, with command
+`["python", "run_platform.py"]`. The worker container is
+`3902a58854a0c4efb3eb8fc9807ea344d30fd8e036210a165ac512282d9bc75c`, created
+`2026-09-12T09:55:36.98279058Z`, running, with command
+`["python", "/app/run_worker.py"]`. Both use the exact image, run as
+`cyberassess`, use read-only root filesystems, drop all capabilities, and
+enable `no-new-privileges`.
+
+PostgreSQL and Redis were preserved and not recreated. PostgreSQL is container
+`e88c23415c583d99de289c173e7f3a7ceb280596e4fec5aebdb387d11f374bf0`, using
+`postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685`,
+created `2026-09-08T16:13:05.320938141Z`. Redis is container
+`8e73e9c2a7c7e10d966f314e50ad2c9f03525f2607b9cf9465e07e8cdecda104`, using
+`redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf`,
+created `2026-09-08T16:03:01.114442821Z`. PostgreSQL accepted connections,
+Redis returned `PONG`, and the `cyberassess-workers` group reported pending
+`0` and lag `0` with 36 consumers.
+
+The exact-runtime API health check returned HTTP `200` with status `HEALTHY`,
+version `14.3.0`, storage `OK`, `scans_stored=0`, `total_scans_stored=0`, and
+`registered_engines_count=5`. Authenticated checks returned HTTP `200` for
+login, `/api/auth/me` as `admin`/`ADMIN` in `org-7f0c365a`, and the
+tenant-scoped `/api/system/executions/recovery/health` endpoint with
+`recovery=[]`. The worker was orderly restarted from PID `2268860` to
+`2269163`; stop and start both exited `0`, and the restarted worker retained
+the exact image identity. No scan, provider credential injection, or
+unrestricted external scanning was performed.
+
+The exact-runtime disposable hardened inventory probe reported
+`FLEET_COUNT=26` with IDs `amass`, `bandit`, `checkov`, `dockle`, `ffuf`,
+`gitleaks`, `grype`, `gtfobins`, `httpx`, `hydra`, `katana`, `kube-bench`,
+`metasploit`, `nmap`, `nuclei`, `osv-scanner`, `prowler`, `retire`,
+`schemathesis`, `semgrep`, `sqlmap`, `sslyze`, `subfinder`, `syft`, `trivy`,
+and `trufflehog`. The probe used no network, a read-only filesystem, all
+capability drops, no-new-privileges, and disposable tmpfs mounts; it performed
+no scan.
+
+### Authorization, persistence, and protected data
+
+The CT108 credential operation was limited to the explicitly authorized
+demo-account recovery. One existing active administrator row was updated in
+PostgreSQL database `cyberassess`; no full database reset, schema change,
+account creation, or history deletion occurred. Current counts are
+`users=1`, `scans=0`, `findings=0`, `finding_occurrences=0`,
+`execution_requests=0`, `execution_runs=0`, and `audit_events=10`. The audit
+increase consists of successful verification logins. Raw credentials and
+password hashes were not recorded.
+
+The protected repository SQLite database remains outside delivery operations.
+Its unchanged fingerprint is `10285056` bytes, mtime
+`2026-09-04T23:24:42.6548237Z`, SHA-256
+`7a5a019389f69574b7bae31c355efeeed47fbe9f203e2c2a65c946e21cba6ecc`.
+
+### Authoritative GitHub Actions evidence
+
+GitHub Actions run
+`34685317236` ([run](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34685317236))
+executed for exact SHA `031cda1f93fd0e7cebf6ec50452da43dc7bf980f` and
+completed successfully. All six jobs passed:
+
+| Job | Job ID | Result |
+| --- | --- | --- |
+| Windows Job Object assurance | `103531200228` | 19 passed, 0 skipped |
+| PostgreSQL 16 schema assurance | `103531200272` | 29 passed, 0 skipped |
+| Hardened production image verification | `103531200286` | passed |
+| Compile backend | `103531200317` | passed |
+| Focused contract verification | `103531200328` | 341 passed, 11 skipped |
+| Full repository verification | `103531200341` | 1026 passed, 14 skipped, 15 warnings |
+
+Retained artifact archive digests are:
+
+| Artifact | Archive digest |
+| --- | --- |
+| `focused-contract-evidence-34685317236` | `sha256:1b06e56eca45f63c37f0f1594a1e6b0a12255c2fab7da10607ad5fd3b49f27c5` |
+| `full-repository-evidence-34685317236` | `sha256:1274378bc6a7744183b474316ab8a80025c7f77329c2b435e1ecee35ab5f54bd` |
+| `postgres-schema-evidence-34685317236` | `sha256:c8a2d9ddbac261e97a9999634efd36d2493cf6ebf59ef97035f91789fd5ac0f2` |
+| `windows-job-object-evidence-34685317236` | `sha256:3a31edfb4708d4010eb8ee99b09667d9267902f665fdb94fe3deea29ef093417` |
+
+The downloaded files are retained under
+`.project-temp/section-b-recovery-closure-20260912/github-34685317236/`.
+The focused log/XML hashes are
+`2375C4081E2012DE4A87B271CC8345D5A367BC877AC2412723E55C8277F578B9` and
+`E023F2A8AC6D2CCB218483A6014B951AEF9F08A8890433A52CD12A4DBF82A9E4`; the
+full log and skip-classifier hashes are
+`3097A22B1D957DE23EDCB579F02101E490C65BEED8322CEF6CBF027DAB66D8AF` and
+`FE9BCDB7B4DBE76CA538738236F9969766D91C0A834328A24F835264E0F18555`.
+The PostgreSQL log/XML hashes are
+`657E8BEAEB1E4C6782F8C42083311CA70C7EF15BDD9EFAE7EC03ED60D9ED0F47` and
+`3BCEA268EE173DAE7FCD34DBBD5BABD408165A72193C07F695FFCB954527C153`;
+the Windows log/XML hashes are
+`898CE90FC860827455D20950DD03E5F492BAB2949F5026701CFF2058982DA527` and
+`9A19DC08F1201F2E18AFB2DE877CFCE26B4326E77757C9A6E51EB61F36E7398C4`.
+
+The full-suite classifier records exactly 14 skips: three managed-tool
+availability skips, ten Windows/platform-covered skips, and one historical
+provenance-blocked fixture. They remain skips and are not counted as passes.
+Warnings include the upload-artifact Node.js 24 migration notice and Python
+deprecation warnings; no warning was treated as a pass or failure.
+
+### Delivery boundary and remaining acceptance state
+
+The local branch and GitHub branch were verified at the exact published SHA.
+GitLab was not updated because its read-only remote returned HTTP `530`; the
+mirror remains deferred until the GitHub-first publication and independent
+auditor gates are satisfied. GitLab is not an acceptance provider. Docker
+Compose network segmentation remains a container-network boundary and is not
+dynamic destination-level egress enforcement.
+
+This current evidence closes the stale publication references but does not
+close the lifecycle matrix. The rows remain `OPEN` pending independent
+auditor acceptance and the remaining durable cancellation/recovery,
+tenant-isolation, and broader OS-level evidence that is not established by
+the orderly worker-loop test, deployment smoke checks, or a green CI run alone.

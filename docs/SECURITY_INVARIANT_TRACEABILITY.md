@@ -19,15 +19,15 @@ In accordance with Rule 0.1 (*Enterprise Security Invariant Closure & Production
 | **INV-006** | Pre-Resolution DNS & DNS Rebinding Defenses | Contract 01 Section 5.1, Contract 04 Section 3, Contract 08 Section 12.1 | backend/app/core/ssrf_protector.py | tests/security/test_adversarial_sec_matrix.py::test_sec_009_ssrf_dns_rebinding_pre_resolution | **VERIFIED** |
 | **INV-007** | Workspace Jail & Path Traversal / Symlink Containment | Contract 01 Section 6, Contract 08 Section 12.3 | backend/app/core/path_sandbox.py | tests/security/test_adversarial_sec_matrix.py::test_sec_010_filesystem_escape_blocked, test_sec_011_symlink_escape_blocked | **VERIFIED** |
 | **INV-008** | Tool Supply Chain Integrity & Pinned SHA-256 Checksums | Contract 01 Section 7, Contract 03 Section 2, Contract 08 Section 4, Contract 09 | backend/app/installers/tool_manifest.py, backend/app/installers/github_release_installer.py | tests/security/test_adversarial_sec_matrix.py::test_sec_017_tool_hash_mismatch_rejection, test_sec_018_unpinned_tool_rejection, test_sec_019_malicious_archive_zipslip_rejection | **VERIFIED** |
-| **INV-009** | Process Supervisor & Subprocess Tree Termination | Contract 03 §1.1.3 and §3, Contract 08 §6.1.2 and §6.6, Contract 09 | backend/app/core/process_supervisor.py, backend/app/core/windows_job.py, backend/app/core/execution_context.py, backend/app/core/execution_service.py | tests/security/test_adversarial_sec_matrix.py::test_sec_020_scan_cancellation_lifecycle; tests/security/test_process_launch_boundary.py::test_windows_job_atomic_assignment_and_descendant_termination; tests/security/test_process_launch_boundary.py::test_windows_supervisor_cancellation_requires_attested_identity; tests/security/test_process_launch_boundary.py::test_windows_non_scan_timeout_output_cancellation_and_exception_are_typed; tests/security/test_execution_decision_authority.py::test_governed_process_rejection_is_durably_settled_after_authority_claim | **REPOSITORY VERIFIED / WINDOWS CI VERIFIED — baseline run 34659175863, job 103457915354; current candidate run 34666036688, job 103477994643** |
+| **INV-009** | Process Supervisor & Subprocess Tree Termination | Contract 03 §1.1.3 and §3, Contract 08 §6.1.2 and §6.6, Contract 09 | backend/app/core/process_supervisor.py, backend/app/core/windows_job.py, backend/app/core/execution_context.py, backend/app/core/execution_service.py | tests/security/test_adversarial_sec_matrix.py::test_sec_020_scan_cancellation_lifecycle; tests/security/test_process_launch_boundary.py::test_windows_job_atomic_assignment_and_descendant_termination; tests/security/test_process_launch_boundary.py::test_windows_supervisor_cancellation_requires_attested_identity; tests/security/test_process_launch_boundary.py::test_windows_non_scan_timeout_output_cancellation_and_exception_are_typed; tests/security/test_execution_decision_authority.py::test_governed_process_rejection_is_durably_settled_after_authority_claim | **REPOSITORY VERIFIED / WINDOWS CI VERIFIED — historical baseline run 34659175863, job 103457915354; current published run 34685317236, job 103531200228** |
 | **INV-010** | Resource Governance & Scan Concurrency Bounding | Contract 01 Section 8, Contract 04 Section 1, Contract 09 | backend/app/core/queue.py | tests/security/test_adversarial_sec_matrix.py::test_sec_021_resource_exhaustion_concurrency_governance | **VERIFIED** |
 | **INV-011** | Secret Sanitization in Evidence, Logs & Reports | Contract 01 Section 6, Contract 02 Section 4, Contract 09 | backend/app/core/models.py, backend/app/exporters/sarif_exporter.py, backend/app/exporters/html_exporter.py | tests/security/test_adversarial_sec_matrix.py::test_sec_022_evidence_secret_masking, test_sec_028_report_secret_leakage_sanitization | **VERIFIED** |
 | **INV-012** | Immutable Chained Cryptographic Audit Logging | Contract 01 Section 4, Contract 02 Section 6, Contract 08 Section 1 | backend/app/core/db.py | tests/security/test_adversarial_sec_matrix.py::test_sec_023_audit_log_integrity | **VERIFIED** |
 | **INV-013** | Finding Lifecycle, SLA Clock Preservation & Correlation | Contract 01 Section 5.2, Contract 02 Section 4, Contract 08 Section 2 | backend/app/core/correlator.py, backend/app/core/models.py | tests/security/test_adversarial_sec_matrix.py::test_sec_024_risk_acceptance_visibility, test_sec_025_sla_clock_preservation, test_sec_026_correlation_false_merge_prevention, test_sec_027_correlation_duplicate_merging | **VERIFIED** |
 | **INV-014** | Relational Database ACID Persistence | Contract 01 Section 4, Contract 02 Section 3-6 | backend/app/core/db.py, backend/app/core/storage.py | tests/security/test_adversarial_sec_matrix.py::test_sec_029_database_transaction_integrity | **VERIFIED** |
 | **INV-015** | Development Mode Privilege Isolation | Contract 01 Section 3, Contract 08 Section 1 | backend/app/core/auth.py | tests/security/test_adversarial_sec_matrix.py::test_sec_030_development_mode_privilege_isolation | **VERIFIED** |
-| **INV-016** | Authentication Side-Effect Isolation & Backend-Owned Tool Observation | Contract 04 Section 1.1.1, 1.5.2, Contract 07 Section 2, Contract 08 Section 6.1.2 | frontend/js/app.js, backend/app/main.py, backend/app/core/observation_service.py | tests/test_frontend_contract.py, tests/test_observation_service.py | **REPOSITORY VERIFIED / DEPLOYMENT PENDING** |
-| **INV-017** | Durable Scan History & Retention Boundary | Contract 01 Section 3, Contract 04 Section 1.3.1, Contract 07 Section 7, Contract 08 Section 6.1.3 | backend/app/core/db.py, backend/app/core/storage.py, backend/app/api/scans.py, frontend/js/app.js | tests/test_api_endpoints.py, tests/security/test_database_backend.py, tests/test_models_and_grading.py | **REPOSITORY VERIFIED / DEPLOYMENT PENDING** |
+| **INV-016** | Authentication Side-Effect Isolation & Backend-Owned Tool Observation | Contract 04 Section 1.1.1, 1.5.2, Contract 07 Section 2, Contract 08 Section 6.1.2 | frontend/js/app.js, backend/app/main.py, backend/app/core/observation_service.py | tests/test_frontend_contract.py, tests/test_observation_service.py | **REPOSITORY VERIFIED / CT108 exact-source deployment observed; independent acceptance OPEN** |
+| **INV-017** | Durable Scan History & Retention Boundary | Contract 01 Section 3, Contract 04 Section 1.3.1, Contract 07 Section 7, Contract 08 Section 6.1.3 | backend/app/core/db.py, backend/app/core/storage.py, backend/app/api/scans.py, frontend/js/app.js | tests/test_api_endpoints.py, tests/security/test_database_backend.py, tests/test_models_and_grading.py | **REPOSITORY VERIFIED / CT108 persistence boundary observed; independent acceptance OPEN** |
 
 ---
 
@@ -132,13 +132,15 @@ Repository-level controls for the documented invariants are implemented and veri
 - **Tests:** `tests/security/test_code_sast_assurance.py`, E13 adapter tests, `tests/test_engine_code_sast.py`, persistence/API tests, and full regression.
 - **Status:** `REPOSITORY_VERIFIED` for the corrected shared process-supervision, fallback-provenance, execution-state attribution, evidence-sanitization, authoritative-persistence, explicit discovery-admission boundary, platform-owned provider destination allowlists, observation-only cloud fallback, hardened production containers, and 26-tool registry controls. The current Linux production image verified managed trust records and runtime paths for Nuclei, FFuF, Gitleaks, Subfinder, httpx, Katana, Syft, Grype, OSV-Scanner, TruffleHog, Dockle, kube-bench, Amass, and source-built Nmap, plus Retire.js and the six lock-bound Python environments, all under UID 999. No unmanaged runtime is treated as evidence; Prowler remains fail-closed without a worker-side tenant-scoped credential envelope and provider egress controls, while missing native cloud observations are explicitly degraded rather than treated as clean. OS-level external-process egress governance and diagnostic-only auxiliary tools remain documented limitations.
 
-## Section B execution-lifecycle runtime-candidate evidence — 2026-09-12
+## Section B historical pre-publication execution-lifecycle runtime-candidate evidence — 2026-09-12
 
 This dated entry records bounded implementation and platform evidence gathered
 before the final grouped GitHub publication. It supplements, and does not
-rewrite, the historical E11.3/E13 entries above. The temporary CT 108 image is
+rewrite, the historical E11.3/E13 entries above. The temporary CT108 image is
 not treated as a published revision, and this entry does not change the
-acceptance status of the execution-lifecycle matrix.
+acceptance status of the execution-lifecycle matrix. It is not current
+source-provenance evidence for published commit `031cda1`; that evidence is
+recorded in the final Section B section below.
 
 - **Demonstrated source corrections:** `Dockerfile` now supplies explicit
   legacy-builder `BUILDPLATFORM`/`TARGETARCH` defaults and serializes the
@@ -203,12 +205,12 @@ acceptance status of the execution-lifecycle matrix.
 | **INV-R4.4** | Docker Compose Standalone/Enterprise Profile Isolation | Audit R4.4 | `docker-compose.yml`, `README.md` | `tests/test_e13_platform_hardening.py` | **VERIFIED** |
 | **INV-R4.5** | Egress Fail-Closed Documentation Truthfulness | Audit R4.5 | `README.md`, `docs/DOCKER_COMPOSE_DEPLOYMENT.md` | Doc & Code Inspection | **VERIFIED** |
 | **INV-R4.6** | Reconciled Supported Python Interpreters (3.11/3.13) | Audit R4.6 | `README.md`, `contracts/09_TOOL_IMPLEMENTATION_CONTRACT.md` | Doc & Code Inspection | **VERIFIED** |
-| **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (baseline) and 34666036688 (current candidate) | **VERIFIED — current candidate run 34666036688** |
-| **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (baseline) and 34666036688 (current candidate) | **VERIFIED — current candidate run 34666036688** |
+| **INV-R4.7** | Authoritative Linux CI Verification Proof | Audit R4.7 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (historical baseline) and 34685317236 (current published commit) | **VERIFIED — current published run 34685317236** |
+| **INV-R4.8** | Production Container Live Health Smoke Verification | Audit R4.8 | `.github/workflows/contract-verification.yml` | GitHub Actions CI Runs 34659175863 (historical baseline) and 34685317236 (current published commit) | **VERIFIED — current published run 34685317236** |
 
 ---
 
-## Section B current authenticated recovery and active-handler evidence — 2026-09-12
+## Section B historical pre-final-source authenticated recovery and active-handler evidence — 2026-09-12
 
 The previous Section B runtime note recorded an HTTP 401 for the supplied
 administrator credential. That observation remains historical. CT108 was
@@ -220,7 +222,8 @@ before/after fingerprints are recorded in
 `docs/evidence/section_b_execution_lifecycle_followup_2026-09-12.md` and the
 project-local evidence record it names.
 
-Current CT108 evidence is:
+The following evidence was collected before the exact published-source
+deployment and is retained as historical operational evidence:
 
 - authenticated login and `/api/auth/me` returned HTTP `200` for the active
   `ADMIN` in `org-7f0c365a`;
@@ -235,13 +238,80 @@ Current CT108 evidence is:
 
 The post-change disposable local lifecycle suite recorded `96 passed, 46
 skipped, 1 warning`; the database-backend suite recorded `36 passed, 1
-warning`. This is implementation/runtime evidence only. The lifecycle matrix
-remains open pending exact-SHA GitHub Actions verification and independent
-auditor acceptance.
+warning`. This is implementation/runtime evidence only. At the time of this
+entry, exact-SHA GitHub Actions verification and independent auditor
+acceptance remained open; current exact-source CI and runtime evidence is
+recorded in the final Section B section below.
 
 The full substantive local regression recorded `954 passed, 85 skipped, 1
 deselected, 15 warnings`; the deselected item is the preserved historical
 `.ci` worktree-inventory assertion and is not counted as a pass. The local
-result remains supplementary until the exact grouped commit is verified by
-GitHub Actions.
+result remains supplementary. The exact grouped commit is now verified by
+GitHub Actions run `34685317236`, but independent auditor acceptance remains
+open.
+
+## Section B final published source, exact CT108 runtime, and authoritative CI evidence — 2026-09-12
+
+The exact application/test source used for the current Section B runtime and CI
+evidence is commit
+`031cda1f93fd0e7cebf6ec50452da43dc7bf980f` on
+`security/nmap-installer-closure`, parent
+`cb563414a1721a780ed0d0184ed8e9ee6c6dbcd8`, tree
+`0a43ef6b895f059a991173122bd220ac37140579` ([GitHub commit](https://github.com/andresslacson1989/security-assessment-platform/commit/031cda1f93fd0e7cebf6ec50452da43dc7bf980f)).
+The exact source archive is `6,318,080` bytes with SHA-256
+`32066405c11f07e4b94d17c1b43136bfd0bff54035aa54843828db1b687ead25`; the
+archive transferred to CT108 matched that size and digest; the extracted
+source was verified against that archive. The exact-source build used image tag
+`ghcr.io/andresslacson1989/security-assessment-platform:section-b-final-031cda1`
+and image ID/RepoDigest
+`sha256:a66b873c679d1f3873c3c093d70e0ac3f05ee907aff5ff082c4517f35a55c4e1`.
+The image was created at `2026-09-12T09:54:32.364976258Z`, is Linux/amd64,
+and is labeled with the exact revision, source archive digest, and source
+`github.com/andresslacson1989/security-assessment-platform`. The retained
+build log is 28,667 bytes with SHA-256
+`19c7bcbe7eda35cd9a5b25950f8045b08fda06869b87b277d792b8a692fdbbd6`.
+
+CT108 exact-runtime evidence is summarized in the companion evidence record
+`docs/evidence/section_b_execution_lifecycle_followup_2026-09-12.md`:
+
+- API container `3b281c1f48a9c12fcf501aaa6c40ba162ded7175db6537c0818c951ad780fb03`
+  and worker container
+  `3902a58854a0c4efb3eb8fc9807ea344d30fd8e036210a165ac512282d9bc75c` ran the
+  exact image; both ran as `cyberassess` with read-only root, all capabilities
+  dropped, and `no-new-privileges`; the API was healthy and the worker command
+  was `python /app/run_worker.py`.
+- Existing PostgreSQL and Redis containers were preserved. PostgreSQL was
+  ready, Redis returned `PONG`, and the `cyberassess-workers` queue group had
+  pending `0` and lag `0`.
+- The API health endpoint returned HTTP `200`, `HEALTHY`, version `14.3.0`,
+  storage `OK`, and five registered engines. Login, `/me`, and the
+  tenant-scoped recovery-health endpoint returned HTTP `200`; recovery was
+  empty for `org-7f0c365a`.
+- The worker restarted from PID `2268860` to `2269163` with stop/start exit
+  code `0` and the same image identity. No scan or provider credential
+  injection was performed.
+- The disposable hardened inventory probe reported all 26 registered tool
+  IDs; no scan or network access was performed.
+
+The exact GitHub Actions run is
+`34685317236` ([run](https://github.com/andresslacson1989/security-assessment-platform/actions/runs/34685317236))
+for the exact published SHA. All six jobs passed: Windows Job Object
+`103531200228` (19 passed), PostgreSQL 16 schema
+`103531200272` (29 passed), hardened production image
+`103531200286`, compile backend `103531200317`, focused contract
+`103531200328` (341 passed, 11 skipped), and full repository
+`103531200341` (1026 passed, 14 skipped, 15 warnings). Retained GitHub
+artifact archive digests are recorded in the companion evidence document;
+the 14 full-suite skips remain skips and comprise three managed-tool
+availability skips, ten Windows/platform-covered skips, and one historical
+provenance-blocked fixture.
+
+The authorized CT108 account-only credential operation changed one existing
+administrator password row and did not reset the database or delete scan,
+finding, execution, or test history. The protected repository SQLite
+fingerprint remained unchanged. These are runtime and publication evidence,
+not an independent acceptance decision: the lifecycle criteria and auditor
+acceptance remain open. GitLab was not updated because the mirror remote
+returned HTTP `530`; GitLab is mirror-only and cannot satisfy this acceptance
+gate.
 
