@@ -15,7 +15,15 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import pytest
 import psycopg
 
-from app.core.db import PostgresDatabaseManager
+from app.core.db import (
+    PostgresDatabaseManager,
+    _assert_compatibility_column_exact,
+    _compatibility_column_metadata,
+)
+from app.core.migration_artifacts import (
+    COMPATIBILITY_RECONCILIATION_MANIFEST,
+    COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+)
 from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.models import AuditAction, AuditEvent
 from app.core.scan_request_migration_v13 import _CHILD_LINK_CHECK, _normalized_sql
@@ -455,6 +463,25 @@ def test_postgres_bootstrap_health_and_rerun_are_real_backend_operations():
         # the startup health path after the first transaction has completed.
         second = PostgresDatabaseManager(manager.database_url)
         second._pool.close()
+
+
+def test_postgres_compatibility_manifest_and_current_provenance_are_exact():
+    with _isolated_manager() as manager:
+        with manager._connection_scope() as conn:
+            for entry in COMPATIBILITY_RECONCILIATION_MANIFEST:
+                metadata = _compatibility_column_metadata(conn, "postgresql", entry)
+                _assert_compatibility_column_exact(entry, metadata)
+
+            events = conn.execute(
+                "SELECT migration_version, context_json FROM schema_migration_events "
+                "WHERE migration_version BETWEEN 1 AND 12 ORDER BY migration_version, event_sequence"
+            ).fetchall()
+        assert len(events) == 24
+        assert COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["postgresql"].startswith("sha256:")
+        for event in events:
+            context = json.loads(event["context_json"])
+            assert context["compatibility_artifact"] == COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["postgresql"]
+            assert context["compatibility_manifest"] == COMPATIBILITY_RECONCILIATION_MANIFEST
 
 
 def test_postgres_version_two_remediates_legacy_request_fk():

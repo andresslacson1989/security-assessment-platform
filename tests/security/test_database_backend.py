@@ -15,14 +15,24 @@ import pytest
 
 import app.core.db as db_module
 from app.core.db import (
+    _MigrationCompatibilityError,
+    _MigrationGuardedConnection,
     _PostgresConnection,
     _PostgresRow,
     _qmark_to_postgres,
+    _assert_compatibility_column_exact,
+    _compatibility_column_metadata,
+    _compatibility_ddl,
+    _is_postgres_duplicate_column,
+    _is_sqlite_duplicate_column,
     DatabaseManager,
     PostgresDatabaseManager,
     is_database_integrity_error,
 )
 from app.core.migration_artifacts import (
+    COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+    COMPATIBILITY_RECONCILIATION_MANIFEST,
+    COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
     FORWARD_APPLY_MANIFESTS,
     FORWARD_APPLY_SOURCE_SHA256,
     MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256,
@@ -207,6 +217,317 @@ def test_database_import_binds_to_explicit_disposable_path_before_singleton_crea
 
     assert result.stdout.strip() == str(database_path)
     assert database_path.is_file()
+
+
+def test_compatibility_manifest_has_exact_governed_inventory_and_savepoints():
+    assert [
+        (entry["table"], entry["column"], entry["family"])
+        for entry in COMPATIBILITY_RECONCILIATION_MANIFEST[:8]
+    ] == [
+        ("api_keys", "status", "generic"),
+        ("users", "principal_type", "generic"),
+        ("finding_occurrences", "organization_id", "generic"),
+        ("audit_events", "sequence_number", "generic"),
+        ("audit_events", "previous_event_hash", "generic"),
+        ("audit_events", "event_hash", "generic"),
+        ("assets", "active_probing_granted", "generic"),
+        ("assets", "live_secret_verification_granted", "generic"),
+    ]
+    assert [entry["column"] for entry in COMPATIBILITY_RECONCILIATION_MANIFEST[8:]] == [
+        "approved_decision_id",
+        "target_policy_version",
+        "operation_policy_revision",
+        "request_fingerprint",
+        "operation_options_json",
+        "resource_budget_json",
+        "account_impact_budget_json",
+        "credential_scope_json",
+        "snapshot_completeness",
+    ]
+    assert len(COMPATIBILITY_RECONCILIATION_MANIFEST) == 17
+    assert all(entry["savepoint"] for entry in COMPATIBILITY_RECONCILIATION_MANIFEST)
+    assert COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION == "execution-compatibility-reconciliation-v1"
+
+
+def test_duplicate_race_classification_is_backend_native_and_column_specific():
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+
+    assert _is_sqlite_duplicate_column(
+        sqlite3.OperationalError("duplicate column name: status"), entry
+    )
+    assert not _is_sqlite_duplicate_column(
+        sqlite3.OperationalError("already exists: status"), entry
+    )
+    assert not _is_sqlite_duplicate_column(
+        sqlite3.OperationalError("duplicate column name: other"), entry
+    )
+
+    class PostgresDuplicate:
+        sqlstate = "42701"
+
+    class SameMessageDifferentState:
+        sqlstate = "42P07"
+
+        def __str__(self):
+            return "duplicate column name: status"
+
+    assert _is_postgres_duplicate_column(PostgresDuplicate())
+    assert not _is_postgres_duplicate_column(SameMessageDifferentState())
+
+
+def test_fresh_sqlite_bootstrap_submits_each_governed_ddl_only_when_missing(tmp_path, monkeypatch):
+    traced = []
+    original_connect = db_module.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(traced.append)
+        return connection
+
+    monkeypatch.setattr(db_module.sqlite3, "connect", traced_connect)
+    manager = DatabaseManager(db_path=tmp_path / "fresh-governed.sqlite3")
+    governed_sql = db_module._compatibility_manifest_by_sql()
+    actual = {
+        normalized: sum(
+            1 for statement in traced
+            if db_module._normalize_migration_sql(statement) == normalized
+        )
+        for normalized in governed_sql
+    }
+    expected = {
+        normalized: 1 if entry["table"] == "users" and entry["column"] == "principal_type" else 0
+        for normalized, entry in governed_sql.items()
+    }
+    assert actual == expected
+    with manager._connection_scope() as connection:
+        assert [row["version"] for row in connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()] == list(range(1, 14))
+        for entry in COMPATIBILITY_RECONCILIATION_MANIFEST:
+            _assert_compatibility_column_exact(
+                entry,
+                _compatibility_column_metadata(connection, "sqlite", entry),
+            )
+
+
+def test_sqlite_guard_skips_exact_existing_definition_without_submitting_ddl(tmp_path):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    path = tmp_path / "existing.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE api_keys (key_id TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE')")
+    statements = []
+    connection.set_trace_callback(statements.append)
+    manager = object.__new__(DatabaseManager)
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_2")
+    assert guarded.execute(_compatibility_ddl(entry)).rowcount == 0
+    guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+    assert not any(db_module._normalize_migration_sql(statement) == db_module._normalize_migration_sql(_compatibility_ddl(entry)) for statement in statements)
+    connection.close()
+
+
+def test_sqlite_guard_adds_missing_definition_and_verifies_postcondition(tmp_path):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    path = tmp_path / "missing.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE api_keys (key_id TEXT)")
+    manager = object.__new__(DatabaseManager)
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_2")
+    guarded.execute(_compatibility_ddl(entry))
+    guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+    metadata = _compatibility_column_metadata(connection, "sqlite", entry)
+    _assert_compatibility_column_exact(entry, metadata)
+    connection.close()
+
+
+def test_sqlite_guard_rejects_wrong_existing_definition(tmp_path):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "principal_type")
+    connection = sqlite3.connect(tmp_path / "wrong.sqlite3")
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE users (principal_type TEXT DEFAULT 'TENANT_PRINCIPAL')")
+    manager = object.__new__(DatabaseManager)
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_3")
+    with pytest.raises(_MigrationCompatibilityError, match="not exact"):
+        guarded.execute(_compatibility_ddl(entry))
+    guarded.execute("ROLLBACK TO SAVEPOINT schema_migration_3")
+    guarded.execute("RELEASE SAVEPOINT schema_migration_3")
+    connection.close()
+
+
+def test_sqlite_guard_rejects_missing_table_before_ddl(tmp_path):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    connection = sqlite3.connect(tmp_path / "missing-table.sqlite3")
+    connection.row_factory = sqlite3.Row
+    manager = object.__new__(DatabaseManager)
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_2")
+    with pytest.raises(_MigrationCompatibilityError, match="table is missing"):
+        guarded.execute(_compatibility_ddl(entry))
+    guarded.execute("ROLLBACK TO SAVEPOINT schema_migration_2")
+    guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+    connection.close()
+
+
+def test_sqlite_guard_wraps_unexpected_ddl_failure_without_duplicate_fallback(tmp_path):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    path = tmp_path / "readonly.sqlite3"
+    writable = sqlite3.connect(path)
+    writable.execute("CREATE TABLE api_keys (key_id TEXT)")
+    writable.commit()
+    writable.close()
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    manager = object.__new__(DatabaseManager)
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_2")
+    with pytest.raises(_MigrationCompatibilityError, match="DDL execution failed") as failure:
+        guarded.execute(_compatibility_ddl(entry))
+    assert "duplicate" not in str(failure.value).lower()
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    ("peer_definition", "should_pass"),
+    (("TEXT NOT NULL DEFAULT 'ACTIVE'", True), ("TEXT", False)),
+)
+def test_sqlite_guard_accepts_only_exact_duplicate_race_postcondition(tmp_path, peer_definition, should_pass):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    path = tmp_path / ("race-exact.sqlite3" if should_pass else "race-wrong.sqlite3")
+    peer = sqlite3.connect(path)
+    peer.execute("PRAGMA journal_mode=WAL")
+    peer.execute("CREATE TABLE api_keys (key_id TEXT)")
+    peer.commit()
+    state = {"injected": False}
+    target_sql = db_module._normalize_migration_sql(_compatibility_ddl(entry))
+
+    class RaceConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if not state["injected"] and db_module._normalize_migration_sql(sql) == target_sql:
+                peer.execute(f"ALTER TABLE api_keys ADD COLUMN status {peer_definition}")
+                peer.commit()
+                state["injected"] = True
+                raise sqlite3.OperationalError("duplicate column name: status")
+            return super().execute(sql, parameters)
+
+    connection = sqlite3.connect(path, factory=RaceConnection)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.row_factory = sqlite3.Row
+    manager = object.__new__(DatabaseManager)
+    manager.db_path = path
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_2")
+    try:
+        if should_pass:
+            guarded.execute(_compatibility_ddl(entry))
+            guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+        else:
+            with pytest.raises(_MigrationCompatibilityError, match="not exact"):
+                guarded.execute(_compatibility_ddl(entry))
+            connection.execute("ROLLBACK TO SAVEPOINT schema_migration_2")
+            connection.execute("RELEASE SAVEPOINT schema_migration_2")
+    finally:
+        connection.close()
+        peer.close()
+
+
+def test_compatibility_artifact_rejects_mutated_current_digest(monkeypatch):
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    original = COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["sqlite"]
+    replacement = "0" if original[-1] != "0" else "1"
+    monkeypatch.setitem(
+        db_module.COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+        "sqlite",
+        original[:-1] + replacement,
+    )
+    with pytest.raises(RuntimeError, match="compatibility reconciliation artifact drifted"):
+        database._verify_compatibility_reconciliation_artifact(spec)
+
+
+def _assert_compatibility_artifact_rejects_one_byte_source_mutation(monkeypatch, target):
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    original_getsource = db_module.inspect.getsource
+
+    def mutated_getsource(candidate):
+        source = original_getsource(candidate)
+        if candidate is target:
+            assert source
+            replacement = " " if source[-1] != " " else "\n"
+            return source[:-1] + replacement
+        return source
+
+    monkeypatch.setattr(db_module.inspect, "getsource", mutated_getsource)
+    with pytest.raises(RuntimeError, match="compatibility reconciliation artifact drifted"):
+        database._verify_compatibility_reconciliation_artifact(spec)
+
+
+def test_compatibility_artifact_rejects_source_mutated_coordinator_activation_path(monkeypatch):
+    _assert_compatibility_artifact_rejects_one_byte_source_mutation(
+        monkeypatch,
+        DatabaseManager._run_migration_coordinator,
+    )
+
+
+def test_compatibility_artifact_rejects_source_mutated_guarded_callable(monkeypatch):
+    _assert_compatibility_artifact_rejects_one_byte_source_mutation(
+        monkeypatch,
+        db_module._compatibility_column_metadata,
+    )
+
+
+def test_compatibility_artifact_rejects_mutated_security_sensitive_pattern(monkeypatch):
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    original = db_module._COMPATIBILITY_IDENTIFIER_PATTERN
+    mutated_pattern = db_module.re.compile(
+        original.pattern.replace("*", "+"),
+        original.flags,
+    )
+    monkeypatch.setattr(db_module, "_COMPATIBILITY_IDENTIFIER_PATTERN", mutated_pattern)
+    with pytest.raises(RuntimeError, match="compatibility reconciliation artifact drifted"):
+        database._verify_compatibility_reconciliation_artifact(spec)
+
+
+def test_v13_forward_apply_artifact_verification_does_not_use_compatibility_artifact(monkeypatch):
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 13)
+    calls = []
+
+    def unexpected_compatibility_digest(backend):
+        calls.append(backend)
+        return "sha256:" + ("0" * 64)
+
+    monkeypatch.setattr(db_module, "_compatibility_reconciliation_artifact_digest", unexpected_compatibility_digest)
+    database._verify_forward_apply_artifact(spec)
+    assert calls == []
+
+
+def test_current_compatibility_provenance_is_complete_and_partial_claims_fail_closed():
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    frozen_context = {
+        "coordinator": "registry",
+        "provenance_format": "registry-coordinator-v2",
+        "migration_version": spec.version,
+        "apply_artifact_revision": db_module.FORWARD_APPLY_ARTIFACT_REVISION,
+        "apply_artifact": spec.apply_artifact["sqlite"],
+        "apply_artifacts": spec.apply_artifact,
+        "apply_manifest": spec.apply_manifest,
+        "backend_policy": spec.backend_policy,
+    }
+    complete = dict(frozen_context)
+    complete.update(database._compatibility_artifact_claim(spec))
+    row = {"transaction_context_id": f"txp-{'a' * 32}-{spec.apply_artifact['sqlite'].split(':', 1)[1]}"}
+    database._validate_migration_event_provenance(row, spec, complete)
+    partial = dict(complete)
+    partial.pop("compatibility_manifest")
+    with pytest.raises(RuntimeError, match="partial compatibility provenance"):
+        database._validate_migration_event_provenance(row, spec, partial)
 
 
 def test_worker_does_not_reexecute_terminal_authoritative_scan_states():

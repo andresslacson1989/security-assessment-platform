@@ -90,6 +90,9 @@ from app.core.models import (
 )
 from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.migration_artifacts import (
+    COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+    COMPATIBILITY_RECONCILIATION_MANIFEST,
+    COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
     FORWARD_APPLY_ARTIFACT_REVISION,
     FORWARD_APPLY_SOURCE_SHA256,
     POSTCONDITION_SOURCE_SHA256,
@@ -847,6 +850,458 @@ class _PostgresConnection:
         self._connection.close()
 
 
+class _MigrationCompatibilityError(RuntimeError):
+    """A migration compatibility check failed closed without masking the cause."""
+
+
+_COMPATIBILITY_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_COMPATIBILITY_SAVEPOINT_PATTERN = re.compile(r"^savepoint ([a-z_][a-z0-9_]*)$", re.IGNORECASE)
+_COMPATIBILITY_RELEASE_PATTERN = re.compile(r"^release savepoint ([a-z_][a-z0-9_]*)$", re.IGNORECASE)
+_COMPATIBILITY_ROLLBACK_TO_PATTERN = re.compile(r"^rollback to savepoint ([a-z_][a-z0-9_]*)$", re.IGNORECASE)
+_COMPATIBILITY_ROLLBACK_PATTERN = re.compile(r"^rollback$", re.IGNORECASE)
+_COMPATIBILITY_LITERAL_PATTERN = re.compile(r"^'((?:''|[^'])*)'(?:::text)?$", re.IGNORECASE)
+
+
+def _normalize_migration_sql(sql: str) -> str:
+    """Normalize only whitespace and statement terminators for static matching."""
+    if not isinstance(sql, str):
+        return ""
+    value = sql.strip()
+    while value.endswith(";"):
+        value = value[:-1].rstrip()
+    return re.sub(r"\s+", " ", value)
+
+
+def _compatibility_identifier(identifier: str) -> str:
+    """Validate a code-owned identifier before using it in SQLite PRAGMA SQL."""
+    if not isinstance(identifier, str) or not _COMPATIBILITY_IDENTIFIER_PATTERN.fullmatch(identifier):
+        raise _MigrationCompatibilityError("migration compatibility manifest contains an invalid identifier")
+    return identifier
+
+
+def _quote_sqlite_compatibility_identifier(identifier: str) -> str:
+    return '"' + _compatibility_identifier(identifier).replace('"', '""') + '"'
+
+
+def _normalize_compatibility_default(value: Any) -> Optional[str]:
+    """Normalize the small, explicit default grammar used by the manifest."""
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value).strip())
+    if text == "0":
+        return "0"
+    literal = _COMPATIBILITY_LITERAL_PATTERN.fullmatch(text)
+    if literal:
+        return literal.group(1).replace("''", "'")
+    raise _MigrationCompatibilityError("migration compatibility metadata contains an unsupported default expression")
+
+
+def _compatibility_manifest_entries() -> tuple[dict[str, Any], ...]:
+    """Validate and freeze the checked-in compatibility manifest at use time."""
+    expected_families = ("generic", "snapshot")
+    entries = tuple(COMPATIBILITY_RECONCILIATION_MANIFEST)
+    if len(entries) != 17:
+        raise _MigrationCompatibilityError("migration compatibility manifest entry count is not exact")
+    validated: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("family") not in expected_families:
+            raise _MigrationCompatibilityError("migration compatibility manifest entry is invalid")
+        for key in ("table", "column", "definition", "type", "savepoint"):
+            if not isinstance(entry.get(key), str) or not entry[key].strip():
+                raise _MigrationCompatibilityError("migration compatibility manifest entry is incomplete")
+        _compatibility_identifier(entry["table"])
+        _compatibility_identifier(entry["column"])
+        _compatibility_identifier(entry["savepoint"])
+        if not isinstance(entry.get("nullable"), bool):
+            raise _MigrationCompatibilityError("migration compatibility manifest nullability is invalid")
+        if entry.get("default") is not None and not isinstance(entry["default"], str):
+            raise _MigrationCompatibilityError("migration compatibility manifest default is invalid")
+        validated.append(dict(entry))
+    return tuple(validated)
+
+
+def _compatibility_ddl(entry: dict[str, Any]) -> str:
+    return f"ALTER TABLE {entry['table']} ADD COLUMN {entry['column']} {entry['definition']};"
+
+
+def _compatibility_manifest_by_sql() -> dict[str, dict[str, Any]]:
+    entries = _compatibility_manifest_entries()
+    by_sql: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        normalized = _normalize_migration_sql(_compatibility_ddl(entry))
+        if normalized in by_sql:
+            raise _MigrationCompatibilityError("migration compatibility manifest contains duplicate DDL")
+        by_sql[normalized] = entry
+    return by_sql
+
+
+def _compatibility_column_metadata(connection: Any, backend: str, entry: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Read exact current-schema metadata without interpolating caller input."""
+    table = _compatibility_identifier(entry["table"])
+    column = _compatibility_identifier(entry["column"])
+    if backend == "sqlite":
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if table_exists is None:
+            raise _MigrationCompatibilityError("migration compatibility table is missing")
+        rows = connection.execute(
+            f"PRAGMA table_info({_quote_sqlite_compatibility_identifier(table)})"
+        ).fetchall()
+        row = next((item for item in rows if item["name"] == column), None)
+        if row is None:
+            return None
+        if row["notnull"] not in (0, 1):
+            raise _MigrationCompatibilityError("migration compatibility metadata nullability is invalid")
+        return {
+            "type": str(row["type"]).strip().casefold(),
+            "nullable": not bool(row["notnull"]),
+            "default": row["dflt_value"],
+        }
+    if backend == "postgresql":
+        table_exists = connection.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema=current_schema() AND table_name=? AND table_type='BASE TABLE'",
+            (table,),
+        ).fetchone()
+        if table_exists is None:
+            raise _MigrationCompatibilityError("migration compatibility table is missing")
+        row = connection.execute(
+            "SELECT data_type, is_nullable, column_default "
+            "FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name=? AND column_name=?",
+            (table, column),
+        ).fetchone()
+        if row is None:
+            return None
+        nullable = str(row["is_nullable"]).strip().upper()
+        if nullable not in {"YES", "NO"}:
+            raise _MigrationCompatibilityError("migration compatibility metadata nullability is invalid")
+        return {
+            "type": str(row["data_type"]).strip().casefold(),
+            "nullable": nullable == "YES",
+            "default": row["column_default"],
+        }
+    raise _MigrationCompatibilityError("migration compatibility backend is unsupported")
+
+
+def _assert_compatibility_column_exact(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -> None:
+    if metadata is None:
+        raise _MigrationCompatibilityError("migration compatibility column is missing after reconciliation")
+    expected_type = str(entry["type"]).strip().casefold()
+    actual_type = str(metadata["type"]).strip().casefold()
+    if actual_type != expected_type:
+        raise _MigrationCompatibilityError("migration compatibility column type is not exact")
+    if bool(metadata["nullable"]) != bool(entry["nullable"]):
+        raise _MigrationCompatibilityError("migration compatibility column nullability is not exact")
+    actual_default = _normalize_compatibility_default(metadata["default"])
+    if actual_default != entry["default"]:
+        raise _MigrationCompatibilityError("migration compatibility column default is not exact")
+
+
+def _is_sqlite_duplicate_column(error: BaseException, entry: dict[str, Any]) -> bool:
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    match = re.fullmatch(r"duplicate column name:\s*([A-Za-z_][A-Za-z0-9_]*)", str(error).strip(), re.IGNORECASE)
+    return match is not None and match.group(1).casefold() == entry["column"].casefold()
+
+
+def _is_postgres_duplicate_column(error: BaseException) -> bool:
+    sqlstate = getattr(error, "sqlstate", None)
+    if sqlstate is None:
+        sqlstate = getattr(getattr(error, "diag", None), "sqlstate", None)
+    return str(sqlstate) == "42701"
+
+
+class _MigrationNoOpResult:
+    rowcount = 0
+    description = None
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+
+class _MigrationGuardedCursor:
+    """Cursor facade that keeps migration DDL on the guarded connection path."""
+
+    def __init__(self, owner, cursor):
+        self._owner = owner
+        self._cursor = cursor
+
+    def execute(self, sql: str, params=None):
+        if self._owner._is_guarded_ddl(sql):
+            self._owner.execute(sql, params)
+            return self
+        self._cursor.execute(sql, params or ())
+        return self
+
+    def executemany(self, sql: str, params):
+        self._cursor.executemany(sql, params)
+        return self
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+class _MigrationGuardedConnection:
+    """Intercept only the two reviewed compatibility ALTER TABLE families."""
+
+    def __init__(self, manager, connection):
+        self._manager = manager
+        self._connection = connection
+        self._backend = "postgresql" if isinstance(manager, PostgresDatabaseManager) else "sqlite"
+        self._entries_by_sql = _compatibility_manifest_by_sql()
+        self._savepoints: list[str] = []
+
+    def _is_guarded_ddl(self, sql: str) -> bool:
+        return _normalize_migration_sql(sql) in self._entries_by_sql
+
+    def _track_control_statement(self, sql: str) -> None:
+        normalized = _normalize_migration_sql(sql)
+        savepoint = _COMPATIBILITY_SAVEPOINT_PATTERN.fullmatch(normalized)
+        if savepoint:
+            self._savepoints.append(savepoint.group(1))
+            return
+        release = _COMPATIBILITY_RELEASE_PATTERN.fullmatch(normalized)
+        if release:
+            name = release.group(1)
+            if self._savepoints and self._savepoints[-1] == name:
+                self._savepoints.pop()
+            return
+        if _COMPATIBILITY_ROLLBACK_PATTERN.fullmatch(normalized):
+            self._savepoints.clear()
+
+    def _current_savepoint(self) -> Optional[str]:
+        return self._savepoints[-1] if self._savepoints else None
+
+    def _raise_reconciliation_error(self, message: str, cause: Optional[BaseException] = None):
+        error = _MigrationCompatibilityError(message)
+        if cause is None:
+            raise error
+        raise error from cause
+
+    def _rollback_to_caller_savepoint(self, savepoint: str, cause: BaseException) -> None:
+        try:
+            # Keep the savepoint open.  The frozen caller performs the matching
+            # RELEASE SAVEPOINT after this method returns successfully.
+            self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        except Exception as rollback_error:
+            self._raise_reconciliation_error("migration compatibility savepoint recovery failed", rollback_error)
+
+    def _duplicate_race_metadata(self, entry: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Read a raced SQLite schema from a fresh read-only handle.
+
+        SQLite may retain the caller's preflight read snapshot after a
+        ROLLBACK TO SAVEPOINT.  A separate read-only handle is therefore
+        required to observe a concurrent committed schema change while the
+        caller's savepoint remains open for the frozen RELEASE statement.
+        PostgreSQL statements after a savepoint rollback use the normal
+        transaction snapshot and can be read on the guarded handle.
+        """
+        if self._backend != "sqlite":
+            return _compatibility_column_metadata(self._connection, self._backend, entry)
+        database_path = getattr(self._manager, "db_path", None)
+        if database_path is None or str(database_path) == ":memory:":
+            self._raise_reconciliation_error("migration compatibility race verification requires a durable SQLite path")
+        path = Path(database_path).resolve()
+        if not path.is_file():
+            self._raise_reconciliation_error("migration compatibility race verification database is unavailable")
+        verification_connection = None
+        try:
+            verification_connection = sqlite3.connect(
+                path.as_uri() + "?mode=ro",
+                uri=True,
+                check_same_thread=False,
+                timeout=30,
+            )
+            verification_connection.row_factory = sqlite3.Row
+            return _compatibility_column_metadata(verification_connection, "sqlite", entry)
+        except _MigrationCompatibilityError:
+            raise
+        except Exception as verification_error:
+            self._raise_reconciliation_error("migration compatibility race verification failed", verification_error)
+        finally:
+            if verification_connection is not None:
+                verification_connection.close()
+
+    def _execute_guarded_ddl(self, entry: dict[str, Any]):
+        savepoint = self._current_savepoint()
+        if savepoint != entry["savepoint"]:
+            self._raise_reconciliation_error("migration compatibility DDL was issued outside its approved savepoint")
+        try:
+            metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
+        except _MigrationCompatibilityError:
+            raise
+        except Exception as preflight_error:
+            self._raise_reconciliation_error("migration compatibility preflight failed", preflight_error)
+        if metadata is not None:
+            _assert_compatibility_column_exact(entry, metadata)
+            return _MigrationNoOpResult()
+        statement = _compatibility_ddl(entry)
+        try:
+            result = self._connection.execute(statement)
+        except Exception as exc:
+            duplicate = _is_postgres_duplicate_column(exc) if self._backend == "postgresql" else _is_sqlite_duplicate_column(exc, entry)
+            if not duplicate:
+                self._raise_reconciliation_error("migration compatibility DDL execution failed", exc)
+            self._rollback_to_caller_savepoint(savepoint, exc)
+            try:
+                raced_metadata = self._duplicate_race_metadata(entry)
+                _assert_compatibility_column_exact(entry, raced_metadata)
+            except Exception as post_race_error:
+                if isinstance(post_race_error, _MigrationCompatibilityError):
+                    raise
+                self._raise_reconciliation_error("migration compatibility post-race verification failed", post_race_error)
+            return _MigrationNoOpResult()
+        try:
+            _assert_compatibility_column_exact(
+                entry,
+                _compatibility_column_metadata(self._connection, self._backend, entry),
+            )
+        except Exception as postcondition_error:
+            if isinstance(postcondition_error, _MigrationCompatibilityError):
+                raise
+            self._raise_reconciliation_error("migration compatibility postcondition verification failed", postcondition_error)
+        return result
+
+    def cursor(self):
+        return _MigrationGuardedCursor(self, self._connection.cursor())
+
+    def execute(self, sql: str, params=None):
+        normalized = _normalize_migration_sql(sql)
+        entry = self._entries_by_sql.get(normalized)
+        if entry is not None:
+            if params not in (None, ()):
+                self._raise_reconciliation_error("migration compatibility DDL does not accept parameters")
+            return self._execute_guarded_ddl(entry)
+        result = self._connection.execute(sql, params) if params is not None else self._connection.execute(sql)
+        self._track_control_statement(sql)
+        return result
+
+    def executemany(self, sql: str, params):
+        return self._connection.executemany(sql, params)
+
+    def executescript(self, sql: str):
+        return self._connection.executescript(sql)
+
+    def commit(self):
+        return self._connection.commit()
+
+    def rollback(self):
+        self._savepoints.clear()
+        return self._connection.rollback()
+
+    def close(self):
+        return self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+def _migration_connection_for(manager, connection):
+    """Wrap only coordinator migration connections, never ordinary DAL traffic."""
+    if not getattr(manager, "_migration_coordinator_active", False):
+        return connection
+    # v13 has its own separately fingerprinted callable and transaction
+    # boundary.  Leave that path byte-for-byte compatible with its existing
+    # SQLite transaction detection; only v1-v12 invoke the guarded loops.
+    migration_spec = getattr(manager, "_migration_spec", None)
+    if migration_spec is not None and getattr(migration_spec, "version", None) == 13:
+        return connection
+    if isinstance(connection, _MigrationGuardedConnection):
+        return connection
+    return _MigrationGuardedConnection(manager, connection)
+
+
+def _compatibility_reconciliation_artifact_digest(backend: str) -> str:
+    """Fingerprint the reviewed current compatibility boundary and activation path."""
+    if backend not in {"sqlite", "postgresql"}:
+        raise RuntimeError("unsupported compatibility artifact backend")
+    pattern_material = _canonical_json({
+        "_COMPATIBILITY_IDENTIFIER_PATTERN": {
+            "pattern": _COMPATIBILITY_IDENTIFIER_PATTERN.pattern,
+            "flags": _COMPATIBILITY_IDENTIFIER_PATTERN.flags,
+        },
+        "_COMPATIBILITY_SAVEPOINT_PATTERN": {
+            "pattern": _COMPATIBILITY_SAVEPOINT_PATTERN.pattern,
+            "flags": _COMPATIBILITY_SAVEPOINT_PATTERN.flags,
+        },
+        "_COMPATIBILITY_RELEASE_PATTERN": {
+            "pattern": _COMPATIBILITY_RELEASE_PATTERN.pattern,
+            "flags": _COMPATIBILITY_RELEASE_PATTERN.flags,
+        },
+        "_COMPATIBILITY_ROLLBACK_TO_PATTERN": {
+            "pattern": _COMPATIBILITY_ROLLBACK_TO_PATTERN.pattern,
+            "flags": _COMPATIBILITY_ROLLBACK_TO_PATTERN.flags,
+        },
+        "_COMPATIBILITY_ROLLBACK_PATTERN": {
+            "pattern": _COMPATIBILITY_ROLLBACK_PATTERN.pattern,
+            "flags": _COMPATIBILITY_ROLLBACK_PATTERN.flags,
+        },
+        "_COMPATIBILITY_LITERAL_PATTERN": {
+            "pattern": _COMPATIBILITY_LITERAL_PATTERN.pattern,
+            "flags": _COMPATIBILITY_LITERAL_PATTERN.flags,
+        },
+    })
+    source_objects = (
+        _MigrationCompatibilityError,
+        _MigrationNoOpResult,
+        _normalize_migration_sql,
+        _compatibility_identifier,
+        _quote_sqlite_compatibility_identifier,
+        _normalize_compatibility_default,
+        _compatibility_manifest_entries,
+        _compatibility_ddl,
+        _compatibility_manifest_by_sql,
+        _compatibility_column_metadata,
+        _assert_compatibility_column_exact,
+        _is_sqlite_duplicate_column,
+        _is_postgres_duplicate_column,
+        _MigrationGuardedConnection,
+        _MigrationGuardedCursor,
+        _migration_connection_for,
+        _compatibility_reconciliation_artifact_digest,
+        DatabaseManager.__init__,
+        PostgresDatabaseManager.__init__,
+        DatabaseManager._run_migration_coordinator,
+        DatabaseManager._get_connection,
+        DatabaseManager._connection_scope,
+        PostgresDatabaseManager._connection_scope,
+        DatabaseManager._verify_forward_apply_artifact,
+        DatabaseManager._verify_compatibility_reconciliation_artifact,
+        DatabaseManager._validate_migration_event_provenance,
+        DatabaseManager._compatibility_artifact_claim,
+        DatabaseManager._record_migration_event,
+        DatabaseManager._record_migration_failure,
+    )
+    material = "\n".join((
+        COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+        _canonical_json(COMPATIBILITY_RECONCILIATION_MANIFEST),
+        pattern_material,
+        backend,
+        *(inspect.getsource(item) for item in source_objects),
+    )).encode("utf-8")
+    return "sha256:" + hashlib.sha256(material).hexdigest()
+
+
 class PostgresDatabaseManager:
     """PostgreSQL enterprise backend using a bounded connection pool."""
 
@@ -899,10 +1354,10 @@ class PostgresDatabaseManager:
     def _connection_scope(self):
         active_connection = _ACTIVE_DATABASE_CONNECTION.get()
         if active_connection is not None:
-            yield active_connection
+            yield _migration_connection_for(self, active_connection)
             return
         raw_connection = self._pool.getconn()
-        connection = _PostgresConnection(raw_connection)
+        connection = _migration_connection_for(self, _PostgresConnection(raw_connection))
         try:
             yield connection
             connection.commit()
@@ -1120,6 +1575,56 @@ class DatabaseManager:
         expected = spec.apply_artifact.get(backend) if isinstance(spec.apply_artifact, dict) else None
         if actual != expected or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version, {}).get(backend):
             raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
+        self._verify_compatibility_reconciliation_artifact(spec)
+
+    def _verify_compatibility_reconciliation_artifact(self, spec) -> None:
+        """Bind v1-v12 migration execution to the current guarded DDL path."""
+        if spec.version == 13:
+            return
+        if spec.version not in range(1, 13):
+            raise RuntimeError(f"migration compatibility artifact is not defined for version {spec.version}")
+        backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        expected = COMPATIBILITY_RECONCILIATION_SOURCE_SHA256.get(backend)
+        actual = _compatibility_reconciliation_artifact_digest(backend)
+        if (
+            not isinstance(expected, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected)
+            or actual != expected
+            or COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION != "execution-compatibility-reconciliation-v1"
+            or len(_compatibility_manifest_entries()) != 17
+        ):
+            raise RuntimeError("migration compatibility reconciliation artifact drifted")
+
+    def _compatibility_artifact_claim(self, spec) -> dict[str, Any]:
+        """Return the complete current compatibility identity for v1-v12 events."""
+        if not 1 <= spec.version <= 12:
+            return {}
+        backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        return {
+            "compatibility_artifact_revision": COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+            "compatibility_artifact": COMPATIBILITY_RECONCILIATION_SOURCE_SHA256[backend],
+            "compatibility_manifest": COMPATIBILITY_RECONCILIATION_MANIFEST,
+        }
+
+    def _validate_compatibility_artifact_claim(self, spec, context: dict, backend: str) -> None:
+        claim_keys = {
+            "compatibility_artifact_revision",
+            "compatibility_artifact",
+            "compatibility_manifest",
+        }
+        present = claim_keys & set(context)
+        if not present:
+            return
+        if present != claim_keys:
+            raise RuntimeError("migration event contains partial compatibility provenance")
+        if not 1 <= spec.version <= 12:
+            raise RuntimeError("migration event contains compatibility provenance for an unsupported version")
+        if (
+            context.get("compatibility_artifact_revision") != COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+            or context.get("compatibility_artifact") != COMPATIBILITY_RECONCILIATION_SOURCE_SHA256.get(backend)
+            or context.get("compatibility_manifest") != COMPATIBILITY_RECONCILIATION_MANIFEST
+        ):
+            raise RuntimeError("migration event compatibility provenance drifted")
 
     def _validate_migration_event_provenance(self, row, spec, context: dict) -> None:
         """Validate the immutable provenance format bound to a ledger event."""
@@ -1141,16 +1646,33 @@ class DatabaseManager:
                 or context.get("backend_policy") != spec.backend_policy
             ):
                 raise RuntimeError("migration ledger row forward-apply provenance drifted")
+            self._validate_compatibility_artifact_claim(spec, context, backend)
             return
         if re.fullmatch(r"tx-[0-9a-f]{32}", transaction_context_id) is None:
             raise RuntimeError("migration ledger transaction context format is invalid")
-        new_claim_keys = {"provenance_format", "apply_artifact_revision", "apply_artifact", "apply_artifacts", "apply_manifest", "backend_policy"}
+        new_claim_keys = {
+            "provenance_format", "apply_artifact_revision", "apply_artifact",
+            "apply_artifacts", "apply_manifest", "backend_policy",
+            "compatibility_artifact_revision", "compatibility_artifact",
+            "compatibility_manifest",
+        }
         if new_claim_keys & set(context):
             raise RuntimeError("legacy migration event contains partial forward-apply provenance")
 
     def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
         error_class = type(exc).__name__ if exc else None
         error_message = str(exc)[:500] if exc else None
+        context = {
+            "coordinator": "registry",
+            "provenance_format": "registry-coordinator-v2",
+            "migration_version": spec.version,
+            "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
+            "apply_artifact": spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"),
+            "apply_artifacts": spec.apply_artifact,
+            "apply_manifest": spec.apply_manifest,
+            "backend_policy": spec.backend_policy,
+        }
+        context.update(self._compatibility_artifact_claim(spec))
         with self._connection_scope() as conn:
             conn.execute("""INSERT INTO schema_migration_events
                 (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
@@ -1162,16 +1684,7 @@ class DatabaseManager:
                 utc_now().isoformat(), "POSTGRESQL" if isinstance(self, PostgresDatabaseManager) else "SQLITE",
                 self._migration_schema_name, spec.previous_version, spec.target_version, spec.checksum,
                 "database-startup", self._migration_transaction_id, error_class, error_message,
-                json.dumps({
-                    "coordinator": "registry",
-                    "provenance_format": "registry-coordinator-v2",
-                    "migration_version": spec.version,
-                    "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
-                    "apply_artifact": spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"),
-                    "apply_artifacts": spec.apply_artifact,
-                    "apply_manifest": spec.apply_manifest,
-                    "backend_policy": spec.backend_policy,
-                }, sort_keys=True, separators=(",", ":")),
+                 json.dumps(context, sort_keys=True, separators=(",", ":")),
                 rollback_status))
 
     def _ensure_migration_ledger(self) -> None:
@@ -1586,6 +2099,7 @@ class DatabaseManager:
                 "backend_policy": spec.backend_policy,
                 "rollback": "not independently confirmed",
             }
+            failure_context.update(self._compatibility_artifact_claim(spec))
             for event_type, rollback_status, sequence in (("FAILED", "FAILED", 2), ("ROLLBACK_FAILED", "FAILED", 3)):
                 conn.execute("""INSERT INTO schema_migration_events
                     (event_id,attempt_id,migration_version,migration_id,migration_name,registry_revision,event_sequence,event_type,event_at,backend,schema_name,
@@ -1759,7 +2273,7 @@ class DatabaseManager:
             except sqlite3.DatabaseError:
                 conn.close()
                 raise
-            return conn
+            return _migration_connection_for(self, conn)
         except Exception:
             # Never silently switch databases: doing so can mix tenants or
             # resurrect state from an unrelated persistence location.
@@ -1770,7 +2284,7 @@ class DatabaseManager:
         """Provide an explicit transaction scope that always closes SQLite handles."""
         active_connection = _ACTIVE_DATABASE_CONNECTION.get()
         if active_connection is not None:
-            yield active_connection
+            yield _migration_connection_for(self, active_connection)
             return
         conn = self._get_connection()
         try:
