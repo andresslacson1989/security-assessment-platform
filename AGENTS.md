@@ -48,6 +48,76 @@ and operation; use read-only access where practical, record the authorization
 and evidence, and require separate explicit authorization for destructive
 changes.
 
+## Project-Disk-Only File Storage
+
+All files created, written, extracted, generated, copied, or retained for
+repository work MUST be stored on the project's disk under the repository root
+(`E:\web apps\security-assessment-platform` in the current workspace), or
+under an explicitly approved subdirectory of that root. Agents MUST NOT use
+another local disk, an operating-system temporary directory, a user-profile
+temporary directory, a desktop/downloads directory, `/tmp`, or an external
+workspace to save working files, test outputs, logs, evidence, bundles,
+temporary databases, validation checkouts, or generated artifacts.
+
+The default local temporary root is
+`E:\web apps\security-assessment-platform\.project-temp\`. Each run MUST use
+its own clearly named subdirectory beneath that root. This directory is for
+project-local temporary output only and MUST NOT be staged, committed, or
+published unless a separate scope explicitly requires a specific artifact.
+
+Before running a command or test that writes to a default temporary location,
+redirect its temporary and output paths to a project-local directory and record
+that location in the evidence. This storage rule does not authorize changes to
+`data/cyberassess.db`, remote runtime databases, or any other protected path;
+those paths remain governed by the database and delivery policies above.
+Existing files and artifacts MUST NOT be deleted or relocated to enforce this
+rule without separate explicit authorization.
+
+## Section B Acceptance-Tier Amendment (2026-09-14)
+
+This dated amendment changes delivery classification only. It does not change
+application behavior, security controls, API contracts, migration invariants,
+tool trust rules, database protection, or the GitHub-before-GitLab publication
+rule for final repository release.
+
+For the current delivery cycle, Section B security acceptance is a narrower
+gate and may be accepted only when all of the following are independently
+verified:
+
+- execution authority, cancellation/recovery, quarantine, database, and real
+  PostgreSQL Section B security vectors pass;
+- real PostgreSQL executes with zero dependency-gated or unauthorized skips;
+- migration provenance, one-byte source and artifact mutation rejection,
+  historical/current identity separation, v13 independence, 26-tool and
+  registry preservation pass;
+- compilation/static checks and fresh disposable SQLite startup pass;
+- no security control is weakened;
+- `data/cyberassess.db` is unmodified and unstaged;
+- unrelated user changes, `.ci`, `.project-temp`, `v/`, and mirror staging are
+  not staged, deleted, or relocated; and
+- all remaining non-security gates are explicitly recorded as open, failed,
+  skipped, or unverified.
+
+The following are overall final-release gates rather than prerequisites for
+the narrower Section B security acceptance, provided that no Section B
+security failure is present:
+
+- full repository verification;
+- GitHub artifact upload/finalization when the underlying security test output
+  is captured and independently verifiable from the run;
+- Windows and image jobs outside the Section B security boundary; and
+- exact GitLab mirroring and final release publication.
+
+These remain mandatory for declaring the entire repository delivery complete.
+They must not be reported as passed merely because Section B security
+acceptance passes. GitHub remains the authoritative CI/CD provider, GitLab
+remains a repository mirror only, and no final GitLab promotion occurs until
+the existing GitHub-first and exact-SHA rules pass.
+
+Any later reference to final acceptance or complete repository delivery means
+the overall release gate. A reference to Section B acceptance means only the
+narrower security gate defined by this amendment.
+
 ## Authoritative Delivery and Contract-Acceptance Goal
 
 The complete delivery and contract-acceptance goal is preserved verbatim in

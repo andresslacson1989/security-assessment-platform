@@ -21,6 +21,7 @@ from app.core.db import (
     PostgresDatabaseManager,
     _assert_compatibility_column_exact,
     _compatibility_column_metadata,
+    _compatibility_column_metadata_snapshot,
 )
 from app.core.migration_artifacts import (
     COMPATIBILITY_RECONCILIATION_MANIFEST,
@@ -46,14 +47,23 @@ def _trace_compatibility_metadata_calls(calls):
     Python's call tracer lets this test record the real invocation boundary
     while leaving the production callable and its fingerprint unchanged.
     """
-    target_code = _compatibility_column_metadata.__code__
+    target_codes = {
+        _compatibility_column_metadata.__code__,
+        _compatibility_column_metadata_snapshot.__code__,
+    }
     previous_trace = sys.gettrace()
 
     def trace(frame, event, arg):
-        if event == "call" and frame.f_code is target_code:
+        if event == "call" and frame.f_code in target_codes:
             entry = frame.f_locals.get("entry")
             if isinstance(entry, dict):
                 calls.append((frame.f_locals.get("backend"), entry))
+                return None
+            entries = frame.f_locals.get("entries")
+            if isinstance(entries, tuple):
+                for snapshot_entry in entries:
+                    if isinstance(snapshot_entry, dict):
+                        calls.append((frame.f_locals.get("backend"), snapshot_entry))
         return None
 
     sys.settrace(trace)
@@ -552,13 +562,13 @@ def test_postgres_version_two_remediates_legacy_request_fk():
                 if backend == "postgresql"
                 and entry["family"] == "generic"
                 and entry["column"] == "status"
-            ) == 1
+            ) == 2
             assert sum(
                 1 for backend, entry in calls
                 if backend == "postgresql"
                 and entry["family"] == "generic"
                 and entry["column"] == "principal_type"
-            ) == 1
+            ) == 2
             assert sum(
                 1 for backend, entry in calls
                 if backend == "postgresql" and entry["family"] == "generic"

@@ -230,3 +230,48 @@ The goal is complete only when:
 - all 26 tools remain available;
 - the auditor confirms acceptance.
 Until then, the status remains executing or escalated with the precise blocker documented.
+
+## Section B Acceptance-Tier Amendment (2026-09-14)
+
+This dated amendment changes delivery classification only. It does not change
+application behavior, security controls, API contracts, migration invariants,
+tool trust rules, database protection, or the GitHub-before-GitLab publication
+rule for final repository release.
+
+For the current delivery cycle, Section B security acceptance is a narrower
+gate and may be accepted only when all of the following are independently
+verified:
+
+- execution authority, cancellation/recovery, quarantine, database, and real
+  PostgreSQL Section B security vectors pass;
+- real PostgreSQL executes with zero dependency-gated or unauthorized skips;
+- migration provenance, one-byte source and artifact mutation rejection,
+  historical/current identity separation, v13 independence, 26-tool and
+  registry preservation pass;
+- compilation/static checks and fresh disposable SQLite startup pass;
+- no security control is weakened;
+- `data/cyberassess.db` is unmodified and unstaged;
+- unrelated user changes, `.ci`, `.project-temp`, `v/`, and mirror staging are
+  not staged, deleted, or relocated; and
+- all remaining non-security gates are explicitly recorded as open, failed,
+  skipped, or unverified.
+
+The following are overall final-release gates rather than prerequisites for
+the narrower Section B security acceptance, provided that no Section B
+security failure is present:
+
+- full repository verification;
+- GitHub artifact upload/finalization when the underlying security test output
+  is captured and independently verifiable from the run;
+- Windows and image jobs outside the Section B security boundary; and
+- exact GitLab mirroring and final release publication.
+
+These remain mandatory for declaring the entire repository delivery complete.
+They must not be reported as passed merely because Section B security
+acceptance passes. GitHub remains the authoritative CI/CD provider, GitLab
+remains a repository mirror only, and no final GitLab promotion occurs until
+the existing GitHub-first and exact-SHA rules pass.
+
+Any later reference to final acceptance or complete repository delivery means
+the overall release gate. A reference to Section B acceptance means only the
+narrower security gate defined by this amendment.

@@ -39,9 +39,9 @@ WORKDIR /tmp/bin
 
 # 1. Nuclei (v3.2.0)
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      curl -fsSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_arm64.zip -o nuclei.zip && echo "57886fcfd9b15548adbfbc0816b18db5aa9bd0b9b72d5183a55ccac586feeaa5  nuclei.zip" | sha256sum -c -; \
+      curl --fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 120 https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_arm64.zip -o nuclei.zip && echo "57886fcfd9b15548adbfbc0816b18db5aa9bd0b9b72d5183a55ccac586feeaa5  nuclei.zip" | sha256sum -c -; \
     else \
-      curl -fsSL https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip && echo "8351b05772f37268fd172476de3f0c831ca9d9b9b1a6c64bacd38ef055e5d052  nuclei.zip" | sha256sum -c -; \
+      curl --fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-max-time 120 https://github.com/projectdiscovery/nuclei/releases/download/v3.2.0/nuclei_3.2.0_linux_amd64.zip -o nuclei.zip && echo "8351b05772f37268fd172476de3f0c831ca9d9b9b1a6c64bacd38ef055e5d052  nuclei.zip" | sha256sum -c -; \
     fi && \
     unzip -q nuclei.zip nuclei && \
     chmod +x nuclei && \

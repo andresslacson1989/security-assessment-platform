@@ -106,6 +106,21 @@ def test_dockerfile_serializes_trivy_source_compilation():
     assert "go build -p=1" in trivy_build
 
 
+def test_nuclei_download_uses_bounded_retry_without_changing_artifact_trust():
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    nuclei_lines = [
+        line for line in dockerfile.splitlines()
+        if "projectdiscovery/nuclei/releases/download/v3.2.0/" in line
+    ]
+
+    assert len(nuclei_lines) == 2
+    for line in nuclei_lines:
+        assert "--retry 5" in line
+        assert "--retry-delay 2" in line
+        assert "--retry-max-time 120" in line
+        assert "sha256sum -c -" in line
+
+
 def test_ci_workflow_static_contract_is_complete():
     workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "contract-verification.yml"
     workflow_text = workflow_path.read_text().replace("\r\n", "\n")

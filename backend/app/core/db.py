@@ -1142,6 +1142,80 @@ def _compatibility_column_metadata(connection: Any, backend: str, entry: dict[st
     raise _MigrationCompatibilityError("migration compatibility backend is unsupported")
 
 
+def _compatibility_column_metadata_snapshot(
+    connection: Any,
+    backend: str,
+    entries: Tuple[dict[str, Any], ...],
+) -> dict[tuple[str, str], Optional[dict[str, Any]]]:
+    """Read one exact catalog snapshot for a bounded compatibility operation.
+
+    PostgreSQL catalog lookups are intentionally batched because a fresh
+    isolated schema is initialized repeatedly by the assurance suite.  The
+    expected table and column names remain parameterized values; no catalog
+    identifier is interpolated.  The caller still performs exact metadata
+    validation for every returned entry and refreshes this snapshot before
+    committing the guarded operation.
+    """
+    selected_entries = tuple(entries)
+    if not selected_entries:
+        return {}
+    keys = [(entry["table"], entry["column"]) for entry in selected_entries]
+    if len(set(keys)) != len(keys):
+        raise _MigrationCompatibilityError("migration compatibility metadata snapshot contains duplicate entries")
+    if backend != "postgresql":
+        return {
+            key: _compatibility_column_metadata(connection, backend, entry)
+            for key, entry in zip(keys, selected_entries)
+        }
+
+    values = ", ".join("(?, ?)" for _ in selected_entries)
+    parameters = tuple(value for key in keys for value in key)
+    rows = connection.execute(
+        f"""
+        SELECT expected.table_name,
+               expected.column_name,
+               (table_info.table_name IS NOT NULL) AS table_exists,
+               column_info.data_type,
+               column_info.is_nullable,
+               column_info.column_default
+        FROM (VALUES {values}) AS expected(table_name, column_name)
+        LEFT JOIN information_schema.tables AS table_info
+          ON table_info.table_schema = current_schema()
+         AND table_info.table_name = expected.table_name
+         AND table_info.table_type = 'BASE TABLE'
+        LEFT JOIN information_schema.columns AS column_info
+          ON column_info.table_schema = current_schema()
+         AND column_info.table_name = expected.table_name
+         AND column_info.column_name = expected.column_name
+        """,
+        parameters,
+    ).fetchall()
+    if len(rows) != len(selected_entries):
+        raise _MigrationCompatibilityError("migration compatibility metadata snapshot is incomplete")
+
+    metadata_by_key: dict[tuple[str, str], Optional[dict[str, Any]]] = {}
+    for row in rows:
+        key = (str(row["table_name"]), str(row["column_name"]))
+        if key not in keys or key in metadata_by_key:
+            raise _MigrationCompatibilityError("migration compatibility metadata snapshot is ambiguous")
+        if not row["table_exists"]:
+            raise _MigrationCompatibilityError("migration compatibility table is missing")
+        if row["data_type"] is None:
+            metadata_by_key[key] = None
+            continue
+        nullable = str(row["is_nullable"]).strip().upper()
+        if nullable not in {"YES", "NO"}:
+            raise _MigrationCompatibilityError("migration compatibility metadata nullability is invalid")
+        metadata_by_key[key] = {
+            "type": str(row["data_type"]).strip().casefold(),
+            "nullable": nullable == "YES",
+            "default": row["column_default"],
+        }
+    if set(metadata_by_key) != set(keys):
+        raise _MigrationCompatibilityError("migration compatibility metadata snapshot is incomplete")
+    return metadata_by_key
+
+
 def _assert_compatibility_column_exact(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -> None:
     if metadata is None:
         raise _MigrationCompatibilityError("migration compatibility column is missing after reconciliation")
@@ -1228,9 +1302,12 @@ class _MigrationGuardedConnection:
         self._entries_by_sql = _compatibility_manifest_by_sql()
         self._savepoints: list[str] = []
         self._metadata_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._metadata_snapshot: Optional[dict[tuple[str, str], Optional[dict[str, Any]]]] = None
+        self._touched_entries: dict[tuple[str, str], dict[str, Any]] = {}
 
     def _invalidate_metadata_cache(self) -> None:
         self._metadata_cache.clear()
+        self._metadata_snapshot = None
 
     def _invalidate_reconciliation_state(self, entry: dict[str, Any]) -> None:
         self._invalidate_metadata_cache()
@@ -1311,6 +1388,32 @@ class _MigrationGuardedConnection:
             if verification_connection is not None:
                 verification_connection.close()
 
+    def _load_postgres_metadata_snapshot(self) -> dict[tuple[str, str], Optional[dict[str, Any]]]:
+        if self._metadata_snapshot is None:
+            self._metadata_snapshot = _compatibility_column_metadata_snapshot(
+                self._connection,
+                "postgresql",
+                _compatibility_manifest_entries(),
+            )
+        return self._metadata_snapshot
+
+    def _verify_touched_postgres_metadata(self) -> None:
+        """Refresh and validate every guarded entry before transaction commit."""
+        if self._backend != "postgresql" or not self._touched_entries:
+            return
+        entries = tuple(self._touched_entries.values())
+        refreshed = _compatibility_column_metadata_snapshot(
+            self._connection,
+            "postgresql",
+            entries,
+        )
+        for key, entry in self._touched_entries.items():
+            metadata = refreshed.get(key)
+            _assert_compatibility_column_exact(entry, metadata)
+            if self._metadata_snapshot is not None:
+                self._metadata_snapshot[key] = dict(metadata)
+            self._metadata_cache[key] = dict(metadata)
+
     def _execute_guarded_ddl(self, entry: dict[str, Any]):
         if self._operation is None or _migration_operation_for(self._manager) is not self._operation:
             self._raise_reconciliation_error("migration compatibility DDL reached without approved operation context")
@@ -1318,9 +1421,13 @@ class _MigrationGuardedConnection:
         if savepoint != entry["savepoint"]:
             self._raise_reconciliation_error("migration compatibility DDL was issued outside its approved savepoint")
         cache_key = (entry["table"], entry["column"])
-        metadata = self._metadata_cache.get(cache_key)
+        self._touched_entries[cache_key] = entry
+        if self._backend == "postgresql":
+            metadata = self._load_postgres_metadata_snapshot().get(cache_key)
+        else:
+            metadata = self._metadata_cache.get(cache_key)
         try:
-            if metadata is None:
+            if metadata is None and self._backend != "postgresql":
                 metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
         except _MigrationCompatibilityError:
             raise
@@ -1348,14 +1455,34 @@ class _MigrationGuardedConnection:
                     raise
                 self._raise_reconciliation_error("migration compatibility post-race verification failed", post_race_error)
             return _MigrationNoOpResult()
-        try:
-            postcondition_metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
+        if self._backend == "postgresql":
+            # The commit-time batch refresh below is the authoritative
+            # PostgreSQL postcondition.  The expected representation here
+            # keeps subsequent guarded DDL in this transaction bounded.
+            postcondition_metadata = {
+                "type": str(entry["type"]).strip().casefold(),
+                "nullable": bool(entry["nullable"]),
+                "default": (
+                    None
+                    if entry["default"] is None or entry["default"] == "0"
+                    else "'" + str(entry["default"]).replace("'", "''") + "'"
+                ),
+            }
             _assert_compatibility_column_exact(entry, postcondition_metadata)
-        except Exception as postcondition_error:
-            if isinstance(postcondition_error, _MigrationCompatibilityError):
-                raise
-            self._raise_reconciliation_error("migration compatibility postcondition verification failed", postcondition_error)
-        self._invalidate_reconciliation_state(entry)
+            if self._metadata_snapshot is None:
+                self._raise_reconciliation_error("migration compatibility metadata snapshot is unavailable")
+            self._metadata_snapshot[cache_key] = dict(postcondition_metadata)
+            if self._operation is not None and entry.get("family") == "generic":
+                self._operation.generic_reconciliation_complete = False
+        else:
+            try:
+                postcondition_metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
+                _assert_compatibility_column_exact(entry, postcondition_metadata)
+            except Exception as postcondition_error:
+                if isinstance(postcondition_error, _MigrationCompatibilityError):
+                    raise
+                self._raise_reconciliation_error("migration compatibility postcondition verification failed", postcondition_error)
+            self._invalidate_reconciliation_state(entry)
         self._metadata_cache[cache_key] = dict(postcondition_metadata)
         return result
 
@@ -1391,9 +1518,11 @@ class _MigrationGuardedConnection:
 
     def commit(self):
         try:
+            self._verify_touched_postgres_metadata()
             return self._connection.commit()
         finally:
             self._invalidate_metadata_cache()
+            self._touched_entries.clear()
 
     def rollback(self):
         self._savepoints.clear()
@@ -1401,6 +1530,7 @@ class _MigrationGuardedConnection:
             return self._connection.rollback()
         finally:
             self._invalidate_metadata_cache()
+            self._touched_entries.clear()
 
     def close(self):
         return self._connection.close()
@@ -1467,6 +1597,7 @@ def _compatibility_reconciliation_artifact_digest(backend: str) -> str:
         _compatibility_manifest_by_sql,
         _is_relevant_compatibility_schema_mutation,
         _compatibility_column_metadata,
+        _compatibility_column_metadata_snapshot,
         _assert_compatibility_column_exact,
         _is_sqlite_duplicate_column,
         _is_postgres_duplicate_column,
