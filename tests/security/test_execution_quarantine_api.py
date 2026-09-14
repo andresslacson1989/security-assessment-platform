@@ -1,7 +1,9 @@
 """Route-level authentication and tenant-binding tests for quarantine recovery."""
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -80,6 +82,7 @@ def _seed_recovery_health_execution(
     organization_id: str,
     user_id: str,
     suffix: str,
+    create_recovery_projection: bool = True,
 ) -> str:
     """Create one authorized disposable execution with visible recovery state."""
     now = datetime.now(timezone.utc)
@@ -131,6 +134,9 @@ def _seed_recovery_health_execution(
         reset_correlation_id(correlation_token)
     assert result == "AUTHORIZED"
     assert execution_id
+
+    if not create_recovery_projection:
+        return execution_id
 
     retry_at = (now + timedelta(minutes=1)).isoformat()
     with database._connection_scope() as conn:
@@ -234,6 +240,219 @@ def test_recovery_health_is_authenticated_tenant_scoped_and_identity_safe(
     )
     assert database.recovery_health(admin_a.organization_id)[0]["organization_id"] == admin_a.organization_id
     assert database.recovery_health(admin_b.organization_id)[0]["organization_id"] == admin_b.organization_id
+
+
+@pytest.mark.asyncio
+async def test_recovery_health_exposes_observer_created_state_from_production_revocation(
+    recovery_health_api_state,
+    monkeypatch,
+):
+    """The recovery API reports a row created by the real observer workflow."""
+    database, admin_a, admin_b, _execution_a, _execution_b = recovery_health_api_state
+    execution_id = _seed_recovery_health_execution(
+        database,
+        organization_id=admin_a.organization_id,
+        user_id=admin_a.id,
+        suffix="observer-created",
+        create_recovery_projection=False,
+    )
+    request_id = "request-recovery-health-observer-created"
+    worker_identity = "worker-recovery-health-observer-created"
+    lease = database.claim_execution_dispatch_intent(
+        execution_id,
+        admin_a.organization_id,
+        worker_identity,
+    )
+    assert lease is not None
+    assert database.transition_execution_run(
+        execution_id,
+        admin_a.organization_id,
+        "REQUESTED",
+        "STARTING",
+        worker_identity=worker_identity,
+        dispatch_claim_token=lease.token,
+    ) is True
+    assert database.revoke_execution_request(
+        request_id,
+        admin_a.organization_id,
+        admin_a.id,
+    ) is True
+
+    class NeverCalledSupervisor:
+        def cancel_execution(self, *_args, **_kwargs):
+            raise AssertionError("missing process identity must not invoke the supervisor")
+
+    monkeypatch.setattr(
+        "app.core.execution_service.get_worker_generation",
+        lambda: "observer-created-generation",
+    )
+    from app.core.observation_service import BackendObservationService
+
+    service = BackendObservationService(
+        interval_seconds=60,
+        refresh_timeout_seconds=1,
+        database=database,
+        supervisor=NeverCalledSupervisor(),
+    )
+    try:
+        assert await service.reap_execution_authority_once() == 0
+    finally:
+        await service.stop()
+
+    client = TestClient(app)
+    endpoint = "/api/system/executions/recovery/health"
+    assert client.get(endpoint).status_code == 401
+    response = client.get(
+        endpoint,
+        headers={"Authorization": f"Bearer {create_access_token(admin_a)}"},
+    )
+    assert response.status_code == 200
+    row = next(item for item in response.json()["recovery"] if item["execution_id"] == execution_id)
+    assert row["status"] == "DEFERRED"
+    assert row["last_outcome"] == "identity_unavailable"
+    assert "durable process identity unavailable" in row["last_error"]
+    assert all(
+        field not in row
+        for field in ("process_id", "root_process_id", "process_group_id", "identity_attestation")
+    )
+
+    other_tenant = client.get(
+        endpoint,
+        headers={"Authorization": f"Bearer {create_access_token(admin_b)}"},
+    )
+    assert other_tenant.status_code == 200
+    assert execution_id not in {
+        item["execution_id"] for item in other_tenant.json()["recovery"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_recovery_health_exposes_supervisor_timeout_from_production_observer(
+    recovery_health_api_state,
+    monkeypatch,
+):
+    """A timed-out exact cancellation remains authenticated, tenant-scoped recovery evidence."""
+    from app.core.process_supervisor import ProcessCancellationResult, ProcessCancellationStatus
+    from app.core.observation_service import BackendObservationService
+
+    database, admin_a, admin_b, _execution_a, _execution_b = recovery_health_api_state
+    execution_id = _seed_recovery_health_execution(
+        database,
+        organization_id=admin_a.organization_id,
+        user_id=admin_a.id,
+        suffix="observer-supervisor-timeout",
+        create_recovery_projection=False,
+    )
+    request_id = "request-recovery-health-observer-supervisor-timeout"
+    worker_identity = "worker-recovery-health-observer-supervisor-timeout"
+    execution = database.get_execution_run(execution_id, admin_a.organization_id)
+    assert execution is not None
+    decision_id = execution["approved_decision_id"]
+    authority = database.claim_execution_authority(
+        decision_id,
+        admin_a.organization_id,
+        f"session-recovery-health-observer-supervisor-timeout",
+        worker_identity,
+        OPERATION_POLICY_REVISION,
+    )
+    assert authority is not None
+    capability = SimpleNamespace(
+        execution_id=execution_id,
+        decision=SimpleNamespace(
+            id=decision_id,
+            organization_id=admin_a.organization_id,
+        ),
+        claim_token=authority.decision.token,
+        dispatch_claim_token=authority.dispatch.token,
+        worker_identity=worker_identity,
+        worker_generation=execution["worker_generation"],
+        database=database,
+    )
+    from app.core.execution_service import record_posix_launch
+
+    assert record_posix_launch(
+        capability,
+        pid=4242,
+        process_group_id=4242,
+        session_id=4242,
+        start_token="posix:00000000-0000-0000-0000-000000000099:12345",
+        member_snapshot=(SimpleNamespace(
+            pid=4242,
+            process_group_id=4242,
+            session_id=4242,
+            start_token="posix:00000000-0000-0000-0000-000000000099:12345",
+        ),),
+    )
+    assert database.revoke_execution_request(
+        request_id,
+        admin_a.organization_id,
+        admin_a.id,
+    ) is True
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowSupervisor:
+        def cancel_execution(self, requested_execution_id, *, process_identity=None):
+            assert requested_execution_id == execution_id
+            assert process_identity is not None
+            entered.set()
+            release.wait(timeout=5)
+            return ProcessCancellationResult(
+                requested_execution_id,
+                ProcessCancellationStatus.NOT_FOUND,
+            )
+
+    monkeypatch.setattr(
+        "app.core.execution_service.get_worker_generation",
+        lambda: "observer-supervisor-timeout-generation",
+    )
+    service = BackendObservationService(
+        interval_seconds=60,
+        # Keep enough budget for disposable SQLite recovery enumeration and
+        # worker scheduling; the supervisor remains blocked longer than this
+        # budget so the test still exercises the timeout ownership boundary.
+        refresh_timeout_seconds=1,
+        shutdown_timeout_seconds=0.05,
+        database=database,
+        supervisor=SlowSupervisor(),
+    )
+    try:
+        assert await service.reap_execution_authority_once() == 0
+        assert entered.is_set()
+        assert service._pending_supervisor_cancellations
+
+        client = TestClient(app)
+        endpoint = "/api/system/executions/recovery/health"
+        assert client.get(endpoint).status_code == 401
+        response = client.get(
+            endpoint,
+            headers={"Authorization": f"Bearer {create_access_token(admin_a)}"},
+        )
+        assert response.status_code == 200
+        row = next(item for item in response.json()["recovery"] if item["execution_id"] == execution_id)
+        assert row["status"] == "DEFERRED"
+        assert row["last_outcome"] == "termination_timeout"
+        assert all(
+            field not in row
+            for field in ("process_id", "root_process_id", "process_group_id", "identity_attestation")
+        )
+
+        other_tenant = client.get(
+            endpoint,
+            headers={"Authorization": f"Bearer {create_access_token(admin_b)}"},
+        )
+        assert other_tenant.status_code == 200
+        assert execution_id not in {
+            item["execution_id"] for item in other_tenant.json()["recovery"]
+        }
+    finally:
+        release.set()
+        for _ in range(40):
+            if not service._pending_supervisor_cancellations:
+                break
+            await asyncio.sleep(0.01)
+        await service.stop()
 
 
 def test_quarantine_route_requires_authenticated_admin_session(quarantine_api_state):

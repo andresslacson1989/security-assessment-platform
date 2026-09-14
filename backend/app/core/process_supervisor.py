@@ -69,6 +69,32 @@ class ProcessCancellationResult:
         return self.confirmed
 
 
+def normalize_cancellation_result(
+    result: object,
+    *,
+    execution_id: str,
+) -> tuple[str, bool]:
+    """Return a confirmation only for the exact typed supervisor result.
+
+    Callers at the execution and recovery boundaries must not infer a
+    termination fact from truthiness, a duck-typed ``status`` attribute, or a
+    result for a different execution.  The supervisor is the sole producer of
+    this typed result; every other shape is intentionally represented as an
+    unknown, non-confirming outcome so it remains recoverable.
+    """
+    if (
+        type(result) is not ProcessCancellationResult
+        or result.execution_id != execution_id
+        or type(result.status) is not ProcessCancellationStatus
+    ):
+        return "UNKNOWN", False
+    status = result.status.value
+    return status, status in {
+        ProcessCancellationStatus.KILLED.value,
+        ProcessCancellationStatus.ALREADY_EXITED.value,
+    }
+
+
 @dataclass(frozen=True)
 class ProcessMemberIdentity:
     """Kernel identity for one live member of a governed POSIX session."""

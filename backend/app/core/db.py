@@ -4174,7 +4174,15 @@ class DatabaseManager:
                       JOIN execution_process_ownership p ON p.execution_id = r.execution_id AND p.organization_id = r.organization_id
                      JOIN execution_recovery_state s ON s.execution_id = r.execution_id AND s.organization_id = r.organization_id
                      WHERE r.state IN ('REQUESTED', 'STARTING', 'RUNNING')
-                       AND s.status NOT IN ('IN_PROGRESS', 'EXHAUSTED')
+                       AND (
+                            s.status NOT IN ('IN_PROGRESS', 'EXHAUSTED')
+                            OR (
+                                 s.status = 'IN_PROGRESS'
+                                 AND p.ownership_state IN ('LAUNCH_UNCERTAIN', 'RECOVERY_BLOCKED')
+                                 AND s.lease_expires_at IS NOT NULL
+                                 AND s.lease_expires_at <= ?
+                            )
+                       )
                        AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?)
                        AND (
                             q.state <> 'AUTHORIZED' OR d.approval_state <> 'APPROVED'
@@ -4183,12 +4191,19 @@ class DatabaseManager:
                             OR q.expires_at <= ? OR d.expires_at <= ?
                             OR (i.state = 'CLAIMED' AND (i.lease_expires_at IS NULL OR i.lease_expires_at <= ?))
                             OR (p.ownership_state IN ('UNKNOWN','EXTERNAL_PROCESS_GOVERNED','LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
-                                AND s.status <> 'IN_PROGRESS'
-                                AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?))
+                                AND (
+                                     (s.status <> 'IN_PROGRESS'
+                                      AND (s.next_retry_at IS NULL OR s.next_retry_at <= ?))
+                                     OR (
+                                          s.status = 'IN_PROGRESS'
+                                          AND s.lease_expires_at IS NOT NULL
+                                          AND s.lease_expires_at <= ?
+                                     )
+                                ))
                        )
                      ORDER BY r.created_at
                      LIMIT ?""",
-                (now, now, now, now, now, limit),
+                (now, now, now, now, now, now, now, limit),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -5654,6 +5669,31 @@ class DatabaseManager:
             ).fetchone()
             if not row:
                 return False
+            unknown_unbound_shape = (
+                row["ownership_state"] == ProcessOwnershipState.UNKNOWN.value
+                and row["launch_commit_state"] in {
+                    LaunchCommitState.NOT_ATTEMPTED.value,
+                    LaunchCommitState.UNCERTAIN.value,
+                }
+                and row["container_type"] == ProcessContainerType.NONE.value
+                and row["worker_generation"] is None
+                and all(
+                    row[field_name] is None
+                    for field_name in (
+                        "container_identity",
+                        "root_process_id",
+                        "root_process_start_token",
+                        "process_group_id",
+                        "session_id",
+                        "identity_attestation",
+                        "no_process_proof",
+                    )
+                )
+            )
+            ownership_generation_bound = (
+                row["worker_generation"] == row["run_worker_generation"]
+                or unknown_unbound_shape
+            )
             if (
                 (
                     row["ownership_state"] == ProcessOwnershipState.EXTERNAL_PROCESS_GOVERNED.value
@@ -5679,7 +5719,7 @@ class DatabaseManager:
                 or row["run_worker_identity"] != row["decision_worker_identity"]
                 or not isinstance(row["run_worker_generation"], str)
                 or not row["run_worker_generation"].strip()
-                or row["worker_generation"] != row["run_worker_generation"]
+                or not ownership_generation_bound
                 or (worker_identity is not None and row["run_worker_identity"] != worker_identity)
                 or (worker_generation is not None and row["run_worker_generation"] != worker_generation)
                 or not isinstance(row["correlation_id"], str)
@@ -5798,6 +5838,7 @@ class DatabaseManager:
     def settle_recovery_execution(
         self, execution_id: str, organization_id: str, owner: str,
         lease_token: str, worker_generation: str, *,
+        termination_status: str,
         terminal_state: str = "FAILED",
         reason_code: str = "PROCESS_LAUNCH_UNCERTAIN",
     ) -> bool:
@@ -5811,6 +5852,8 @@ class DatabaseManager:
         """
         if terminal_state != "FAILED" or not is_valid_execution_terminal_outcome(terminal_state, reason_code):
             raise ValueError("recovery settlement requires the reviewed failed/uncertain outcome")
+        if termination_status not in {"KILLED", "ALREADY_EXITED"}:
+            raise ValueError("recovery settlement requires a confirmed process termination status")
         now = utc_now()
         with self._connection_scope() as conn:
             lock = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
@@ -5833,8 +5876,9 @@ class DatabaseManager:
                        ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id
                     WHERE p.execution_id=? AND p.organization_id=?
                       AND s.owner=? AND s.lease_token=?
-                      AND s.worker_generation=? AND s.status='IN_PROGRESS'""" + lock,
-                (execution_id, organization_id, owner, lease_token, worker_generation),
+                      AND s.worker_generation=? AND s.status='IN_PROGRESS'
+                      AND s.lease_expires_at > ?""" + lock,
+                (execution_id, organization_id, owner, lease_token, worker_generation, now.isoformat()),
             ).fetchone()
             if not row or row["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
                 return False
@@ -5954,7 +5998,7 @@ class DatabaseManager:
                 "recovery_status": "CONFIRMED_TERMINATED",
                 "recovery_attempt_number": attempt_number,
                 "recovery_attempt_id": attempt_id,
-                "termination_status": "ALREADY_EXITED",
+                "termination_status": termination_status,
                 "process_id": int(row["root_process_id"]),
                 "process_group_id": row["process_group_id"],
                 "process_start_token": row["root_process_start_token"],
@@ -6003,7 +6047,7 @@ class DatabaseManager:
                 (termination_proof, now.isoformat(), execution_id, organization_id,
                  owner, lease_token, worker_generation),
             )
-            if any(result.rowcount != 1 for result in (ownership, dispatch, run, recovery)):
+            if any(result.rowcount != 1 for result in (ownership, dispatch, run, decision, recovery)):
                 raise RuntimeError("recovery settlement lost its transaction fence")
             conn.execute(
                 """INSERT INTO execution_recovery_attempts
@@ -6013,10 +6057,23 @@ class DatabaseManager:
                     completed_at, error_code, escalation_level, health_reference)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (attempt_id, execution_id, organization_id, owner, worker_generation,
-                 attempt_number, "CONFIRMED_TERMINATED", "CONFIRMED", reason_code,
+                 attempt_number, "CONFIRMED_TERMINATED", termination_status, reason_code,
                  correlation_id, now.isoformat(), now.isoformat(), now.isoformat(),
                  None, 0, f"recovery-proof:{hashlib.sha256(termination_proof.encode('utf-8')).hexdigest()}"),
             )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                id=f"aud-{uuid.uuid4().hex[:12]}", actor=owner,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_RECOVERY_ATTEMPT_RECORDED,
+                object_type="execution_recovery_attempt", object_id=attempt_id,
+                result="SUCCESS", correlation_id=correlation_id,
+                details={
+                    "attempt_number": attempt_number,
+                    "execution_id": execution_id,
+                    "status": "CONFIRMED_TERMINATED",
+                    "termination_status": termination_status,
+                },
+            ))
             self._insert_audit_event_conn(conn, AuditEvent(
                 id=f"aud-{uuid.uuid4().hex[:12]}", actor=owner,
                 organization_id=organization_id,

@@ -1520,6 +1520,7 @@ def test_committed_launch_uncertainty_transitions_to_recovery_blocked_without_re
         "worker-settlement",
         lease["lease_token"],
         "generation-settlement",
+        termination_status="ALREADY_EXITED",
     ) is True
     settled = database.get_process_ownership(
         "run-committed-launch-recovery", "org-settlement"
@@ -1652,6 +1653,7 @@ def test_post_commit_recovery_uses_exact_identity_after_database_restart(tmp_pat
     assert restarted.settle_recovery_execution(
         "run-post-commit-restart", "org-settlement", "worker-settlement",
         lease["lease_token"], "generation-settlement",
+        termination_status="ALREADY_EXITED",
     ) is True
     settled = restarted.get_process_ownership("run-post-commit-restart", "org-settlement")
     proof = decode_execution_proof(settled["no_process_proof"], expected_proof_type="TERMINATION_CONFIRMED")
@@ -2180,6 +2182,7 @@ def test_recovery_settlement_rejects_owner_not_bound_to_durable_run_read_only(tm
         "worker-attacker",
         lease["lease_token"],
         "generation-settlement",
+        termination_status="ALREADY_EXITED",
     ) is False
     assert snapshot() == before
 
@@ -2216,6 +2219,7 @@ def test_recovery_settlement_accepts_distinct_recovery_lease_binding(tmp_path):
         "execution-recovery-coordinator",
         lease["lease_token"],
         "recovery-generation-1",
+        termination_status="KILLED",
     ) is True
 
     with database._connection_scope() as conn:
@@ -2309,6 +2313,7 @@ def test_deferred_complete_uncertain_recovery_preserves_provenance_and_settles(t
         recovery_owner,
         retry_lease["lease_token"],
         "recovery-confirmation-generation",
+        termination_status="ALREADY_EXITED",
     ) is True
 
 

@@ -164,6 +164,22 @@ jobs:
             tests/security/test_execution_decision_authority.py \
             tests/security/test_execution_cancellation_coordinator.py \
             tests/security/test_real_dispatch_authority_assurance.py \
+            tests/test_observation_service.py::test_late_durable_write_remains_tracked_and_requires_reconciliation \
+            tests/test_observation_service.py::test_supervisor_timeout_remains_owned_through_shutdown \
+            tests/test_observation_service.py::test_supervisor_timeout_does_not_overlap_next_recovery \
+            tests/test_observation_service.py::test_uncertain_supervisor_timeout_does_not_claim_second_recovery_lease \
+            tests/test_observation_service.py::test_termination_status_accepts_exact_typed_result_and_rejects_lookalikes \
+            tests/test_observation_service.py::test_late_supervisor_result_does_not_terminalize_stale_recovery \
+            tests/test_observation_service.py::test_late_supervisor_failure_is_consumed_and_visible \
+            tests/test_observation_service.py::test_late_durable_write_remains_owned_through_bounded_shutdown \
+            tests/test_observation_service.py::test_caller_cancellation_does_not_cancel_started_durable_write \
+            tests/test_observation_service.py::test_late_durable_write_failure_is_consumed_after_shutdown \
+            tests/test_observation_service.py::test_late_durable_recovery_write_remains_visible_to_fresh_service \
+            tests/test_observation_service.py::test_conflicting_pending_durable_write_payload_is_rejected_without_second_invocation \
+            tests/test_observation_service.py::test_cancellation_resistant_non_write_worker_remains_owned_and_fences_restart \
+            tests/test_observation_service.py::test_fresh_service_uses_durable_recovery_when_completion_callback_loop_is_unavailable \
+            tests/security/test_execution_quarantine_api.py::test_recovery_health_exposes_observer_created_state_from_production_revocation \
+            tests/security/test_execution_quarantine_api.py::test_recovery_health_exposes_supervisor_timeout_from_production_observer \
             tests/security/test_scan_request_migration.py \
             tests/security/test_process_launch_boundary.py \
             tests/security/test_container_hardening.py \
