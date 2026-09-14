@@ -7,6 +7,7 @@ They never discover or mutate an ambient application database.
 import os
 import hashlib
 import json
+import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +34,33 @@ from app.core.tool_operation_policy import OPERATION_POLICY_REVISION
 
 POSTGRES_TEST_URL = os.getenv("CYBERASSESS_POSTGRES_TEST_URL", "").strip()
 POSTGRES_TEST_ACK = os.getenv("CYBERASSESS_POSTGRES_TEST_ACK", "").strip()
+
+
+@contextmanager
+def _trace_compatibility_metadata_calls(calls):
+    """Observe the trusted metadata function without replacing its code object.
+
+    The migration coordinator fingerprints this function's source before
+    startup.  A mock or monkeypatch would therefore create an intentional
+    integrity mismatch rather than a valid observation of coordinator work.
+    Python's call tracer lets this test record the real invocation boundary
+    while leaving the production callable and its fingerprint unchanged.
+    """
+    target_code = _compatibility_column_metadata.__code__
+    previous_trace = sys.gettrace()
+
+    def trace(frame, event, arg):
+        if event == "call" and frame.f_code is target_code:
+            entry = frame.f_locals.get("entry")
+            if isinstance(entry, dict):
+                calls.append((frame.f_locals.get("backend"), entry))
+        return None
+
+    sys.settrace(trace)
+    try:
+        yield
+    finally:
+        sys.settrace(previous_trace)
 
 
 def test_v10_postcondition_query_qualifies_constraint_oid():
@@ -485,64 +513,71 @@ def test_postgres_compatibility_manifest_and_current_provenance_are_exact():
             assert context["compatibility_manifest"] == COMPATIBILITY_RECONCILIATION_MANIFEST
 
 
-def test_postgres_coordinator_bounds_compatibility_catalog_work(monkeypatch):
+def test_postgres_coordinator_bounds_compatibility_catalog_work():
     calls = []
-    original_metadata = db_module._compatibility_column_metadata
+    with _trace_compatibility_metadata_calls(calls):
+        with _isolated_manager():
+            generic_entries = [
+                entry for entry in COMPATIBILITY_RECONCILIATION_MANIFEST
+                if entry["family"] == "generic"
+            ]
+            generic_counts = {
+                entry["column"]: sum(
+                    1 for backend, observed in calls
+                    if backend == "postgresql"
+                    and observed["family"] == "generic"
+                    and observed["table"] == entry["table"]
+                    and observed["column"] == entry["column"]
+                )
+                for entry in generic_entries
+            }
+            assert set(generic_counts) == {entry["column"] for entry in generic_entries}
+            assert all(count <= 2 for count in generic_counts.values())
 
-    def traced_metadata(connection, backend, entry):
-        calls.append((backend, entry["family"], entry["table"], entry["column"]))
-        return original_metadata(connection, backend, entry)
 
-    monkeypatch.setattr(db_module, "_compatibility_column_metadata", traced_metadata)
-    with _isolated_manager():
-        generic_entries = [
-            entry for entry in COMPATIBILITY_RECONCILIATION_MANIFEST
-            if entry["family"] == "generic"
-        ]
-        generic_counts = {
-            entry["column"]: calls.count(("postgresql", "generic", entry["table"], entry["column"]))
-            for entry in generic_entries
-        }
-        assert set(generic_counts) == {entry["column"] for entry in generic_entries}
-        assert all(count <= 2 for count in generic_counts.values())
-
-
-def test_postgres_version_two_remediates_legacy_request_fk(monkeypatch):
+def test_postgres_version_two_remediates_legacy_request_fk():
     calls = []
-    original_metadata = db_module._compatibility_column_metadata
-
-    def traced_metadata(connection, backend, entry):
-        calls.append((backend, entry["family"], entry["column"]))
-        return original_metadata(connection, backend, entry)
-
-    monkeypatch.setattr(db_module, "_compatibility_column_metadata", traced_metadata)
-    with _isolated_manager() as manager:
-        calls.clear()
-        with manager._connection_scope() as conn:
-            conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_legacy_request_fk FOREIGN KEY (request_id) REFERENCES execution_requests(id)")
-            conn.execute("DELETE FROM schema_migrations WHERE version >= 2")
-        # The startup coordinator correctly rejects a non-contiguous ledger.
-        # Exercise the bounded v2 remediation directly without replaying later
-        # historical DDL migrations that are already present in this schema.
-        manager._init_db(max_migration_version=2)
-        assert calls.count(("postgresql", "generic", "status")) == 1
-        assert calls.count(("postgresql", "generic", "principal_type")) == 1
-        assert sum(1 for call in calls if call[0] == "postgresql" and call[1] == "generic") == 8
-        with manager._connection_scope() as conn:
-            legacy = conn.execute("""
-                SELECT COUNT(*) AS count
-                FROM pg_constraint c
-                JOIN pg_class t ON t.oid = c.conrelid
-                JOIN pg_class pt ON pt.oid = c.confrelid
-                JOIN pg_namespace n ON n.oid = t.relnamespace
-                JOIN pg_namespace pn ON pn.oid = pt.relnamespace
-                WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
-                  AND n.nspname = current_schema() AND pn.nspname = current_schema()
-                  AND c.contype = 'f' AND array_length(c.conkey, 1) = 1
-                  AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id)%'
-            """).fetchone()
-            assert legacy["count"] == 0
-            assert conn.execute("SELECT 1 FROM schema_migrations WHERE version = 2").fetchone()
+    with _trace_compatibility_metadata_calls(calls):
+        with _isolated_manager() as manager:
+            calls.clear()
+            with manager._connection_scope() as conn:
+                conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_legacy_request_fk FOREIGN KEY (request_id) REFERENCES execution_requests(id)")
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 2")
+            # The startup coordinator correctly rejects a non-contiguous ledger.
+            # Exercise the bounded v2 remediation directly without replaying later
+            # historical DDL migrations that are already present in this schema.
+            manager._init_db(max_migration_version=2)
+            assert sum(
+                1 for backend, entry in calls
+                if backend == "postgresql"
+                and entry["family"] == "generic"
+                and entry["column"] == "status"
+            ) == 1
+            assert sum(
+                1 for backend, entry in calls
+                if backend == "postgresql"
+                and entry["family"] == "generic"
+                and entry["column"] == "principal_type"
+            ) == 1
+            assert sum(
+                1 for backend, entry in calls
+                if backend == "postgresql" and entry["family"] == "generic"
+            ) == 8
+            with manager._connection_scope() as conn:
+                legacy = conn.execute("""
+                    SELECT COUNT(*) AS count
+                    FROM pg_constraint c
+                    JOIN pg_class t ON t.oid = c.conrelid
+                    JOIN pg_class pt ON pt.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = t.relnamespace
+                    JOIN pg_namespace pn ON pn.oid = pt.relnamespace
+                    WHERE t.relname = 'execution_runs' AND pt.relname = 'execution_requests'
+                      AND n.nspname = current_schema() AND pn.nspname = current_schema()
+                      AND c.contype = 'f' AND array_length(c.conkey, 1) = 1
+                      AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (request_id)%'
+                """).fetchone()
+                assert legacy["count"] == 0
+                assert conn.execute("SELECT 1 FROM schema_migrations WHERE version = 2").fetchone()
 
 
 def test_postgres_health_rejects_same_name_wrong_column_index():
