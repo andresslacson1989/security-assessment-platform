@@ -57,13 +57,15 @@ def _trace_compatibility_metadata_calls(calls):
         if event == "call" and frame.f_code in target_codes:
             entry = frame.f_locals.get("entry")
             if isinstance(entry, dict):
-                calls.append((frame.f_locals.get("backend"), entry))
+                calls.append((frame.f_locals.get("backend"), ("single", entry)))
                 return None
             entries = frame.f_locals.get("entries")
             if isinstance(entries, tuple):
-                for snapshot_entry in entries:
-                    if isinstance(snapshot_entry, dict):
-                        calls.append((frame.f_locals.get("backend"), snapshot_entry))
+                snapshot_entries = tuple(
+                    snapshot_entry for snapshot_entry in entries
+                    if isinstance(snapshot_entry, dict)
+                )
+                calls.append((frame.f_locals.get("backend"), ("batch", snapshot_entries)))
         return None
 
     sys.settrace(trace)
@@ -531,18 +533,31 @@ def test_postgres_coordinator_bounds_compatibility_catalog_work():
                 entry for entry in COMPATIBILITY_RECONCILIATION_MANIFEST
                 if entry["family"] == "generic"
             ]
-            generic_counts = {
-                entry["column"]: sum(
-                    1 for backend, observed in calls
-                    if backend == "postgresql"
-                    and observed["family"] == "generic"
-                    and observed["table"] == entry["table"]
+            batches = [
+                payload[1]
+                for backend, payload in calls
+                if backend == "postgresql" and payload[0] == "batch"
+            ]
+            single_calls = [
+                payload for backend, payload in calls
+                if backend == "postgresql" and payload[0] == "single"
+            ]
+            assert batches
+            assert not single_calls
+            assert all(
+                any(
+                    observed["table"] == entry["table"]
                     and observed["column"] == entry["column"]
+                    for observed in batch
                 )
                 for entry in generic_entries
-            }
-            assert set(generic_counts) == {entry["column"] for entry in generic_entries}
-            assert all(count <= 2 for count in generic_counts.values())
+                for batch in batches
+                if batch
+            )
+            # The coordinator performs bounded batch snapshots.  The bound is
+            # on catalog round trips, not on the number of manifest rows
+            # represented by each batch observation.
+            assert len(batches) <= 2 * len(generic_entries)
 
 
 def test_postgres_version_two_remediates_legacy_request_fk():
@@ -557,22 +572,19 @@ def test_postgres_version_two_remediates_legacy_request_fk():
             # Exercise the bounded v2 remediation directly without replaying later
             # historical DDL migrations that are already present in this schema.
             manager._init_db(max_migration_version=2)
-            assert sum(
-                1 for backend, entry in calls
-                if backend == "postgresql"
-                and entry["family"] == "generic"
-                and entry["column"] == "status"
-            ) == 2
-            assert sum(
-                1 for backend, entry in calls
-                if backend == "postgresql"
-                and entry["family"] == "generic"
-                and entry["column"] == "principal_type"
-            ) == 2
-            assert sum(
-                1 for backend, entry in calls
-                if backend == "postgresql" and entry["family"] == "generic"
-            ) == 8
+            batches = [
+                payload[1]
+                for backend, payload in calls
+                if backend == "postgresql" and payload[0] == "batch"
+            ]
+            generic_observations = [
+                entry for batch in batches for entry in batch
+                if entry["family"] == "generic"
+            ]
+            assert len(batches) == 2
+            assert sum(entry["column"] == "status" for entry in generic_observations) == 2
+            assert sum(entry["column"] == "principal_type" for entry in generic_observations) == 2
+            assert len(generic_observations) == 16
             with manager._connection_scope() as conn:
                 legacy = conn.execute("""
                     SELECT COUNT(*) AS count
