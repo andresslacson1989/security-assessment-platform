@@ -41,6 +41,24 @@ FORWARD_APPLY_SOURCE_SHA256 = {
     13: {"sqlite": "sha256:820f109dbe3e626363e475a16a0caa3fac638fa4e7b15139976d328a303e4334", "postgresql": "sha256:f86fbbb9e9ca9fb84f7a5f102251b26ef7b6df28a0336f011ed64b257cb8ca90"},
 }
 
+# Current v1-v12 source identities are kept in a separate epoch so existing
+# ledger rows remain verifiable against the published implementation identity.
+CURRENT_FORWARD_APPLY_ARTIFACT_REVISION = "execution-migration-apply-v2"
+CURRENT_FORWARD_APPLY_SOURCE_SHA256 = {
+    1: {"sqlite": "sha256:8cc5abd31423b5df66f01a5f89d4fc3cedbf23fdd13cc3d50afceca53c774448", "postgresql": "sha256:2105c4dbc17aa81ed5bb6abfc0d670016dc65f29e9e7cc5a2fabb52b96fd3cf3"},
+    2: {"sqlite": "sha256:69d40eced1e1b0920f40f7b32b900065f1788f2690e63b334490e9e51197fced", "postgresql": "sha256:a9378cdc74c200af8d3f1b0907ddb5c4e1f254a428c952c6b74dd60f47feedfc"},
+    3: {"sqlite": "sha256:58e20b1c3e0a39d3eb31012d6520d076779c4a9236eba67c80723a1f0fd6d0d1", "postgresql": "sha256:c399ead033f5e44d5a16494a3e9cce77e2e1e7a3da68b7550240b48bf7873062"},
+    4: {"sqlite": "sha256:2b6795ec71691e89d8a9d274d97aaf62dac6221cebea4fc45a8d5a6e2366b0b7", "postgresql": "sha256:d88ac043519b36fe7981254a7ec5b7aa5b5e89ce5dccef19333e2a00e18fbc89"},
+    5: {"sqlite": "sha256:fca85a53b7ca4e9ca54c0fe0648d93abe580a217a6f6508a024c1057c728d7a8", "postgresql": "sha256:7ba538266ad96f23fd06941257001e08a664716b1aaf96e1c88cb385d7834664"},
+    6: {"sqlite": "sha256:a77e4144223a319fad6a95aa62bd650d56daddab82a3aa89bfacb536a2db5654", "postgresql": "sha256:741784a5fc3f1ab06044d1e36fc186460216c7404901d951768d169cf8dc2962"},
+    7: {"sqlite": "sha256:5877dbd427baa8e10577587ff824a4fc039eef83aff789cc547dc0d4e750bcaf", "postgresql": "sha256:b7514580711743291cc7bc59b14554713fd515aca6fef2f73857f633635c9fac"},
+    8: {"sqlite": "sha256:a2487e0b51e5c7d426da1a23415ea7fd1e81bc631903e105db0f072dc3bcf0c5", "postgresql": "sha256:872da90fec993ce4a4dacb84e0d1d59ea2b483ef0a77f0b641b26abbf0743270"},
+    9: {"sqlite": "sha256:2c64ed3286484588427c460a7515e0a3e640e5938a0983f23f951d1861064f71", "postgresql": "sha256:478f65fab2682ac669fb3f47a8aa3791629e2c90991837d265a0f1db187063c5"},
+    10: {"sqlite": "sha256:43e2931af48a81fd53d099396750370e20eab1764070feb1a45bd1d85dcbc905", "postgresql": "sha256:1ad76380ec28fa55baf0aee41c9b5461298f69f2ba7d6dc81bec3cc5c46b7c0e"},
+    11: {"sqlite": "sha256:a2dbd65238d3ac4e66f13b5ec5af67140df3c57d356d321e8e127e667793179c", "postgresql": "sha256:ef539657fc1200191e3fd7c961a8d2b8f16fe00d971f77e3a310391556501c41"},
+    12: {"sqlite": "sha256:5a85ef6a0cce767db0bebd9497e7446c948d1352e7ccfc0b383bf5414582556d", "postgresql": "sha256:f336a2216fc18bf456224dc34416bbbc917c571d95df1643398b4e52a55bbb16"},
+}
+
 # Migration ledger checksums incorporate the verifier artifact that was
 # approved when each migration identity was published.  Keep this map
 # immutable when a verifier receives a narrowly scoped compatibility fix;
@@ -265,4 +283,10 @@ COMPATIBILITY_RECONCILIATION_MANIFEST = [
 COMPATIBILITY_RECONCILIATION_SOURCE_SHA256 = {
     "sqlite": "sha256:0ede92db2cbdf4ad7e59176e7c910bcc399a80510b389ce140c50b0e8679cb77",
     "postgresql": "sha256:b10d4bffdb6c0d2293c306322cff1fdae8ff3f959e182a67c3114a564fa59280",
+}
+
+CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION = "execution-compatibility-reconciliation-v2"
+CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256 = {
+    "sqlite": "sha256:cae43a732741a99af9493a7186f175d79494b81cc4cbccd4a14bda4ef8365c13",
+    "postgresql": "sha256:64a923934c4bbb8a5c3cb04be938d44ddb74b6ed740fc20623c44d751341dd6d",
 }

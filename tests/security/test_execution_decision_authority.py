@@ -14,7 +14,17 @@ import pytest
 from app.core.execution_decision import ExecutionDecisionError, issue_execution_capability
 from app.core.db import DatabaseManager
 from app.core.migration_registry import MIGRATION_REGISTRY, _EXPECTED_CHECKSUMS
-from app.core.migration_artifacts import FORWARD_APPLY_ARTIFACT_REVISION
+from app.core.migration_artifacts import (
+    COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+    COMPATIBILITY_RECONCILIATION_MANIFEST,
+    COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+    CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+    CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+    CURRENT_FORWARD_APPLY_ARTIFACT_REVISION,
+    CURRENT_FORWARD_APPLY_SOURCE_SHA256,
+    FORWARD_APPLY_ARTIFACT_REVISION,
+    FORWARD_APPLY_SOURCE_SHA256,
+)
 from app.core.scan_request_migration_v13 import apply_artifact_digest
 from app.core.models import AuditAction, AuditEvent, ExecutionAuthorityLease, ExecutionDecisionRecord, ExecutionDispatchLease, ExecutionLeaseClaim, ExecutionRunRecord, Target, TargetType, EXECUTION_REASON_CODES, is_canonical_execution_reason_code, is_valid_execution_terminal_outcome
 from app.core.models import UserProfile, UserRole
@@ -136,12 +146,31 @@ def test_fresh_database_records_one_durable_outcome_per_registered_migration(tmp
         item for version in range(1, len(MIGRATION_REGISTRY) + 1) for item in ((version, 1, "STARTED"), (version, 2, "SUCCEEDED"))
     ]
     for row in rows:
+        version = int(row["migration_version"])
+        spec = next(item for item in MIGRATION_REGISTRY if item.version == version)
         context = json.loads(row["context_json"])
         assert context["coordinator"] == "registry"
         assert context["provenance_format"] == "registry-coordinator-v2"
-        assert context["apply_artifact_revision"] == "execution-migration-apply-v1"
-        assert context["apply_artifact"].startswith("sha256:")
-        assert context["apply_manifest"]
+        assert context["apply_manifest"] == spec.apply_manifest
+        assert context["backend_policy"] == spec.backend_policy
+        if version <= 12:
+            normalized_artifacts = {
+                int(key): value for key, value in context["apply_artifacts"].items()
+            }
+            assert context["apply_artifact_revision"] == CURRENT_FORWARD_APPLY_ARTIFACT_REVISION
+            assert context["apply_artifact"] == CURRENT_FORWARD_APPLY_SOURCE_SHA256[version]["sqlite"]
+            assert normalized_artifacts == CURRENT_FORWARD_APPLY_SOURCE_SHA256
+            assert context["compatibility_artifact_revision"] == CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+            assert context["compatibility_artifact"] == CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["sqlite"]
+            assert context["compatibility_manifest"] == COMPATIBILITY_RECONCILIATION_MANIFEST
+        else:
+            assert version == 13
+            assert context["apply_artifact_revision"] == FORWARD_APPLY_ARTIFACT_REVISION
+            assert context["apply_artifact"] == spec.apply_artifact["sqlite"]
+            assert context["apply_artifacts"] == spec.apply_artifact
+            assert "compatibility_artifact_revision" not in context
+            assert "compatibility_artifact" not in context
+            assert "compatibility_manifest" not in context
 
 
 def test_forward_apply_artifact_vectors_match_runtime_serialization():
@@ -150,40 +179,88 @@ def test_forward_apply_artifact_vectors_match_runtime_serialization():
         for backend in ("sqlite", "postgresql"):
             if spec.version == 13:
                 actual = apply_artifact_digest(manager, backend=backend, manifest=spec.apply_manifest)
+                assert spec.apply_artifact[backend] == actual
             else:
                 material = "\n".join((
                     inspect.getsource(DatabaseManager._init_db),
                     inspect.getsource(DatabaseManager._apply_migration_version),
-                    FORWARD_APPLY_ARTIFACT_REVISION,
+                    CURRENT_FORWARD_APPLY_ARTIFACT_REVISION,
                     json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
                     backend,
                 )).encode("utf-8")
                 actual = "sha256:" + hashlib.sha256(material).hexdigest()
-            assert spec.apply_artifact[backend] == actual
+                assert CURRENT_FORWARD_APPLY_SOURCE_SHA256[spec.version][backend] == actual
 
 
 def test_migration_provenance_rejects_malformed_or_mismatched_transaction_context():
     manager = DatabaseManager.__new__(DatabaseManager)
-    spec = MIGRATION_REGISTRY[0]
-    digest = spec.apply_artifact["sqlite"].split(":", 1)[1]
-    context = {
-        "coordinator": "registry",
-        "provenance_format": "registry-coordinator-v2",
-        "apply_artifact_revision": "execution-migration-apply-v1",
-        "apply_artifact": spec.apply_artifact["sqlite"],
-        "apply_artifacts": spec.apply_artifact,
-        "apply_manifest": spec.apply_manifest,
-        "backend_policy": spec.backend_policy,
-    }
-    row = {"transaction_context_id": f"txp-0123456789abcdef0123456789abcdef-{digest}"}
-    manager._validate_migration_event_provenance(row, spec, context)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
 
-    for transaction_context_id in (
-        f"txp-not-a-uuid-{digest}",
-        f"txp-0123456789abcdef0123456789abcdef-{'0' * 64}",
-    ):
-        with pytest.raises(RuntimeError, match="transaction provenance identity"):
-            manager._validate_migration_event_provenance({"transaction_context_id": transaction_context_id}, spec, context)
+    def _context_for_epoch(current):
+        forward_revision = CURRENT_FORWARD_APPLY_ARTIFACT_REVISION if current else FORWARD_APPLY_ARTIFACT_REVISION
+        forward_artifacts = CURRENT_FORWARD_APPLY_SOURCE_SHA256 if current else FORWARD_APPLY_SOURCE_SHA256
+        compatibility_revision = (
+            CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+            if current else COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+        )
+        compatibility_artifacts = (
+            CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
+            if current else COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
+        )
+        return {
+            "coordinator": "registry",
+            "provenance_format": "registry-coordinator-v2",
+            "apply_artifact_revision": forward_revision,
+            "apply_artifact": forward_artifacts[spec.version]["sqlite"],
+            "apply_artifacts": forward_artifacts,
+            "apply_manifest": spec.apply_manifest,
+            "backend_policy": spec.backend_policy,
+            "compatibility_artifact_revision": compatibility_revision,
+            "compatibility_artifact": compatibility_artifacts["sqlite"],
+            "compatibility_manifest": COMPATIBILITY_RECONCILIATION_MANIFEST,
+        }
+
+    historical_context = _context_for_epoch(False)
+    historical_digest = FORWARD_APPLY_SOURCE_SHA256[spec.version]["sqlite"].split(":", 1)[1]
+    historical_row = {"transaction_context_id": f"txp-0123456789abcdef0123456789abcdef-{historical_digest}"}
+    historical_context_before = dict(historical_context)
+    manager._validate_migration_event_provenance(historical_row, spec, historical_context)
+    assert historical_context == historical_context_before
+
+    current_context = _context_for_epoch(True)
+    current_digest = CURRENT_FORWARD_APPLY_SOURCE_SHA256[spec.version]["sqlite"].split(":", 1)[1]
+    current_row = {"transaction_context_id": f"txp-abcdefabcdefabcdefabcdefabcdefab-{current_digest}"}
+    current_context_before = dict(current_context)
+    manager._validate_migration_event_provenance(current_row, spec, current_context)
+    assert current_context == current_context_before
+
+    partial_context = dict(current_context)
+    partial_context.pop("compatibility_manifest")
+    with pytest.raises(RuntimeError, match="partial paired provenance"):
+        manager._validate_migration_event_provenance(current_row, spec, partial_context)
+
+    mixed_context = dict(current_context)
+    mixed_context.update({
+        "compatibility_artifact_revision": COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+        "compatibility_artifact": COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["sqlite"],
+    })
+    with pytest.raises(RuntimeError, match="forward/compatibility provenance pair"):
+        manager._validate_migration_event_provenance(current_row, spec, mixed_context)
+
+    digest = historical_digest
+
+    with pytest.raises(RuntimeError, match="transaction provenance identity"):
+        manager._validate_migration_event_provenance(
+            {"transaction_context_id": f"txp-not-a-uuid-{digest}"},
+            spec,
+            historical_context,
+        )
+    with pytest.raises(RuntimeError, match="forward/compatibility provenance pair"):
+        manager._validate_migration_event_provenance(
+            {"transaction_context_id": f"txp-0123456789abcdef0123456789abcdef-{'0' * 64}"},
+            spec,
+            historical_context,
+        )
 
     with pytest.raises(RuntimeError, match="partial forward-apply provenance"):
         manager._validate_migration_event_provenance(
@@ -191,10 +268,10 @@ def test_migration_provenance_rejects_malformed_or_mismatched_transaction_contex
         )
 
     for tampered_context in (
-        {key: value for key, value in context.items() if key != "coordinator"},
-        {**context, "coordinator": "operator"},
+        {key: value for key, value in historical_context.items() if key != "coordinator"},
+        {**historical_context, "coordinator": "operator"},
     ):
-        with pytest.raises(RuntimeError, match="forward-apply provenance|provenance identity"):
+        with pytest.raises(RuntimeError, match="forward-apply provenance|provenance identity|partial paired provenance|forward/compatibility provenance pair"):
             manager._validate_migration_event_provenance({"transaction_context_id": f"txp-{'2' * 32}-{digest}"}, spec, tampered_context)
 
     for transaction_context_id in ("tx-legacy", "tx-1"):

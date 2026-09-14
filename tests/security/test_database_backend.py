@@ -1,6 +1,7 @@
 """Contract 01 database backend compatibility and selection tests."""
 
 import asyncio
+import copy
 import hashlib
 import inspect
 import json
@@ -33,6 +34,11 @@ from app.core.migration_artifacts import (
     COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
     COMPATIBILITY_RECONCILIATION_MANIFEST,
     COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+    CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+    CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+    CURRENT_FORWARD_APPLY_ARTIFACT_REVISION,
+    CURRENT_FORWARD_APPLY_SOURCE_SHA256,
+    FORWARD_APPLY_ARTIFACT_REVISION,
     FORWARD_APPLY_MANIFESTS,
     FORWARD_APPLY_SOURCE_SHA256,
     MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256,
@@ -154,8 +160,43 @@ def test_current_verifier_fingerprints_match_every_runtime_method():
 def test_forward_apply_artifacts_cover_both_supported_database_backends():
     assert set(FORWARD_APPLY_MANIFESTS) == set(range(1, 14))
     assert set(FORWARD_APPLY_SOURCE_SHA256) == set(range(1, 14))
+    assert set(CURRENT_FORWARD_APPLY_SOURCE_SHA256) == set(range(1, 13))
     assert all(set(vector) == {"sqlite", "postgresql"} for vector in FORWARD_APPLY_MANIFESTS.values())
     assert all(set(vector) == {"sqlite", "postgresql"} for vector in FORWARD_APPLY_SOURCE_SHA256.values())
+    assert all(set(vector) == {"sqlite", "postgresql"} for vector in CURRENT_FORWARD_APPLY_SOURCE_SHA256.values())
+
+
+def test_current_forward_apply_fingerprints_match_runtime_serialization():
+    for spec in MIGRATION_REGISTRY:
+        if spec.version == 13:
+            continue
+        for backend in ("sqlite", "postgresql"):
+            material = "\n".join((
+                inspect.getsource(DatabaseManager._init_db),
+                inspect.getsource(DatabaseManager._apply_migration_version),
+                db_module.CURRENT_FORWARD_APPLY_ARTIFACT_REVISION,
+                json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
+                backend,
+            )).encode("utf-8")
+            actual = "sha256:" + hashlib.sha256(material).hexdigest()
+            assert CURRENT_FORWARD_APPLY_SOURCE_SHA256[spec.version][backend] == actual
+
+
+def test_historical_artifact_epoch_remains_immutable_and_current_epoch_is_distinct():
+    assert FORWARD_APPLY_ARTIFACT_REVISION == "execution-migration-apply-v1"
+    assert COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION == "execution-compatibility-reconciliation-v1"
+    assert FORWARD_APPLY_SOURCE_SHA256[1] == {
+        "sqlite": "sha256:8a0778721d6be2da6acb4c0c3324bff2fd93d81be008e5855d0ef7eae047b8e0",
+        "postgresql": "sha256:cad1976d162f7b2feb70c8c3621afd36f96841bca0280b13e9e891af33de1cef",
+    }
+    assert COMPATIBILITY_RECONCILIATION_SOURCE_SHA256 == {
+        "sqlite": "sha256:0ede92db2cbdf4ad7e59176e7c910bcc399a80510b389ce140c50b0e8679cb77",
+        "postgresql": "sha256:b10d4bffdb6c0d2293c306322cff1fdae8ff3f959e182a67c3114a564fa59280",
+    }
+    assert CURRENT_FORWARD_APPLY_ARTIFACT_REVISION == "execution-migration-apply-v2"
+    assert CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION == "execution-compatibility-reconciliation-v2"
+    assert CURRENT_FORWARD_APPLY_SOURCE_SHA256 != FORWARD_APPLY_SOURCE_SHA256
+    assert CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256 != COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
 
 
 def test_authoritative_schema_rejects_one_byte_mutated_current_verifier_digest(monkeypatch):
@@ -310,6 +351,85 @@ def test_fresh_sqlite_bootstrap_submits_each_governed_ddl_only_when_missing(tmp_
             )
 
 
+def test_direct_sqlite_init_uses_scoped_boundary_without_duplicate_compatibility_ddl(tmp_path, monkeypatch):
+    traced = []
+    original_connect = db_module.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(traced.append)
+        return connection
+
+    monkeypatch.setattr(db_module.sqlite3, "connect", traced_connect)
+    manager = DatabaseManager(db_path=tmp_path / "direct-init.sqlite3")
+    baseline_count = len(traced)
+
+    manager._init_db(max_migration_version=2)
+
+    direct_statements = traced[baseline_count:]
+    for entry in COMPATIBILITY_RECONCILIATION_MANIFEST:
+        normalized = db_module._normalize_migration_sql(_compatibility_ddl(entry))
+        assert not any(db_module._normalize_migration_sql(statement) == normalized for statement in direct_statements)
+    assert db_module._migration_operation_for(manager) is None
+
+
+def test_guarded_metadata_cache_is_connection_and_transaction_bounded(tmp_path, monkeypatch):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    connection = sqlite3.connect(tmp_path / "bounded-cache.sqlite3")
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE api_keys (key_id TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE')")
+    manager = object.__new__(DatabaseManager)
+    calls = []
+    original_metadata = db_module._compatibility_column_metadata
+
+    def traced_metadata(*args, **kwargs):
+        calls.append((args[1], args[2]["table"], args[2]["column"]))
+        return original_metadata(*args, **kwargs)
+
+    monkeypatch.setattr(db_module, "_compatibility_column_metadata", traced_metadata)
+    with db_module._migration_operation_context(manager, "bounded-cache-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_2")
+        assert guarded.execute(_compatibility_ddl(entry)).rowcount == 0
+        guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+        guarded.execute("SAVEPOINT schema_migration_2")
+        assert guarded.execute(_compatibility_ddl(entry)).rowcount == 0
+        guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+        assert len(calls) == 1
+        guarded.commit()
+        guarded.execute("SAVEPOINT schema_migration_2")
+        assert guarded.execute(_compatibility_ddl(entry)).rowcount == 0
+        guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+        assert len(calls) == 2
+    connection.close()
+
+
+def test_guarded_compatibility_ddl_rejects_missing_operation_context(tmp_path):
+    entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
+    connection = sqlite3.connect(tmp_path / "missing-operation-context.sqlite3")
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE api_keys (key_id TEXT)")
+    manager = object.__new__(DatabaseManager)
+    guarded = _MigrationGuardedConnection(manager, connection)
+    guarded.execute("SAVEPOINT schema_migration_2")
+    with pytest.raises(_MigrationCompatibilityError, match="approved operation context"):
+        guarded.execute(_compatibility_ddl(entry))
+    connection.rollback()
+    connection.close()
+
+
+def test_migration_connection_does_not_trust_mutable_coordinator_flag(tmp_path):
+    connection = sqlite3.connect(tmp_path / "operation-boundary.sqlite3")
+    manager = object.__new__(DatabaseManager)
+    manager._migration_coordinator_active = True
+
+    assert db_module._migration_connection_for(manager, connection) is connection
+    with db_module._migration_operation_context(manager, "boundary-test"):
+        guarded = db_module._migration_connection_for(manager, connection)
+        assert isinstance(guarded, _MigrationGuardedConnection)
+    connection.close()
+
+
 def test_sqlite_guard_skips_exact_existing_definition_without_submitting_ddl(tmp_path):
     entry = next(item for item in COMPATIBILITY_RECONCILIATION_MANIFEST if item["column"] == "status")
     path = tmp_path / "existing.sqlite3"
@@ -319,10 +439,11 @@ def test_sqlite_guard_skips_exact_existing_definition_without_submitting_ddl(tmp
     statements = []
     connection.set_trace_callback(statements.append)
     manager = object.__new__(DatabaseManager)
-    guarded = _MigrationGuardedConnection(manager, connection)
-    guarded.execute("SAVEPOINT schema_migration_2")
-    assert guarded.execute(_compatibility_ddl(entry)).rowcount == 0
-    guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+    with db_module._migration_operation_context(manager, "unit-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_2")
+        assert guarded.execute(_compatibility_ddl(entry)).rowcount == 0
+        guarded.execute("RELEASE SAVEPOINT schema_migration_2")
     assert not any(db_module._normalize_migration_sql(statement) == db_module._normalize_migration_sql(_compatibility_ddl(entry)) for statement in statements)
     connection.close()
 
@@ -334,10 +455,11 @@ def test_sqlite_guard_adds_missing_definition_and_verifies_postcondition(tmp_pat
     connection.row_factory = sqlite3.Row
     connection.execute("CREATE TABLE api_keys (key_id TEXT)")
     manager = object.__new__(DatabaseManager)
-    guarded = _MigrationGuardedConnection(manager, connection)
-    guarded.execute("SAVEPOINT schema_migration_2")
-    guarded.execute(_compatibility_ddl(entry))
-    guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+    with db_module._migration_operation_context(manager, "unit-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_2")
+        guarded.execute(_compatibility_ddl(entry))
+        guarded.execute("RELEASE SAVEPOINT schema_migration_2")
     metadata = _compatibility_column_metadata(connection, "sqlite", entry)
     _assert_compatibility_column_exact(entry, metadata)
     connection.close()
@@ -349,12 +471,13 @@ def test_sqlite_guard_rejects_wrong_existing_definition(tmp_path):
     connection.row_factory = sqlite3.Row
     connection.execute("CREATE TABLE users (principal_type TEXT DEFAULT 'TENANT_PRINCIPAL')")
     manager = object.__new__(DatabaseManager)
-    guarded = _MigrationGuardedConnection(manager, connection)
-    guarded.execute("SAVEPOINT schema_migration_3")
-    with pytest.raises(_MigrationCompatibilityError, match="not exact"):
-        guarded.execute(_compatibility_ddl(entry))
-    guarded.execute("ROLLBACK TO SAVEPOINT schema_migration_3")
-    guarded.execute("RELEASE SAVEPOINT schema_migration_3")
+    with db_module._migration_operation_context(manager, "unit-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_3")
+        with pytest.raises(_MigrationCompatibilityError, match="not exact"):
+            guarded.execute(_compatibility_ddl(entry))
+        guarded.execute("ROLLBACK TO SAVEPOINT schema_migration_3")
+        guarded.execute("RELEASE SAVEPOINT schema_migration_3")
     connection.close()
 
 
@@ -363,12 +486,13 @@ def test_sqlite_guard_rejects_missing_table_before_ddl(tmp_path):
     connection = sqlite3.connect(tmp_path / "missing-table.sqlite3")
     connection.row_factory = sqlite3.Row
     manager = object.__new__(DatabaseManager)
-    guarded = _MigrationGuardedConnection(manager, connection)
-    guarded.execute("SAVEPOINT schema_migration_2")
-    with pytest.raises(_MigrationCompatibilityError, match="table is missing"):
-        guarded.execute(_compatibility_ddl(entry))
-    guarded.execute("ROLLBACK TO SAVEPOINT schema_migration_2")
-    guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+    with db_module._migration_operation_context(manager, "unit-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_2")
+        with pytest.raises(_MigrationCompatibilityError, match="table is missing"):
+            guarded.execute(_compatibility_ddl(entry))
+        guarded.execute("ROLLBACK TO SAVEPOINT schema_migration_2")
+        guarded.execute("RELEASE SAVEPOINT schema_migration_2")
     connection.close()
 
 
@@ -382,11 +506,12 @@ def test_sqlite_guard_wraps_unexpected_ddl_failure_without_duplicate_fallback(tm
     connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     manager = object.__new__(DatabaseManager)
-    guarded = _MigrationGuardedConnection(manager, connection)
-    guarded.execute("SAVEPOINT schema_migration_2")
-    with pytest.raises(_MigrationCompatibilityError, match="DDL execution failed") as failure:
-        guarded.execute(_compatibility_ddl(entry))
-    assert "duplicate" not in str(failure.value).lower()
+    with db_module._migration_operation_context(manager, "unit-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_2")
+        with pytest.raises(_MigrationCompatibilityError, match="DDL execution failed") as failure:
+            guarded.execute(_compatibility_ddl(entry))
+        assert "duplicate" not in str(failure.value).lower()
     connection.close()
 
 
@@ -418,34 +543,42 @@ def test_sqlite_guard_accepts_only_exact_duplicate_race_postcondition(tmp_path, 
     connection.row_factory = sqlite3.Row
     manager = object.__new__(DatabaseManager)
     manager.db_path = path
-    guarded = _MigrationGuardedConnection(manager, connection)
-    guarded.execute("SAVEPOINT schema_migration_2")
-    try:
-        if should_pass:
-            guarded.execute(_compatibility_ddl(entry))
-            guarded.execute("RELEASE SAVEPOINT schema_migration_2")
-        else:
-            with pytest.raises(_MigrationCompatibilityError, match="not exact"):
+    with db_module._migration_operation_context(manager, "unit-test"):
+        guarded = _MigrationGuardedConnection(manager, connection)
+        guarded.execute("SAVEPOINT schema_migration_2")
+        try:
+            if should_pass:
                 guarded.execute(_compatibility_ddl(entry))
-            connection.execute("ROLLBACK TO SAVEPOINT schema_migration_2")
-            connection.execute("RELEASE SAVEPOINT schema_migration_2")
-    finally:
-        connection.close()
-        peer.close()
+                guarded.execute("RELEASE SAVEPOINT schema_migration_2")
+            else:
+                with pytest.raises(_MigrationCompatibilityError, match="not exact"):
+                    guarded.execute(_compatibility_ddl(entry))
+                connection.execute("ROLLBACK TO SAVEPOINT schema_migration_2")
+                connection.execute("RELEASE SAVEPOINT schema_migration_2")
+        finally:
+            connection.close()
+            peer.close()
 
 
 def test_compatibility_artifact_rejects_mutated_current_digest(monkeypatch):
     database = object.__new__(DatabaseManager)
     spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
-    original = COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["sqlite"]
+    original = CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["sqlite"]
     replacement = "0" if original[-1] != "0" else "1"
     monkeypatch.setitem(
-        db_module.COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+        db_module.CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
         "sqlite",
         original[:-1] + replacement,
     )
     with pytest.raises(RuntimeError, match="compatibility reconciliation artifact drifted"):
         database._verify_compatibility_reconciliation_artifact(spec)
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+def test_current_compatibility_fingerprints_match_runtime_digest(backend):
+    assert db_module._compatibility_reconciliation_artifact_digest(backend) == (
+        CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256[backend]
+    )
 
 
 def _assert_compatibility_artifact_rejects_one_byte_source_mutation(monkeypatch, target):
@@ -470,6 +603,20 @@ def test_compatibility_artifact_rejects_source_mutated_coordinator_activation_pa
     _assert_compatibility_artifact_rejects_one_byte_source_mutation(
         monkeypatch,
         DatabaseManager._run_migration_coordinator,
+    )
+
+
+def test_compatibility_artifact_rejects_source_mutated_direct_activation_path(monkeypatch):
+    _assert_compatibility_artifact_rejects_one_byte_source_mutation(
+        monkeypatch,
+        DatabaseManager._init_db,
+    )
+
+
+def test_compatibility_artifact_rejects_source_mutated_operation_context(monkeypatch):
+    _assert_compatibility_artifact_rejects_one_byte_source_mutation(
+        monkeypatch,
+        db_module._migration_operation_context,
     )
 
 
@@ -507,27 +654,123 @@ def test_v13_forward_apply_artifact_verification_does_not_use_compatibility_arti
     assert calls == []
 
 
-def test_current_compatibility_provenance_is_complete_and_partial_claims_fail_closed():
-    database = object.__new__(DatabaseManager)
-    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
-    frozen_context = {
+def _provenance_context(spec, backend="sqlite", *, current):
+    forward_revision = CURRENT_FORWARD_APPLY_ARTIFACT_REVISION if current else FORWARD_APPLY_ARTIFACT_REVISION
+    forward_map = CURRENT_FORWARD_APPLY_SOURCE_SHA256 if current else FORWARD_APPLY_SOURCE_SHA256
+    compatibility_revision = (
+        CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+        if current else COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+    )
+    compatibility_map = (
+        CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
+        if current else COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
+    )
+    return {
         "coordinator": "registry",
         "provenance_format": "registry-coordinator-v2",
         "migration_version": spec.version,
-        "apply_artifact_revision": db_module.FORWARD_APPLY_ARTIFACT_REVISION,
-        "apply_artifact": spec.apply_artifact["sqlite"],
-        "apply_artifacts": spec.apply_artifact,
-        "apply_manifest": spec.apply_manifest,
+        "apply_artifact_revision": forward_revision,
+        "apply_artifact": forward_map[spec.version][backend],
+        "apply_artifacts": copy.deepcopy(forward_map),
+        "apply_manifest": copy.deepcopy(spec.apply_manifest),
         "backend_policy": spec.backend_policy,
+        "compatibility_artifact_revision": compatibility_revision,
+        "compatibility_artifact": compatibility_map[backend],
+        "compatibility_manifest": copy.deepcopy(COMPATIBILITY_RECONCILIATION_MANIFEST),
     }
-    complete = dict(frozen_context)
-    complete.update(database._compatibility_artifact_claim(spec))
-    row = {"transaction_context_id": f"txp-{'a' * 32}-{spec.apply_artifact['sqlite'].split(':', 1)[1]}"}
-    database._validate_migration_event_provenance(row, spec, complete)
-    partial = dict(complete)
-    partial.pop("compatibility_manifest")
-    with pytest.raises(RuntimeError, match="partial compatibility provenance"):
-        database._validate_migration_event_provenance(row, spec, partial)
+
+
+def _provenance_row(artifact_map, version=1, backend="sqlite"):
+    artifact = artifact_map[version][backend]
+    return {"transaction_context_id": f"txp-{'a' * 32}-{artifact.split(':', 1)[1]}"}
+
+
+@pytest.mark.parametrize("current", [False, True], ids=["historical", "current"])
+def test_complete_forward_and_compatibility_provenance_epochs_validate_without_rewriting(current):
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    context = _provenance_context(spec, current=current)
+    row = _provenance_row(CURRENT_FORWARD_APPLY_SOURCE_SHA256 if current else FORWARD_APPLY_SOURCE_SHA256)
+    row_before = copy.deepcopy(row)
+    context_before = copy.deepcopy(context)
+
+    database._validate_migration_event_provenance(row, spec, context)
+
+    assert row == row_before
+    assert context == context_before
+
+
+@pytest.mark.parametrize(
+    "mutation,expected_message",
+    [
+        ("mixed", "provenance pair is invalid"),
+        ("partial", "partial paired provenance"),
+        ("unknown_revision", "provenance pair is invalid"),
+        ("wrong_backend", "provenance pair is invalid"),
+        ("wrong_suffix", "provenance pair is invalid"),
+        ("forward_mutation", "provenance pair is invalid"),
+        ("compatibility_mutation", "provenance pair is invalid"),
+        ("manifest_mutation", "provenance pair is invalid"),
+    ],
+)
+def test_paired_migration_provenance_rejects_invalid_or_mixed_claims(mutation, expected_message):
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    context = _provenance_context(spec, current=True)
+    row = _provenance_row(CURRENT_FORWARD_APPLY_SOURCE_SHA256)
+    if mutation == "mixed":
+        context.update({
+            "compatibility_artifact_revision": COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+            "compatibility_artifact": COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["sqlite"],
+        })
+    elif mutation == "partial":
+        context.pop("compatibility_manifest")
+    elif mutation == "unknown_revision":
+        context["apply_artifact_revision"] = "execution-migration-apply-unknown"
+    elif mutation == "wrong_backend":
+        database = object.__new__(PostgresDatabaseManager)
+    elif mutation == "wrong_suffix":
+        row = {"transaction_context_id": f"txp-{'a' * 32}-{'0' * 64}"}
+    elif mutation == "forward_mutation":
+        context["apply_artifacts"][2]["sqlite"] = context["apply_artifacts"][2]["sqlite"][:-1] + "0"
+    elif mutation == "compatibility_mutation":
+        original = context["compatibility_artifact"]
+        context["compatibility_artifact"] = original[:-1] + ("0" if original[-1] != "0" else "1")
+    elif mutation == "manifest_mutation":
+        context["apply_manifest"]["sqlite"] = "manifest-mutated"
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        database._validate_migration_event_provenance(row, spec, context)
+
+
+def test_legacy_transaction_context_accepts_only_claimless_rows():
+    database = object.__new__(DatabaseManager)
+    spec = next(item for item in MIGRATION_REGISTRY if item.version == 1)
+    database._validate_migration_event_provenance(
+        {"transaction_context_id": f"tx-{'a' * 32}"}, spec, {}
+    )
+    context = _provenance_context(spec, current=True)
+    with pytest.raises(RuntimeError, match="partial forward-apply provenance"):
+        database._validate_migration_event_provenance(
+            {"transaction_context_id": f"tx-{'a' * 32}"}, spec, context
+        )
+
+
+def test_fresh_disposable_process_imports_after_current_artifact_verification(tmp_path):
+    database_path = tmp_path / "fresh-process.db"
+    environment = os.environ.copy()
+    environment.pop("DATABASE_URL", None)
+    environment["CYBERASSESS_DB_PATH"] = str(database_path)
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "backend")
+    completed = subprocess.run(
+        [sys.executable, "-c", "import app.core.db as db; print(type(db.db_manager).__name__)"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "DatabaseManager" in completed.stdout
 
 
 def test_worker_does_not_reexecute_terminal_authoritative_scan_states():

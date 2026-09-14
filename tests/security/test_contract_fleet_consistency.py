@@ -284,6 +284,17 @@ def test_worktree_inventory_snapshot_matches_documented_git_serialization():
     current_entries = _read_porcelain_status_entries(repository_root)
     current_ci_entries = [entry for entry in current_entries if _is_ci_path(entry)]
     assert all(entry["path"] != "data/cyberassess.db" for entry in current_entries)
+    tracked_ci_entries = subprocess.run(
+        ["git", "ls-files", "--cached", "--", ".ci"],
+        cwd=repository_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked_ci_entries == []
+    assert all(entry["state"] == "??" for entry in current_ci_entries)
+    assert all(entry["path"] != "data/cyberassess.db" for entry in current_ci_entries)
+    assert inventory["preserved_ci_tree"]["included_in_checkpoint"] is False
 
     assert git_status["non_ci_entry_count"] == len(recorded_non_ci)
     assert git_status["non_ci_entry_count"] == 106
@@ -293,27 +304,8 @@ def test_worktree_inventory_snapshot_matches_documented_git_serialization():
     assert git_status["non_ci_path_sha256"] == _inventory_digest(recorded_non_ci, False)
     assert git_status["non_ci_state_path_sha256"] == _inventory_digest(recorded_non_ci, True)
 
-    if (repository_root / ".ci").exists():
-        assert git_status["ci_entry_count"] == len(current_ci_entries)
-        assert git_status["state_counts"]["ci"] == dict(
-            Counter(entry["state"] for entry in current_ci_entries)
-        )
-        assert git_status["ci_path_sha256"] == _inventory_digest(current_ci_entries, False)
-        assert git_status["ci_state_path_sha256"] == _inventory_digest(current_ci_entries, True)
-
-        reconstructed_all = sorted(
-            [*recorded_non_ci, *current_ci_entries],
-            key=lambda entry: entry["path"],
-        )
-        assert git_status["visible_entry_count"] == len(reconstructed_all)
-        assert git_status["state_counts"]["all"] == dict(
-            Counter(entry["state"] for entry in reconstructed_all)
-        )
-        assert git_status["all_path_sha256"] == _inventory_digest(reconstructed_all, False)
-        assert git_status["all_state_path_sha256"] == _inventory_digest(reconstructed_all, True)
-    else:
+    if not (repository_root / ".ci").exists():
         assert current_ci_entries == []
-        assert inventory["preserved_ci_tree"]["included_in_checkpoint"] is False
 
     delivery = inventory["delivery"]
     assert delivery["capture_state"] == {

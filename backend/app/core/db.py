@@ -93,8 +93,12 @@ from app.core.migration_artifacts import (
     COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
     COMPATIBILITY_RECONCILIATION_MANIFEST,
     COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+    CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+    CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
     FORWARD_APPLY_ARTIFACT_REVISION,
     FORWARD_APPLY_SOURCE_SHA256,
+    CURRENT_FORWARD_APPLY_ARTIFACT_REVISION,
+    CURRENT_FORWARD_APPLY_SOURCE_SHA256,
     POSTCONDITION_SOURCE_SHA256,
 )
 from app.core.tool_operation_policy import get_operation_policy, is_canonical_operation_policy_revision
@@ -721,6 +725,9 @@ MIGRATION_POSTCONDITION_REVISION = "execution-postconditions-v2"
 _ACTIVE_DATABASE_CONNECTION: ContextVar[Any | None] = ContextVar(
     "cyberassess_active_database_connection", default=None,
 )
+_MIGRATION_OPERATION: ContextVar[Any | None] = ContextVar(
+    "cyberassess_migration_operation", default=None,
+)
 
 
 class _PostgresRow(dict):
@@ -854,6 +861,137 @@ class _MigrationCompatibilityError(RuntimeError):
     """A migration compatibility check failed closed without masking the cause."""
 
 
+class _MigrationOperationState:
+    """Context-local state for one explicitly authorized migration operation."""
+
+    __slots__ = ("manager", "operation_kind", "generic_reconciliation_complete")
+
+    def __init__(self, manager: Any, operation_kind: str):
+        self.manager = manager
+        self.operation_kind = operation_kind
+        self.generic_reconciliation_complete = False
+
+
+@contextmanager
+def _migration_operation_context(manager: Any, operation_kind: str):
+    """Authorize compatibility reconciliation only inside one bounded scope."""
+    if not isinstance(operation_kind, str) or not operation_kind.strip():
+        raise _MigrationCompatibilityError("migration operation kind is invalid")
+    active = _MIGRATION_OPERATION.get()
+    if active is not None:
+        if active.manager is not manager:
+            raise _MigrationCompatibilityError("nested migration operation crossed manager boundary")
+        yield active
+        return
+    operation = _MigrationOperationState(manager, operation_kind.strip())
+    token = _MIGRATION_OPERATION.set(operation)
+    try:
+        yield operation
+    finally:
+        _MIGRATION_OPERATION.reset(token)
+
+
+def _migration_operation_for(manager: Any) -> Optional[_MigrationOperationState]:
+    """Return the approved operation only when it belongs to this manager."""
+    operation = _MIGRATION_OPERATION.get()
+    if operation is None or operation.manager is not manager:
+        return None
+    return operation
+
+
+def _forward_apply_identity(spec: Any, backend: str, *, current: bool) -> tuple[str, str, dict]:
+    """Return one complete, explicitly selected v1-v12 forward identity."""
+    if spec.version not in range(1, 13) or backend not in {"sqlite", "postgresql"}:
+        raise _MigrationCompatibilityError("migration forward artifact identity is unsupported")
+    artifact_map = CURRENT_FORWARD_APPLY_SOURCE_SHA256 if current else FORWARD_APPLY_SOURCE_SHA256
+    revision = CURRENT_FORWARD_APPLY_ARTIFACT_REVISION if current else FORWARD_APPLY_ARTIFACT_REVISION
+    selected_map = artifact_map.get(spec.version)
+    if not isinstance(selected_map, dict) or set(selected_map) != {"sqlite", "postgresql"}:
+        raise _MigrationCompatibilityError("migration forward artifact identity is incomplete")
+    selected = selected_map.get(backend)
+    if not isinstance(selected, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", selected):
+        raise _MigrationCompatibilityError("migration forward artifact identity is malformed")
+    return revision, selected, artifact_map
+
+
+def _compatibility_identity(backend: str, *, current: bool) -> tuple[str, str]:
+    """Return one complete, explicitly selected compatibility identity."""
+    if backend not in {"sqlite", "postgresql"}:
+        raise _MigrationCompatibilityError("migration compatibility artifact backend is unsupported")
+    revision = (
+        CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+        if current else COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+    )
+    artifact = (
+        CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
+        if current else COMPATIBILITY_RECONCILIATION_SOURCE_SHA256
+    ).get(backend)
+    if not isinstance(artifact, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact):
+        raise _MigrationCompatibilityError("migration compatibility artifact identity is malformed")
+    return revision, artifact
+
+
+def _validate_paired_migration_provenance(
+    spec: Any,
+    backend: str,
+    transaction_artifact: str,
+    context: dict[str, Any],
+) -> str:
+    """Accept exactly one complete old/current forward+compatibility pair."""
+    forward_keys = {
+        "coordinator", "provenance_format", "apply_artifact_revision",
+        "apply_artifact", "apply_artifacts", "apply_manifest", "backend_policy",
+    }
+    compatibility_keys = {
+        "compatibility_artifact_revision", "compatibility_artifact", "compatibility_manifest",
+    }
+    present_forward = forward_keys & set(context)
+    present_compatibility = compatibility_keys & set(context)
+    if present_forward != forward_keys or present_compatibility != compatibility_keys:
+        raise _MigrationCompatibilityError("migration event contains partial paired provenance")
+
+    def _artifact_maps_match(candidate: Any, expected: dict) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        normalized: dict[int, Any] = {}
+        for key, value in candidate.items():
+            if isinstance(key, bool):
+                return False
+            if isinstance(key, int):
+                normalized_key = key
+            elif isinstance(key, str) and key.isdigit():
+                normalized_key = int(key)
+            else:
+                return False
+            if normalized_key in normalized:
+                return False
+            normalized[normalized_key] = value
+        return normalized == expected
+
+    matches = []
+    for epoch, current in (("legacy", False), ("current", True)):
+        forward_revision, forward_artifact, forward_map = _forward_apply_identity(spec, backend, current=current)
+        compatibility_revision, compatibility_artifact = _compatibility_identity(backend, current=current)
+        if transaction_artifact != forward_artifact.split(":", 1)[1]:
+            continue
+        if (
+            context.get("coordinator") == "registry"
+            and context.get("provenance_format") == "registry-coordinator-v2"
+            and context.get("apply_artifact_revision") == forward_revision
+            and context.get("apply_artifact") == forward_artifact
+            and _artifact_maps_match(context.get("apply_artifacts"), forward_map)
+            and context.get("apply_manifest") == spec.apply_manifest
+            and context.get("backend_policy") == spec.backend_policy
+            and context.get("compatibility_artifact_revision") == compatibility_revision
+            and context.get("compatibility_artifact") == compatibility_artifact
+            and context.get("compatibility_manifest") == COMPATIBILITY_RECONCILIATION_MANIFEST
+        ):
+            matches.append(epoch)
+    if len(matches) != 1:
+        raise _MigrationCompatibilityError("migration event forward/compatibility provenance pair is invalid")
+    return matches[0]
+
+
 _COMPATIBILITY_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _COMPATIBILITY_SAVEPOINT_PATTERN = re.compile(r"^savepoint ([a-z_][a-z0-9_]*)$", re.IGNORECASE)
 _COMPATIBILITY_RELEASE_PATTERN = re.compile(r"^release savepoint ([a-z_][a-z0-9_]*)$", re.IGNORECASE)
@@ -933,6 +1071,24 @@ def _compatibility_manifest_by_sql() -> dict[str, dict[str, Any]]:
             raise _MigrationCompatibilityError("migration compatibility manifest contains duplicate DDL")
         by_sql[normalized] = entry
     return by_sql
+
+
+def _is_relevant_compatibility_schema_mutation(sql: str) -> bool:
+    """Identify raw DDL that can invalidate generic compatibility proof."""
+    normalized = _normalize_migration_sql(sql)
+    match = re.match(
+        r"^(?:ALTER|DROP)\s+TABLE(?:\s+IF\s+EXISTS)?\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+        normalized,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return False
+    generic_tables = {
+        entry["table"]
+        for entry in _compatibility_manifest_entries()
+        if entry["family"] == "generic"
+    }
+    return match.group(1) in generic_tables
 
 
 def _compatibility_column_metadata(connection: Any, backend: str, entry: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -1064,12 +1220,22 @@ class _MigrationGuardedCursor:
 class _MigrationGuardedConnection:
     """Intercept only the two reviewed compatibility ALTER TABLE families."""
 
-    def __init__(self, manager, connection):
+    def __init__(self, manager, connection, operation=None):
         self._manager = manager
         self._connection = connection
         self._backend = "postgresql" if isinstance(manager, PostgresDatabaseManager) else "sqlite"
+        self._operation = operation if operation is not None else _migration_operation_for(manager)
         self._entries_by_sql = _compatibility_manifest_by_sql()
         self._savepoints: list[str] = []
+        self._metadata_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _invalidate_metadata_cache(self) -> None:
+        self._metadata_cache.clear()
+
+    def _invalidate_reconciliation_state(self, entry: dict[str, Any]) -> None:
+        self._invalidate_metadata_cache()
+        if self._operation is not None and entry.get("family") == "generic":
+            self._operation.generic_reconciliation_complete = False
 
     def _is_guarded_ddl(self, sql: str) -> bool:
         return _normalize_migration_sql(sql) in self._entries_by_sql
@@ -1088,6 +1254,9 @@ class _MigrationGuardedConnection:
             return
         if _COMPATIBILITY_ROLLBACK_PATTERN.fullmatch(normalized):
             self._savepoints.clear()
+            self._invalidate_metadata_cache()
+        elif _COMPATIBILITY_ROLLBACK_TO_PATTERN.fullmatch(normalized):
+            self._invalidate_metadata_cache()
 
     def _current_savepoint(self) -> Optional[str]:
         return self._savepoints[-1] if self._savepoints else None
@@ -1143,17 +1312,23 @@ class _MigrationGuardedConnection:
                 verification_connection.close()
 
     def _execute_guarded_ddl(self, entry: dict[str, Any]):
+        if self._operation is None or _migration_operation_for(self._manager) is not self._operation:
+            self._raise_reconciliation_error("migration compatibility DDL reached without approved operation context")
         savepoint = self._current_savepoint()
         if savepoint != entry["savepoint"]:
             self._raise_reconciliation_error("migration compatibility DDL was issued outside its approved savepoint")
+        cache_key = (entry["table"], entry["column"])
+        metadata = self._metadata_cache.get(cache_key)
         try:
-            metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
+            if metadata is None:
+                metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
         except _MigrationCompatibilityError:
             raise
         except Exception as preflight_error:
             self._raise_reconciliation_error("migration compatibility preflight failed", preflight_error)
         if metadata is not None:
             _assert_compatibility_column_exact(entry, metadata)
+            self._metadata_cache[cache_key] = dict(metadata)
             return _MigrationNoOpResult()
         statement = _compatibility_ddl(entry)
         try:
@@ -1166,20 +1341,22 @@ class _MigrationGuardedConnection:
             try:
                 raced_metadata = self._duplicate_race_metadata(entry)
                 _assert_compatibility_column_exact(entry, raced_metadata)
+                self._invalidate_reconciliation_state(entry)
+                self._metadata_cache[cache_key] = dict(raced_metadata)
             except Exception as post_race_error:
                 if isinstance(post_race_error, _MigrationCompatibilityError):
                     raise
                 self._raise_reconciliation_error("migration compatibility post-race verification failed", post_race_error)
             return _MigrationNoOpResult()
         try:
-            _assert_compatibility_column_exact(
-                entry,
-                _compatibility_column_metadata(self._connection, self._backend, entry),
-            )
+            postcondition_metadata = _compatibility_column_metadata(self._connection, self._backend, entry)
+            _assert_compatibility_column_exact(entry, postcondition_metadata)
         except Exception as postcondition_error:
             if isinstance(postcondition_error, _MigrationCompatibilityError):
                 raise
             self._raise_reconciliation_error("migration compatibility postcondition verification failed", postcondition_error)
+        self._invalidate_reconciliation_state(entry)
+        self._metadata_cache[cache_key] = dict(postcondition_metadata)
         return result
 
     def cursor(self):
@@ -1192,6 +1369,10 @@ class _MigrationGuardedConnection:
             if params not in (None, ()):
                 self._raise_reconciliation_error("migration compatibility DDL does not accept parameters")
             return self._execute_guarded_ddl(entry)
+        if _is_relevant_compatibility_schema_mutation(normalized):
+            self._invalidate_metadata_cache()
+            if self._operation is not None:
+                self._operation.generic_reconciliation_complete = False
         result = self._connection.execute(sql, params) if params is not None else self._connection.execute(sql)
         self._track_control_statement(sql)
         return result
@@ -1200,14 +1381,26 @@ class _MigrationGuardedConnection:
         return self._connection.executemany(sql, params)
 
     def executescript(self, sql: str):
+        self._invalidate_metadata_cache()
+        if self._operation is not None and any(
+            _is_relevant_compatibility_schema_mutation(statement)
+            for statement in re.split(r";", sql)
+        ):
+            self._operation.generic_reconciliation_complete = False
         return self._connection.executescript(sql)
 
     def commit(self):
-        return self._connection.commit()
+        try:
+            return self._connection.commit()
+        finally:
+            self._invalidate_metadata_cache()
 
     def rollback(self):
         self._savepoints.clear()
-        return self._connection.rollback()
+        try:
+            return self._connection.rollback()
+        finally:
+            self._invalidate_metadata_cache()
 
     def close(self):
         return self._connection.close()
@@ -1217,8 +1410,9 @@ class _MigrationGuardedConnection:
 
 
 def _migration_connection_for(manager, connection):
-    """Wrap only coordinator migration connections, never ordinary DAL traffic."""
-    if not getattr(manager, "_migration_coordinator_active", False):
+    """Wrap only connections inside an approved context-local migration operation."""
+    operation = _migration_operation_for(manager)
+    if operation is None:
         return connection
     # v13 has its own separately fingerprinted callable and transaction
     # boundary.  Leave that path byte-for-byte compatible with its existing
@@ -1228,7 +1422,7 @@ def _migration_connection_for(manager, connection):
         return connection
     if isinstance(connection, _MigrationGuardedConnection):
         return connection
-    return _MigrationGuardedConnection(manager, connection)
+    return _MigrationGuardedConnection(manager, connection, operation)
 
 
 def _compatibility_reconciliation_artifact_digest(backend: str) -> str:
@@ -1271,10 +1465,17 @@ def _compatibility_reconciliation_artifact_digest(backend: str) -> str:
         _compatibility_manifest_entries,
         _compatibility_ddl,
         _compatibility_manifest_by_sql,
+        _is_relevant_compatibility_schema_mutation,
         _compatibility_column_metadata,
         _assert_compatibility_column_exact,
         _is_sqlite_duplicate_column,
         _is_postgres_duplicate_column,
+        _MigrationOperationState,
+        _migration_operation_context,
+        _migration_operation_for,
+        _forward_apply_identity,
+        _compatibility_identity,
+        _validate_paired_migration_provenance,
         _MigrationGuardedConnection,
         _MigrationGuardedCursor,
         _migration_connection_for,
@@ -1282,6 +1483,7 @@ def _compatibility_reconciliation_artifact_digest(backend: str) -> str:
         DatabaseManager.__init__,
         PostgresDatabaseManager.__init__,
         DatabaseManager._run_migration_coordinator,
+        DatabaseManager._init_db,
         DatabaseManager._get_connection,
         DatabaseManager._connection_scope,
         PostgresDatabaseManager._connection_scope,
@@ -1293,7 +1495,7 @@ def _compatibility_reconciliation_artifact_digest(backend: str) -> str:
         DatabaseManager._record_migration_failure,
     )
     material = "\n".join((
-        COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+        CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
         _canonical_json(COMPATIBILITY_RECONCILIATION_MANIFEST),
         pattern_material,
         backend,
@@ -1457,7 +1659,7 @@ class DatabaseManager:
 
     def _run_migration_coordinator(self) -> None:
         """Apply and verify each registered migration as an isolated outcome."""
-        with self._migration_lock():
+        with _migration_operation_context(self, "registry-coordinator"), self._migration_lock():
             self._ensure_migration_ledger()
             with self._connection_scope() as conn:
                 self._verify_resolved_reconciliation_artifacts(conn)
@@ -1505,7 +1707,13 @@ class DatabaseManager:
                 self._migration_schema_name = "public" if isinstance(self, PostgresDatabaseManager) else str(self.db_path)
                 self._migration_spec = spec
                 backend_key = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
-                self._migration_transaction_id = f"txp-{uuid.uuid4().hex}-{spec.apply_artifact[backend_key].split(':', 1)[1]}"
+                if spec.version == 13:
+                    transaction_artifact = spec.apply_artifact.get(backend_key)
+                else:
+                    _, transaction_artifact, _ = _forward_apply_identity(spec, backend_key, current=True)
+                if not isinstance(transaction_artifact, str) or not transaction_artifact.startswith("sha256:"):
+                    raise _MigrationCompatibilityError("migration transaction artifact identity is invalid")
+                self._migration_transaction_id = f"txp-{uuid.uuid4().hex}-{transaction_artifact.split(':', 1)[1]}"
                 self._migration_started_durable = False
                 self._migration_coordinator_active = True
                 try:
@@ -1567,13 +1775,13 @@ class DatabaseManager:
         material = "\n".join((
             inspect.getsource(implementation),
             inspect.getsource(dispatcher),
-            FORWARD_APPLY_ARTIFACT_REVISION,
+            CURRENT_FORWARD_APPLY_ARTIFACT_REVISION,
             json.dumps(spec.apply_manifest, sort_keys=True, separators=(",", ":")),
             backend,
         )).encode("utf-8")
         actual = "sha256:" + hashlib.sha256(material).hexdigest()
-        expected = spec.apply_artifact.get(backend) if isinstance(spec.apply_artifact, dict) else None
-        if actual != expected or actual != FORWARD_APPLY_SOURCE_SHA256.get(spec.version, {}).get(backend):
+        expected = CURRENT_FORWARD_APPLY_SOURCE_SHA256.get(spec.version, {}).get(backend)
+        if actual != expected:
             raise RuntimeError(f"migration forward-apply artifact drifted for version {spec.version}")
         self._verify_compatibility_reconciliation_artifact(spec)
 
@@ -1584,13 +1792,13 @@ class DatabaseManager:
         if spec.version not in range(1, 13):
             raise RuntimeError(f"migration compatibility artifact is not defined for version {spec.version}")
         backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
-        expected = COMPATIBILITY_RECONCILIATION_SOURCE_SHA256.get(backend)
+        expected = CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256.get(backend)
         actual = _compatibility_reconciliation_artifact_digest(backend)
         if (
             not isinstance(expected, str)
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected)
             or actual != expected
-            or COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION != "execution-compatibility-reconciliation-v1"
+            or CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION != "execution-compatibility-reconciliation-v2"
             or len(_compatibility_manifest_entries()) != 17
         ):
             raise RuntimeError("migration compatibility reconciliation artifact drifted")
@@ -1601,8 +1809,8 @@ class DatabaseManager:
             return {}
         backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
         return {
-            "compatibility_artifact_revision": COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
-            "compatibility_artifact": COMPATIBILITY_RECONCILIATION_SOURCE_SHA256[backend],
+            "compatibility_artifact_revision": CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION,
+            "compatibility_artifact": CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256[backend],
             "compatibility_manifest": COMPATIBILITY_RECONCILIATION_MANIFEST,
         }
 
@@ -1620,8 +1828,8 @@ class DatabaseManager:
         if not 1 <= spec.version <= 12:
             raise RuntimeError("migration event contains compatibility provenance for an unsupported version")
         if (
-            context.get("compatibility_artifact_revision") != COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
-            or context.get("compatibility_artifact") != COMPATIBILITY_RECONCILIATION_SOURCE_SHA256.get(backend)
+            context.get("compatibility_artifact_revision") != CURRENT_COMPATIBILITY_RECONCILIATION_ARTIFACT_REVISION
+            or context.get("compatibility_artifact") != CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256.get(backend)
             or context.get("compatibility_manifest") != COMPATIBILITY_RECONCILIATION_MANIFEST
         ):
             raise RuntimeError("migration event compatibility provenance drifted")
@@ -1630,23 +1838,26 @@ class DatabaseManager:
         """Validate the immutable provenance format bound to a ledger event."""
         transaction_context_id = str(row["transaction_context_id"])
         backend = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
-        selected_artifact = spec.apply_artifact.get(backend)
         if transaction_context_id.startswith("txp-"):
             match = re.fullmatch(r"txp-([0-9a-f]{32})-([0-9a-f]{64})", transaction_context_id)
-            if match is None or match.group(2) != selected_artifact.split(":", 1)[1]:
+            if match is None:
                 raise RuntimeError("migration ledger transaction provenance identity is invalid")
-            if (
-                context.get("coordinator") != "registry"
-                or
-                context.get("provenance_format") != "registry-coordinator-v2"
-                or context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
-                or context.get("apply_artifact") != selected_artifact
-                or context.get("apply_artifacts") != spec.apply_artifact
-                or context.get("apply_manifest") != spec.apply_manifest
-                or context.get("backend_policy") != spec.backend_policy
-            ):
-                raise RuntimeError("migration ledger row forward-apply provenance drifted")
-            self._validate_compatibility_artifact_claim(spec, context, backend)
+            if spec.version == 13:
+                selected_artifact = spec.apply_artifact.get(backend)
+                if (
+                    not isinstance(selected_artifact, str)
+                    or match.group(2) != selected_artifact.split(":", 1)[1]
+                    or context.get("coordinator") != "registry"
+                    or context.get("provenance_format") != "registry-coordinator-v2"
+                    or context.get("apply_artifact_revision") != FORWARD_APPLY_ARTIFACT_REVISION
+                    or context.get("apply_artifact") != selected_artifact
+                    or context.get("apply_artifacts") != spec.apply_artifact
+                    or context.get("apply_manifest") != spec.apply_manifest
+                    or context.get("backend_policy") != spec.backend_policy
+                ):
+                    raise RuntimeError("migration ledger row forward-apply provenance drifted")
+            else:
+                _validate_paired_migration_provenance(spec, backend, match.group(2), context)
             return
         if re.fullmatch(r"tx-[0-9a-f]{32}", transaction_context_id) is None:
             raise RuntimeError("migration ledger transaction context format is invalid")
@@ -1662,13 +1873,20 @@ class DatabaseManager:
     def _record_migration_event(self, spec, event_type: str, sequence: int, rollback_status: str, exc: Optional[Exception] = None) -> None:
         error_class = type(exc).__name__ if exc else None
         error_message = str(exc)[:500] if exc else None
+        backend_key = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+        if spec.version == 13:
+            forward_revision = FORWARD_APPLY_ARTIFACT_REVISION
+            forward_artifact = spec.apply_artifact.get(backend_key)
+            forward_artifacts = spec.apply_artifact
+        else:
+            forward_revision, forward_artifact, forward_artifacts = _forward_apply_identity(spec, backend_key, current=True)
         context = {
             "coordinator": "registry",
             "provenance_format": "registry-coordinator-v2",
             "migration_version": spec.version,
-            "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
-            "apply_artifact": spec.apply_artifact.get("postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"),
-            "apply_artifacts": spec.apply_artifact,
+            "apply_artifact_revision": forward_revision,
+            "apply_artifact": forward_artifact,
+            "apply_artifacts": forward_artifacts,
             "apply_manifest": spec.apply_manifest,
             "backend_policy": spec.backend_policy,
         }
@@ -2088,13 +2306,19 @@ class DatabaseManager:
         with self._connection_scope() as conn:
             spec = self._migration_spec
             backend_key = "postgresql" if isinstance(self, PostgresDatabaseManager) else "sqlite"
+            if spec.version == 13:
+                forward_revision = FORWARD_APPLY_ARTIFACT_REVISION
+                forward_artifact = spec.apply_artifact.get(backend_key)
+                forward_artifacts = spec.apply_artifact
+            else:
+                forward_revision, forward_artifact, forward_artifacts = _forward_apply_identity(spec, backend_key, current=True)
             failure_context = {
                 "coordinator": "registry",
                 "provenance_format": "registry-coordinator-v2",
                 "migration_version": spec.version,
-                "apply_artifact_revision": FORWARD_APPLY_ARTIFACT_REVISION,
-                "apply_artifact": spec.apply_artifact.get(backend_key),
-                "apply_artifacts": spec.apply_artifact,
+                "apply_artifact_revision": forward_revision,
+                "apply_artifact": forward_artifact,
+                "apply_artifacts": forward_artifacts,
                 "apply_manifest": spec.apply_manifest,
                 "backend_policy": spec.backend_policy,
                 "rollback": "not independently confirmed",
@@ -2952,7 +3176,7 @@ class DatabaseManager:
 
     def _init_db(self, max_migration_version: Optional[int] = None) -> None:
         """Initializes database schema, relational constraints, and performance indexes."""
-        with self._connection_scope() as conn:
+        with _migration_operation_context(self, "legacy-init-db") as migration_operation, self._connection_scope() as conn:
             # 1. Ensure all tables exist
             conn.executescript("""
             -- Organizations Table
@@ -3276,7 +3500,7 @@ class DatabaseManager:
             """)
 
             # 2. Automated Non-Destructive Column Migrations for Existing Tables
-            migrations = [
+            migrations = [] if migration_operation.generic_reconciliation_complete else [
                 "ALTER TABLE audit_events ADD COLUMN previous_event_hash TEXT;",
                 "ALTER TABLE audit_events ADD COLUMN event_hash TEXT;",
                 "ALTER TABLE api_keys ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';",
@@ -3302,6 +3526,7 @@ class DatabaseManager:
                         raise
                     if "duplicate column name" not in str(exc).lower() and "already exists" not in str(exc).lower():
                         raise
+            migration_operation.generic_reconciliation_complete = True
 
             # Versioned execution-run migration.  The execution plane uses one
             # authorized request for one run; retries require a new request and
@@ -4655,6 +4880,7 @@ class DatabaseManager:
             rows = conn.execute(
                 """SELECT r.execution_id, r.organization_id, r.process_id,
                            r.state AS run_state,
+                           r.worker_generation AS run_worker_generation,
                            r.process_group_id, r.correlation_id,
                            p.ownership_state, p.root_process_id,
                            p.process_group_id AS ownership_process_group_id,
@@ -5740,7 +5966,14 @@ class DatabaseManager:
 
     def claim_recovery(self, execution_id: str, organization_id: str, owner: str, worker_generation: str, *, lease_seconds: int = 30) -> Optional[dict[str, Any]]:
         """Claim one recovery lease; expired leases are safely reclaimable."""
-        if not all(isinstance(value, str) and value.strip() for value in (execution_id, organization_id, owner, worker_generation)) or lease_seconds <= 0:
+        if (
+            not all(
+                isinstance(value, str) and value.strip() and len(value) <= 256
+                for value in (execution_id, organization_id, owner, worker_generation)
+            )
+            or type(lease_seconds) is not int
+            or lease_seconds <= 0
+        ):
             return None
         now = utc_now()
         expiry = now + timedelta(seconds=lease_seconds)
@@ -5749,21 +5982,59 @@ class DatabaseManager:
             if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
                 conn.execute("BEGIN IMMEDIATE")
             suffix = " FOR UPDATE" if isinstance(self, PostgresDatabaseManager) else ""
-            ownership = conn.execute(
-                "SELECT ownership_state FROM execution_process_ownership WHERE execution_id=? AND organization_id=?" + suffix,
+            binding = conn.execute(
+                """SELECT p.ownership_state,
+                          p.worker_generation AS ownership_worker_generation,
+                          p.correlation_id AS ownership_correlation_id,
+                          r.state AS run_state,
+                          r.worker_identity AS run_worker_identity,
+                          r.worker_generation AS run_worker_generation,
+                          r.correlation_id AS run_correlation_id,
+                          d.worker_identity AS decision_worker_identity,
+                          i.state AS dispatch_state
+                     FROM execution_process_ownership p
+                     JOIN execution_runs r
+                       ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id
+                     JOIN execution_decisions d
+                       ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                     JOIN execution_dispatch_intents i
+                       ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id
+                    WHERE p.execution_id=? AND p.organization_id=?""" + suffix,
                 (execution_id, organization_id),
             ).fetchone()
-            if not ownership or ownership["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}:
+            if not binding or (
+                binding["ownership_state"] not in {"LAUNCH_UNCERTAIN", "RECOVERY_BLOCKED"}
+                or binding["run_state"] not in {"REQUESTED", "STARTING", "RUNNING"}
+                or binding["dispatch_state"] != "CLAIMED"
+                or not isinstance(binding["run_worker_identity"], str)
+                or not binding["run_worker_identity"].strip()
+                or binding["decision_worker_identity"] != binding["run_worker_identity"]
+                or not isinstance(binding["run_worker_generation"], str)
+                or not binding["run_worker_generation"].strip()
+                or binding["ownership_worker_generation"] != binding["run_worker_generation"]
+                or not isinstance(binding["ownership_correlation_id"], str)
+                or not binding["ownership_correlation_id"].strip()
+                or binding["ownership_correlation_id"] != binding["run_correlation_id"]
+                or not isinstance(binding["run_correlation_id"], str)
+                or not binding["run_correlation_id"].strip()
+            ):
                 return None
             state = conn.execute(
                 "SELECT * FROM execution_recovery_state WHERE execution_id=? AND organization_id=?" + suffix,
                 (execution_id, organization_id),
             ).fetchone()
-            if state and state["lease_expires_at"] and datetime.fromisoformat(state["lease_expires_at"]) > now:
+            try:
+                if state and state["lease_expires_at"] and datetime.fromisoformat(state["lease_expires_at"]) > now:
+                    return None
+                if state and state["next_retry_at"] and datetime.fromisoformat(state["next_retry_at"]) > now:
+                    return None
+            except (TypeError, ValueError):
+                # Malformed lease/retry evidence is not safely reclaimable.
                 return None
-            if state and state["next_retry_at"] and datetime.fromisoformat(state["next_retry_at"]) > now:
-                return None
-            if state and state["status"] == "EXHAUSTED":
+            if state and state["status"] in {"CONFIRMED_TERMINATED", "EXHAUSTED"}:
+                # A terminal recovery projection is immutable at this
+                # boundary.  Reopening it would allow a later lease to create
+                # a second recovery attempt after durable settlement.
                 return None
             attempt_number = (int(state["attempt_number"]) if state else 0) + 1
             if state:
@@ -5782,70 +6053,218 @@ class DatabaseManager:
                      worker_generation, attempt_number, escalation_level, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (execution_id, organization_id, "IN_PROGRESS", owner, token, expiry.isoformat(), worker_generation, attempt_number, 0, now.isoformat()),
                 )
+            claim_evidence = json.dumps(
+                {
+                    "attempt_number": attempt_number,
+                    "execution_id": execution_id,
+                    "lease_expires_at": expiry.isoformat(),
+                    "organization_id": organization_id,
+                    "owner": owner,
+                    "worker_generation": worker_generation,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            claim_health_reference = (
+                "recovery-claim:"
+                + hashlib.sha256(claim_evidence.encode("utf-8")).hexdigest()
+            )
             conn.execute(
                 """INSERT INTO execution_recovery_attempts
                 (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
-                 attempt_number, status, reason_code, correlation_id, requested_at, started_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                 attempt_number, status, reason_code, correlation_id, requested_at, started_at,
+                 health_reference)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (token, execution_id, organization_id, owner, worker_generation,
                  attempt_number, "IN_PROGRESS", "RECOVERY_CLAIMED",
-                 f"corr-recovery-{execution_id}", now.isoformat(), now.isoformat()),
+                 binding["run_correlation_id"], now.isoformat(), now.isoformat(),
+                 claim_health_reference),
             )
+            self._insert_audit_event_conn(conn, AuditEvent(
+                actor=owner,
+                organization_id=organization_id,
+                action=AuditAction.EXECUTION_RECOVERY_ATTEMPT_RECORDED,
+                object_type="execution_recovery_attempt",
+                object_id=token,
+                correlation_id=binding["run_correlation_id"],
+                result="SUCCESS",
+                details={
+                    "attempt_number": attempt_number,
+                    "execution_id": execution_id,
+                    "status": "IN_PROGRESS",
+                    "worker_generation": worker_generation,
+                },
+            ))
             return {"execution_id": execution_id, "organization_id": organization_id, "owner": owner,
                     "worker_generation": worker_generation, "lease_token": token,
-                    "lease_expires_at": expiry.isoformat(), "attempt_number": attempt_number}
+                    "lease_expires_at": expiry.isoformat(), "attempt_number": attempt_number,
+                    "correlation_id": binding["run_correlation_id"]}
 
     def renew_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, lease_seconds: int = 30) -> bool:
-        if lease_seconds <= 0:
+        if (
+            not all(
+                isinstance(value, str) and value.strip() and len(value) <= 512
+                for value in (execution_id, organization_id, owner, lease_token, worker_generation)
+            )
+            or type(lease_seconds) is not int
+            or lease_seconds <= 0
+        ):
             return False
-        expiry = utc_now() + timedelta(seconds=lease_seconds)
+        now = utc_now()
+        expiry = now + timedelta(seconds=lease_seconds)
         with self._connection_scope() as conn:
             return conn.execute(
                 """UPDATE execution_recovery_state SET lease_expires_at=?, updated_at=?
                 WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=?
-                AND status='IN_PROGRESS' AND lease_expires_at > ?""",
-                (expiry.isoformat(), utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation, utc_now().isoformat()),
+                AND status='IN_PROGRESS' AND lease_expires_at > ?
+                AND EXISTS (
+                    SELECT 1
+                      FROM execution_process_ownership p
+                      JOIN execution_runs r
+                        ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id
+                      JOIN execution_decisions d
+                        ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                      JOIN execution_dispatch_intents i
+                        ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id
+                     WHERE p.execution_id=execution_recovery_state.execution_id
+                       AND p.organization_id=execution_recovery_state.organization_id
+                       AND p.ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                       AND p.worker_generation=r.worker_generation
+                       AND p.correlation_id=r.correlation_id
+                       AND r.state IN ('REQUESTED','STARTING','RUNNING')
+                       AND r.worker_identity=d.worker_identity
+                       AND i.state='CLAIMED'
+                )""",
+                (expiry.isoformat(), now.isoformat(), execution_id, organization_id, owner, lease_token, worker_generation, now.isoformat()),
             ).rowcount == 1
 
     def complete_recovery(self, execution_id: str, organization_id: str, owner: str, lease_token: str, worker_generation: str, *, status: str, outcome: str, error: Optional[str] = None, next_retry_at: Optional[datetime] = None) -> bool:
-        allowed = {"CONFIRMED_TERMINATED", "DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
-        if status not in allowed:
+        allowed = {"DEFERRED", "FAILED", "ESCALATED", "EXHAUSTED"}
+        if (
+            status not in allowed
+            or not all(
+                isinstance(value, str) and value.strip() and len(value) <= 512
+                for value in (execution_id, organization_id, owner, lease_token, worker_generation, outcome)
+            )
+            or (error is not None and (not isinstance(error, str) or len(error) > 512))
+        ):
             return False
         if status == "DEFERRED" and next_retry_at is None:
             raise ValueError("deferred recovery requires a retry time")
         if status != "DEFERRED" and next_retry_at is not None:
             raise ValueError("only deferred recovery may carry a retry time")
+        now = utc_now()
         with self._connection_scope() as conn:
             changed = conn.execute(
                 """UPDATE execution_recovery_state SET status=?, last_outcome=?, last_error=?,
                 owner=NULL, lease_token=NULL, lease_expires_at=NULL, next_retry_at=?, updated_at=?
-                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=? AND status='IN_PROGRESS'""",
+                WHERE execution_id=? AND organization_id=? AND owner=? AND lease_token=? AND worker_generation=?
+                  AND status='IN_PROGRESS' AND lease_expires_at > ?
+                  AND EXISTS (
+                    SELECT 1
+                      FROM execution_process_ownership p
+                      JOIN execution_runs r
+                        ON r.execution_id=p.execution_id AND r.organization_id=p.organization_id
+                      JOIN execution_decisions d
+                        ON d.id=r.approved_decision_id AND d.organization_id=r.organization_id
+                      JOIN execution_dispatch_intents i
+                        ON i.execution_id=p.execution_id AND i.organization_id=p.organization_id
+                     WHERE p.execution_id=execution_recovery_state.execution_id
+                       AND p.organization_id=execution_recovery_state.organization_id
+                       AND p.ownership_state IN ('LAUNCH_UNCERTAIN','RECOVERY_BLOCKED')
+                       AND p.worker_generation=r.worker_generation
+                       AND p.correlation_id=r.correlation_id
+                       AND r.state IN ('REQUESTED','STARTING','RUNNING')
+                       AND r.worker_identity=d.worker_identity
+                       AND i.state='CLAIMED'
+                  )""",
                 (status, outcome, error, next_retry_at.isoformat() if next_retry_at else None,
-                 utc_now().isoformat(), execution_id, organization_id, owner, lease_token, worker_generation),
+                 now.isoformat(), execution_id, organization_id, owner, lease_token, worker_generation, now.isoformat()),
             )
             if changed.rowcount == 1:
                 if status in {"DEFERRED", "ESCALATED", "EXHAUSTED"}:
-                    conn.execute(
+                    ownership_updated = conn.execute(
                         """UPDATE execution_process_ownership
                            SET ownership_state='RECOVERY_BLOCKED', updated_at=?
                          WHERE execution_id=? AND organization_id=?
-                           AND ownership_state='LAUNCH_UNCERTAIN'""",
-                        (utc_now().isoformat(), execution_id, organization_id),
+                            AND ownership_state='LAUNCH_UNCERTAIN'""",
+                        (now.isoformat(), execution_id, organization_id),
                     )
-                now = utc_now()
+                    if ownership_updated.rowcount == 0:
+                        ownership = conn.execute(
+                            "SELECT ownership_state FROM execution_process_ownership "
+                            "WHERE execution_id=? AND organization_id=?",
+                            (execution_id, organization_id),
+                        ).fetchone()
+                        if (
+                            not ownership
+                            or ownership["ownership_state"]
+                            != ProcessOwnershipState.RECOVERY_BLOCKED.value
+                        ):
+                            raise RuntimeError(
+                                "recovery completion lost its ownership-state fence"
+                            )
+                recovery_state = conn.execute(
+                    "SELECT attempt_number FROM execution_recovery_state "
+                    "WHERE execution_id=? AND organization_id=?",
+                    (execution_id, organization_id),
+                ).fetchone()
+                if not recovery_state:
+                    raise RuntimeError("recovery completion lost its durable state")
+                completion_evidence = json.dumps(
+                    {
+                        "attempt_number": recovery_state["attempt_number"],
+                        "execution_id": execution_id,
+                        "organization_id": organization_id,
+                        "outcome": outcome,
+                        "status": status,
+                        "worker_generation": worker_generation,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                completion_health_reference = (
+                    "recovery-completion:"
+                    + hashlib.sha256(completion_evidence.encode("utf-8")).hexdigest()
+                )
                 conn.execute(
                     """INSERT INTO execution_recovery_attempts
                     (attempt_id, execution_id, organization_id, worker_identity, worker_generation,
                      attempt_number, status, cancellation_status, reason_code, correlation_id,
-                     requested_at, completed_at, error_code, escalation_level)
-                    SELECT ?, execution_id, organization_id, ?, worker_generation,
-                           attempt_number, ?, ?, 'RECOVERY_COMPLETED', ?,
-                           ?, ?, ?, escalation_level
-                    FROM execution_recovery_state
-                    WHERE execution_id=? AND organization_id=?""",
-                    (f"{lease_token}-completed", owner, status, outcome, f"corr-recovery-{execution_id}",
-                     now.isoformat(), now.isoformat(), error, execution_id, organization_id),
+                     requested_at, completed_at, error_code, escalation_level, health_reference)
+                    SELECT ?, s.execution_id, s.organization_id, ?, s.worker_generation,
+                           attempt_number, ?, ?, 'RECOVERY_COMPLETED', r.correlation_id,
+                           ?, ?, ?, escalation_level, ?
+                    FROM execution_recovery_state s
+                    JOIN execution_runs r
+                      ON r.execution_id=s.execution_id AND r.organization_id=s.organization_id
+                    WHERE s.execution_id=? AND s.organization_id=?""",
+                    (f"{lease_token}-completed", owner, status, outcome,
+                     now.isoformat(), now.isoformat(), error, completion_health_reference,
+                     execution_id, organization_id),
                 )
+                attempt_row = conn.execute(
+                    "SELECT attempt_number, correlation_id FROM execution_recovery_attempts "
+                    "WHERE attempt_id=? AND execution_id=? AND organization_id=?",
+                    (f"{lease_token}-completed", execution_id, organization_id),
+                ).fetchone()
+                if not attempt_row:
+                    raise RuntimeError("recovery completion evidence was not persisted")
+                self._insert_audit_event_conn(conn, AuditEvent(
+                    actor=owner,
+                    organization_id=organization_id,
+                    action=AuditAction.EXECUTION_RECOVERY_ATTEMPT_RECORDED,
+                    object_type="execution_recovery_attempt",
+                    object_id=f"{lease_token}-completed",
+                    correlation_id=attempt_row["correlation_id"],
+                    result="SUCCESS",
+                    details={
+                        "attempt_number": attempt_row["attempt_number"],
+                        "execution_id": execution_id,
+                        "status": status,
+                        "outcome": outcome,
+                    },
+                ))
             return changed.rowcount == 1
 
     def record_unconfirmed_governed_recovery(

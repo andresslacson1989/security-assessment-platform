@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import pytest
 import psycopg
 
+import app.core.db as db_module
 from app.core.db import (
     PostgresDatabaseManager,
     _assert_compatibility_column_exact,
@@ -22,7 +23,7 @@ from app.core.db import (
 )
 from app.core.migration_artifacts import (
     COMPATIBILITY_RECONCILIATION_MANIFEST,
-    COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
+    CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256,
 )
 from app.core.migration_registry import MIGRATION_REGISTRY
 from app.core.models import AuditAction, AuditEvent
@@ -477,15 +478,46 @@ def test_postgres_compatibility_manifest_and_current_provenance_are_exact():
                 "WHERE migration_version BETWEEN 1 AND 12 ORDER BY migration_version, event_sequence"
             ).fetchall()
         assert len(events) == 24
-        assert COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["postgresql"].startswith("sha256:")
+        assert CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["postgresql"].startswith("sha256:")
         for event in events:
             context = json.loads(event["context_json"])
-            assert context["compatibility_artifact"] == COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["postgresql"]
+            assert context["compatibility_artifact"] == CURRENT_COMPATIBILITY_RECONCILIATION_SOURCE_SHA256["postgresql"]
             assert context["compatibility_manifest"] == COMPATIBILITY_RECONCILIATION_MANIFEST
 
 
-def test_postgres_version_two_remediates_legacy_request_fk():
+def test_postgres_coordinator_bounds_compatibility_catalog_work(monkeypatch):
+    calls = []
+    original_metadata = db_module._compatibility_column_metadata
+
+    def traced_metadata(connection, backend, entry):
+        calls.append((backend, entry["family"], entry["table"], entry["column"]))
+        return original_metadata(connection, backend, entry)
+
+    monkeypatch.setattr(db_module, "_compatibility_column_metadata", traced_metadata)
+    with _isolated_manager():
+        generic_entries = [
+            entry for entry in COMPATIBILITY_RECONCILIATION_MANIFEST
+            if entry["family"] == "generic"
+        ]
+        generic_counts = {
+            entry["column"]: calls.count(("postgresql", "generic", entry["table"], entry["column"]))
+            for entry in generic_entries
+        }
+        assert set(generic_counts) == {entry["column"] for entry in generic_entries}
+        assert all(count <= 2 for count in generic_counts.values())
+
+
+def test_postgres_version_two_remediates_legacy_request_fk(monkeypatch):
+    calls = []
+    original_metadata = db_module._compatibility_column_metadata
+
+    def traced_metadata(connection, backend, entry):
+        calls.append((backend, entry["family"], entry["column"]))
+        return original_metadata(connection, backend, entry)
+
+    monkeypatch.setattr(db_module, "_compatibility_column_metadata", traced_metadata)
     with _isolated_manager() as manager:
+        calls.clear()
         with manager._connection_scope() as conn:
             conn.execute("ALTER TABLE execution_runs ADD CONSTRAINT execution_runs_legacy_request_fk FOREIGN KEY (request_id) REFERENCES execution_requests(id)")
             conn.execute("DELETE FROM schema_migrations WHERE version >= 2")
@@ -493,6 +525,9 @@ def test_postgres_version_two_remediates_legacy_request_fk():
         # Exercise the bounded v2 remediation directly without replaying later
         # historical DDL migrations that are already present in this schema.
         manager._init_db(max_migration_version=2)
+        assert calls.count(("postgresql", "generic", "status")) == 1
+        assert calls.count(("postgresql", "generic", "principal_type")) == 1
+        assert sum(1 for call in calls if call[0] == "postgresql" and call[1] == "generic") == 8
         with manager._connection_scope() as conn:
             legacy = conn.execute("""
                 SELECT COUNT(*) AS count
