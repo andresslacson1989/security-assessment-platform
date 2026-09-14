@@ -548,11 +548,10 @@ def test_postgres_coordinator_bounds_compatibility_catalog_work():
                 any(
                     observed["table"] == entry["table"]
                     and observed["column"] == entry["column"]
+                    for batch in batches
                     for observed in batch
                 )
                 for entry in generic_entries
-                for batch in batches
-                if batch
             )
             # The coordinator performs bounded batch snapshots.  The bound is
             # on catalog round trips, not on the number of manifest rows
