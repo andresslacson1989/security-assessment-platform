@@ -60,7 +60,10 @@ jobs:
   focused-contract-verification:
     name: Focused contract verification
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The complete focused selection is intentionally serialized. Its
+    # observed GitHub-hosted runtime is approximately 29 minutes; retain
+    # bounded execution with operational headroom for runner variance.
+    timeout-minutes: 40
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
@@ -220,7 +223,10 @@ jobs:
   full-repository-verification:
     name: Full repository verification
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The full suite must finish so JUnit and skip-classification evidence are
+    # produced. Its observed GitHub-hosted runtime is approximately 41
+    # minutes; retain bounded execution with operational headroom.
+    timeout-minutes: 60
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
