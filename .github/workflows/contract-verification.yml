@@ -60,10 +60,10 @@ jobs:
   focused-contract-verification:
     name: Focused contract verification
     runs-on: ubuntu-latest
-    # The complete focused selection is intentionally serialized. Its
-    # observed GitHub-hosted runtime is approximately 29 minutes; retain
-    # bounded execution with operational headroom for runner variance.
-    timeout-minutes: 40
+    # The complete focused selection is collected once and executed in two
+    # deterministic concurrent shards. The job remains bounded at the
+    # contract-defined 20-minute limit.
+    timeout-minutes: 20
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
@@ -155,39 +155,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          report_dir="$CI_REPORT_DIR"
-          mkdir -p "$report_dir"
-          python -m pytest -p no:cacheprovider -q \
-            --basetemp="$PYTEST_BASETEMP" \
-            tests/security/test_contract_fleet_consistency.py \
-            backend/tests/test_scan_manifest_contract.py \
-            backend/tests/test_execution_launch_inventory.py \
-            tests/security/test_database_backend.py \
-            tests/security/test_auth_admin_boundaries.py \
-            tests/security/test_execution_decision_authority.py \
-            tests/security/test_execution_cancellation_coordinator.py \
-            tests/security/test_real_dispatch_authority_assurance.py \
-            tests/test_observation_service.py::test_late_durable_write_remains_tracked_and_requires_reconciliation \
-            tests/test_observation_service.py::test_supervisor_timeout_remains_owned_through_shutdown \
-            tests/test_observation_service.py::test_supervisor_timeout_does_not_overlap_next_recovery \
-            tests/test_observation_service.py::test_uncertain_supervisor_timeout_does_not_claim_second_recovery_lease \
-            tests/test_observation_service.py::test_termination_status_accepts_exact_typed_result_and_rejects_lookalikes \
-            tests/test_observation_service.py::test_late_supervisor_result_does_not_terminalize_stale_recovery \
-            tests/test_observation_service.py::test_late_supervisor_failure_is_consumed_and_visible \
-            tests/test_observation_service.py::test_late_durable_write_remains_owned_through_bounded_shutdown \
-            tests/test_observation_service.py::test_caller_cancellation_does_not_cancel_started_durable_write \
-            tests/test_observation_service.py::test_late_durable_write_failure_is_consumed_after_shutdown \
-            tests/test_observation_service.py::test_late_durable_recovery_write_remains_visible_to_fresh_service \
-            tests/test_observation_service.py::test_conflicting_pending_durable_write_payload_is_rejected_without_second_invocation \
-            tests/test_observation_service.py::test_cancellation_resistant_non_write_worker_remains_owned_and_fences_restart \
-            tests/test_observation_service.py::test_fresh_service_uses_durable_recovery_when_completion_callback_loop_is_unavailable \
-            tests/security/test_execution_quarantine_api.py::test_recovery_health_exposes_observer_created_state_from_production_revocation \
-            tests/security/test_execution_quarantine_api.py::test_recovery_health_exposes_supervisor_timeout_from_production_observer \
-            tests/security/test_scan_request_migration.py \
-            tests/security/test_process_launch_boundary.py \
-            tests/security/test_container_hardening.py \
-            --junitxml="$report_dir/focused-contract.xml" \
-            2>&1 | tee "$report_dir/focused-contract.log"
+          python .github/scripts/run_complete_pytest.py \
+            --suite focused \
+            --shards 2 \
+            --job-root "$CI_ROOT" \
+            --report-dir "$CI_REPORT_DIR" \
+            --base-temp "$PYTEST_BASETEMP" \
+            --junitxml "$CI_REPORT_DIR/focused-contract.xml" \
+            --log "$CI_REPORT_DIR/focused-contract.log" \
+            --process-timeout-seconds 1080 \
+            --suite-path tests/security/test_contract_fleet_consistency.py \
+            --suite-path backend/tests/test_scan_manifest_contract.py \
+            --suite-path backend/tests/test_execution_launch_inventory.py \
+            --suite-path tests/security/test_database_backend.py \
+            --suite-path tests/security/test_auth_admin_boundaries.py \
+            --suite-path tests/security/test_execution_decision_authority.py \
+            --suite-path tests/security/test_execution_cancellation_coordinator.py \
+            --suite-path tests/security/test_real_dispatch_authority_assurance.py \
+            --suite-path tests/test_observation_service.py::test_late_durable_write_remains_tracked_and_requires_reconciliation \
+            --suite-path tests/test_observation_service.py::test_supervisor_timeout_remains_owned_through_shutdown \
+            --suite-path tests/test_observation_service.py::test_supervisor_timeout_does_not_overlap_next_recovery \
+            --suite-path tests/test_observation_service.py::test_uncertain_supervisor_timeout_does_not_claim_second_recovery_lease \
+            --suite-path tests/test_observation_service.py::test_termination_status_accepts_exact_typed_result_and_rejects_lookalikes \
+            --suite-path tests/test_observation_service.py::test_late_supervisor_result_does_not_terminalize_stale_recovery \
+            --suite-path tests/test_observation_service.py::test_late_supervisor_failure_is_consumed_and_visible \
+            --suite-path tests/test_observation_service.py::test_late_durable_write_remains_owned_through_bounded_shutdown \
+            --suite-path tests/test_observation_service.py::test_caller_cancellation_does_not_cancel_started_durable_write \
+            --suite-path tests/test_observation_service.py::test_late_durable_write_failure_is_consumed_after_shutdown \
+            --suite-path tests/test_observation_service.py::test_late_durable_recovery_write_remains_visible_to_fresh_service \
+            --suite-path tests/test_observation_service.py::test_conflicting_pending_durable_write_payload_is_rejected_without_second_invocation \
+            --suite-path tests/test_observation_service.py::test_cancellation_resistant_non_write_worker_remains_owned_and_fences_restart \
+            --suite-path tests/test_observation_service.py::test_fresh_service_uses_durable_recovery_when_completion_callback_loop_is_unavailable \
+            --suite-path tests/security/test_execution_quarantine_api.py::test_recovery_health_exposes_observer_created_state_from_production_revocation \
+            --suite-path tests/security/test_execution_quarantine_api.py::test_recovery_health_exposes_supervisor_timeout_from_production_observer \
+            --suite-path tests/security/test_scan_request_migration.py \
+            --suite-path tests/security/test_process_launch_boundary.py \
+            --suite-path tests/security/test_container_hardening.py
 
       - name: Reject unexpected focused-test skips
         shell: bash
@@ -223,10 +226,10 @@ jobs:
   full-repository-verification:
     name: Full repository verification
     runs-on: ubuntu-latest
-    # The full suite must finish so JUnit and skip-classification evidence are
-    # produced. Its observed GitHub-hosted runtime is approximately 41
-    # minutes; retain bounded execution with operational headroom.
-    timeout-minutes: 60
+    # The complete repository selection is collected once and executed in two
+    # deterministic concurrent shards. The job remains bounded at the
+    # contract-defined 30-minute limit.
+    timeout-minutes: 30
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
@@ -319,12 +322,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          report_dir="$FULL_EVIDENCE_DIR"
-          mkdir -p "$report_dir"
-          python -m pytest -p no:cacheprovider -q \
-            --basetemp="$PYTEST_BASETEMP" \
-            --junitxml="$report_dir/full-suite.xml" \
-            2>&1 | tee "$report_dir/full-suite.log"
+          python .github/scripts/run_complete_pytest.py \
+            --suite full \
+            --shards 2 \
+            --job-root "$CI_ROOT" \
+            --report-dir "$FULL_EVIDENCE_DIR" \
+            --base-temp "$PYTEST_BASETEMP" \
+            --junitxml "$FULL_EVIDENCE_DIR/full-suite.xml" \
+            --log "$FULL_EVIDENCE_DIR/full-suite.log" \
+            --process-timeout-seconds 1620
 
       - name: Classify full-suite skips
         if: ${{ always() }}

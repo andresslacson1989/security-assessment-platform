@@ -140,6 +140,7 @@ def test_ci_workflow_static_contract_is_complete():
         "windows-job-object-assurance",
     }
     focused_job = workflow["jobs"]["focused-contract-verification"]
+    assert focused_job["timeout-minutes"] == 20
     assert focused_job["services"]["redis"]["image"] == "redis:7.2-alpine"
     assert focused_job["services"]["redis"]["ports"] == ["6379:6379"]
     assert focused_job["services"]["postgres"]["image"] == "postgres:16-alpine"
@@ -151,6 +152,7 @@ def test_ci_workflow_static_contract_is_complete():
     assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_ACK"] == "I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION"
     assert workflow["jobs"]["full-repository-verification"]["services"]["postgres"]["image"] == "postgres:16-alpine"
     full_job = workflow["jobs"]["full-repository-verification"]
+    assert full_job["timeout-minutes"] == 30
     assert full_job["services"]["redis"]["image"] == "redis:7.2-alpine"
     assert full_job["services"]["redis"]["ports"] == ["6379:6379"]
     assert full_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/15"
@@ -219,8 +221,8 @@ def test_ci_workflow_static_contract_is_complete():
             if key in {"CYBERASSESS_DB_PATH", "FULL_EVIDENCE_DIR", "POSTGRES_EVIDENCE_DIR"}:
                 assert str(value).startswith(job_root + "/")
     assert workflow_text.count('>> "$GITHUB_ENV"') == 4
-    assert workflow_text.count('python -m pytest -p no:cacheprovider -q') == 4
-    assert workflow_text.count('--basetemp="$PYTEST_BASETEMP"') == 3
+    assert workflow_text.count('python -m pytest -p no:cacheprovider -q') == 2
+    assert workflow_text.count('--basetemp="$PYTEST_BASETEMP"') == 1
     assert workflow_text.count('path: ${{ env.CI_REPORT_DIR }}/') == 4
     assert "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite" not in workflow_text
     for line in workflow_text.splitlines():
@@ -240,6 +242,10 @@ def test_ci_workflow_static_contract_is_complete():
     assert "focused-contract.xml" in workflow_text
     assert "full-suite.xml" in workflow_text
     assert "postgres-suite.xml" in workflow_text
+    assert ".github/scripts/run_complete_pytest.py" in workflow_text
+    assert "--suite focused" in workflow_text
+    assert "--suite full" in workflow_text
+    assert "--shards 2" in workflow_text
     assert workflow_text.count("if-no-files-found: error") == 4
     assert workflow_text.count("retention-days: 14") == 4
     assert '"--basetemp=$env:CI_PYTEST_BASETEMP"' in workflow_text
