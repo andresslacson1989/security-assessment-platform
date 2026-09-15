@@ -1,15 +1,37 @@
 """Deployment regression checks for the hardened execution containers."""
 
 from pathlib import Path
+import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
+import time
 
 import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_complete_pytest_helper():
+    helper_path = REPOSITORY_ROOT / ".github" / "scripts" / "run_complete_pytest.py"
+    spec = importlib.util.spec_from_file_location("cyberassess_complete_pytest", helper_path)
+    assert spec is not None and spec.loader is not None
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+def _project_local_evidence_dir(label: str) -> Path:
+    path = (
+        REPOSITORY_ROOT
+        / ".project-temp"
+        / f"container-hardening-{label}-{os.getpid()}-{time.time_ns()}"
+    )
+    path.mkdir(parents=True, exist_ok=False)
+    return path
 
 
 def test_all_runtime_services_use_hardened_container_defaults():
@@ -423,3 +445,143 @@ def test_schemathesis_isolated_environment_is_not_installed_in_app_runtime():
     assert "schemathesis" not in requirements.lower()
     assert not any(line.startswith("schemathesis==") for line in lock.splitlines())
     assert (REPOSITORY_ROOT / "backend" / "tool-requirements" / "schemathesis.lock").is_file()
+
+
+def test_complete_pytest_event_stream_is_ordered_and_manifest_bound():
+    helper = _load_complete_pytest_helper()
+    evidence_dir = _project_local_evidence_dir("events")
+    events_path = evidence_dir / "shards" / "00" / "reports" / "pytest-events.jsonl"
+    manifest_sha256 = "a" * 64
+    node_ids = [
+        "tests/example.py::test_first",
+        "backend/tests/example.py::test_second",
+    ]
+    writer = helper._ShardEventWriter(
+        events_path,
+        suite="focused",
+        manifest_sha256=manifest_sha256,
+        shard_index=0,
+        shard_count=2,
+    )
+    writer.write(event_type="session_start", node_id="")
+    for node_id in node_ids:
+        writer.write(event_type="node_start", node_id=node_id)
+        for phase in ("setup", "call", "teardown"):
+            writer.write(
+                event_type="phase_result",
+                node_id=node_id,
+                pytest_phase=phase,
+                outcome="passed",
+                duration_seconds=0.001,
+            )
+    writer.write(event_type="session_finish", node_id="", outcome="0")
+    writer.close()
+
+    records = helper._read_events(
+        events_path,
+        expected_manifest_digest=manifest_sha256,
+        shard_index=0,
+        shard_count=2,
+        expected_node_ids=node_ids,
+    )
+    assert [record["sequence"] for record in records] == list(range(1, len(records) + 1))
+    assert all(record["manifest_sha256"] == manifest_sha256 for record in records)
+    assert all(record["shard_index"] == 0 and record["shard_count"] == 2 for record in records)
+    assert all(record["timestamp"].endswith("Z") for record in records)
+    assert all(isinstance(record["monotonic_ns"], int) for record in records)
+    assert {record["pytest_phase"] for record in records if record["event_type"] == "phase_result"} == {
+        "setup",
+        "call",
+        "teardown",
+    }
+
+
+def test_complete_pytest_failure_event_redacts_known_secrets(monkeypatch):
+    helper = _load_complete_pytest_helper()
+    evidence_dir = _project_local_evidence_dir("failure-redaction")
+    events_path = evidence_dir / "shards" / "01" / "reports" / "pytest-events.jsonl"
+    secret_password = "ci-password-value"
+    secret_token = "ci-token-value"
+    monkeypatch.setenv("CI_TEST_PASSWORD", secret_password)
+    monkeypatch.setenv("CI_TEST_TOKEN", secret_token)
+    writer = helper._ShardEventWriter(
+        events_path,
+        suite="full",
+        manifest_sha256="b" * 64,
+        shard_index=1,
+        shard_count=2,
+    )
+    report = type(
+        "SyntheticReport",
+        (),
+        {
+            "outcome": "failed",
+            "when": "call",
+            "longreprtext": (
+                "tests/example.py:12: AssertionError\n"
+                f"password={secret_password} token={secret_token}"
+            ),
+        },
+    )()
+    writer.write(
+        event_type="phase_result",
+        node_id="tests/example.py::test_secret_safe_failure",
+        pytest_phase="call",
+        outcome="failed",
+        duration_seconds=0.25,
+        failure=helper._failure_record(report),
+    )
+    writer.close()
+    serialized = events_path.read_text(encoding="utf-8")
+    assert secret_password not in serialized
+    assert secret_token not in serialized
+    assert "[REDACTED]" in serialized
+    assert "tests/example.py:12: AssertionError" in serialized
+    assert "test_secret_safe_failure" in serialized
+
+
+def test_complete_pytest_execution_state_records_terminal_outcomes():
+    helper = _load_complete_pytest_helper()
+    evidence_dir = _project_local_evidence_dir("execution-state")
+    manifest_sha256 = "c" * 64
+    cases = (
+        ("completed", 0, False, False),
+        ("failed", 1, False, False),
+        ("timed_out", None, True, True),
+        ("start_failed", None, False, False),
+    )
+    for terminal_state, exit_code, timed_out, terminated in cases:
+        state_path = evidence_dir / terminal_state / "reports" / "pytest-execution-state.json"
+        metadata = {
+            "suite": "focused",
+            "manifest_sha256": manifest_sha256,
+            "index": 0,
+            "shard_count": 2,
+            "node_count": 1,
+            "child_pid": 1234 if terminal_state != "start_failed" else None,
+            "started_at": "2026-09-15T00:00:00.000Z",
+            "started_monotonic": time.monotonic(),
+            "log": str(state_path.with_name("focused-shard-00.log")),
+            "events": str(state_path.with_name("pytest-events.jsonl")),
+            "junit": str(state_path.with_name("focused-shard-00.xml")),
+            "observer": str(state_path.with_name("pytest-observer.json")),
+            "execution_state": str(state_path),
+            "process": None,
+        }
+        helper._write_execution_state(
+            metadata,
+            terminal_state=terminal_state,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            terminated=terminated,
+        )
+        record = json.loads(state_path.read_text(encoding="utf-8"))
+        assert record["schema"] == helper.EXECUTION_STATE_SCHEMA
+        assert record["manifest_sha256"] == manifest_sha256
+        assert record["shard_index"] == 0
+        assert record["shard_count"] == 2
+        assert record["terminal_state"] == terminal_state
+        assert record["exit_code"] == exit_code
+        assert record["timed_out"] is timed_out
+        assert record["terminated"] is terminated
+        assert set(record["paths"]) == {"log", "events", "junit", "observer", "execution_state"}
