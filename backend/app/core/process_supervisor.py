@@ -316,6 +316,32 @@ class ProcessSupervisor:
     _LAUNCH_HANDSHAKE_STABLE_SECONDS = 0.10
     _LAUNCH_HANDSHAKE_POLL_SECONDS = 0.01
 
+    # Keep the POSIX process-group root alive while the requested argv runs.
+    # Very short-lived commands can otherwise exit between Popen() returning
+    # and the first complete /proc identity sample.  The shim does not parse
+    # or interpolate the requested command: sys.argv is passed as an exact
+    # vector to the child, and the shim waits for that child so the supervisor
+    # still attests and owns one complete process container.
+    _POSIX_PROCESS_CONTAINER_SHIM = (
+        "import os, subprocess, sys\n"
+        "try:\n"
+        "    child = subprocess.Popen(sys.argv[1:], env=os.environ)\n"
+        "except FileNotFoundError as exc:\n"
+        "    print(f'Executable not found: {exc}', file=sys.stderr)\n"
+        "    raise SystemExit(127)\n"
+        "except PermissionError as exc:\n"
+        "    print(f'Permission denied: {exc}', file=sys.stderr)\n"
+        "    raise SystemExit(126)\n"
+        "returncode = child.wait()\n"
+        "if returncode < 0:\n"
+        "    try:\n"
+        "        os.kill(os.getpid(), -returncode)\n"
+        "    except OSError:\n"
+        "        raise SystemExit(128 + -returncode)\n"
+        "    raise SystemExit(1)\n"
+        "raise SystemExit(returncode)\n"
+    )
+
     def __init__(self):
         self._active_pids: Set[int] = set()
         self._execution_pids: dict[str, int] = {}
@@ -1933,8 +1959,18 @@ class ProcessSupervisor:
                                 pass
                         raise
                 else:
+                    launch_cmd = cmd
+                    if os.name != "nt":
+                        launch_cmd = [
+                            sys.executable,
+                            "-I",
+                            "-S",
+                            "-c",
+                            self._POSIX_PROCESS_CONTAINER_SHIM,
+                            *cmd,
+                        ]
                     proc = subprocess.Popen(
-                        cmd,
+                        launch_cmd,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
