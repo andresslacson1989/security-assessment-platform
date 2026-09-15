@@ -418,6 +418,7 @@ def _read_events(
     expected_nodes = set(expected_node_ids)
     seen_sequences: list[int] = []
     node_events: dict[str, set[str]] = {node_id: set() for node_id in expected_node_ids}
+    node_phase_outcomes: dict[str, dict[str, str]] = {node_id: {} for node_id in expected_node_ids}
     for expected_sequence, value in enumerate(records, start=1):
         if not isinstance(value, dict) or value.get("schema") != EVENTS_SCHEMA:
             raise RuntimeError(f"pytest event schema mismatch: {path}")
@@ -434,13 +435,23 @@ def _read_events(
         if not isinstance(node_id, str) or not isinstance(event_type, str):
             raise RuntimeError(f"pytest event identity is malformed: {path}")
         if node_id in expected_nodes:
-            node_events[node_id].add(event_type if event_type != "phase_result" else str(value.get("pytest_phase")))
-    required_events = {"node_start", "setup", "call", "teardown"}
-    missing = {
-        node_id: sorted(required_events - event_types)
-        for node_id, event_types in node_events.items()
-        if required_events - event_types
-    }
+            if event_type == "phase_result":
+                phase = value.get("pytest_phase")
+                outcome = value.get("outcome")
+                if not isinstance(phase, str) or not isinstance(outcome, str):
+                    raise RuntimeError(f"pytest phase event is malformed: {path}")
+                node_events[node_id].add(phase)
+                node_phase_outcomes[node_id][phase] = outcome
+            else:
+                node_events[node_id].add(event_type)
+    required_events = {"node_start", "setup", "teardown"}
+    missing: dict[str, list[str]] = {}
+    for node_id, event_types in node_events.items():
+        missing_events = required_events - event_types
+        if "call" not in event_types and node_phase_outcomes[node_id].get("setup") != "skipped":
+            missing_events.add("call")
+        if missing_events:
+            missing[node_id] = sorted(missing_events)
     if missing:
         raise RuntimeError(f"pytest event coverage is incomplete for {path}: {missing}")
     if seen_sequences != list(range(1, len(records) + 1)):

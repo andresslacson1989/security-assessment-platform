@@ -67,7 +67,7 @@ jobs:
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
-      CYBERASSESS_LIVE_REDIS_TEST_URL: redis://127.0.0.1:6379/15
+      CYBERASSESS_LIVE_REDIS_TEST_URL: redis://127.0.0.1:6379/0
       CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
       CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
       CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/focused-contract-verification
@@ -237,7 +237,7 @@ jobs:
     env:
       OPERATING_MODE: TEST
       JWT_SECRET: ci-only-jwt-secret-012345678901234567890123456789
-      CYBERASSESS_LIVE_REDIS_TEST_URL: redis://127.0.0.1:6379/15
+      CYBERASSESS_LIVE_REDIS_TEST_URL: redis://127.0.0.1:6379/0
       CYBERASSESS_POSTGRES_TEST_URL: postgresql://cyberassess_ci:cyberassess_ci_only@127.0.0.1:5432/cyberassess_ci
       CYBERASSESS_POSTGRES_TEST_ACK: I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION
       CI_ROOT: ${{ github.workspace }}/.project-temp/contract-verification-${{ github.run_id }}/full-repository-verification

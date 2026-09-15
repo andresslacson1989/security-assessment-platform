@@ -846,6 +846,35 @@ async def test_identity_capture_failure_after_popen_is_typed_uncertain_and_recov
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-container shim is not used on Windows")
+async def test_short_non_scan_process_is_attested_before_it_can_exit(monkeypatch):
+    """The POSIX launch container keeps a fast command inside the identity handshake."""
+    supervisor = ProcessSupervisor()
+    captured_identities: list[ProcessIdentity | None] = []
+    original_register = supervisor._register_execution
+
+    def capture_registration(*args, **kwargs):
+        captured_identities.append(kwargs.get("identity"))
+        return original_register(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_register_execution", capture_registration)
+    result = await supervisor.execute(
+        [sys.executable, "-c", "print('fast-process', flush=True)"],
+        timeout=5.0,
+        non_scan_context=issue_non_scan_execution_context("observation:fast-process"),
+    )
+
+    assert result.execution_status is ProcessExecutionStatus.COMPLETED
+    assert result.stdout.strip() == "fast-process"
+    attested = [identity for identity in captured_identities if identity is not None]
+    assert attested
+    assert attested[-1].pid > 1
+    assert attested[-1].process_group_id == attested[-1].pid
+    assert attested[-1].session_id == attested[-1].pid
+    assert attested[-1].member_snapshot
+
+
+@pytest.mark.asyncio
 async def test_typed_credential_handoff_cannot_release_credentials_without_verifier():
     """Metadata alone must never authorize credential release to a child."""
     handoff = CredentialEnvironmentHandoff(

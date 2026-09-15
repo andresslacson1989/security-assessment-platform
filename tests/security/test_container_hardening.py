@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 
+import pytest
 import yaml
 
 
@@ -169,7 +170,7 @@ def test_ci_workflow_static_contract_is_complete():
     assert focused_job["services"]["postgres"]["ports"] == ["5432:5432"]
     assert "--health-cmd=\"redis-cli ping\"" in workflow_text
     assert "--health-cmd=\"pg_isready -U cyberassess_ci -d cyberassess_ci\"" in workflow_text
-    assert focused_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/15"
+    assert focused_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/0"
     assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_URL"].endswith("/cyberassess_ci")
     assert focused_job["env"]["CYBERASSESS_POSTGRES_TEST_ACK"] == "I_UNDERSTAND_DISPOSABLE_DATABASE_MUTATION"
     assert workflow["jobs"]["full-repository-verification"]["services"]["postgres"]["image"] == "postgres:16-alpine"
@@ -177,7 +178,7 @@ def test_ci_workflow_static_contract_is_complete():
     assert full_job["timeout-minutes"] == 30
     assert full_job["services"]["redis"]["image"] == "redis:7.2-alpine"
     assert full_job["services"]["redis"]["ports"] == ["6379:6379"]
-    assert full_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/15"
+    assert full_job["env"]["CYBERASSESS_LIVE_REDIS_TEST_URL"] == "redis://127.0.0.1:6379/0"
     windows_job = workflow["jobs"]["windows-job-object-assurance"]
     assert windows_job["runs-on"] == "windows-2022"
     assert windows_job["timeout-minutes"] == 20
@@ -494,6 +495,100 @@ def test_complete_pytest_event_stream_is_ordered_and_manifest_bound():
         "call",
         "teardown",
     }
+
+
+def test_complete_pytest_event_stream_accepts_setup_skip_without_call():
+    helper = _load_complete_pytest_helper()
+    evidence_dir = _project_local_evidence_dir("setup-skip-events")
+    events_path = evidence_dir / "shards" / "00" / "reports" / "pytest-events.jsonl"
+    manifest_sha256 = "d" * 64
+    node_id = "tests/example.py::test_setup_skip"
+    writer = helper._ShardEventWriter(
+        events_path,
+        suite="focused",
+        manifest_sha256=manifest_sha256,
+        shard_index=0,
+        shard_count=2,
+    )
+    writer.write(event_type="session_start", node_id="")
+    writer.write(event_type="node_start", node_id=node_id)
+    writer.write(
+        event_type="phase_result",
+        node_id=node_id,
+        pytest_phase="setup",
+        outcome="skipped",
+        duration_seconds=0.001,
+    )
+    writer.write(
+        event_type="phase_result",
+        node_id=node_id,
+        pytest_phase="teardown",
+        outcome="passed",
+        duration_seconds=0.001,
+    )
+    writer.write(event_type="session_finish", node_id="", outcome="0")
+    writer.close()
+
+    records = helper._read_events(
+        events_path,
+        expected_manifest_digest=manifest_sha256,
+        shard_index=0,
+        shard_count=2,
+        expected_node_ids=[node_id],
+    )
+    assert [record["pytest_phase"] for record in records if record["event_type"] == "phase_result"] == [
+        "setup",
+        "teardown",
+    ]
+
+
+def test_complete_pytest_event_stream_rejects_missing_call_after_successful_setup():
+    helper = _load_complete_pytest_helper()
+    evidence_dir = _project_local_evidence_dir("incomplete-events")
+    events_path = evidence_dir / "shards" / "00" / "reports" / "pytest-events.jsonl"
+    manifest_sha256 = "e" * 64
+    node_id = "tests/example.py::test_missing_call"
+    writer = helper._ShardEventWriter(
+        events_path,
+        suite="focused",
+        manifest_sha256=manifest_sha256,
+        shard_index=0,
+        shard_count=2,
+    )
+    writer.write(event_type="session_start", node_id="")
+    writer.write(event_type="node_start", node_id=node_id)
+    writer.write(
+        event_type="phase_result",
+        node_id=node_id,
+        pytest_phase="setup",
+        outcome="passed",
+        duration_seconds=0.001,
+    )
+    writer.write(
+        event_type="phase_result",
+        node_id=node_id,
+        pytest_phase="teardown",
+        outcome="passed",
+        duration_seconds=0.001,
+    )
+    writer.write(event_type="session_finish", node_id="", outcome="0")
+    writer.close()
+
+    with pytest.raises(RuntimeError, match="event coverage is incomplete"):
+        helper._read_events(
+            events_path,
+            expected_manifest_digest=manifest_sha256,
+            shard_index=0,
+            shard_count=2,
+            expected_node_ids=[node_id],
+        )
+
+
+def test_complete_pytest_redis_shards_use_distinct_valid_database_indices():
+    helper = _load_complete_pytest_helper()
+
+    assert helper._redis_shard_url("redis://127.0.0.1:6379/0", 0) == "redis://127.0.0.1:6379/0"
+    assert helper._redis_shard_url("redis://127.0.0.1:6379/0", 1) == "redis://127.0.0.1:6379/1"
 
 
 def test_complete_pytest_failure_event_redacts_known_secrets(monkeypatch):

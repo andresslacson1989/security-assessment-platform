@@ -2763,7 +2763,9 @@ class DatabaseManager:
         else:
             constraints = conn.execute("""SELECT contype, convalidated, pg_get_constraintdef(c.oid) AS definition
                 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
-                WHERE t.relname IN ('execution_process_ownership','execution_recovery_attempts','execution_recovery_state')""").fetchall()
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=current_schema()
+                  AND t.relname IN ('execution_process_ownership','execution_recovery_attempts','execution_recovery_state')""").fetchall()
             if any(not row["convalidated"] for row in constraints):
                 raise RuntimeError("execution lifecycle migration v10 contains an unvalidated constraint")
             for table in ("execution_process_ownership", "execution_recovery_attempts", "execution_recovery_state"):

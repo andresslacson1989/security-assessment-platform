@@ -80,6 +80,8 @@ def test_v10_postcondition_query_qualifies_constraint_oid():
     source = (Path(__file__).resolve().parents[2] / "backend" / "app" / "core" / "db.py").read_text(encoding="utf-8")
     assert "pg_get_constraintdef(oid)" not in source
     assert "pg_get_constraintdef(c.oid)" in source
+    assert "JOIN pg_namespace n ON n.oid=t.relnamespace" in source
+    assert "WHERE n.nspname=current_schema()" in source
 
 
 def _assert_audit_event_hash(event):

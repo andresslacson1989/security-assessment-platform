@@ -140,7 +140,7 @@ def test_current_verifier_fingerprint_is_separate_from_historical_checksum_mater
         "sha256:0c9dbfd369deee0e3240845793bb61be9bc8e66ac9eeaf2e9612e1dcc00c52f7"
     )
     assert POSTCONDITION_SOURCE_SHA256["_verify_migration_v10_postconditions"] == (
-        "sha256:f7c6b70bc95fe5ee2bb1c1062454a8b4db5121fa483926794c1708b06c211ae8"
+        "sha256:b5a343cd16ced6244b0a426d11c9210e5a005f1b1306e115416cc662b09b959d"
     )
     assert MIGRATION_CHECKSUM_POSTCONDITION_SOURCE_SHA256["_verify_migration_v10_postconditions"] != POSTCONDITION_SOURCE_SHA256[
         "_verify_migration_v10_postconditions"
