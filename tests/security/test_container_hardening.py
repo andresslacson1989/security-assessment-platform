@@ -223,7 +223,7 @@ def test_ci_workflow_static_contract_is_complete():
     assert workflow_text.count('>> "$GITHUB_ENV"') == 4
     assert workflow_text.count('python -m pytest -p no:cacheprovider -q') == 2
     assert workflow_text.count('--basetemp="$PYTEST_BASETEMP"') == 1
-    assert workflow_text.count('path: ${{ env.CI_REPORT_DIR }}/') == 4
+    assert workflow_text.count('path: ${{ env.CI_REPORT_DIR }}/') == 2
     assert "CYBERASSESS_POSTGRES_TEST_URL is required for the isolated PostgreSQL integration suite" not in workflow_text
     for line in workflow_text.splitlines():
         if "/tmp" in line:
@@ -248,6 +248,18 @@ def test_ci_workflow_static_contract_is_complete():
     assert "--shards 2" in workflow_text
     assert workflow_text.count("if-no-files-found: error") == 4
     assert workflow_text.count("retention-days: 14") == 4
+    for job_id in ("focused-contract-verification", "full-repository-verification"):
+        upload_step = next(
+            step for step in workflow["jobs"][job_id]["steps"]
+            if step.get("name") in {"Upload focused evidence", "Upload full-suite evidence"}
+        )
+        assert upload_step["if"] == "${{ always() }}"
+        assert upload_step["with"]["if-no-files-found"] == "error"
+        upload_paths = upload_step["with"]["path"].splitlines()
+        assert "${{ env.CI_REPORT_DIR }}/" in upload_paths
+        assert "${{ env.CI_ROOT }}/collection/" in upload_paths
+        assert "${{ env.CI_ROOT }}/shards/*/reports/" in upload_paths
+        assert upload_step["with"]["path"].strip() != "${{ env.CI_ROOT }}/"
     assert '"--basetemp=$env:CI_PYTEST_BASETEMP"' in workflow_text
     assert "test_windows_job_atomic_assignment_and_descendant_termination" in workflow_text
     assert "test_windows_worker_crash_kill_on_close_blocks_durable_reattachment" in workflow_text
