@@ -257,7 +257,9 @@ def test_ci_workflow_static_contract_is_complete():
         assert upload_step["with"]["if-no-files-found"] == "error"
         upload_paths = upload_step["with"]["path"].splitlines()
         assert "${{ env.CI_REPORT_DIR }}/" in upload_paths
-        assert "${{ env.CI_ROOT }}/collection/" in upload_paths
+        assert "${{ env.CI_ROOT }}/collection/pytest-collect.stdout" in upload_paths
+        assert "${{ env.CI_ROOT }}/collection/pytest-collect.stderr" in upload_paths
+        assert "${{ env.CI_ROOT }}/collection/" not in upload_paths
         assert "${{ env.CI_ROOT }}/shards/*/reports/" in upload_paths
         assert upload_step["with"]["path"].strip() != "${{ env.CI_ROOT }}/"
     assert '"--basetemp=$env:CI_PYTEST_BASETEMP"' in workflow_text

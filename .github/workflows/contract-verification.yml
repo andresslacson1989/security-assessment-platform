@@ -221,7 +221,8 @@ jobs:
           name: focused-contract-evidence-${{ github.run_id }}
           path: |
             ${{ env.CI_REPORT_DIR }}/
-            ${{ env.CI_ROOT }}/collection/
+            ${{ env.CI_ROOT }}/collection/pytest-collect.stdout
+            ${{ env.CI_ROOT }}/collection/pytest-collect.stderr
             ${{ env.CI_ROOT }}/shards/*/reports/
           if-no-files-found: error
           retention-days: 14
@@ -388,7 +389,8 @@ jobs:
           name: full-repository-evidence-${{ github.run_id }}
           path: |
             ${{ env.CI_REPORT_DIR }}/
-            ${{ env.CI_ROOT }}/collection/
+            ${{ env.CI_ROOT }}/collection/pytest-collect.stdout
+            ${{ env.CI_ROOT }}/collection/pytest-collect.stderr
             ${{ env.CI_ROOT }}/shards/*/reports/
           if-no-files-found: error
           retention-days: 14
